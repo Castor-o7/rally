@@ -22,6 +22,20 @@ still be refined as each story is taken.
 - **MUS-12: Give the watchman a read-only GitHub token.** Relevant to RAL-18.
 - **MUS-39: Show that a terminal message came from the operator.** Limits what RAL-6 can prove today.
 
+## What a first deployment needs
+
+Rally can run on Murph, as the ledger of record for Rally's own stories first, once these are done:
+
+1. RAL-13: the service and its access control, so both machines can reach it.
+2. RAL-15: backups to a1, with a real restore, so nothing is lost.
+3. RAL-14, RAL-16 and RAL-17: tamper detection, untrusted text and secrets, because an append-only ledger
+   can't simply forget what it took in.
+4. RAL-6: verification limits written down, because teams will read Verified as meaning something.
+5. The operator: a router reservation for Murph, and approval of the rollout.
+
+The other teams join after a trial on Rally's own stories (RAL-24). RAL-9 retires the hand-kept table.
+Until then, Muster's `docs/board.md` stays in force. The web app and stall detection come after this.
+
 ## Phase 0: Design
 
 - [x] **RAL-4: Decide where Rally runs.** Open question 1 in the design, and the first to settle.
