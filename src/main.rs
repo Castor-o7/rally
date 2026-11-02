@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
-use rally::ledger::State;
+use rally::ledger::{State, TeamStatus};
 use rally::record::{Kind, Record, Source};
 use rally::store::Store;
 
@@ -86,6 +86,25 @@ enum Command {
         #[arg(long)]
         as_verifier: bool,
     },
+    /// Declare your team's state: available, working or blocked.
+    TeamState {
+        team: String,
+        #[arg(value_parser = parse_status)]
+        status: TeamStatus,
+        /// The story this is about, if any.
+        #[arg(long)]
+        story: Option<String>,
+        /// Needed when blocked: what you're blocked on.
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Show each team's declared state, or one team with its history.
+    Teams {
+        team: Option<String>,
+        /// Show the state as it stood after this record.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
     /// Show the state of every story, or one story with its history.
     Show {
         story: Option<String>,
@@ -99,6 +118,11 @@ fn parse_state(text: &str) -> Result<State, String> {
     serde_json::from_value(json!(text)).map_err(|_| {
         format!("{text:?} isn't a state: ready, claimed, in_review, verified or sent_back")
     })
+}
+
+fn parse_status(text: &str) -> Result<TeamStatus, String> {
+    serde_json::from_value(json!(text))
+        .map_err(|_| format!("{text:?} isn't a state: available, working or blocked"))
 }
 
 fn main() -> ExitCode {
@@ -141,6 +165,43 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 }
             };
             return Ok(serde_json::to_string_pretty(&output)?);
+        }
+        Command::Teams { team, as_of } => {
+            let ledger = store.ledger(as_of)?;
+            let output = match team {
+                Some(name) => {
+                    let key = name.trim().to_lowercase();
+                    let team = ledger
+                        .teams()
+                        .get(&key)
+                        .ok_or_else(|| format!("{name} has declared no state"))?;
+                    json!({"as_of": ledger.last_seq(), "team": key, "detail": team})
+                }
+                None => {
+                    let current: serde_json::Map<String, Value> = ledger
+                        .teams()
+                        .iter()
+                        .map(|(name, team)| (name.clone(), json!(team.current)))
+                        .collect();
+                    json!({"as_of": ledger.last_seq(), "teams": current})
+                }
+            };
+            return Ok(serde_json::to_string_pretty(&output)?);
+        }
+        Command::TeamState {
+            team,
+            status,
+            story,
+            note,
+        } => {
+            let mut body = json!({"change": "team_state", "team": team, "status": status});
+            if let Some(story) = story {
+                body["story"] = json!(story);
+            }
+            if let Some(note) = note {
+                body["note"] = json!(note);
+            }
+            (Kind::Declared, body)
         }
         Command::Ready { story } => (Kind::Declared, json!({"change": "ready", "story": story})),
         Command::Claim { story, team } => (

@@ -4,7 +4,7 @@ Rally is the ledger of progress for a muster of agents: what work exists, who ha
 far along it is, and what evidence backs that up. It lets a watchman see that a team has
 stalled, without polling the team or trusting a hand-kept table.
 
-**Status: early.** The record format, story states and replay exist, with a `rally` command that works
+**Status: early.** The record format, story states, team states and replay exist, with a `rally` command that works
 on a local ledger file. The service, its access control and the web app don't exist yet, so don't rely
 on who a record says wrote it. Work follows the [roadmap](docs/roadmap.md).
 

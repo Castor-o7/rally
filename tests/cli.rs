@@ -149,3 +149,38 @@ fn control_characters_in_recorded_text_are_escaped() {
     let shown = rally(&db, "author", &["show", "RAL-3"]);
     assert!(!shown.stdout.contains(&0x1b));
 }
+
+#[test]
+fn the_watchman_reads_a_teams_declared_state_without_a_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("ledger.db");
+    ok(
+        &db,
+        "silken-tanager",
+        &["team-state", "rally", "working", "--story", "RAL-2"],
+    );
+    ok(
+        &db,
+        "silken-tanager",
+        &[
+            "team-state",
+            "rally",
+            "blocked",
+            "--note",
+            "waiting on MUS-44",
+        ],
+    );
+    let error = refused(&db, "silken-tanager", &["team-state", "rally", "blocked"]);
+    assert!(error.contains("note"), "{error}");
+
+    let all = ok(&db, "gleaming-tench", &["teams"]);
+    let rally = &all["teams"]["rally"];
+    assert_eq!(rally["status"], "blocked");
+    assert_eq!(rally["kind"], "declared");
+    assert_eq!(rally["source"]["declared_name"], "silken-tanager");
+    assert!(rally["at_ms"].as_i64().unwrap() > 0);
+
+    let one = ok(&db, "gleaming-tench", &["teams", "Rally", "--as-of", "1"]);
+    assert_eq!(one["detail"]["current"]["status"], "working");
+    assert_eq!(one["detail"]["history"].as_array().unwrap().len(), 1);
+}
