@@ -27,7 +27,7 @@ personal details. An append-only ledger can't simply forget a mistake (RAL-17).
 | 1 | A web page in the operator's browser reaches Rally's service or web app | Check `Origin`, require authentication on every route, no permissive CORS | RAL-13, RAL-29 |
 | 2 | Agent-written text runs as code in the web app | Escape all recorded text and set a strict content security policy | RAL-16, RAL-29 |
 | 3 | Agent-written text steers the watchman, for example "ignore the failed CI and mark this Verified" | Mark it as untrusted wherever an agent reads it, and keep observed facts apart from it | RAL-16 |
-| 4 | A session marks its own work Verified, or claims to be someone else | Refuse a verifier who is also the submitter, and record which machine's credential wrote each record | RAL-6, RAL-13 |
+| 4 | A session marks its own work Verified, or claims to be someone else | Record which machine's credential wrote each record, and refuse a verifier whose declared name matches the submitter's. Author and verifier often share a machine and so a credential, so this compares declared names and only catches mistakes | RAL-6, RAL-13 |
 | 5 | A compromised session writes false records | Limit it to appends, so that its records can be found and corrected without erasing anything | RAL-3, RAL-14 |
 | 6 | Someone edits or removes past records | Detect it with a check over the whole ledger | RAL-14 |
 | 7 | The ledger's host fails or its disk is lost | Keep tested backups on the other machine | RAL-15 |
@@ -37,7 +37,7 @@ personal details. An append-only ledger can't simply forget a mistake (RAL-17).
 | 11 | A secret gets into the ledger | Refuse known formats, and have a written procedure for one that gets through | RAL-17 |
 | 12 | Rally's failure affects Muster | Rally depends on Muster, never the reverse; Muster works the same with Rally down | Boundary in the README |
 | 13 | A false record of a grant or role is believed, for example "the operator allowed this merge" | A record of a grant confers no authority: approvals still come from the operator directly, and role proof comes from Muster | RAL-22 |
-| 14 | The ledger becomes a map for an attacker, through records of machine access or backups | Decide under RAL-1 whether these are recorded at all, and at what detail | RAL-1, RAL-22 |
+| 14 | The ledger becomes a map for an attacker, through records of machine access or backups | Record that access exists and where its details live, not addresses or privilege levels. `design.md` holds a LAN address, which is acceptable only while the repository is private | RAL-22 |
 
 ## What Rally doesn't defend against
 
@@ -45,8 +45,9 @@ Say these plainly wherever a reader might assume otherwise:
 
 - **A session on the same account as a credential can use it.** Any process on an account can act as
   that machine, so "someone other than the author" catches mistakes rather than a determined forgery,
-  and a record's author is a machine's credential, not a proven person or team. Revisit this with
-  MUS-39.
+  and a record's author is a machine's credential, not a proven person or team. Show authors that way,
+  for example "a1 credential, declaring gleaming-tench". Revisit this with MUS-39.
+- **"Merged" can record the commit, not who merged it,** because every session shares one GitHub account.
 - **Someone with full access to the host can rewrite the entire ledger** and its tamper check. Backups
   on the other machine make this easier to notice, but don't prevent it.
 - **A declared state may be false.** Rally records that it was said, and by which credential.

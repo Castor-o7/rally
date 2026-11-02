@@ -69,13 +69,22 @@ The bones. Everything later reads from this.
 ## Phase 2: Verification
 
 - [ ] **RAL-5: Check submitted evidence.** Done when: on submission, Rally records as observed whether
-  the commit exists, names the story and passed CI, and a test covers each failure.
+  the commit exists, names the story and passed CI, and a test covers each failure. What a team didn't
+  test is its own field, not free text.
+- [ ] **RAL-31: Tie verification to a commit.** Heads can move while work waits: muster#34 changed three
+  times in review on 2026-11-02. Done when: each Verified and each requested second read names a commit,
+  and Rally records as observed when the merged commit differs from the verified one, with a test.
+- [ ] **RAL-32: Show a requested second read.** catapp#78 merged before a requested read arrived. Done
+  when: a requested read is visible to whoever merges until it's answered or withdrawn. Whether it
+  blocks a merge is the operator's call, and this story records it either way.
+- [ ] **RAL-33: Record merges as commits.** Done when: Merged records the commit, is independent of
+  Verified, and doesn't claim who merged, since every session shares one GitHub account.
 - [ ] **RAL-18: Check evidence with least privilege.** Done when: evidence checks use read-only GitHub
   access, a merge attempt with that access is refused, and a test shows that Rally reads evidence without
   checking out or running submitted code.
 - [ ] **RAL-6: Verify separately from the author.** Done when: a story can only be marked Verified or
-  Sent back by someone other than its submitter, with the verifier and note recorded, and the docs say
-  what this does and doesn't prove.
+  Sent back under a declared name other than its submitter's, with the verifier and note recorded, and
+  the docs say that this only catches mistakes, because both may hold the same machine's credential.
 - [ ] **RAL-19: Let a team read and correct its own record.** Done when: a team can read everything
   recorded about it without asking the watchman, and can append a correction or a disagreement that's
   shown beside the original. Verification outcomes stay with the verifier.
@@ -90,11 +99,16 @@ The bones. Everything later reads from this.
   conditions on the order of work, standing grants with their scope and whether each was direct or
   relayed, and how old each fact is; and a test shows no open submission is lost when the watchman
   changes. The brief records grants but confers no authority, and proof of who holds a role comes from
-  Muster, not the ledger. List from the watchman, 2026-11-02. Live daemon commit, backups and machine
-  access are for RAL-1 to place, since the threat model has to weigh recording them.
+  Muster, not the ledger. Each field shows whether it's observed, declared or verified. Machine access
+  appears only as that it exists and where its details live. List from the watchman, 2026-11-02. Live
+  daemon commit and backups are for RAL-1 to place.
 - [ ] **RAL-20: Record who is waiting on whom.** Done when: a team can name what it's blocked on,
   including another team's story, the watchman can list open blockers and chains of them, and a blocker
-  stays open until someone closes it, with who and why recorded.
+  stays open until someone closes it, with who and why recorded. A blocked story and a blocked team are
+  recorded separately.
+- [ ] **RAL-30: Reconcile an outage.** Done when: entries made on the fallback board during an outage can
+  be backfilled with their real time and who entered them, the gap itself stays visible, and a test
+  shows that backfilled records can't pass for live ones.
 - [ ] **RAL-7: Detect a stall.** Depends on MUS-4 and MUS-44. Done when: each row of the stall table in
   the design has a test, a team resting after a story isn't flagged, and the stall of 2026-10-30 would
   have been flagged.
@@ -105,7 +119,8 @@ The bones. Everything later reads from this.
   scores, weights or ranking.
 - [ ] **RAL-23: Show progress across roadmaps.** For the watchman's planning. Done when: for each
   roadmap, the watchman can see how many stories are in each state, which ready stories have nothing
-  blocking them, and which blockers hold up the most stories, with no comparison or ranking of teams.
+  blocking them, which blockers hold up the most stories, and which roadmap ticks have no Verified
+  behind them, with no comparison or ranking of teams.
 - [ ] **RAL-24: Bring in other projects.** Open question 4 in the design. Done when: the decision is
   recorded, and Muster, catapp, ParadoxDetector and any other team on the board can be tracked by it.
 - [ ] **RAL-9: Replace the hand-kept table.** Depends on RAL-24. The current table is
@@ -130,3 +145,6 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   that markup in recorded text doesn't run, and that an unauthorized viewer is refused; it isn't exposed
   to the open internet; and someone other than its author has reviewed it adversarially, before it's
   reachable beyond the machine it runs on.
+- [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
+  on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
+  its own that can be revoked alone, after its own threat review.
