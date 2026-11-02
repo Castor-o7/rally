@@ -116,10 +116,18 @@ means one machine failing takes out both. Backups go to the other machine either
 
 **What we know so far, reported by the watchman on 2026-11-02:** a1's Muster connections go to the
 private LAN address 192.168.1.241:6255. a1 has `Tailscale.app` installed but no `tailscale` or `wg`
-command, and has `utun` interfaces nobody has identified, so a VPN isn't ruled out. Murph reports being
-up since 10-15 and a1 since 10-13. That's one data point, and the crash of 2026-11-01 happened without
-either rebooting and its cause is unknown, so Murph's reliability is still unverified, as is its side
-of the network.
+command, and has `utun` interfaces nobody has identified, so a VPN isn't ruled out. a1 has been up since
+10-13.
+
+**Reported by vibrant-mink from Murph, the same day:** no Tailscale or WireGuard in use as far as it
+could tell (`tailscaled` inactive, no such interfaces). Its LAN address, 192.168.1.241, comes from DHCP,
+so it could change unless the router reserves it; the router wasn't checked. Murph has been up since
+10-15, with crash entries on 09-26 and other reboots on 09-26, 10-12 and 10-15, reasons unknown. It
+didn't reboot on 11-01, and what crashed that night is still unknown. Power and network outages that
+didn't reboot the host weren't checked, because nothing monitors them.
+
+So Rally's first transport would be the LAN, protected by its own TLS and tokens rather than a mesh, and
+hosting on Murph needs a stable address first. Murph's reliability is still only partly known.
 
 ## Open questions
 
