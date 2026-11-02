@@ -36,6 +36,8 @@ pub struct RateLimit {
     pub write_burst: f64,
     pub write_per_second: f64,
     pub max_ledger_bytes: u64,
+    /// Rally shares its host with Muster's daemon, so it stops writing well before the disk fills.
+    pub min_free_bytes: u64,
 }
 
 impl Default for RateLimit {
@@ -46,6 +48,7 @@ impl Default for RateLimit {
             write_burst: 30.0,
             write_per_second: 0.2,
             max_ledger_bytes: 1024 * 1024 * 1024,
+            min_free_bytes: 5 * 1024 * 1024 * 1024,
         }
     }
 }
@@ -181,6 +184,19 @@ fn internal(error: &StoreError) -> Response {
     )
 }
 
+/// Space available on the disk holding `path` to an account like this one, excluding what's
+/// reserved for the system.
+#[cfg(unix)]
+fn free_bytes(path: &Path) -> std::io::Result<u64> {
+    let stats = rustix::fs::statvfs(path)?;
+    Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
+}
+
+#[cfg(not(unix))]
+fn free_bytes(_path: &Path) -> std::io::Result<u64> {
+    Err(std::io::Error::other("only Unix hosts are supported"))
+}
+
 /// What a client sends to write. It has no credential or time, because the service sets those.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -195,6 +211,7 @@ async fn write_record(
     Extension(identity): Extension<Identity>,
     text: String,
 ) -> Response {
+    // If either check can't be made, refuse the write rather than risk the disk.
     match std::fs::metadata(&service.db) {
         Ok(metadata) if metadata.len() < service.limit.max_ledger_bytes => {}
         Ok(_) => return failure(StatusCode::INSUFFICIENT_STORAGE, "the ledger is full"),
@@ -203,6 +220,22 @@ async fn write_record(
             return failure(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "the ledger can't be read",
+            );
+        }
+    }
+    match free_bytes(&service.db) {
+        Ok(free) if free >= service.limit.min_free_bytes => {}
+        Ok(_) => {
+            return failure(
+                StatusCode::INSUFFICIENT_STORAGE,
+                "the ledger's disk is low on free space",
+            );
+        }
+        Err(error) => {
+            eprintln!("rally: can't check free disk space: {error}");
+            return failure(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "free disk space can't be checked",
             );
         }
     }
