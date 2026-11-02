@@ -107,12 +107,17 @@ how long a check-in lasts, and test the rules against the stall of 2026-10-30.
 - **Who may connect.** Only machines the operator has paired with Rally, a1 and Murph to start with. A
   write records which machine's credential made it. The web app gets its own read-only credential.
 - **When the service is down,** a write fails with a clear error rather than queueing silently, reads
-  fail too, and teams fall back to Muster's `docs/board.md` process. Muster isn't affected.
+  fail too, and teams fall back to Muster's `docs/board.md` process, with the watchman keeping the
+  fallback board. Muster isn't affected. Outage entries are backfilled afterwards with their real time
+  and who entered them, so the ledger never looks continuous when it wasn't (RAL-30).
 - **Not through Muster messages.** That would tie the ledger to message delivery, which is still being
   hardened (MUS-34), and would make Muster the ledger's transport rather than a neighbor.
 
 **Which machine:** Murph is the likely host because it already runs the Muster daemon, but that also
-means one machine failing takes out both. Backups go to the other machine either way (RAL-15).
+means one machine failing takes out both. Stall detection needs Muster's roster anyway, so that costs
+less than it looks. Backups go to the other machine either way (RAL-15). If that's a1, they only run
+while it's awake and the docs must say so. The watchman's conditions for Murph are a router reservation
+first and a tested restore on a1, and it asks what crashed on 11-01 before deciding.
 
 **What we know so far, reported by the watchman on 2026-11-02:** a1's Muster connections go to the
 private LAN address 192.168.1.241:6255. a1 has `Tailscale.app` installed but no `tailscale` or `wg`
