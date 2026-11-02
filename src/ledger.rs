@@ -55,13 +55,18 @@ pub enum Change {
     /// Someone other than the submitter returns the story, saying what's missing.
     SendBack { story: String, note: String },
     /// Annotates an earlier record of the same story, which stays in the history. Can also set the
-    /// state. Moving a story into or out of a verifier's state takes a verifier.
+    /// state: a team can only do that for a story it holds, naming itself in `team`, and moving a
+    /// story into or out of a verifier's state takes a verifier. Without a state, it's only an
+    /// annotation, which anyone can add, and `team` is ignored. Teams can record a disagreement
+    /// this way, and it changes nothing else.
     Correct {
         story: String,
         corrects: u64,
         note: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<State>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team: Option<String>,
     },
 }
 
@@ -280,6 +285,8 @@ fn transition(
             }
             story.state = State::Claimed;
             story.team = Some(team.clone());
+            // A new claim needs its own submission.
+            story.submitted_by = None;
         }
         Change::Release { team, .. } => {
             require_kind(record, Kind::Declared)?;
@@ -289,6 +296,7 @@ fn transition(
             require_holder(story, id, team)?;
             story.state = State::Ready;
             story.team = None;
+            story.submitted_by = None;
         }
         Change::Submit { team, .. } => {
             require_kind(record, Kind::Declared)?;
@@ -311,7 +319,10 @@ fn transition(
             };
         }
         Change::Correct {
-            corrects, state, ..
+            corrects,
+            state,
+            team,
+            ..
         } => {
             let target = story.history.iter().position(|e| e.seq == *corrects);
             let Some(target) = target else {
@@ -327,14 +338,30 @@ fn transition(
                 });
             }
             if let Some(new_state) = state {
-                if story.state.is_verifiers() || new_state.is_verifiers() {
+                if story.state.is_verifiers()
+                    || new_state.is_verifiers()
+                    || record.kind() == Kind::Verified
+                {
                     require_verifier(story, id, record)?;
+                } else {
+                    let team = team.as_deref().ok_or(LedgerError::EmptyField("team"))?;
+                    require_holder(story, id, team)?;
                 }
-                // Every state past Ready needs a team to hold it.
-                if *new_state != State::Ready && story.team.is_none() {
+                // Every state past Ready needs a team to hold it, and every state past Claimed
+                // needs a submission, or the check against self-verification has nothing to
+                // compare with.
+                let needs_submission = *new_state == State::InReview || new_state.is_verifiers();
+                if (*new_state != State::Ready && story.team.is_none())
+                    || (needs_submission && story.submitted_by.is_none())
+                {
                     return Err(refuse(story.state));
                 }
                 story.state = *new_state;
+                // Going back to Ready or Claimed means the work may change, so it needs a new
+                // submission rather than reviving the old evidence.
+                if matches!(new_state, State::Ready | State::Claimed) {
+                    story.submitted_by = None;
+                }
                 if *new_state == State::Ready {
                     story.team = None;
                 }
@@ -358,7 +385,7 @@ fn require_kind(record: &Record, expected: Kind) -> Result<(), LedgerError> {
 
 fn require_holder(story: &Story, id: &str, team: &str) -> Result<(), LedgerError> {
     match &story.team {
-        Some(holder) if holder != team => Err(LedgerError::WrongTeam {
+        Some(holder) if !same_name(holder, team) => Err(LedgerError::WrongTeam {
             story: id.to_owned(),
             holder: holder.clone(),
         }),
@@ -368,20 +395,47 @@ fn require_holder(story: &Story, id: &str, team: &str) -> Result<(), LedgerError
 
 fn require_verifier(story: &Story, id: &str, record: &Record) -> Result<(), LedgerError> {
     require_kind(record, Kind::Verified)?;
-    let name = record.source().declared_name.as_deref();
-    if name.is_some() && name == story.submitted_by.as_deref() {
+    let Some(name) = record.source().declared_name.as_deref() else {
+        return Ok(());
+    };
+    // Anyone who ever submitted this story counts as an author, as does the team holding it.
+    let submitted = story.history.iter().any(|entry| {
+        matches!(entry.change, Change::Submit { .. })
+            && entry
+                .source
+                .declared_name
+                .as_deref()
+                .is_some_and(|submitter| same_name(submitter, name))
+    });
+    let holds = story
+        .team
+        .as_deref()
+        .is_some_and(|team| same_name(team, name));
+    if submitted || holds {
         return Err(LedgerError::SelfVerification {
             story: id.to_owned(),
-            name: name.unwrap_or_default().to_owned(),
+            name: name.to_owned(),
         });
     }
     Ok(())
+}
+
+/// Compares declared names, ignoring case and surrounding space, to catch honest slips.
+fn same_name(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
 }
 
 fn check_fields(change: &Change) -> Result<(), LedgerError> {
     let id = change.story();
     if !is_story_id(id) {
         return Err(LedgerError::InvalidStoryId(id.to_owned()));
+    }
+    if let Change::Correct {
+        team: Some(team), ..
+    } = change
+        && team.trim().is_empty()
+    {
+        return Err(LedgerError::EmptyField("team"));
     }
     let fields: &[(&'static str, &str)] = match change {
         Change::Ready { .. } => &[],
@@ -660,7 +714,7 @@ mod tests {
         let original = ledger.story(STORY).unwrap().history[2].change.clone();
         let correction = team(json!({
             "change": "correct", "story": STORY, "corrects": 3,
-            "note": "wrong commit; it was def456", "state": "claimed"
+            "note": "wrong commit; it was def456", "state": "claimed", "team": "rally"
         }));
         apply_next(&mut ledger, &correction).unwrap();
 
@@ -721,13 +775,15 @@ mod tests {
     fn a_correction_to_ready_clears_the_team_and_past_ready_needs_one() {
         let mut ledger = ledger_with(&[ready(), claim()]);
         let to_ready = team(json!({
-            "change": "correct", "story": STORY, "corrects": 2, "note": "x", "state": "ready"
+            "change": "correct", "story": STORY, "corrects": 2, "note": "x", "state": "ready",
+            "team": "rally"
         }));
         apply_next(&mut ledger, &to_ready).unwrap();
         assert_eq!(ledger.story(STORY).unwrap().team, None);
 
         let to_claimed = team(json!({
-            "change": "correct", "story": STORY, "corrects": 2, "note": "x", "state": "claimed"
+            "change": "correct", "story": STORY, "corrects": 2, "note": "x", "state": "claimed",
+            "team": "rally"
         }));
         assert!(matches!(
             apply_next(&mut ledger, &to_claimed),
@@ -753,6 +809,211 @@ mod tests {
                 Err(LedgerError::WrongKind { .. })
             ));
         }
+    }
+
+    #[test]
+    fn a_correction_cannot_skip_submission_to_self_verify() {
+        let mut ledger = ledger_with(&[ready(), claim()]);
+        let skip = team(json!({
+            "change": "correct", "story": STORY, "corrects": 2, "note": "x", "state": "in_review"
+        }));
+        let _ = apply_next(&mut ledger, &skip);
+        let own = record(
+            Kind::Verified,
+            "alice",
+            json!({"change": "verify", "story": STORY, "note": "fine"}),
+        );
+        assert!(apply_next(&mut ledger, &own).is_err());
+        assert_eq!(state(&ledger), State::Claimed);
+    }
+
+    #[test]
+    fn another_team_cannot_move_a_claim_by_correcting_it() {
+        for target in ["ready", "in_review", "claimed"] {
+            let mut ledger = ledger_with(&[ready(), claim()]);
+            let before = ledger.clone();
+            let body = json!({
+                "change": "correct", "story": STORY, "corrects": 2, "note": "x",
+                "state": target
+            });
+            assert!(apply_next(&mut ledger, &team(body)).is_err(), "{target}");
+            assert_eq!(ledger, before);
+        }
+    }
+
+    #[test]
+    fn a_correction_with_a_state_must_name_the_holding_team() {
+        for (extra, missing) in [(None, true), (Some("muster"), false)] {
+            let mut ledger = ledger_with(&[ready(), claim()]);
+            let mut body = json!({
+                "change": "correct", "story": STORY, "corrects": 2, "note": "x", "state": "ready"
+            });
+            if let Some(extra) = extra {
+                body["team"] = json!(extra);
+            }
+            let result = apply_next(&mut ledger, &team(body));
+            if missing {
+                assert_eq!(result, Err(LedgerError::EmptyField("team")));
+            } else {
+                assert!(matches!(result, Err(LedgerError::WrongTeam { .. })));
+            }
+        }
+    }
+
+    #[test]
+    fn the_holder_cannot_correct_into_review_without_a_submission() {
+        let mut ledger = ledger_with(&[ready(), claim()]);
+        let body = json!({
+            "change": "correct", "story": STORY, "corrects": 2, "note": "x",
+            "state": "in_review", "team": "rally"
+        });
+        assert!(matches!(
+            apply_next(&mut ledger, &team(body)),
+            Err(LedgerError::InvalidTransition { .. })
+        ));
+    }
+
+    #[test]
+    fn a_verifier_cannot_correct_an_unsubmitted_story_into_a_verifiers_state() {
+        for target in ["verified", "sent_back", "in_review"] {
+            let mut ledger = ledger_with(&[ready(), claim()]);
+            let body = json!({
+                "change": "correct", "story": STORY, "corrects": 2, "note": "x", "state": target
+            });
+            assert!(matches!(
+                apply_next(&mut ledger, &verifier(body)),
+                Err(LedgerError::InvalidTransition { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn a_verifier_can_reassign_a_claim() {
+        let mut ledger = ledger_with(&[ready(), claim()]);
+        let body = json!({
+            "change": "correct", "story": STORY, "corrects": 2, "note": "session ended",
+            "state": "ready"
+        });
+        apply_next(&mut ledger, &verifier(body)).unwrap();
+        assert_eq!(state(&ledger), State::Ready);
+    }
+
+    #[test]
+    fn a_new_claim_needs_its_own_submission() {
+        let mut ledger = ledger_with(&[ready(), claim(), submit(), send_back(), claim()]);
+        let body = json!({
+            "change": "correct", "story": STORY, "corrects": 5, "note": "x",
+            "state": "in_review", "team": "rally"
+        });
+        assert!(matches!(
+            apply_next(&mut ledger, &team(body)),
+            Err(LedgerError::InvalidTransition { .. })
+        ));
+    }
+
+    fn verify_as(name: &str) -> Record {
+        record(
+            Kind::Verified,
+            name,
+            json!({"change": "verify", "story": STORY, "note": "fine"}),
+        )
+    }
+
+    fn correct_to(target: &str, corrects: u64) -> serde_json::Value {
+        json!({
+            "change": "correct", "story": STORY, "corrects": corrects, "note": "x",
+            "state": target, "team": "rally"
+        })
+    }
+
+    #[test]
+    fn a_team_cannot_verify_under_its_own_team_name() {
+        let mut ledger = ledger_with(&[ready(), claim(), submit()]);
+        assert!(matches!(
+            apply_next(&mut ledger, &verify_as("rally")),
+            Err(LedgerError::SelfVerification { .. })
+        ));
+    }
+
+    #[test]
+    fn going_back_to_claimed_needs_a_new_submission() {
+        let mut ledger = ledger_with(&[ready(), claim(), submit()]);
+        apply_next(&mut ledger, &team(correct_to("claimed", 3))).unwrap();
+        assert!(matches!(
+            apply_next(&mut ledger, &team(correct_to("in_review", 3))),
+            Err(LedgerError::InvalidTransition { .. })
+        ));
+        let to_verified = verifier(json!({
+            "change": "correct", "story": STORY, "corrects": 3, "note": "x", "state": "verified"
+        }));
+        assert!(matches!(
+            apply_next(&mut ledger, &to_verified),
+            Err(LedgerError::InvalidTransition { .. })
+        ));
+        apply_next(&mut ledger, &submit()).unwrap();
+        assert_eq!(state(&ledger), State::InReview);
+    }
+
+    #[test]
+    fn a_verifier_reopening_a_story_needs_a_new_submission() {
+        let mut ledger = ledger_with(&[ready(), claim(), submit(), verify()]);
+        let reopen = verifier(json!({
+            "change": "correct", "story": STORY, "corrects": 4, "note": "x", "state": "claimed"
+        }));
+        apply_next(&mut ledger, &reopen).unwrap();
+        assert!(matches!(
+            apply_next(&mut ledger, &team(correct_to("in_review", 3))),
+            Err(LedgerError::InvalidTransition { .. })
+        ));
+    }
+
+    #[test]
+    fn anyone_who_ever_submitted_cannot_verify() {
+        let mut ledger = ledger_with(&[ready(), claim(), submit(), send_back(), claim()]);
+        let bob = record(
+            Kind::Declared,
+            "bob",
+            json!({"change": "submit", "story": STORY, "team": "rally", "evidence": "def"}),
+        );
+        apply_next(&mut ledger, &bob).unwrap();
+        assert!(matches!(
+            apply_next(&mut ledger, &verify_as("alice")),
+            Err(LedgerError::SelfVerification { .. })
+        ));
+    }
+
+    #[test]
+    fn names_compare_without_case_or_surrounding_space() {
+        for name in ["Alice", "alice ", " ALICE", "Rally"] {
+            let mut ledger = ledger_with(&[ready(), claim(), submit()]);
+            assert!(
+                matches!(
+                    apply_next(&mut ledger, &verify_as(name)),
+                    Err(LedgerError::SelfVerification { .. })
+                ),
+                "{name:?}"
+            );
+        }
+        let mut ledger = ledger_with(&[ready(), claim()]);
+        let body = json!({"change": "release", "story": STORY, "team": " RALLY "});
+        apply_next(&mut ledger, &team(body)).unwrap();
+        assert_eq!(state(&ledger), State::Ready);
+    }
+
+    #[test]
+    fn a_correction_without_a_state_only_annotates() {
+        let mut ledger = ledger_with(&[ready(), claim()]);
+        let before = ledger.story(STORY).unwrap().clone();
+        let note = record(
+            Kind::Declared,
+            "someone-else",
+            json!({"change": "correct", "story": STORY, "corrects": 2, "note": "I disagree"}),
+        );
+        apply_next(&mut ledger, &note).unwrap();
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.state, before.state);
+        assert_eq!(story.team, before.team);
+        assert_eq!(story.history[1].corrected_by, vec![3]);
     }
 
     #[test]

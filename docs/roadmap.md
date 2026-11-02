@@ -54,8 +54,9 @@ The bones. Everything later reads from this.
   unauthorized write or read is refused, shown by a test for each route into the service, and the docs
   say what an accepted write does and doesn't prove about who sent it.
 - [ ] **RAL-14: Make tampering detectable.** Done when: a check reports any altered, removed or
-  reordered record, a test covers each, and the docs say what this can't catch, such as someone with
-  full access rewriting the whole ledger.
+  reordered record, including the newest records being removed, which doesn't show as a gap in the
+  sequence; a test covers each; and the docs say what this can't catch, such as someone with full access
+  rewriting the whole ledger.
 - [ ] **RAL-15: Back up and restore the ledger.** Done when: a backup restored on the other machine
   passes the RAL-14 check and rebuilds the same state, shown by a real restore; backups get the same
   protection as the ledger; and because a1 is only available with its lid open, backups catch up
