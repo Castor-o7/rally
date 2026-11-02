@@ -74,7 +74,7 @@ The bones. Everything later reads from this.
 - [ ] **RAL-2: Show whether a team is available, working or blocked.** Continues MUS-28. Done when: a
   team can set its state, the watchman can read it without sending a message, and it's labelled as
   declared.
-- [ ] **RAL-13: Control who can write and read.** Depends on RAL-4 and RAL-10. Done when: an
+- [x] **RAL-13: Control who can write and read.** Depends on RAL-4 and RAL-10. Done when: an
   unauthorized write or read is refused, shown by a test for each route into the service, and the docs
   say what an accepted write does and doesn't prove about who sent it.
 - [ ] **RAL-35: Limit load on the service.** From the second read of RAL-13. Done when: connections are
