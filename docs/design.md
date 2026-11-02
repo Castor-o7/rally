@@ -11,6 +11,12 @@ has made, which are listed first.
   of where and how each team is.
 - When the watchman sees a team has stalled, the watchman coordinates with that team to find
   out whether there's other work it can do or whether it's stuck on a real problem.
+- If Muster is the musculature of the network, Rally is the bones: the deterministic ledger of the
+  current state of the muster's teams, and the center for recording and verifying work.
+- The watchman uses the ledger to verify each team's successes and challenges against its roadmap, to
+  unblock teams, and to record and plan so as to maximize progress while respecting each team.
+- Rally maintains a relationship to security, of the information and of the environment.
+- A visually appealing web app showing the current ledger and past ledgers is a goal.
 
 ## Carried over from Muster's roadmap
 
@@ -25,8 +31,10 @@ operator decisions, but they've held up so far:
 
 ## What Rally can and can't determine
 
-Rally can decide some things deterministically and has to label the rest. Each record has one
-of three kinds:
+The ledger itself is deterministic: the same records always produce the same state. Its contents
+aren't all facts, though, so "the ledger says a team is working" means a team declared that, not that
+it's true. Rally can decide some things deterministically and has to label the rest. Each record has
+one of three kinds:
 
 | Kind | Meaning | Examples |
 |---|---|---|
@@ -94,8 +102,8 @@ how long a check-in lasts, and test the rules against the stall of 2026-10-30.
    Options include a single service on one machine, or sending writes through Muster messages. A
    service needs its own answer to who may connect.
 2. **How is Rally's state stored?** An append-only log of events is the leading idea, because it
-   gives the history the Version 0 table lacks and lets a wrong entry be corrected without erasing
-   it. SQLite is one candidate. Whether Rally should use myko is also open; Muster's decision to
+   gives the history the Version 0 table lacks, lets a wrong entry be corrected without erasing
+   it, and can rebuild the past ledgers the web app has to show. SQLite is one candidate. Whether Rally should use myko is also open; Muster's decision to
    stay on myko doesn't bind Rally.
 3. **What does "someone other than the author" mean when identity can't be proved?** Any process on
    an account can act as that machine, so this rule catches mistakes rather than a determined
@@ -103,7 +111,8 @@ how long a check-in lasts, and test the rules against the stall of 2026-10-30.
 4. **How do other projects join?** The board already covers Muster, catapp and ParadoxDetector, each
    with its own roadmap file. Decide whether stories stay in those files with Rally tracking them, or
    Rally becomes their home.
-5. **Who can see what, and how?** Candidates are a CLI, Muster's TUI or web UI, or a generated table. A
-   Rally view inside Muster would break the one-way dependency.
+5. **Who can see what, and how?** The operator wants Rally's own web app, so it's settled that there is
+   one, and the proposal is that it's read-only. Who may view it, and from where, is still open. A Rally
+   view inside Muster would break the one-way dependency.
 6. **Should Rally's notifications use structured messages?** Muster's MUS-43 is designing those, so
    Rally's digests are a good test case. Talk to the Muster team before settling a format.
