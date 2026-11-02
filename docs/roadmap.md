@@ -26,7 +26,8 @@ still be refined as each story is taken.
 
 Rally can run on Murph, as the ledger of record for Rally's own stories first, once these are done:
 
-1. RAL-13: the service and its access control, so both machines can reach it.
+1. RAL-13: the service and its access control, so both machines can reach it. RAL-36, so it can't fill the
+   disk Muster's daemon needs, and a check of Murph's free disk before rollout.
 2. RAL-15: backups to a1, with a real restore, so nothing is lost.
 3. RAL-14, RAL-16 and RAL-17: tamper detection, untrusted text and secrets, because an append-only ledger
    can't simply forget what it took in.
@@ -41,6 +42,7 @@ other teams join (RAL-24) or the table is retired (RAL-9), it also needs:
 - RAL-30's outage backfill used once for real.
 - RAL-31's warning when a merged commit differs from the verified one.
 - RAL-7 reading roster facts from `muster-shim roster`, once that has rolled out.
+- RAL-35's limits on load, with read time measured as records grow, before other teams join.
 
 The web app comes after this.
 
@@ -78,6 +80,9 @@ The bones. Everything later reads from this.
 - [ ] **RAL-35: Limit load on the service.** From the second read of RAL-13. Done when: connections are
   capped and time out before they authenticate, failed token attempts are limited, and reads don't replay
   the whole ledger under the store's lock, with a test for each.
+- [ ] **RAL-36: Stop before the disk fills.** Rally shares Murph with Muster's daemon. Required before the
+  trial. Done when: the service refuses writes while free space on the ledger's disk is below a set floor,
+  reads carry on, the error says why, and a test shows it. The docs say what isn't covered.
 - [ ] **RAL-14: Make tampering detectable.** Done when: a check reports any altered, removed or
   reordered record, including the newest records being removed, which doesn't show as a gap in the
   sequence; a test covers each; and the docs say what this can't catch, such as someone with full access

@@ -51,6 +51,11 @@ verify their own work catches mistakes, not forgery. Revisit this with MUS-39.
 
 - `--db` works on a ledger file directly, with no service and no checks on who is writing. It's for tests
   and for the host's own administration.
+- Write limits are per machine, so all of a machine's sessions share them. Watch for 429s in real use.
+- One compromised credential could reach the 1 GiB stop in about 4 days, which blocks everyone's writes
+  while reads carry on. If that happens, revoke the credential, find its records by credential with
+  `rally show`, and restart with a higher `--max-ledger-bytes` if there's disk to spare. Records stay
+  in the ledger, because it's append-only.
 - A failed token attempt isn't rate limited, and connections aren't capped or timed out while they're
   still unauthenticated. Tokens are 256 random bits, so guessing isn't practical, but a flood or slow
   connections could still load the service (RAL-35). This is why it stays off the open internet.

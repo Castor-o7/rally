@@ -262,6 +262,21 @@ fn encode(text: &str) -> String {
     encoded
 }
 
+/// Creates an empty private file, refusing one that already exists.
+fn create_new_private(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(())
+}
+
 fn config_path(config: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
     match config {
         Some(path) => Ok(path),
@@ -317,11 +332,20 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             out,
             read_only,
         } => {
-            if out.exists() {
-                return Err(format!("{} already exists", out.display()).into());
+            // Claim the file first, so a failure can't leave a machine whose token nobody has.
+            create_new_private(&out)?;
+            let state = StateDir::open(&state_dir)?;
+            let pairing = match state.add_machine(&name, &address, read_only) {
+                Ok(pairing) => pairing,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&out);
+                    return Err(error.into());
+                }
+            };
+            if let Err(error) = write_private(&out, pairing.code().as_bytes()) {
+                let _ = state.revoke(&name);
+                return Err(error.into());
             }
-            let pairing = StateDir::open(&state_dir)?.add_machine(&name, &address, read_only)?;
-            write_private(&out, pairing.code().as_bytes())?;
             return Ok(json!({"machine": name, "pair_code_file": out}).to_string());
         }
         Command::Revoke { name, state_dir } => {
