@@ -1,0 +1,149 @@
+//! Runs the real `rally` binary against a ledger file.
+
+use std::path::Path;
+use std::process::{Command, Output};
+
+use serde_json::Value;
+
+fn rally(db: &Path, name: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_rally"))
+        .args(["--db"])
+        .arg(db)
+        .args(["--credential", "a1", "--as", name])
+        .args(args)
+        .env_remove("RALLY_DB")
+        .env_remove("RALLY_CREDENTIAL")
+        .env_remove("RALLY_NAME")
+        .output()
+        .unwrap()
+}
+
+fn ok(db: &Path, name: &str, args: &[&str]) -> Value {
+    let output = rally(db, name, args);
+    assert!(
+        output.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn refused(db: &Path, name: &str, args: &[&str]) -> String {
+    let output = rally(db, name, args);
+    assert!(!output.status.success(), "{args:?} should be refused");
+    String::from_utf8(output.stderr).unwrap()
+}
+
+#[test]
+fn a_team_claims_and_submits_and_the_history_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("ledger.db");
+
+    ok(&db, "silken-tanager", &["ready", "RAL-3"]);
+    ok(
+        &db,
+        "silken-tanager",
+        &["claim", "RAL-3", "--team", "rally"],
+    );
+    let evidence = "Castor-o7/rally abc123";
+    let submitted = ok(
+        &db,
+        "silken-tanager",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", evidence],
+    );
+    assert_eq!(submitted["recorded"], 3);
+
+    let error = refused(
+        &db,
+        "silken-tanager",
+        &["claim", "RAL-3", "--team", "rally"],
+    );
+    assert!(error.contains("can't make this change"), "{error}");
+
+    ok(
+        &db,
+        "silken-tanager",
+        &[
+            "correct",
+            "RAL-3",
+            "--corrects",
+            "3",
+            "--note",
+            "wrong commit",
+            "--state",
+            "claimed",
+        ],
+    );
+
+    let shown = ok(&db, "gleaming-tench", &["show", "RAL-3"]);
+    assert_eq!(shown["detail"]["state"], "claimed");
+    let history = shown["detail"]["history"].as_array().unwrap();
+    assert_eq!(history.len(), 4);
+    assert_eq!(history[2]["change"]["evidence"], evidence);
+    assert_eq!(history[2]["corrected_by"][0], 4);
+    assert_eq!(history[0]["kind"], "declared");
+    assert_eq!(history[0]["source"]["credential"], "a1");
+    assert_eq!(history[0]["source"]["declared_name"], "silken-tanager");
+
+    let earlier = ok(&db, "gleaming-tench", &["show", "RAL-3", "--as-of", "3"]);
+    assert_eq!(earlier["detail"]["state"], "in_review");
+}
+
+#[test]
+fn the_submitter_cannot_verify_but_someone_else_can() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("ledger.db");
+
+    ok(&db, "author", &["ready", "RAL-3"]);
+    ok(&db, "author", &["claim", "RAL-3", "--team", "rally"]);
+    ok(
+        &db,
+        "author",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
+    );
+
+    let error = refused(&db, "author", &["verify", "RAL-3", "--note", "fine"]);
+    assert!(error.contains("can't verify"), "{error}");
+
+    ok(
+        &db,
+        "reader",
+        &["verify", "RAL-3", "--note", "read the diff"],
+    );
+    let all = ok(&db, "reader", &["show"]);
+    assert_eq!(all["stories"]["RAL-3"]["state"], "verified");
+}
+
+#[test]
+fn writing_needs_a_credential_and_a_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("ledger.db");
+    let output = Command::new(env!("CARGO_BIN_EXE_rally"))
+        .arg("--db")
+        .arg(&db)
+        .args(["ready", "RAL-3"])
+        .env_remove("RALLY_CREDENTIAL")
+        .env_remove("RALLY_NAME")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(error.contains("--credential"), "{error}");
+}
+
+#[test]
+fn control_characters_in_recorded_text_are_escaped() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("ledger.db");
+    ok(&db, "author", &["ready", "RAL-3"]);
+    ok(&db, "author", &["claim", "RAL-3", "--team", "rally"]);
+    let escape = "abc\u{1b}[31m";
+    let output = rally(
+        &db,
+        "author",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", escape],
+    );
+    assert!(output.status.success());
+    let shown = rally(&db, "author", &["show", "RAL-3"]);
+    assert!(!shown.stdout.contains(&0x1b));
+}
