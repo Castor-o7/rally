@@ -72,6 +72,8 @@ fn a_team_claims_and_submits_and_the_history_is_kept() {
             "wrong commit",
             "--state",
             "claimed",
+            "--team",
+            "rally",
         ],
     );
 

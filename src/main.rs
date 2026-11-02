@@ -78,6 +78,9 @@ enum Command {
         note: String,
         #[arg(long, value_parser = parse_state)]
         state: Option<State>,
+        /// Your team, needed to set the state of a story your team holds.
+        #[arg(long)]
+        team: Option<String>,
         /// Record this as a verifier's correction, needed to move a story into or out of Verified
         /// or Sent back.
         #[arg(long)]
@@ -169,6 +172,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             corrects,
             note,
             state,
+            team,
             as_verifier,
         } => {
             let mut body = json!({
@@ -176,6 +180,9 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             });
             if let Some(state) = state {
                 body["state"] = json!(state);
+            }
+            if let Some(team) = team {
+                body["team"] = json!(team);
             }
             let kind = if as_verifier {
                 Kind::Verified
