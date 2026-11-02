@@ -17,7 +17,7 @@ use rally::client;
 use rally::ledger::{State, TeamStatus};
 use rally::record::{Kind, Record, Source};
 use rally::server::{self, RateLimit};
-use rally::store::Store;
+use rally::store::{Head, Store};
 use rally::views;
 
 /// A ledger of progress for a muster of agents.
@@ -145,6 +145,17 @@ enum Command {
         #[arg(long)]
         as_verifier: bool,
     },
+    /// Check the ledger for tampering. Fails if there's a problem. Save the head it prints somewhere
+    /// else, and pass it back later with --expect.
+    Check {
+        /// A head saved earlier, as SEQ:HASH.
+        #[arg(long, value_parser = parse_head)]
+        expect: Option<Head>,
+    },
+    /// On the service's host, with --db: accept the current head after a lost or damaged head file.
+    /// Refuses a broken chain. This also accepts any removal `check` was reporting, so compare with a
+    /// head saved elsewhere first.
+    AdoptHead,
     /// Declare your team's state: available, working or blocked.
     TeamState {
         team: String,
@@ -177,6 +188,18 @@ fn parse_state(text: &str) -> Result<State, String> {
     serde_json::from_value(json!(text)).map_err(|_| {
         format!("{text:?} isn't a state: ready, claimed, in_review, verified or sent_back")
     })
+}
+
+fn parse_head(text: &str) -> Result<Head, String> {
+    let (seq, hash) = text.split_once(':').ok_or("expected SEQ:HASH")?;
+    let valid = hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+    match seq.parse() {
+        Ok(seq) if valid => Ok(Head {
+            seq,
+            hash: hash.to_owned(),
+        }),
+        _ => Err("expected SEQ:HASH".to_owned()),
+    }
 }
 
 fn parse_status(text: &str) -> Result<TeamStatus, String> {
@@ -372,6 +395,31 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             write_private(&path, serde_json::to_string(&pairing)?.as_bytes())?;
             return Ok(json!({"paired": pairing.address, "config": path}).to_string());
+        }
+        Command::AdoptHead => {
+            let db = cli
+                .db
+                .ok_or("adopt-head needs --db, on the service's host")?;
+            let head = Store::open(&db)?.adopt_head()?;
+            return Ok(json!({"adopted": head}).to_string());
+        }
+        Command::Check { expect } => {
+            let backend = Backend::choose(cli.db.as_deref(), &config_path(cli.config)?)?;
+            let result: Value = match &backend {
+                Backend::File(store) => json!(store.verify(expect.as_ref())?),
+                Backend::Service(pairing) => {
+                    let path = match &expect {
+                        Some(head) => format!("/v1/check?seq={}&hash={}", head.seq, head.hash),
+                        None => "/v1/check".to_owned(),
+                    };
+                    reply_value(&client::request(pairing, "GET", &path, None, &[])?)?
+                }
+            };
+            let text = serde_json::to_string_pretty(&result)?;
+            if result["ok"] == json!(true) {
+                return Ok(text);
+            }
+            return Err(format!("the ledger failed its check:\n{text}").into());
         }
         Command::Show { story, as_of } => {
             let backend = Backend::choose(cli.db.as_deref(), &config_path(cli.config)?)?;

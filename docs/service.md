@@ -48,6 +48,33 @@ It doesn't prove who or which team sent it. Every session on a machine's account
 token, so a session can declare any name and any kind, including `verified`. So the check that authors don't
 verify their own work catches mistakes, not forgery. Revisit this with MUS-39.
 
+## Detecting tampering
+
+Each record's hash covers the one before it, so altering, removing or reordering a record means reads that
+reach it are refused, and `rally check` says where. A read as of an earlier record still works, because that
+history is intact.
+
+Removing the newest records leaves a shorter chain that still holds, so ordinary reads don't notice: only
+`rally check` does. The head is kept in `<ledger>.head` for this, and `rally check` compares against it and
+prints the current head. Writes stop if that file is missing or isn't on the chain, because a write would
+otherwise replace the evidence. A head file behind the ledger is allowed, because a crash leaves it that
+way.
+
+To recover, run `rally check`, keeping the damaged files to look at. Then either restore the ledger and its
+head file together from a backup, or, if the chain is intact and a head saved elsewhere still matches, run
+`rally --db <ledger> adopt-head` on the host. It refuses a broken chain, but it does accept any removal
+of the newest records that `check` was reporting, so don't use it to make a warning go away, and don't edit
+the head file by hand.
+
+Save that head somewhere other than the host from time to time, then check it with
+`rally check --expect SEQ:HASH`. That's the only protection against the case below.
+
+This detects and doesn't prevent. **Someone with write access to the host can rewrite the whole ledger,
+its hashes and the head file together, and `rally check` alone will pass.** Only a head saved elsewhere
+would show it, and it can't show anything changed after that head was saved, or show which version is
+true. Without a saved head, this also goes unseen if someone winds the head file back along with the
+records, or removes every record and the head file, which looks like a new ledger.
+
 ## Known limits
 
 - `--db` works on a ledger file directly, with no service and no checks on who is writing. It's for tests
@@ -74,5 +101,5 @@ verify their own work catches mistakes, not forgery. Revisit this with MUS-39.
   certificate, which would break every machine's pin. Restore it, or remove both and pair every machine
   again.
 - File permissions keep secrets private on Unix only. Windows isn't a supported host.
-- Any process on the host's account can read or change the ledger, the key and the token hashes (RAL-14).
+- Any process on the host's account can read or change the ledger, the key and the token hashes.
 - Replacing the certificate means pairing every machine again.

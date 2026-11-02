@@ -139,6 +139,23 @@ fn writing_needs_a_credential_and_a_name() {
 }
 
 #[test]
+fn check_passes_on_a_good_ledger_and_fails_on_a_wrong_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("ledger.db");
+    ok(&db, "author", &["ready", "RAL-3"]);
+    let result = ok(&db, "author", &["check"]);
+    assert_eq!(result["ok"], true);
+    let hash = result["head"]["hash"].as_str().unwrap().to_owned();
+    ok(&db, "author", &["check", "--expect", &format!("1:{hash}")]);
+
+    let wrong = format!("1:{}", "f".repeat(64));
+    let error = refused(&db, "author", &["check", "--expect", &wrong]);
+    assert!(error.contains("rewritten"), "{error}");
+    let error = refused(&db, "author", &["check", "--expect", "nonsense"]);
+    assert!(error.contains("SEQ:HASH"), "{error}");
+}
+
+#[test]
 fn control_characters_in_recorded_text_are_escaped() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("ledger.db");
