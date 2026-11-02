@@ -36,6 +36,8 @@ personal details. An append-only ledger can't simply forget a mistake (RAL-17).
 | 10 | A flood of writes fills the disk or hides real changes | Limit record size and write rate for each credential | RAL-13, RAL-16 |
 | 11 | A secret gets into the ledger | Refuse known formats, and have a written procedure for one that gets through | RAL-17 |
 | 12 | Rally's failure affects Muster | Rally depends on Muster, never the reverse; Muster works the same with Rally down | Boundary in the README |
+| 13 | A false record of a grant or role is believed, for example "the operator allowed this merge" | A record of a grant confers no authority: approvals still come from the operator directly, and role proof comes from Muster | RAL-22 |
+| 14 | The ledger becomes a map for an attacker, through records of machine access or backups | Decide under RAL-1 whether these are recorded at all, and at what detail | RAL-1, RAL-22 |
 
 ## What Rally doesn't defend against
 

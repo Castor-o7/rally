@@ -112,11 +112,14 @@ how long a check-in lasts, and test the rules against the stall of 2026-10-30.
   hardened (MUS-34), and would make Muster the ledger's transport rather than a neighbor.
 
 **Which machine:** Murph is the likely host because it already runs the Muster daemon, but that also
-means one machine failing takes out both. Check how reliably it stays up before choosing. Backups go to
-the other machine either way (RAL-15).
+means one machine failing takes out both. Backups go to the other machine either way (RAL-15).
 
-**Unverified:** whether a1 and Murph are on a mesh network today. Muster's roadmap calls for Tailscale
-or WireGuard beyond the LAN, and Tailscale is installed on a1, but nothing has been checked on Murph.
+**What we know so far, reported by the watchman on 2026-11-02:** a1's Muster connections go to the
+private LAN address 192.168.1.241:6255. a1 has `Tailscale.app` installed but no `tailscale` or `wg`
+command, and has `utun` interfaces nobody has identified, so a VPN isn't ruled out. Murph reports being
+up since 10-15 and a1 since 10-13. That's one data point, and the crash of 2026-11-01 happened without
+either rebooting and its cause is unknown, so Murph's reliability is still unverified, as is its side
+of the network.
 
 ## Open questions
 
