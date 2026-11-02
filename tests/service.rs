@@ -323,6 +323,34 @@ fn a_full_ledger_refuses_writes_but_can_be_read() {
 }
 
 #[test]
+fn add_machine_leaves_nothing_behind_when_it_fails() {
+    let service = start();
+    let taken = service.dir.path().join("taken.pair");
+    std::fs::write(&taken, "keep me").unwrap();
+    let add = |out: &Path, address: &str| {
+        rally()
+            .args(["add-machine", "a1", "--address", address, "--state-dir"])
+            .arg(service.state_dir())
+            .arg("--out")
+            .arg(out)
+            .output()
+            .unwrap()
+    };
+    assert!(!add(&taken, "x:1").status.success());
+    assert_eq!(std::fs::read_to_string(&taken).unwrap(), "keep me");
+
+    let bad = service.dir.path().join("bad.pair");
+    assert!(!add(&bad, "a/b:1").status.success());
+    assert!(!bad.exists());
+
+    let missing = service.dir.path().join("no/such/dir/a1.pair");
+    assert!(!add(&missing, "x:1").status.success());
+    // The name wasn't taken by any of those attempts.
+    let good = service.dir.path().join("good.pair");
+    assert!(add(&good, "x:1").status.success());
+}
+
+#[test]
 fn a_client_refuses_a_service_with_the_wrong_certificate() {
     let service = start();
     let mut a1 = service.add("a1", false);
