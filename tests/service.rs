@@ -296,7 +296,14 @@ fn a_flooding_credential_is_limited_without_affecting_another() {
 
 #[test]
 fn writes_have_their_own_lower_limit_and_reads_keep_working() {
-    let service = start_with(&["--write-burst", "2", "--write-per-second", "0.001"]);
+    let service = start_with(&[
+        "--write-burst",
+        "2",
+        "--write-per-second",
+        "0.001",
+        "--min-free-bytes",
+        "0",
+    ]);
     let a1 = service.add("a1", false);
     let mark = |story: &str| {
         write(
@@ -316,7 +323,7 @@ fn writes_have_their_own_lower_limit_and_reads_keep_working() {
 
 #[test]
 fn a_full_ledger_refuses_writes_but_can_be_read() {
-    let service = start_with(&["--max-ledger-bytes", "1"]);
+    let service = start_with(&["--max-ledger-bytes", "1", "--min-free-bytes", "0"]);
     let a1 = service.add("a1", false);
     assert_eq!(ready(&a1).status, 507);
     assert_eq!(call(&a1, "GET", "/v1/stories", None).status, 200);

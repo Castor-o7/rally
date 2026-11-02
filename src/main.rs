@@ -64,6 +64,9 @@ enum Command {
         /// Refuse writes once the ledger file reaches this size.
         #[arg(long, default_value_t = RateLimit::default().max_ledger_bytes)]
         max_ledger_bytes: u64,
+        /// Refuse writes while the ledger's disk has less free space than this.
+        #[arg(long, default_value_t = RateLimit::default().min_free_bytes)]
+        min_free_bytes: u64,
     },
     /// On the service's host, add a machine and write its pair code to a private file.
     AddMachine {
@@ -314,6 +317,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             write_burst,
             write_per_second,
             max_ledger_bytes,
+            min_free_bytes,
         } => {
             let db = cli.db.ok_or("serve needs --db or RALLY_DB")?;
             let limit = RateLimit {
@@ -322,6 +326,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 write_burst,
                 write_per_second,
                 max_ledger_bytes,
+                min_free_bytes,
             };
             return run_service(&db, &bind, &state_dir, limit);
         }
@@ -343,7 +348,12 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 }
             };
             if let Err(error) = write_private(&out, pairing.code().as_bytes()) {
-                let _ = state.revoke(&name);
+                if let Err(revoke) = state.revoke(&name) {
+                    eprintln!(
+                        "rally: warning: {name} is still paired and its token exists only on this \
+                         machine's state, so revoke it by hand: {revoke}"
+                    );
+                }
                 return Err(error.into());
             }
             return Ok(json!({"machine": name, "pair_code_file": out}).to_string());
