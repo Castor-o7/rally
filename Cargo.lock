@@ -859,6 +859,7 @@ dependencies = [
  "hex",
  "rcgen",
  "rusqlite",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",
