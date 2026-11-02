@@ -1,0 +1,10 @@
+[package]
+name = "rally"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "A ledger of progress for a muster of agents."
+repository = "https://github.com/Castor-o7/rally"
+publish = false
+
+[dependencies]
