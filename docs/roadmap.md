@@ -24,13 +24,13 @@ still be refined as each story is taken.
 
 ## Phase 0: Design
 
-- [ ] **RAL-4: Decide where Rally runs.** Open question 1 in the design, and the first to settle.
+- [x] **RAL-4: Decide where Rally runs.** Open question 1 in the design, and the first to settle.
   Done when: the design records how both machines read and write the ledger and who may connect, and
   the operator has agreed it.
-- [ ] **RAL-1: Agree the design.** Continues MUS-32. Start from [design.md](design.md). Done when:
+- [x] **RAL-1: Agree the design.** Continues MUS-32. Start from [design.md](design.md). Done when:
   the operator has agreed the design, its open questions are answered or deliberately deferred, and
   follow-up stories are filed here.
-- [ ] **RAL-10: Write the threat model.** Before any service exists. Done when: `docs/` says what the
+- [x] **RAL-10: Write the threat model.** Before any service exists. Done when: `docs/` says what the
   ledger holds, who could want to read or alter it, how the service and web app could be attacked, what
   must never be recorded, and what Rally doesn't defend against, and the operator has agreed it.
 
@@ -38,7 +38,7 @@ still be refined as each story is taken.
 
 The bones. Everything later reads from this.
 
-- [ ] **RAL-11: Define the ledger's record format.** Done when: every record has a versioned format
+- [x] **RAL-11: Define the ledger's record format.** Done when: every record has a versioned format
   giving its kind (observed, declared or verified), source and time, and a record missing any of them
   is refused, with a test for each.
 - [ ] **RAL-3: Record stories and their states.** Continues MUS-23. Done when: a team can claim a
