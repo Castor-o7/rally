@@ -94,6 +94,28 @@ how long a check-in lasts, and test the rules against the stall of 2026-10-30.
   against a nickname go stale. Key claims on the team and story, and record the session only as
   who was acting at the time.
 
+### What Muster's roster can tell Rally
+
+From the Muster team, 2026-11-02, for RAL-7. `muster-shim roster` (muster#40) isn't merged or rolled
+out yet, so nothing should be built against it until it is.
+
+- **`observed` fields** (`bound_to_connection`, `waiting`, `waiting_until`) show that a connection or wait
+  exists, not that a session is working. `bound_to_connection` can stay true after a drop until the row
+  is reaped.
+- **`waiting` means "probably wakeable".** It can be falsely true for minutes after a wait times out or a
+  daemon restarts, and clock skew between machines shifts its expiry.
+- **`attested` fields** (`machine`, `operator`) are written by the gate for paired machines, but sessions
+  on the daemon's own host only claim them, and the row doesn't say which case applies.
+- **Everything else is declared,** including `last_activity_at`, `activity` and `current_task`. So
+  `last_activity_at` isn't proof of life, and liveness can't be read directly through the gate.
+- **`wake: none`** means no sign that a message would wake the session, not that it's dead. An empty roster
+  comes back as an error rather than an empty list.
+- All of this holds against paired machines. A process on the daemon's host can write anything until
+  MUS-7.
+
+So the stall table's "can't be woken" row is a prompt to ask, never a conclusion that an agent is gone,
+and Rally labels these facts with Muster's own categories rather than calling them all observed.
+
 ## RAL-4: where Rally runs
 
 **Agreed by the operator on 2026-11-02,** confirming the recommendations put to them: this design, Murph
