@@ -33,8 +33,16 @@ Rally can run on Murph, as the ledger of record for Rally's own stories first, o
 4. RAL-6: verification limits written down, because teams will read Verified as meaning something.
 5. The operator: a router reservation for Murph, and approval of the rollout.
 
-The other teams join after a trial on Rally's own stories (RAL-24). RAL-9 retires the hand-kept table.
-Until then, Muster's `docs/board.md` stays in force. The web app and stall detection come after this.
+The trial keeps the watchman's table and Rally in parallel for Rally's own stories, comparing the two.
+Muster's `docs/board.md` stays in force throughout. Before the watchman relies on the ledger, and the
+other teams join (RAL-24) or the table is retired (RAL-9), it also needs:
+
+- RAL-15's tested restore on a1, with the catch-up and overdue alert in use.
+- RAL-30's outage backfill used once for real.
+- RAL-31's warning when a merged commit differs from the verified one.
+- RAL-7 reading roster facts from `muster-shim roster`, once that has rolled out.
+
+The web app comes after this.
 
 ## Phase 0: Design
 
