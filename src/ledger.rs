@@ -34,7 +34,16 @@ impl State {
     }
 }
 
-/// What a record does to a story. This is the `body` of a record.
+/// What a team says about itself (RAL-2). Declared, so it's the team's account and not a fact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamStatus {
+    Available,
+    Working,
+    Blocked,
+}
+
+/// What a record does to a story or team. This is the `body` of a record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "change", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
@@ -68,11 +77,22 @@ pub enum Change {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         team: Option<String>,
     },
+    /// A team declares its own state. Being blocked needs a note saying on what.
+    TeamState {
+        team: String,
+        status: TeamStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        story: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
 }
 
 impl Change {
+    /// The story this change is about. A team's state may only mention one.
     fn story(&self) -> &str {
         match self {
+            Self::TeamState { story, .. } => story.as_deref().unwrap_or_default(),
             Self::Ready { story }
             | Self::Claim { story, .. }
             | Self::Release { story, .. }
@@ -106,6 +126,28 @@ pub struct Story {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub submitted_by: Option<String>,
     pub history: Vec<HistoryEntry>,
+}
+
+/// One declared state of a team.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TeamEntry {
+    pub seq: u64,
+    pub kind: Kind,
+    pub source: Source,
+    pub at_ms: i64,
+    pub status: TeamStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub story: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// A team's latest declared state and those before it. The record's kind, source and time travel
+/// with it, so a reader can see it's declared and how old it is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Team {
+    pub current: TeamEntry,
+    pub history: Vec<TeamEntry>,
 }
 
 /// Why a change was refused.
@@ -186,6 +228,7 @@ impl std::error::Error for LedgerError {}
 pub struct Ledger {
     last_seq: u64,
     stories: BTreeMap<String, Story>,
+    teams: BTreeMap<String, Team>,
 }
 
 impl Ledger {
@@ -211,6 +254,11 @@ impl Ledger {
         &self.stories
     }
 
+    /// Teams by name, in lower case without surrounding space, so `Rally` and `rally` are one team.
+    pub fn teams(&self) -> &BTreeMap<String, Team> {
+        &self.teams
+    }
+
     /// Applies one record, or refuses it and leaves the state unchanged.
     pub fn apply(&mut self, seq: u64, record: &Record) -> Result<(), LedgerError> {
         let expected = self.last_seq + 1;
@@ -223,6 +271,40 @@ impl Ledger {
         let change: Change = serde_json::from_value(record.body().clone())
             .map_err(|e| LedgerError::InvalidChange(e.to_string()))?;
         check_fields(&change)?;
+        if let Change::TeamState {
+            team,
+            status,
+            story,
+            note,
+        } = change
+        {
+            require_kind(record, Kind::Declared)?;
+            let entry = TeamEntry {
+                seq,
+                kind: record.kind(),
+                source: record.source().clone(),
+                at_ms: record.at_ms(),
+                status,
+                story,
+                note,
+            };
+            let key = team.trim().to_lowercase();
+            match self.teams.get_mut(&key) {
+                Some(team) => {
+                    team.current = entry.clone();
+                    team.history.push(entry);
+                }
+                None => {
+                    let team = Team {
+                        current: entry.clone(),
+                        history: vec![entry],
+                    };
+                    self.teams.insert(key, team);
+                }
+            }
+            self.last_seq = seq;
+            return Ok(());
+        }
         let id = change.story().to_owned();
 
         if matches!(change, Change::Ready { .. }) {
@@ -274,7 +356,7 @@ fn transition(
         from,
     };
     match change {
-        Change::Ready { .. } => unreachable!("handled by the caller"),
+        Change::Ready { .. } | Change::TeamState { .. } => unreachable!("handled by the caller"),
         Change::Claim { team, .. } => {
             require_kind(record, Kind::Declared)?;
             match story.state {
@@ -428,8 +510,15 @@ fn same_name(a: &str, b: &str) -> bool {
 
 fn check_fields(change: &Change) -> Result<(), LedgerError> {
     let id = change.story();
-    if !is_story_id(id) {
+    let story_is_optional = matches!(change, Change::TeamState { story: None, .. });
+    if !story_is_optional && !is_story_id(id) {
         return Err(LedgerError::InvalidStoryId(id.to_owned()));
+    }
+    if let Change::TeamState { status, note, .. } = change {
+        let has_note = note.as_deref().is_some_and(|n| !n.trim().is_empty());
+        if note.is_some() && !has_note || *status == TeamStatus::Blocked && !has_note {
+            return Err(LedgerError::EmptyField("note"));
+        }
     }
     if let Change::Correct {
         team: Some(team), ..
@@ -440,7 +529,9 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
     }
     let fields: &[(&'static str, &str)] = match change {
         Change::Ready { .. } => &[],
-        Change::Claim { team, .. } | Change::Release { team, .. } => &[("team", team)],
+        Change::Claim { team, .. }
+        | Change::Release { team, .. }
+        | Change::TeamState { team, .. } => &[("team", team)],
         Change::Submit { team, evidence, .. } => &[("team", team), ("evidence", evidence)],
         Change::Verify { note, .. }
         | Change::SendBack { note, .. }
@@ -1029,6 +1120,110 @@ mod tests {
             apply_next(&mut ledger, &verify_as("Bob")),
             Err(LedgerError::SelfVerification { .. })
         ));
+    }
+
+    fn team_state(body: serde_json::Value) -> Record {
+        team(body)
+    }
+
+    #[test]
+    fn a_team_sets_its_state_and_keeps_its_history() {
+        let mut ledger = Ledger::default();
+        let bodies = [
+            json!({"change": "team_state", "team": "Rally", "status": "working", "story": "RAL-2"}),
+            json!({"change": "team_state", "team": "rally ", "status": "blocked",
+                   "story": "RAL-2", "note": "waiting on MUS-44"}),
+        ];
+        for body in bodies {
+            apply_next(&mut ledger, &team_state(body)).unwrap();
+        }
+        assert_eq!(ledger.teams().len(), 1);
+        let rally = &ledger.teams()["rally"];
+        assert_eq!(rally.current.status, TeamStatus::Blocked);
+        assert_eq!(rally.current.kind, Kind::Declared);
+        assert_eq!(rally.current.at_ms, 1_000);
+        assert_eq!(rally.current.source.credential, "a1");
+        assert_eq!(rally.history.len(), 2);
+        assert_eq!(rally.history[0].status, TeamStatus::Working);
+    }
+
+    #[test]
+    fn team_state_is_labelled_declared_when_read() {
+        let body = json!({"change": "team_state", "team": "rally", "status": "available"});
+        let ledger = ledger_with(&[team_state(body)]);
+        let shown = serde_json::to_value(&ledger.teams()["rally"].current).unwrap();
+        assert_eq!(shown["kind"], "declared");
+    }
+
+    #[test]
+    fn team_state_can_only_be_declared() {
+        let mut ledger = Ledger::default();
+        let body = json!({"change": "team_state", "team": "rally", "status": "working"});
+        let verified = record(Kind::Verified, "watch", body.clone());
+        assert!(matches!(
+            apply_next(&mut ledger, &verified),
+            Err(LedgerError::WrongKind { .. })
+        ));
+        let source = Source {
+            credential: "muster".into(),
+            declared_name: None,
+        };
+        let observed = Record::new(Kind::Observed, source, 1_000, body).unwrap();
+        assert!(matches!(
+            apply_next(&mut ledger, &observed),
+            Err(LedgerError::WrongKind { .. })
+        ));
+    }
+
+    #[test]
+    fn being_blocked_needs_a_note() {
+        let mut ledger = Ledger::default();
+        for note in [None, Some(" ")] {
+            let mut body = json!({"change": "team_state", "team": "rally", "status": "blocked"});
+            if let Some(note) = note {
+                body["note"] = json!(note);
+            }
+            assert_eq!(
+                apply_next(&mut ledger, &team_state(body)),
+                Err(LedgerError::EmptyField("note"))
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_a_bad_team_state() {
+        let mut ledger = Ledger::default();
+        let bad = [
+            (
+                json!({"change": "team_state", "team": " ", "status": "working"}),
+                LedgerError::EmptyField("team"),
+            ),
+            (
+                json!({"change": "team_state", "team": "rally", "status": "working", "story": "x"}),
+                LedgerError::InvalidStoryId("x".into()),
+            ),
+        ];
+        for (body, error) in bad {
+            assert_eq!(apply_next(&mut ledger, &team_state(body)), Err(error));
+        }
+        let unknown = json!({"change": "team_state", "team": "rally", "status": "resting"});
+        assert!(matches!(
+            apply_next(&mut ledger, &team_state(unknown)),
+            Err(LedgerError::InvalidChange(_))
+        ));
+        assert_eq!(ledger, Ledger::default());
+    }
+
+    #[test]
+    fn replay_rebuilds_team_state_as_of_a_past_record() {
+        let records = [
+            team_state(json!({"change": "team_state", "team": "rally", "status": "working"})),
+            team_state(json!({"change": "team_state", "team": "rally", "status": "available"})),
+        ];
+        let then = ledger_with(&records[..1]);
+        assert_eq!(then.teams()["rally"].current.status, TeamStatus::Working);
+        let now = ledger_with(&records);
+        assert_eq!(now.teams()["rally"].current.status, TeamStatus::Available);
     }
 
     #[test]
