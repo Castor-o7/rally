@@ -50,10 +50,15 @@ verify their own work catches mistakes, not forgery. Revisit this with MUS-39.
 
 ## Detecting tampering
 
-Each record's hash covers the one before it, so altering, removing or reordering a record means the
-ledger refuses to be read, and `rally check` says where. Removing the newest records leaves a shorter
-chain that still holds, so the head is also kept in `<ledger>.head`. `rally check` compares against both,
-and prints the current head.
+Each record's hash covers the one before it, so altering, removing or reordering a record means reads that
+reach it are refused, and `rally check` says where. A read as of an earlier record still works, because that
+history is intact.
+
+Removing the newest records leaves a shorter chain that still holds, so ordinary reads don't notice: only
+`rally check` does. The head is kept in `<ledger>.head` for this, and `rally check` compares against it and
+prints the current head. Writes stop if that file is missing or isn't on the chain, because a write would
+otherwise replace the evidence. To recover, run `rally check`, then restore from a backup, keeping the
+damaged files to look at. A head file behind the ledger is allowed, because a crash leaves it that way.
 
 Save that head somewhere other than the host from time to time, then check it with
 `rally check --expect SEQ:HASH`. That's the only protection against the case below.
@@ -61,8 +66,8 @@ Save that head somewhere other than the host from time to time, then check it wi
 This detects and doesn't prevent. **Someone with write access to the host can rewrite the whole ledger,
 its hashes and the head file together, and `rally check` alone will pass.** Only a head saved elsewhere
 would show it, and it can't show anything changed after that head was saved, or show which version is
-true. A head file behind the ledger after a crash isn't reported, so neither is someone winding it back
-along with the records, without a saved head.
+true. Without a saved head, this also goes unseen if someone winds the head file back along with the
+records, or removes every record and the head file, which looks like a new ledger.
 
 ## Known limits
 

@@ -5,10 +5,11 @@
 //! which catches mistakes.
 //!
 //! Tampering is detected rather than prevented (RAL-14). Each row's `chain` is a hash over the row
-//! and the previous row's hash, so altering, removing or reordering a row breaks every read. Removing
-//! the newest rows leaves a shorter chain that's still valid, so the head is also kept in a file
-//! beside the ledger, and can be compared with a head saved elsewhere. See `docs/service.md` for
-//! what this can't catch.
+//! and the previous row's hash, so altering, removing or reordering a row breaks reads that reach it.
+//! Removing the newest rows leaves a shorter chain that's still valid, so the head is also kept in a
+//! file beside the ledger. A write refuses to go ahead unless that file is on the current chain, or
+//! the write would overwrite the evidence. A head saved elsewhere can be compared too. See
+//! `docs/service.md` for what this can't catch.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -77,6 +78,8 @@ pub enum StoreError {
     Tampered {
         seq: u64,
     },
+    /// The head file isn't on the current chain, so writes stop rather than overwrite the evidence.
+    HeadMismatch(String),
     /// A stored record is refused on replay, or the log has a gap.
     Inconsistent(LedgerError),
     Database(rusqlite::Error),
@@ -88,6 +91,7 @@ impl fmt::Display for StoreError {
         match self {
             Self::Refused(e) => write!(f, "refused: {e}"),
             Self::Tampered { seq } => write!(f, "record {seq} doesn't match its chain hash"),
+            Self::HeadMismatch(reason) => write!(f, "writes refused: {reason}"),
             Self::Corrupt { seq, reason } => write!(f, "record {seq} is corrupt: {reason}"),
             Self::Inconsistent(e) => write!(f, "the ledger doesn't replay: {e}"),
             Self::Database(e) => write!(f, "database error: {e}"),
@@ -119,19 +123,36 @@ impl Store {
         connection.execute_batch(SCHEMA)?;
         let mut head_file = path.as_os_str().to_owned();
         head_file.push(".head");
-        Ok(Self {
+        let store = Self {
             connection,
             head_file: head_file.into(),
-        })
+        };
+        // From here on a head file always exists, so a missing one is never just a new ledger.
+        let empty: bool =
+            store
+                .connection
+                .query_row("SELECT NOT EXISTS (SELECT 1 FROM records)", [], |row| {
+                    row.get(0)
+                })?;
+        if empty && !store.head_file.exists() {
+            let start = Head {
+                seq: 0,
+                hash: CHAIN_START.to_owned(),
+            };
+            store.save_head(&start).map_err(StoreError::HeadMismatch)?;
+        }
+        Ok(store)
     }
 
     /// Checks a record against the current state and appends it, returning its position.
     pub fn append(&mut self, record: &Record) -> Result<u64, StoreError> {
+        let head_file = self.head_file.clone();
         // Take the write lock before reading, so two writers can't both check against old state.
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut ledger = replay(&read_records(&transaction, None)?)?;
+        Self::check_head_on_chain(&head_file, &transaction)?;
         let seq = ledger.last_seq() + 1;
         ledger.apply(seq, record).map_err(StoreError::Refused)?;
         let text = record.to_json();
@@ -162,6 +183,9 @@ impl Store {
     pub fn verify(&self, expected: Option<&Head>) -> Result<Verification, StoreError> {
         let mut problems = Vec::new();
         let mut rows = Vec::new();
+        // Read the head first: a write in between then leaves it behind, which is allowed, rather
+        // than ahead, which looks like records were removed.
+        let saved_head = self.read_head();
         match read_chain(&self.connection) {
             Ok(read) => rows = read,
             Err(error @ (StoreError::Tampered { .. } | StoreError::Inconsistent(_))) => {
@@ -189,7 +213,7 @@ impl Store {
                 .map_or_else(|| CHAIN_START.to_owned(), |(hash, _)| hash.clone()),
         };
         if problems.is_empty() {
-            match self.read_head() {
+            match saved_head {
                 Ok(Some(saved)) => compare_head(&rows, &saved, "the head file", &mut problems),
                 Ok(None) if rows.is_empty() => {}
                 Ok(None) => problems.push("the head file is missing".to_owned()),
@@ -206,6 +230,34 @@ impl Store {
         })
     }
 
+    /// Refuses unless the head file names a point on the current chain.
+    fn check_head_on_chain(head_file: &Path, connection: &Connection) -> Result<(), StoreError> {
+        let head = read_head_file(head_file)
+            .map_err(StoreError::HeadMismatch)?
+            .ok_or_else(|| StoreError::HeadMismatch("the head file is missing".to_owned()))?;
+        let hash: Option<String> = if head.seq == 0 {
+            Some(CHAIN_START.to_owned())
+        } else {
+            connection
+                .query_row(
+                    "SELECT chain FROM records WHERE seq = ?1",
+                    [i64::try_from(head.seq).unwrap_or(i64::MAX)],
+                    |row| row.get(0),
+                )
+                .or_else(|error| match error {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(other),
+                })?
+        };
+        match hash {
+            Some(hash) if hash.eq_ignore_ascii_case(&head.hash) => Ok(()),
+            _ => Err(StoreError::HeadMismatch(format!(
+                "the head file at record {} isn't on the ledger's chain; run `rally check`",
+                head.seq
+            ))),
+        }
+    }
+
     fn save_head(&self, head: &Head) -> Result<(), String> {
         let mut temporary = self.head_file.as_os_str().to_owned();
         temporary.push(".new");
@@ -216,13 +268,7 @@ impl Store {
     }
 
     fn read_head(&self) -> Result<Option<Head>, String> {
-        match std::fs::read_to_string(&self.head_file) {
-            Ok(text) => serde_json::from_str(&text)
-                .map(Some)
-                .map_err(|_| "the head file can't be read".to_owned()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!("the head file can't be read: {error}")),
-        }
+        read_head_file(&self.head_file)
     }
 
     /// Every record in order, or those up to and including `as_of`.
@@ -233,6 +279,16 @@ impl Store {
     /// The state as of the latest record, or as of `as_of`.
     pub fn ledger(&self, as_of: Option<u64>) -> Result<Ledger, StoreError> {
         replay(&self.records(as_of)?)
+    }
+}
+
+fn read_head_file(path: &Path) -> Result<Option<Head>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|_| "the head file can't be read".to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("the head file can't be read: {error}")),
     }
 }
 
@@ -289,6 +345,9 @@ fn read_records(connection: &Connection, as_of: Option<u64>) -> Result<Vec<Recor
 /// Adds a problem if `saved` isn't a point on this chain.
 fn compare_head(rows: &[(String, String)], saved: &Head, name: &str, problems: &mut Vec<String>) {
     if saved.seq == 0 {
+        if !saved.hash.eq_ignore_ascii_case(CHAIN_START) {
+            problems.push(format!("{name} at record 0 isn't the start of a chain"));
+        }
         return;
     }
     let row = usize::try_from(saved.seq - 1)
@@ -300,7 +359,7 @@ fn compare_head(rows: &[(String, String)], saved: &Head, name: &str, problems: &
             saved.seq,
             rows.len()
         )),
-        Some((hash, _)) if *hash != saved.hash => problems.push(format!(
+        Some((hash, _)) if !hash.eq_ignore_ascii_case(&saved.hash) => problems.push(format!(
             "{name} doesn't match record {}: the ledger was rewritten",
             saved.seq
         )),
@@ -564,6 +623,101 @@ mod tests {
         head_file.push(".head");
         std::fs::remove_file(head_file).unwrap();
         assert!(!store.verify(None).unwrap().ok);
+    }
+
+    fn release() -> Record {
+        team(json!({"change": "release", "story": "RAL-3", "team": "rally"}))
+    }
+
+    #[test]
+    fn removing_the_newest_records_cannot_heal_on_the_next_write() {
+        let (_dir, _path, mut store) = two_records();
+        remove(&store, "seq = 2");
+        let appended = store.append(&claim());
+        assert!(appended.is_err(), "the next write should be refused");
+        let result = store.verify(None).unwrap();
+        assert!(!result.ok, "the removal must still show");
+    }
+
+    #[test]
+    fn a_missing_head_file_refuses_writes() {
+        let (_dir, path, mut store) = two_records();
+        let mut head_file = path.into_os_string();
+        head_file.push(".head");
+        std::fs::remove_file(head_file).unwrap();
+        assert!(store.append(&release()).is_err());
+    }
+
+    #[test]
+    fn a_new_ledger_can_survive_a_crash_before_its_first_head_save() {
+        let (_dir, path, mut store) = temp_store();
+        let mut head_file = path.clone().into_os_string();
+        head_file.push(".head");
+        assert!(std::path::Path::new(&head_file).exists());
+        store.append(&ready()).unwrap();
+        assert!(store.verify(None).unwrap().ok);
+    }
+
+    #[test]
+    fn recomputing_one_rows_hash_fails_at_the_next_row() {
+        let (_dir, _path, store) = two_records();
+        let text = claim().to_json();
+        let forged = ready().to_json().replace("alice", "mallory");
+        let hash = chain_hash(CHAIN_START, 1, &forged);
+        assert_ne!(text, forged);
+        store
+            .connection
+            .execute_batch("DROP TRIGGER IF EXISTS records_no_update;")
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE records SET record = ?1, chain = ?2 WHERE seq = 1",
+                params![forged, hash],
+            )
+            .unwrap();
+        assert!(matches!(
+            store.ledger(None),
+            Err(StoreError::Tampered { seq: 2 })
+        ));
+        assert!(!store.verify(None).unwrap().ok);
+    }
+
+    #[test]
+    fn the_hash_covers_the_previous_hash_the_position_and_the_record() {
+        let base = chain_hash(CHAIN_START, 1, "x");
+        assert_ne!(base, chain_hash(&"f".repeat(64), 1, "x"));
+        assert_ne!(base, chain_hash(CHAIN_START, 2, "x"));
+        assert_ne!(base, chain_hash(CHAIN_START, 1, "y"));
+    }
+
+    #[test]
+    fn a_head_at_zero_must_be_the_real_start_of_the_chain() {
+        let (_dir, path, store) = two_records();
+        let junk = Head {
+            seq: 0,
+            hash: "junk".into(),
+        };
+        assert!(!store.verify(Some(&junk)).unwrap().ok);
+        let start = Head {
+            seq: 0,
+            hash: CHAIN_START.into(),
+        };
+        assert!(store.verify(Some(&start)).unwrap().ok);
+
+        remove(&store, "seq = 2");
+        let mut head_file = path.into_os_string();
+        head_file.push(".head");
+        std::fs::write(&head_file, serde_json::to_string(&junk).unwrap()).unwrap();
+        assert!(!store.verify(None).unwrap().ok);
+    }
+
+    #[test]
+    fn a_saved_head_in_upper_case_still_matches() {
+        let (_dir, _path, store) = two_records();
+        let mut head = store.verify(None).unwrap().head;
+        head.hash = head.hash.to_uppercase();
+        assert!(store.verify(Some(&head)).unwrap().ok);
     }
 
     #[test]
