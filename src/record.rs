@@ -61,15 +61,43 @@ impl fmt::Display for Source {
     }
 }
 
-/// One entry in the ledger. Fields are private so that every record has passed validation.
+/// One entry in the ledger. Fields are private and deserializing goes through [`RawRecord`], so
+/// every record has passed validation however it was built.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawRecord")]
 pub struct Record {
     version: u64,
     kind: Kind,
     source: Source,
     at_ms: i64,
     body: Value,
+}
+
+/// A record's fields before validation.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRecord {
+    version: u64,
+    kind: Kind,
+    source: Source,
+    at_ms: i64,
+    body: Value,
+}
+
+impl TryFrom<RawRecord> for Record {
+    type Error = RecordError;
+
+    fn try_from(raw: RawRecord) -> Result<Self, RecordError> {
+        let record = Self {
+            version: raw.version,
+            kind: raw.kind,
+            source: raw.source,
+            at_ms: raw.at_ms,
+            body: raw.body,
+        };
+        record.validate()?;
+        Ok(record)
+    }
 }
 
 /// Why a record was refused.
@@ -143,10 +171,10 @@ impl Record {
         if version.as_u64() != Some(FORMAT_VERSION) {
             return Err(RecordError::UnsupportedVersion(version.to_string()));
         }
-        let record: Self =
+        // Go through the raw form so that a validation failure keeps its specific error.
+        let raw: RawRecord =
             serde_json::from_str(text).map_err(|e| RecordError::Malformed(e.to_string()))?;
-        record.validate()?;
-        Ok(record)
+        raw.try_into()
     }
 
     /// Writes the record as one line of JSON.
@@ -171,6 +199,9 @@ impl Record {
     }
 
     fn validate(&self) -> Result<(), RecordError> {
+        if self.version != FORMAT_VERSION {
+            return Err(RecordError::UnsupportedVersion(self.version.to_string()));
+        }
         if self.source.credential.trim().is_empty() {
             return Err(RecordError::EmptyCredential);
         }
@@ -380,6 +411,29 @@ mod tests {
             value["body"] = body;
             assert_eq!(parse(&value), Err(RecordError::BodyNotObject));
         }
+    }
+
+    #[test]
+    fn deserializing_directly_also_validates() {
+        let bad = [
+            ("credential", json!({"credential": ""})),
+            ("declared_name", json!({"credential": "a1"})),
+        ];
+        for (why, source) in bad {
+            let mut value = valid();
+            value["source"] = source;
+            let from_text = serde_json::from_str::<Record>(&value.to_string());
+            assert!(from_text.is_err(), "{why} from text");
+            let from_value = serde_json::from_value::<Record>(value);
+            assert!(from_value.is_err(), "{why} from value");
+        }
+        let mut value = valid();
+        value["version"] = json!(2);
+        assert!(serde_json::from_value::<Record>(value).is_err());
+        let mut value = valid();
+        value["points"] = json!(10);
+        assert!(serde_json::from_value::<Record>(value).is_err());
+        assert!(serde_json::from_value::<Record>(valid()).is_ok());
     }
 
     #[test]
