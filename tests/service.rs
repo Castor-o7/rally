@@ -1,6 +1,6 @@
 //! Runs the real service over TLS and tries each route with and without access.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -44,20 +44,13 @@ fn rally() -> Command {
     command
 }
 
-fn start_with(burst: &str) -> Service {
+fn start_with(limits: &[&str]) -> Service {
     let dir = tempfile::tempdir().unwrap();
     let mut child = rally()
         .arg("--db")
         .arg(dir.path().join("ledger.db"))
-        .args([
-            "serve",
-            "--bind",
-            "127.0.0.1:0",
-            "--burst",
-            burst,
-            "--per-second",
-            "0.001",
-        ])
+        .args(["serve", "--bind", "127.0.0.1:0"])
+        .args(limits)
         .arg("--state-dir")
         .arg(dir.path().join("state"))
         .stdout(Stdio::piped())
@@ -77,7 +70,7 @@ fn start_with(burst: &str) -> Service {
 }
 
 fn start() -> Service {
-    start_with("1000")
+    start_with(&["--burst", "1000", "--write-burst", "1000"])
 }
 
 impl Service {
@@ -86,16 +79,21 @@ impl Service {
     }
 
     fn add(&self, name: &str, read_only: bool) -> Pairing {
+        let out = self.dir.path().join(format!("{name}.pair"));
         let mut command = rally();
         command.args(["add-machine", name, "--address", &self.address]);
         command.arg("--state-dir").arg(self.state_dir());
+        command.arg("--out").arg(&out);
         if read_only {
             command.arg("--read-only");
         }
         let output = command.output().unwrap();
         assert!(output.status.success());
-        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-        Pairing::parse(value["pair_code"].as_str().unwrap()).unwrap()
+        let code = std::fs::read_to_string(&out).unwrap();
+        let pairing = Pairing::parse(&code).unwrap();
+        let printed = String::from_utf8_lossy(&output.stdout);
+        assert!(!printed.contains(&pairing.token), "the token was printed");
+        pairing
     }
 
     fn wrong_token(&self) -> Pairing {
@@ -210,6 +208,23 @@ fn a_read_only_credential_reads_but_cannot_write() {
 }
 
 #[test]
+fn a_read_only_credential_is_refused_on_any_method_but_get() {
+    let service = start();
+    let viewer = service.add("viewer", true);
+    for (method, path) in [
+        ("DELETE", "/v1/stories"),
+        ("PUT", "/v1/teams"),
+        ("POST", "/nope"),
+    ] {
+        assert_eq!(
+            call(&viewer, method, path, Some("{}")).status,
+            403,
+            "{method} {path}"
+        );
+    }
+}
+
+#[test]
 fn only_rally_records_observed_facts() {
     let service = start();
     let a1 = service.add("a1", false);
@@ -268,7 +283,7 @@ fn an_oversized_body_is_refused() {
 
 #[test]
 fn a_flooding_credential_is_limited_without_affecting_another() {
-    let service = start_with("5");
+    let service = start_with(&["--burst", "5", "--per-second", "0.001"]);
     let a1 = service.add("a1", false);
     let murph = service.add("murph", false);
     let statuses: Vec<u16> = (0..7)
@@ -277,6 +292,34 @@ fn a_flooding_credential_is_limited_without_affecting_another() {
     assert_eq!(statuses[..5], [200; 5]);
     assert_eq!(statuses[5..], [429; 2]);
     assert_eq!(call(&murph, "GET", "/v1/teams", None).status, 200);
+}
+
+#[test]
+fn writes_have_their_own_lower_limit_and_reads_keep_working() {
+    let service = start_with(&["--write-burst", "2", "--write-per-second", "0.001"]);
+    let a1 = service.add("a1", false);
+    let mark = |story: &str| {
+        write(
+            &a1,
+            "x",
+            "declared",
+            json!({"change": "ready", "story": story}),
+        )
+        .status
+    };
+    assert_eq!([mark("RAL-1"), mark("RAL-2")], [200, 200]);
+    assert_eq!(mark("RAL-3"), 429);
+    assert_eq!(call(&a1, "GET", "/v1/stories", None).status, 200);
+    let murph = service.add("murph", false);
+    assert_eq!(ready(&murph).status, 200);
+}
+
+#[test]
+fn a_full_ledger_refuses_writes_but_can_be_read() {
+    let service = start_with(&["--max-ledger-bytes", "1"]);
+    let a1 = service.add("a1", false);
+    assert_eq!(ready(&a1).status, 507);
+    assert_eq!(call(&a1, "GET", "/v1/stories", None).status, 200);
 }
 
 #[test]
@@ -289,6 +332,25 @@ fn a_client_refuses_a_service_with_the_wrong_certificate() {
         error.to_string().contains("pairing") || error.to_string().contains("certificate"),
         "{error}"
     );
+}
+
+fn pair(config: &Path, code: &str) -> std::process::Output {
+    let mut child = rally()
+        .arg("--config")
+        .arg(config)
+        .arg("pair")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(code.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
 }
 
 fn cli(config: &Path, name: &str, args: &[&str]) -> std::process::Output {
@@ -311,11 +373,10 @@ fn the_command_works_end_to_end_through_the_service() {
     assert!(!unpaired.status.success());
     assert!(String::from_utf8_lossy(&unpaired.stderr).contains("rally pair"));
 
-    assert!(
-        cli(&config, "x", &["pair", &pairing.code()])
-            .status
-            .success()
-    );
+    let paired = pair(&config, &pairing.code());
+    assert!(paired.status.success());
+    let printed = String::from_utf8_lossy(&paired.stdout);
+    assert!(!printed.contains(&pairing.token), "the token was printed");
     for args in [
         vec!["ready", "RAL-13"],
         vec!["claim", "RAL-13", "--team", "rally"],
@@ -354,11 +415,10 @@ fn the_saved_pairing_is_private() {
     let service = start();
     let pairing = service.add("a1", false);
     let config = service.dir.path().join("client/config.json");
-    assert!(
-        cli(&config, "x", &["pair", &pairing.code()])
-            .status
-            .success()
-    );
+    let paired = pair(&config, &pairing.code());
+    assert!(paired.status.success());
+    let printed = String::from_utf8_lossy(&paired.stdout);
+    assert!(!printed.contains(&pairing.token), "the token was printed");
     let mode = std::fs::metadata(config).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
 }

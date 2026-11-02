@@ -75,6 +75,9 @@ The bones. Everything later reads from this.
 - [ ] **RAL-13: Control who can write and read.** Depends on RAL-4 and RAL-10. Done when: an
   unauthorized write or read is refused, shown by a test for each route into the service, and the docs
   say what an accepted write does and doesn't prove about who sent it.
+- [ ] **RAL-35: Limit load on the service.** From the second read of RAL-13. Done when: connections are
+  capped and time out before they authenticate, failed token attempts are limited, and reads don't replay
+  the whole ledger under the store's lock, with a test for each.
 - [ ] **RAL-14: Make tampering detectable.** Done when: a check reports any altered, removed or
   reordered record, including the newest records being removed, which doesn't show as a gap in the
   sequence; a test covers each; and the docs say what this can't catch, such as someone with full access

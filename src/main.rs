@@ -55,8 +55,17 @@ enum Command {
         /// Requests a credential regains per second.
         #[arg(long, default_value_t = RateLimit::default().per_second)]
         per_second: f64,
+        /// Writes a credential can make at once.
+        #[arg(long, default_value_t = RateLimit::default().write_burst)]
+        write_burst: f64,
+        /// Writes a credential regains per second.
+        #[arg(long, default_value_t = RateLimit::default().write_per_second)]
+        write_per_second: f64,
+        /// Refuse writes once the ledger file reaches this size.
+        #[arg(long, default_value_t = RateLimit::default().max_ledger_bytes)]
+        max_ledger_bytes: u64,
     },
-    /// On the service's host, add a machine and print its pair code, which holds a secret.
+    /// On the service's host, add a machine and write its pair code to a private file.
     AddMachine {
         name: String,
         /// How the paired machine reaches the service.
@@ -64,6 +73,9 @@ enum Command {
         address: String,
         #[arg(long, env = "RALLY_STATE_DIR")]
         state_dir: PathBuf,
+        /// Where to write the pair code, which holds a secret. It's never printed.
+        #[arg(long)]
+        out: PathBuf,
         /// It can read but not write, as the web app will.
         #[arg(long)]
         read_only: bool,
@@ -74,8 +86,9 @@ enum Command {
         #[arg(long, env = "RALLY_STATE_DIR")]
         state_dir: PathBuf,
     },
-    /// Save a pair code from `add-machine` on this machine.
-    Pair { code: String },
+    /// Save a pair code from `add-machine` on this machine, read from standard input so that it
+    /// stays out of shell history and process listings.
+    Pair,
     /// Mark a story as ready to claim.
     Ready { story: String },
     /// Claim a ready or sent-back story.
@@ -283,25 +296,41 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             state_dir,
             burst,
             per_second,
+            write_burst,
+            write_per_second,
+            max_ledger_bytes,
         } => {
             let db = cli.db.ok_or("serve needs --db or RALLY_DB")?;
-            let limit = RateLimit { burst, per_second };
+            let limit = RateLimit {
+                burst,
+                per_second,
+                write_burst,
+                write_per_second,
+                max_ledger_bytes,
+            };
             return run_service(&db, &bind, &state_dir, limit);
         }
         Command::AddMachine {
             name,
             address,
             state_dir,
+            out,
             read_only,
         } => {
+            if out.exists() {
+                return Err(format!("{} already exists", out.display()).into());
+            }
             let pairing = StateDir::open(&state_dir)?.add_machine(&name, &address, read_only)?;
-            return Ok(json!({"machine": name, "pair_code": pairing.code()}).to_string());
+            write_private(&out, pairing.code().as_bytes())?;
+            return Ok(json!({"machine": name, "pair_code_file": out}).to_string());
         }
         Command::Revoke { name, state_dir } => {
             StateDir::open(&state_dir)?.revoke(&name)?;
             return Ok(json!({"revoked": name}).to_string());
         }
-        Command::Pair { code } => {
+        Command::Pair => {
+            let mut code = String::new();
+            std::io::stdin().read_line(&mut code)?;
             let pairing = Pairing::parse(&code)?;
             let path = config_path(cli.config)?;
             if let Some(parent) = path.parent() {

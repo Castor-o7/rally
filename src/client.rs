@@ -132,24 +132,59 @@ pub fn request(
     parse_reply(&raw)
 }
 
+/// Reads a reply, refusing one shorter than it says it is: someone on the network can't forge a
+/// reply, but can cut one off.
 fn parse_reply(raw: &[u8]) -> Result<Reply, Box<dyn std::error::Error>> {
-    let text = String::from_utf8_lossy(raw);
-    let (head, body) = text
-        .split_once("\r\n\r\n")
+    let split = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
         .ok_or("the service sent an incomplete reply")?;
+    let head = String::from_utf8_lossy(&raw[..split]).to_ascii_lowercase();
+    let body = &raw[split + 4..];
     let status = head
         .split_whitespace()
         .nth(1)
         .and_then(|status| status.parse().ok())
         .ok_or("the service sent a reply with no status")?;
-    if head
-        .to_ascii_lowercase()
-        .contains("transfer-encoding: chunked")
-    {
-        return Err("the service sent a chunked reply, which this client doesn't read".into());
+    let length: usize = head
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .and_then(|value| value.trim().parse().ok())
+        .ok_or("the service sent a reply with no length")?;
+    if body.len() != length {
+        return Err("the service's reply was cut off".into());
     }
     Ok(Reply {
         status,
-        body: body.to_owned(),
+        body: String::from_utf8_lossy(body).into_owned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_complete_reply_is_read() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+        let reply = parse_reply(raw).unwrap();
+        assert_eq!((reply.status, reply.body.as_str()), (200, "{}"));
+    }
+
+    #[test]
+    fn a_truncated_reply_is_refused() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n{\"as";
+        assert!(parse_reply(raw).is_err());
+    }
+
+    #[test]
+    fn a_reply_without_a_length_is_refused() {
+        let raw = b"HTTP/1.1 200 OK\r\n\r\n{}";
+        assert!(parse_reply(raw).is_err());
+    }
+
+    #[test]
+    fn a_reply_cut_off_in_its_headers_is_refused() {
+        assert!(parse_reply(b"HTTP/1.1 200 OK\r\nContent-Le").is_err());
+    }
 }

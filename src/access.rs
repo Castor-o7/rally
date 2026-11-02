@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 const MACHINES_FILE: &str = "machines.json";
 const CERT_FILE: &str = "cert.pem";
 const KEY_FILE: &str = "key.pem";
+const LOCK_FILE: &str = "machines.lock";
 const PAIR_PREFIX: &str = "rally-pair:v1/";
 
 /// A paired machine or read-only viewer, as stored on the host.
@@ -33,12 +34,22 @@ pub struct Identity {
 }
 
 /// What a client needs to reach the service: its address, its pinned certificate and a token.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pairing {
     pub address: String,
     pub fingerprint: String,
     pub token: String,
+}
+
+impl fmt::Debug for Pairing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pairing")
+            .field("address", &self.address)
+            .field("fingerprint", &self.fingerprint)
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 impl Pairing {
@@ -80,6 +91,8 @@ pub enum AccessError {
     AlreadyPaired(String),
     UnknownMachine(String),
     EmptyName,
+    /// An address is empty, or has a character a pair code can't carry.
+    BadAddress,
     Certificate(String),
     NoRandomness,
 }
@@ -93,6 +106,7 @@ impl fmt::Display for AccessError {
             Self::AlreadyPaired(name) => write!(f, "{name} is already paired"),
             Self::UnknownMachine(name) => write!(f, "{name} isn't paired"),
             Self::EmptyName => write!(f, "the machine's name is empty"),
+            Self::BadAddress => write!(f, "the address must be a host and port"),
             Self::Certificate(reason) => write!(f, "certificate error: {reason}"),
             Self::NoRandomness => write!(f, "can't get secure random bytes"),
         }
@@ -115,6 +129,7 @@ impl StateDir {
 
     /// The certificate and key as PEM, created on first use, plus the certificate's fingerprint.
     pub fn certificate(&self) -> Result<(PathBuf, PathBuf, String), AccessError> {
+        let _lock = self.lock()?;
         let cert = self.0.join(CERT_FILE);
         let key = self.0.join(KEY_FILE);
         if !cert.exists() || !key.exists() {
@@ -140,11 +155,15 @@ impl StateDir {
         if name.is_empty() {
             return Err(AccessError::EmptyName);
         }
+        if address.is_empty() || address.contains(|c: char| c == '/' || c.is_whitespace()) {
+            return Err(AccessError::BadAddress);
+        }
+        let (_, _, fingerprint) = self.certificate()?;
+        let _lock = self.lock()?;
         let mut machines = self.machines()?;
         if machines.contains_key(name) {
             return Err(AccessError::AlreadyPaired(name.to_owned()));
         }
-        let (_, _, fingerprint) = self.certificate()?;
         let token = random_token()?;
         machines.insert(
             name.to_owned(),
@@ -163,6 +182,7 @@ impl StateDir {
 
     /// Removes a machine. The service reads this file for each request, so it applies at once.
     pub fn revoke(&self, name: &str) -> Result<(), AccessError> {
+        let _lock = self.lock()?;
         let mut machines = self.machines()?;
         if machines.remove(name).is_none() {
             return Err(AccessError::UnknownMachine(name.to_owned()));
@@ -181,6 +201,19 @@ impl StateDir {
                 credential,
                 read_only: machine.read_only,
             }))
+    }
+
+    /// Holds off other changes, across processes, until the returned file is dropped.
+    fn lock(&self) -> Result<std::fs::File, AccessError> {
+        let path = self.0.join(LOCK_FILE);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| AccessError::Io(path.clone(), e))?;
+        file.lock().map_err(|e| AccessError::Io(path, e))?;
+        Ok(file)
     }
 
     fn machines(&self) -> Result<BTreeMap<String, Machine>, AccessError> {
@@ -373,6 +406,78 @@ mod tests {
         assert_eq!(mode(""), 0o700);
         assert_eq!(mode("key.pem"), 0o600);
         assert_eq!(mode("machines.json"), 0o600);
+    }
+
+    #[test]
+    fn concurrent_changes_to_machines_are_not_lost() {
+        let (dir, state) = state();
+        state.certificate().unwrap();
+        let path = dir.path().join("state");
+        let workers: Vec<_> = (0..12)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let state = StateDir::open(&path).unwrap();
+                    state.add_machine(&format!("m{i}"), "x:1", false).unwrap()
+                })
+            })
+            .collect();
+        let pairings: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        for pairing in pairings {
+            assert!(state.identify(&pairing.token).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn a_revoke_survives_a_concurrent_add() {
+        let (dir, state) = state();
+        state.certificate().unwrap();
+        let path = dir.path().join("state");
+        for round in 0..20 {
+            let victim = format!("victim{round}");
+            let pairing = state.add_machine(&victim, "x:1", false).unwrap();
+            let adder = {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let state = StateDir::open(&path).unwrap();
+                    state
+                        .add_machine(&format!("new{round}"), "x:1", false)
+                        .unwrap();
+                })
+            };
+            state.revoke(&victim).unwrap();
+            adder.join().unwrap();
+            assert_eq!(
+                state.identify(&pairing.token).unwrap(),
+                None,
+                "round {round}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_an_address_a_pair_code_cannot_carry() {
+        let (_dir, state) = state();
+        for address in ["", " ", "a/b:1", "a b:1"] {
+            assert!(
+                matches!(
+                    state.add_machine("a1", address, false),
+                    Err(AccessError::BadAddress)
+                ),
+                "{address:?}"
+            );
+        }
+        assert_eq!(state.identify("x").unwrap(), None);
+    }
+
+    #[test]
+    fn debug_output_never_shows_a_token() {
+        let pairing = Pairing {
+            address: "x:1".into(),
+            fingerprint: "a".repeat(64),
+            token: "supersecret".into(),
+        };
+        assert!(!format!("{pairing:?}").contains("supersecret"));
     }
 
     #[test]

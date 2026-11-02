@@ -5,12 +5,12 @@
 
 use std::collections::HashMap;
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{DefaultBodyLimit, Path as UrlPath, Query, Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -25,13 +25,17 @@ use crate::store::{Store, StoreError};
 use crate::views;
 
 /// The largest request body accepted.
-pub const MAX_BODY_BYTES: usize = 64 * 1024;
+pub const MAX_BODY_BYTES: usize = 16 * 1024;
 
-/// Limits on requests from each credential.
+/// Limits on requests from each credential, and on the ledger. Writes have their own, much lower
+/// limit, because each one stays on disk for good.
 #[derive(Clone, Copy, Debug)]
 pub struct RateLimit {
     pub burst: f64,
     pub per_second: f64,
+    pub write_burst: f64,
+    pub write_per_second: f64,
+    pub max_ledger_bytes: u64,
 }
 
 impl Default for RateLimit {
@@ -39,15 +43,19 @@ impl Default for RateLimit {
         Self {
             burst: 120.0,
             per_second: 5.0,
+            write_burst: 30.0,
+            write_per_second: 0.2,
+            max_ledger_bytes: 1024 * 1024 * 1024,
         }
     }
 }
 
 struct Service {
     store: Mutex<Store>,
+    db: PathBuf,
     state_dir: StateDir,
     limit: RateLimit,
-    buckets: Mutex<HashMap<String, (f64, Instant)>>,
+    buckets: Mutex<HashMap<(String, bool), (f64, Instant)>>,
 }
 
 /// Runs the service on `listener` until the process ends.
@@ -61,7 +69,7 @@ pub async fn serve(
     let _ = rustls::crypto::ring::default_provider().install_default();
     let (cert, key, _) = state_dir.certificate()?;
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
-    let app = router(Store::open(db)?, state_dir, limit);
+    let app = router(Store::open(db)?, db.to_owned(), state_dir, limit);
     listener.set_nonblocking(true)?;
     axum_server::from_tcp_rustls(listener, tls)?
         .serve(app.into_make_service())
@@ -69,9 +77,10 @@ pub async fn serve(
     Ok(())
 }
 
-fn router(store: Store, state_dir: StateDir, limit: RateLimit) -> Router {
+fn router(store: Store, db: PathBuf, state_dir: StateDir, limit: RateLimit) -> Router {
     let service = Arc::new(Service {
         store: Mutex::new(store),
+        db,
         state_dir,
         limit,
         buckets: Mutex::new(HashMap::new()),
@@ -112,8 +121,17 @@ async fn guard(State(service): State<Arc<Service>>, mut request: Request, next: 
             return failure(StatusCode::INTERNAL_SERVER_ERROR, "can't check the token");
         }
     };
-    if !service.allow(&identity.credential) {
+    if !service.allow(&identity.credential, false) {
         return failure(StatusCode::TOO_MANY_REQUESTS, "too many requests");
+    }
+    // Checked here rather than in each handler, so that a future route can't forget.
+    if !matches!(*request.method(), Method::GET | Method::HEAD) {
+        if identity.read_only {
+            return failure(StatusCode::FORBIDDEN, "this credential is read-only");
+        }
+        if !service.allow(&identity.credential, true) {
+            return failure(StatusCode::TOO_MANY_REQUESTS, "too many writes");
+        }
     }
     request.extensions_mut().insert(identity);
     next.run(request).await
@@ -125,15 +143,20 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
 }
 
 impl Service {
-    /// A token bucket per credential.
-    fn allow(&self, credential: &str) -> bool {
+    /// A token bucket per credential, with a separate one for its writes.
+    fn allow(&self, credential: &str, write: bool) -> bool {
+        let (burst, per_second) = if write {
+            (self.limit.write_burst, self.limit.write_per_second)
+        } else {
+            (self.limit.burst, self.limit.per_second)
+        };
         let now = Instant::now();
         let mut buckets = self.buckets.lock().expect("no panics hold this lock");
         let (level, last) = buckets
-            .entry(credential.to_owned())
-            .or_insert((self.limit.burst, now));
-        let refill = now.duration_since(*last).as_secs_f64() * self.limit.per_second;
-        *level = (*level + refill).min(self.limit.burst);
+            .entry((credential.to_owned(), write))
+            .or_insert((burst, now));
+        let refill = now.duration_since(*last).as_secs_f64() * per_second;
+        *level = (*level + refill).min(burst);
         *last = now;
         if *level >= 1.0 {
             *level -= 1.0;
@@ -172,8 +195,16 @@ async fn write_record(
     Extension(identity): Extension<Identity>,
     text: String,
 ) -> Response {
-    if identity.read_only {
-        return failure(StatusCode::FORBIDDEN, "this credential is read-only");
+    match std::fs::metadata(&service.db) {
+        Ok(metadata) if metadata.len() < service.limit.max_ledger_bytes => {}
+        Ok(_) => return failure(StatusCode::INSUFFICIENT_STORAGE, "the ledger is full"),
+        Err(error) => {
+            eprintln!("rally: can't check the ledger's size: {error}");
+            return failure(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the ledger can't be read",
+            );
+        }
     }
     let request: WriteRequest = match serde_json::from_str(&text) {
         Ok(request) => request,
