@@ -398,9 +398,10 @@ fn require_verifier(story: &Story, id: &str, record: &Record) -> Result<(), Ledg
     let Some(name) = record.source().declared_name.as_deref() else {
         return Ok(());
     };
-    // Anyone who ever submitted this story counts as an author, as does the team holding it.
-    let submitted = story.history.iter().any(|entry| {
-        matches!(entry.change, Change::Submit { .. })
+    // Anyone who ever claimed or submitted this story counts as an author, as does the team
+    // holding it.
+    let authored = story.history.iter().any(|entry| {
+        matches!(entry.change, Change::Claim { .. } | Change::Submit { .. })
             && entry
                 .source
                 .declared_name
@@ -411,7 +412,7 @@ fn require_verifier(story: &Story, id: &str, record: &Record) -> Result<(), Ledg
         .team
         .as_deref()
         .is_some_and(|team| same_name(team, name));
-    if submitted || holds {
+    if authored || holds {
         return Err(LedgerError::SelfVerification {
             story: id.to_owned(),
             name: name.to_owned(),
@@ -1014,6 +1015,20 @@ mod tests {
         assert_eq!(story.state, before.state);
         assert_eq!(story.team, before.team);
         assert_eq!(story.history[1].corrected_by, vec![3]);
+    }
+
+    #[test]
+    fn whoever_claimed_a_story_cannot_verify_it() {
+        let bob_claims = record(
+            Kind::Declared,
+            "bob",
+            json!({"change": "claim", "story": STORY, "team": "rally"}),
+        );
+        let mut ledger = ledger_with(&[ready(), bob_claims, submit()]);
+        assert!(matches!(
+            apply_next(&mut ledger, &verify_as("Bob")),
+            Err(LedgerError::SelfVerification { .. })
+        ));
     }
 
     #[test]

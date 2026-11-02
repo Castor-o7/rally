@@ -41,10 +41,10 @@ The bones. Everything later reads from this.
 - [x] **RAL-11: Define the ledger's record format.** Done when: every record has a versioned format
   giving its kind (observed, declared or verified), source and time, and a record missing any of them
   is refused, with a test for each.
-- [ ] **RAL-3: Record stories and their states.** Continues MUS-23. Done when: a team can claim a
+- [x] **RAL-3: Record stories and their states.** Continues MUS-23. Done when: a team can claim a
   story and submit it for review with a command, an invalid state change is refused, and each change
   keeps its history, including corrections.
-- [ ] **RAL-12: Make replay deterministic.** Done when: replaying the same records always produces
+- [x] **RAL-12: Make replay deterministic.** Done when: replaying the same records always produces
   identical state, the state as of any past record can be rebuilt, and a test shows both. Replay reads
   no clock or outside system.
 - [ ] **RAL-2: Show whether a team is available, working or blocked.** Continues MUS-28. Done when: a
