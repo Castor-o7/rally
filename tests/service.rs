@@ -70,7 +70,14 @@ fn start_with(limits: &[&str]) -> Service {
 }
 
 fn start() -> Service {
-    start_with(&["--burst", "1000", "--write-burst", "1000"])
+    start_with(&[
+        "--burst",
+        "1000",
+        "--write-burst",
+        "1000",
+        "--min-free-bytes",
+        "0",
+    ])
 }
 
 impl Service {
@@ -283,7 +290,14 @@ fn an_oversized_body_is_refused() {
 
 #[test]
 fn a_flooding_credential_is_limited_without_affecting_another() {
-    let service = start_with(&["--burst", "5", "--per-second", "0.001"]);
+    let service = start_with(&[
+        "--burst",
+        "5",
+        "--per-second",
+        "0.001",
+        "--min-free-bytes",
+        "0",
+    ]);
     let a1 = service.add("a1", false);
     let murph = service.add("murph", false);
     let statuses: Vec<u16> = (0..7)
@@ -355,6 +369,26 @@ fn add_machine_leaves_nothing_behind_when_it_fails() {
     // The name wasn't taken by any of those attempts.
     let good = service.dir.path().join("good.pair");
     assert!(add(&good, "x:1").status.success());
+}
+
+#[test]
+fn low_disk_space_refuses_writes_and_says_why_but_reads_carry_on() {
+    let service = start_with(&["--min-free-bytes", "18446744073709551615"]);
+    let a1 = service.add("a1", false);
+    let reply = ready(&a1);
+    assert_eq!(reply.status, 507);
+    assert!(reply.body.contains("low on free space"), "{}", reply.body);
+    let all = call(&a1, "GET", "/v1/stories", None);
+    assert_eq!(all.status, 200);
+    let all: Value = serde_json::from_str(&all.body).unwrap();
+    assert_eq!(all["as_of"], 0);
+}
+
+#[test]
+fn writes_work_above_the_disk_floor() {
+    let service = start_with(&["--min-free-bytes", "1"]);
+    let a1 = service.add("a1", false);
+    assert_eq!(ready(&a1).status, 200);
 }
 
 #[test]

@@ -37,7 +37,8 @@ stops a token working straight away. Don't expose the port to the open internet.
 - **Read-only is enforced before any route.** A read-only credential can only use GET.
 - **Limits.** 16 KiB per request, and for each credential a request rate and a much lower write rate. The
   defaults allow about 17,000 writes a day, so up to about 280 MB. Writes stop when the ledger file reaches
-  1 GiB, and reads carry on.
+  1 GiB, or while the ledger's disk has under 5 GiB free, and reads carry on. Set the floor with
+  `--min-free-bytes`, and check it against the host's real free space before rollout.
 
 ## What an accepted write proves
 
@@ -51,6 +52,8 @@ verify their own work catches mistakes, not forgery. Revisit this with MUS-39.
 
 - `--db` works on a ledger file directly, with no service and no checks on who is writing. It's for tests
   and for the host's own administration.
+- The disk floor is checked before each write, so it can't see what other programs write in between, and
+  it only stops Rally. It doesn't count backups stored elsewhere, and it can't free space.
 - Write limits are per machine, so all of a machine's sessions share them. Watch for 429s in real use.
 - One compromised credential could reach the 1 GiB stop in about 4 days, which blocks everyone's writes
   while reads carry on. If that happens, revoke the credential, find its records by credential with
