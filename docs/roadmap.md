@@ -57,8 +57,9 @@ The bones. Everything later reads from this.
   reordered record, a test covers each, and the docs say what this can't catch, such as someone with
   full access rewriting the whole ledger.
 - [ ] **RAL-15: Back up and restore the ledger.** Done when: a backup restored on the other machine
-  passes the RAL-14 check and rebuilds the same state, shown by a real restore, and backups get the same
-  protection as the ledger.
+  passes the RAL-14 check and rebuilds the same state, shown by a real restore; backups get the same
+  protection as the ledger; and because a1 is only available with its lid open, backups catch up
+  afterwards and alert when overdue.
 - [ ] **RAL-16: Treat recorded text as untrusted.** Teams write text that the watchman and the web app
   later read. Done when: free text has a length limit, is marked as untrusted wherever it's shown to an
   agent, and a test shows that text written as instructions or markup is displayed only as text.

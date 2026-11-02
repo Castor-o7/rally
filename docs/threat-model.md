@@ -1,8 +1,8 @@
 # Rally threat model
 
-**Draft for [RAL-10](roadmap.md), 2026-11-02. The operator hasn't agreed it yet.** It assumes the
-hosting proposal in [design.md](design.md), which also isn't agreed. Nothing here is built, so these
-are requirements, not descriptions of working defenses.
+**Draft for [RAL-10](roadmap.md), 2026-11-02. The operator hasn't agreed it as a whole yet.** It assumes
+the hosting agreed under RAL-4 in [design.md](design.md). Nothing here is built, so these are
+requirements, not descriptions of working defenses.
 
 It starts from Muster's model: all machines belong to one operator, and Rally must hold up against a
 malicious website and against one compromised session or paired machine. Other people with accounts on
@@ -54,9 +54,8 @@ Say these plainly wherever a reader might assume otherwise:
 - **Verification is one reader's judgment.** Rally records who judged and on what evidence.
 - **Secret detection is incomplete.** It only recognizes known formats.
 
-## Open for the operator
+## Settled under RAL-4
 
-1. Should the web app be viewable from a phone or other devices that aren't paired machines? That
-   changes how viewers authenticate.
-2. Is a record's author being a machine's credential, rather than a proven team, acceptable for Version
-   1? This draft assumes it is, until MUS-39.
+1. The web app is viewable from paired machines only at first. Other devices wait for RAL-34.
+2. A record's author being a machine's credential, rather than a proven team, is acceptable for Version
+   1, until MUS-39.
