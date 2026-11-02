@@ -34,10 +34,10 @@ stops a token working straight away. Don't expose the port to the open internet.
 - **No web pages.** Any request carrying an `Origin` header is refused.
 - **The service sets each record's credential and time.** A client only supplies a declared name, a kind and
   a change. Only Rally itself may record observed facts.
-- **Read-only is enforced before any route.** A read-only credential can only use GET.
+- **Read-only is enforced before any route.** A read-only credential can only use GET and HEAD.
 - **Limits.** 16 KiB per request, and for each credential a request rate and a much lower write rate. The
   defaults allow about 17,000 writes a day, so up to about 280 MB. Writes stop when the ledger file reaches
-  1 GiB, or while the ledger's disk has under 5 GiB free, and reads carry on. Set the floor with
+  64 MiB, or while the ledger's disk has under 5 GiB free, and reads carry on. Set the floor with
   `--min-free-bytes`, and check it against the host's real free space before rollout.
 
 ## What an accepted write proves
@@ -55,15 +55,24 @@ verify their own work catches mistakes, not forgery. Revisit this with MUS-39.
 - The disk floor is checked before each write, so it can't see what other programs write in between, and
   it only stops Rally. It doesn't count backups stored elsewhere, and it can't free space.
 - Write limits are per machine, so all of a machine's sessions share them. Watch for 429s in real use.
-- One compromised credential could reach the 1 GiB stop in about 4 days, which blocks everyone's writes
-  while reads carry on. If that happens, revoke the credential, find its records by credential with
-  `rally show`, and restart with a higher `--max-ledger-bytes` if there's disk to spare. Records stay
-  in the ledger, because it's append-only.
+- One compromised credential could reach the 64 MiB stop in about 6 hours, and several credentials
+  proportionally faster, which blocks everyone's writes
+  while reads carry on. If that happens, revoke the credential and find its records by credential with
+  `rally show`. Those records stay in the ledger, because it's append-only. Raising
+  `--max-ledger-bytes` restores writes but costs memory, as below, so check the host's memory first.
 - A failed token attempt isn't rate limited, and connections aren't capped or timed out while they're
   still unauthenticated. Tokens are 256 random bits, so guessing isn't practical, but a flood or slow
   connections could still load the service (RAL-35). This is why it stays off the open internet.
-- Each read replays the ledger while holding the store's lock, so heavy reading slows everyone as the
-  ledger grows, within the rate limits (RAL-35).
+- Each request reads and replays the whole ledger in memory, holding the store's lock, and blocks one of
+  the service's workers. Measured with a release build on a1, on worst-case 15 KB records through the
+  local command rather than the service: about 150 MB and 0.4 s at 64 MiB, and 2.3 GB and 2.9 s at 1 GiB.
+  That's why the limit is 64 MiB: the host shares its memory with Muster's daemon, and a read-only
+  credential can trigger this too. Don't raise it before RAL-35. Typical records are far smaller, so 64
+  MiB holds many more than that test did.
+- A damaged `machines.json` logs a line for each request, before any rate limit, until it's fixed.
+- If `cert.pem` or `key.pem` goes missing, the service refuses to start rather than making a new
+  certificate, which would break every machine's pin. Restore it, or remove both and pair every machine
+  again.
 - File permissions keep secrets private on Unix only. Windows isn't a supported host.
 - Any process on the host's account can read or change the ledger, the key and the token hashes (RAL-14).
 - Replacing the certificate means pairing every machine again.

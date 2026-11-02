@@ -122,8 +122,12 @@ pub struct StateDir(PathBuf);
 impl StateDir {
     /// Opens the directory, creating it private to this account.
     pub fn open(path: &Path) -> Result<Self, AccessError> {
-        std::fs::create_dir_all(path).map_err(|e| AccessError::Io(path.to_owned(), e))?;
-        set_private_dir(path).map_err(|e| AccessError::Io(path.to_owned(), e))?;
+        // Only a directory made here is made private, so a mistaken path can't change an existing
+        // directory such as a home directory. The secrets inside are private either way.
+        if !path.exists() {
+            std::fs::create_dir_all(path).map_err(|e| AccessError::Io(path.to_owned(), e))?;
+            set_private_dir(path).map_err(|e| AccessError::Io(path.to_owned(), e))?;
+        }
         Ok(Self(path.to_owned()))
     }
 
@@ -132,7 +136,15 @@ impl StateDir {
         let _lock = self.lock()?;
         let cert = self.0.join(CERT_FILE);
         let key = self.0.join(KEY_FILE);
-        if !cert.exists() || !key.exists() {
+        // One without the other means something was lost. Replacing them would silently break every
+        // machine's pin, so that's left for the operator to decide.
+        if cert.exists() != key.exists() {
+            return Err(AccessError::Certificate(format!(
+                "only one of {CERT_FILE} and {KEY_FILE} exists in {}",
+                self.0.display()
+            )));
+        }
+        if !cert.exists() {
             let generated = rcgen::generate_simple_self_signed(vec!["rally".to_owned()])
                 .map_err(|e| AccessError::Certificate(e.to_string()))?;
             write_private(&key, generated.signing_key.serialize_pem().as_bytes())?;
@@ -230,7 +242,11 @@ impl StateDir {
         let temporary = self.0.join(format!("{MACHINES_FILE}.new"));
         let text = serde_json::to_string_pretty(machines).expect("machines have string keys");
         write_private(&temporary, text.as_bytes())?;
-        std::fs::rename(&temporary, &path).map_err(|e| AccessError::Io(path, e))
+        std::fs::rename(&temporary, &path).map_err(|e| AccessError::Io(path.clone(), e))?;
+        // Make the rename itself survive a crash.
+        std::fs::File::open(&self.0)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| AccessError::Io(path, e))
     }
 }
 
@@ -299,7 +315,8 @@ pub fn write_private(path: &Path, contents: &[u8]) -> Result<(), AccessError> {
         file.set_permissions(std::fs::Permissions::from_mode(0o600))
             .map_err(io)?;
     }
-    file.write_all(contents).map_err(io)
+    file.write_all(contents).map_err(io)?;
+    file.sync_all().map_err(io)
 }
 
 #[cfg(unix)]
@@ -406,6 +423,32 @@ mod tests {
         assert_eq!(mode(""), 0o700);
         assert_eq!(mode("key.pem"), 0o600);
         assert_eq!(mode("machines.json"), 0o600);
+    }
+
+    #[test]
+    fn losing_the_key_is_an_error_rather_than_a_silent_new_certificate() {
+        let (dir, state) = state();
+        let (_, _, first) = state.certificate().unwrap();
+        std::fs::remove_file(dir.path().join("state/key.pem")).unwrap();
+        assert!(matches!(
+            state.certificate(),
+            Err(AccessError::Certificate(_))
+        ));
+        let cert = std::fs::read_to_string(dir.path().join("state/cert.pem")).unwrap();
+        assert_eq!(fingerprint_of_pem(&cert).unwrap(), first);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_directory_keeps_its_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        StateDir::open(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
     }
 
     #[test]
