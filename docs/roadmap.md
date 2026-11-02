@@ -10,8 +10,8 @@ IDs are permanent. Don't reuse or renumber them, so they aren't in numeric order
 a "done when" line isn't ready to claim. Until Rally can track itself, stories follow the process in
 Muster's `docs/board.md`.
 
-The "done when" lines from Phase 1 on are a first draft, to refine under RAL-1. No feature code before
-RAL-1 and RAL-4 are agreed.
+The operator agreed the design and threat model on 2026-11-02. Later phases' "done when" lines can
+still be refined as each story is taken.
 
 ## Depends on Muster
 

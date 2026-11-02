@@ -1,8 +1,8 @@
 # Rally design
 
-**Draft, 2026-11-02.** This is the starting point for [RAL-1](roadmap.md), not a settled
-design. The team that owns Rally can change anything here except the decisions the operator
-has made, which are listed first.
+**Agreed by the operator on 2026-11-02 ([RAL-1](roadmap.md)).** The team that owns Rally can change
+anything here except the decisions the operator has made, which are listed first, but agreed points
+should go back to the operator if they change.
 
 ## Decided by the operator
 
@@ -139,10 +139,8 @@ So Rally's first transport is the LAN, protected by its own TLS and tokens rathe
 
 ## Open questions
 
-Answers marked "proposed" are for RAL-1 and need the operator's agreement.
-
 1. **Where does Rally run, and how do both machines reach it?** Answered by RAL-4 above.
-2. **How is Rally's state stored?** Proposed: an append-only log of events in SQLite on the host, written
+2. **How is Rally's state stored?** An append-only log of events in SQLite on the host, written
    by Rally's Rust service, not myko. It gives the history the Version 0 table lacks, lets a wrong entry
    be corrected without erasing it, and can rebuild the past ledgers the web app has to show. A single
    writer and a plain file also keep replay and backups simple. Muster's decision to stay on myko doesn't
@@ -152,11 +150,11 @@ Answers marked "proposed" are for RAL-1 and need the operator's agreement.
    forgery. Say so plainly, and revisit it when Muster has something stronger (MUS-39). Agreed for
    Version 1 under RAL-4: the check compares declared names, and authors show as a credential declaring
    a name, for example "a1 credential, declaring gleaming-tench".
-4. **How do other projects join?** Proposed: stories stay in each project's roadmap file, which its team
+4. **How do other projects join?** Stories stay in each project's roadmap file, which its team
    owns, and Rally tracks them by ID. Rally records their state and evidence, not their text.
 5. **Who can see what, and how?** Rally's own web app, viewable from paired machines only at first
-   (RAL-4). Proposed: it's read-only, and phone viewing waits for RAL-34. A Rally view inside Muster would
+   (RAL-4). It's read-only, and phone viewing waits for RAL-34. A Rally view inside Muster would
    break the one-way dependency.
-6. **Should Rally's notifications use structured messages?** Proposed: deferred until the MUS-43 design
+6. **Should Rally's notifications use structured messages?** Deferred until the MUS-43 design
    meeting, which isn't scheduled. Rally's digests are a good test case, and RAL-8 waits for it or starts
    with plain text.
