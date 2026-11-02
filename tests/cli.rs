@@ -120,17 +120,22 @@ fn the_submitter_cannot_verify_but_someone_else_can() {
 fn writing_needs_a_credential_and_a_name() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("ledger.db");
-    let output = Command::new(env!("CARGO_BIN_EXE_rally"))
-        .arg("--db")
-        .arg(&db)
-        .args(["ready", "RAL-3"])
-        .env_remove("RALLY_CREDENTIAL")
-        .env_remove("RALLY_NAME")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let error = String::from_utf8(output.stderr).unwrap();
-    assert!(error.contains("--credential"), "{error}");
+    for (args, needed) in [
+        (vec!["ready", "RAL-3"], "--as"),
+        (vec!["--as", "x", "ready", "RAL-3"], "--credential"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rally"))
+            .arg("--db")
+            .arg(&db)
+            .args(args)
+            .env_remove("RALLY_CREDENTIAL")
+            .env_remove("RALLY_NAME")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(error.contains(needed), "{error}");
+    }
 }
 
 #[test]
