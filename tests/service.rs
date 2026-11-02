@@ -8,12 +8,13 @@ use rally::access::Pairing;
 use rally::client::{Reply, request};
 use serde_json::{Value, json};
 
-const ROUTES: [(&str, &str); 5] = [
+const ROUTES: [(&str, &str); 6] = [
     ("POST", "/v1/records"),
     ("GET", "/v1/stories"),
     ("GET", "/v1/stories/RAL-13"),
     ("GET", "/v1/teams"),
     ("GET", "/v1/teams/rally"),
+    ("GET", "/v1/check"),
 ];
 
 struct Service {
@@ -475,6 +476,30 @@ fn the_command_works_end_to_end_through_the_service() {
     let then = cli(&config, "x", &["show", "RAL-13", "--as-of", "1"]);
     let then: Value = serde_json::from_slice(&then.stdout).unwrap();
     assert_eq!(then["detail"]["state"], "ready");
+}
+
+#[test]
+fn check_works_through_the_service_and_a_saved_head_is_checked() {
+    let service = start();
+    let a1 = service.add("a1", false);
+    let viewer = service.add("viewer", true);
+    assert_eq!(ready(&a1).status, 200);
+
+    let reply = call(&viewer, "GET", "/v1/check", None);
+    let first: Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(first["ok"], true, "{}", reply.body);
+    assert_eq!(first["head"]["seq"], 1);
+    let hash = first["head"]["hash"].as_str().unwrap();
+
+    let good = format!("/v1/check?seq=1&hash={hash}");
+    let good: Value = serde_json::from_str(&call(&a1, "GET", &good, None).body).unwrap();
+    assert_eq!(good["ok"], true);
+
+    let ahead = format!("/v1/check?seq=2&hash={hash}");
+    let ahead: Value = serde_json::from_str(&call(&a1, "GET", &ahead, None).body).unwrap();
+    assert_eq!(ahead["ok"], false);
+
+    assert_eq!(call(&a1, "GET", "/v1/check?seq=1", None).status, 400);
 }
 
 #[cfg(unix)]

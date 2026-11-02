@@ -81,7 +81,7 @@ The bones. Everything later reads from this.
   capped and time out before they authenticate, failed token attempts are limited, and reads don't replay
   the whole ledger under the store's lock or block the service's workers, with a test for each, and with
   memory and time measured at the ledger's limit before that limit is raised.
-- [ ] **RAL-36: Stop before the disk fills.** Rally shares Murph with Muster's daemon. Required before the
+- [x] **RAL-36: Stop before the disk fills.** Rally shares Murph with Muster's daemon. Required before the
   trial. Done when: the service refuses writes while free space on the ledger's disk is below a set floor,
   reads carry on, the error says why, and a test shows it. The docs say what isn't covered.
 - [ ] **RAL-14: Make tampering detectable.** Done when: a check reports any altered, removed or

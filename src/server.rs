@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use crate::access::{Identity, StateDir};
 use crate::ledger::Ledger;
 use crate::record::{Kind, Record, Source};
-use crate::store::{Store, StoreError};
+use crate::store::{Head, Store, StoreError};
 use crate::views;
 
 /// The largest request body accepted.
@@ -97,6 +97,7 @@ fn router(store: Store, db: PathBuf, state_dir: StateDir, limit: RateLimit) -> R
         .route("/v1/stories/{id}", get(one_story))
         .route("/v1/teams", get(list_teams))
         .route("/v1/teams/{name}", get(one_team))
+        .route("/v1/check", get(check))
         .fallback(|| async { failure(StatusCode::NOT_FOUND, "no such route") })
         .method_not_allowed_fallback(|| async {
             failure(StatusCode::METHOD_NOT_ALLOWED, "method not allowed")
@@ -293,6 +294,27 @@ fn view(
     match read(&ledger) {
         Ok(value) => Json(value).into_response(),
         Err(message) => failure(StatusCode::NOT_FOUND, message),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Expected {
+    seq: Option<u64>,
+    hash: Option<String>,
+}
+
+/// Checks the ledger. A failed check is still a successful reply: the problems are the answer.
+async fn check(State(service): State<Arc<Service>>, Query(expected): Query<Expected>) -> Response {
+    let expected = match (expected.seq, expected.hash) {
+        (Some(seq), Some(hash)) => Some(Head { seq, hash }),
+        (None, None) => None,
+        _ => return failure(StatusCode::BAD_REQUEST, "seq and hash go together"),
+    };
+    let store = service.store.lock().expect("no panics hold this lock");
+    match store.verify(expected.as_ref()) {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => internal(&error),
     }
 }
 
