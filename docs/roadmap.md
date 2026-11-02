@@ -85,8 +85,13 @@ The bones. Everything later reads from this.
 - [ ] **RAL-22: Brief a new watchman from the ledger.** The watchman that started after the crash
   reported on 2026-11-02 had a board last saved on 2026-10-31 and no message history, so it had to ask
   every team to resend. Done when: a new session can read one brief giving each team's state, open
-  claims, submissions awaiting verification and open blockers, and a test shows no open submission is
-  lost when the watchman changes.
+  claims (flagging those whose session has ended), submissions awaiting verification, open blockers,
+  decisions waiting on the operator and who each holds up, holds in force and what releases them,
+  conditions on the order of work, standing grants with their scope and whether each was direct or
+  relayed, and how old each fact is; and a test shows no open submission is lost when the watchman
+  changes. The brief records grants but confers no authority, and proof of who holds a role comes from
+  Muster, not the ledger. List from the watchman, 2026-11-02. Live daemon commit, backups and machine
+  access are for RAL-1 to place, since the threat model has to weigh recording them.
 - [ ] **RAL-20: Record who is waiting on whom.** Done when: a team can name what it's blocked on,
   including another team's story, the watchman can list open blockers and chains of them, and a blocker
   stays open until someone closes it, with who and why recorded.
