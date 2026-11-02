@@ -94,6 +94,30 @@ how long a check-in lasts, and test the rules against the stall of 2026-10-30.
   against a nickname go stale. Key claims on the team and story, and record the session only as
   who was acting at the time.
 
+## Proposal for RAL-4: where Rally runs
+
+**Not agreed yet.** The operator decides this.
+
+- **One service on one machine.** It's the single writer, so there's one order of records and replay
+  stays deterministic. Both machines reach it through a `rally` command that talks to the service.
+- **Transport and access, following Muster's gate.** TLS with a pinned certificate and a separate token
+  for each machine, stored as a hash on the host. These are Rally's own credentials, so Rally doesn't
+  need Muster's tokens and a leak of one doesn't expose the other. It listens on a LAN or mesh address,
+  never the open internet.
+- **Who may connect.** Only machines the operator has paired with Rally, a1 and Murph to start with. A
+  write records which machine's credential made it. The web app gets its own read-only credential.
+- **When the service is down,** a write fails with a clear error rather than queueing silently, reads
+  fail too, and teams fall back to Muster's `docs/board.md` process. Muster isn't affected.
+- **Not through Muster messages.** That would tie the ledger to message delivery, which is still being
+  hardened (MUS-34), and would make Muster the ledger's transport rather than a neighbor.
+
+**Which machine:** Murph is the likely host because it already runs the Muster daemon, but that also
+means one machine failing takes out both. Check how reliably it stays up before choosing. Backups go to
+the other machine either way (RAL-15).
+
+**Unverified:** whether a1 and Murph are on a mesh network today. Muster's roadmap calls for Tailscale
+or WireGuard beyond the LAN, and Tailscale is installed on a1, but nothing has been checked on Murph.
+
 ## Open questions
 
 1. **Where does Rally run, and how do both machines reach it?** Decide this first (RAL-4). The
