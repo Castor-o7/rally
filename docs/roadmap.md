@@ -79,7 +79,8 @@ The bones. Everything later reads from this.
   say what an accepted write does and doesn't prove about who sent it.
 - [ ] **RAL-35: Limit load on the service.** From the second read of RAL-13. Done when: connections are
   capped and time out before they authenticate, failed token attempts are limited, and reads don't replay
-  the whole ledger under the store's lock, with a test for each.
+  the whole ledger under the store's lock or block the service's workers, with a test for each, and with
+  memory and time measured at the ledger's limit before that limit is raised.
 - [ ] **RAL-36: Stop before the disk fills.** Rally shares Murph with Muster's daemon. Required before the
   trial. Done when: the service refuses writes while free space on the ledger's disk is below a set floor,
   reads carry on, the error says why, and a test shows it. The docs say what isn't covered.

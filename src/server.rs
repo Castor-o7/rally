@@ -47,7 +47,10 @@ impl Default for RateLimit {
             per_second: 5.0,
             write_burst: 30.0,
             write_per_second: 0.2,
-            max_ledger_bytes: 1024 * 1024 * 1024,
+            // Each request currently replays the whole ledger in memory: about 150 MB of memory at
+            // this size in the worst case, and 2.3 GB at 1 GiB, on a host shared with Muster.
+            // Raise this only after RAL-35.
+            max_ledger_bytes: 64 * 1024 * 1024,
             min_free_bytes: 5 * 1024 * 1024 * 1024,
         }
     }
