@@ -94,9 +94,11 @@ how long a check-in lasts, and test the rules against the stall of 2026-10-30.
   against a nickname go stale. Key claims on the team and story, and record the session only as
   who was acting at the time.
 
-## Proposal for RAL-4: where Rally runs
+## RAL-4: where Rally runs
 
-**Not agreed yet.** The operator decides this.
+**Agreed by the operator on 2026-11-02,** confirming the recommendations put to them: this design, Murph
+as host, the web app viewable from paired machines only at first, and a record's author being a machine's
+credential for Version 1. Reserving Murph's address on the router is still to do.
 
 - **One service on one machine.** It's the single writer, so there's one order of records and replay
   stays deterministic. Both machines reach it through a `rally` command that talks to the service.
@@ -113,11 +115,10 @@ how long a check-in lasts, and test the rules against the stall of 2026-10-30.
 - **Not through Muster messages.** That would tie the ledger to message delivery, which is still being
   hardened (MUS-34), and would make Muster the ledger's transport rather than a neighbor.
 
-**Which machine:** Murph is the likely host because it already runs the Muster daemon, but that also
-means one machine failing takes out both. Stall detection needs Muster's roster anyway, so that costs
-less than it looks. Backups go to the other machine either way (RAL-15). If that's a1, they only run
-while it's awake and the docs must say so. The watchman's conditions for Murph are a router reservation
-first and a tested restore on a1, and it asks what crashed on 11-01 before deciding.
+**Which machine:** Murph, which already runs the Muster daemon. One machine failing takes out both, but
+stall detection needs Muster's roster anyway, so that costs less than it looks. Murph needs a router
+reservation first. Backups go to a1, a laptop that's only available with its lid open, so they catch up
+afterwards and alert when overdue, and a restore on a1 has to be tested (RAL-15).
 
 **What we know so far, reported by the watchman on 2026-11-02:** a1's Muster connections go to the
 private LAN address 192.168.1.241:6255. a1 has `Tailscale.app` installed but no `tailscale` or `wg`
@@ -128,31 +129,34 @@ command, and has `utun` interfaces nobody has identified, so a VPN isn't ruled o
 could tell (`tailscaled` inactive, no such interfaces). Its LAN address, 192.168.1.241, comes from DHCP,
 so it could change unless the router reserves it; the router wasn't checked. Murph has been up since
 10-15, with crash entries on 09-26 and other reboots on 09-26, 10-12 and 10-15, reasons unknown. It
-didn't reboot on 11-01, and what crashed that night is still unknown. Power and network outages that
-didn't reboot the host weren't checked, because nothing monitors them.
+didn't reboot on 11-01. Power and network outages that didn't reboot the host weren't checked, because
+nothing monitors them.
 
-So Rally's first transport would be the LAN, protected by its own TLS and tokens rather than a mesh, and
-hosting on Murph needs a stable address first. Murph's reliability is still only partly known.
+**The 11-01 crash wasn't Murph.** The operator told the watchman that a cat closed a1's lid, so a1's
+terminals went unresponsive and were restarted. The crash entries on 09-26 are still unexplained.
+
+So Rally's first transport is the LAN, protected by its own TLS and tokens rather than a mesh.
 
 ## Open questions
 
-1. **Where does Rally run, and how do both machines reach it?** Decide this first (RAL-4). The
-   muster spans a Mac (a1) and a Linux box (Murph). A CLI writing to a local file only works on
-   one machine, so the first idea of a small CLI with an append-only log isn't enough by itself.
-   Options include a single service on one machine, or sending writes through Muster messages. A
-   service needs its own answer to who may connect.
-2. **How is Rally's state stored?** An append-only log of events is the leading idea, because it
-   gives the history the Version 0 table lacks, lets a wrong entry be corrected without erasing
-   it, and can rebuild the past ledgers the web app has to show. SQLite is one candidate. Whether Rally should use myko is also open; Muster's decision to
-   stay on myko doesn't bind Rally.
+Answers marked "proposed" are for RAL-1 and need the operator's agreement.
+
+1. **Where does Rally run, and how do both machines reach it?** Answered by RAL-4 above.
+2. **How is Rally's state stored?** Proposed: an append-only log of events in SQLite on the host, written
+   by Rally's Rust service, not myko. It gives the history the Version 0 table lacks, lets a wrong entry
+   be corrected without erasing it, and can rebuild the past ledgers the web app has to show. A single
+   writer and a plain file also keep replay and backups simple. Muster's decision to stay on myko doesn't
+   bind Rally.
 3. **What does "someone other than the author" mean when identity can't be proved?** Any process on
    an account can act as that machine, so this rule catches mistakes rather than a determined
-   forgery. Say so plainly, and revisit it when Muster has something stronger (MUS-39).
-4. **How do other projects join?** The board already covers Muster, catapp and ParadoxDetector, each
-   with its own roadmap file. Decide whether stories stay in those files with Rally tracking them, or
-   Rally becomes their home.
-5. **Who can see what, and how?** The operator wants Rally's own web app, so it's settled that there is
-   one, and the proposal is that it's read-only. Who may view it, and from where, is still open. A Rally
-   view inside Muster would break the one-way dependency.
-6. **Should Rally's notifications use structured messages?** Muster's MUS-43 is designing those, so
-   Rally's digests are a good test case. Talk to the Muster team before settling a format.
+   forgery. Say so plainly, and revisit it when Muster has something stronger (MUS-39). Agreed for
+   Version 1 under RAL-4: the check compares declared names, and authors show as a credential declaring
+   a name, for example "a1 credential, declaring gleaming-tench".
+4. **How do other projects join?** Proposed: stories stay in each project's roadmap file, which its team
+   owns, and Rally tracks them by ID. Rally records their state and evidence, not their text.
+5. **Who can see what, and how?** Rally's own web app, viewable from paired machines only at first
+   (RAL-4). Proposed: it's read-only, and phone viewing waits for RAL-34. A Rally view inside Muster would
+   break the one-way dependency.
+6. **Should Rally's notifications use structured messages?** Proposed: deferred until the MUS-43 design
+   meeting, which isn't scheduled. Rally's digests are a good test case, and RAL-8 waits for it or starts
+   with plain text.
