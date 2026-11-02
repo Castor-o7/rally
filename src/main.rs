@@ -152,6 +152,10 @@ enum Command {
         #[arg(long, value_parser = parse_head)]
         expect: Option<Head>,
     },
+    /// On the service's host, with --db: accept the current head after a lost or damaged head file.
+    /// Refuses a broken chain. This also accepts any removal `check` was reporting, so compare with a
+    /// head saved elsewhere first.
+    AdoptHead,
     /// Declare your team's state: available, working or blocked.
     TeamState {
         team: String,
@@ -391,6 +395,13 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             write_private(&path, serde_json::to_string(&pairing)?.as_bytes())?;
             return Ok(json!({"paired": pairing.address, "config": path}).to_string());
+        }
+        Command::AdoptHead => {
+            let db = cli
+                .db
+                .ok_or("adopt-head needs --db, on the service's host")?;
+            let head = Store::open(&db)?.adopt_head()?;
+            return Ok(json!({"adopted": head}).to_string());
         }
         Command::Check { expect } => {
             let backend = Backend::choose(cli.db.as_deref(), &config_path(cli.config)?)?;

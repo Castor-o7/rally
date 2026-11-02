@@ -91,7 +91,7 @@ The bones. Everything later reads from this.
 - [ ] **RAL-15: Back up and restore the ledger.** Done when: a backup restored on the other machine
   passes the RAL-14 check and rebuilds the same state, shown by a real restore; backups get the same
   protection as the ledger; and because a1 is only available with its lid open, backups catch up
-  afterwards and alert when overdue. Each backup also saves the ledger's head on a1, and the watchman can
+  afterwards and alert when overdue. Each backup keeps the ledger and its head file together, also saves the ledger's head on a1, and the watchman can
   run `rally check --expect` against it (RAL-14), so that a rewrite on the host shows.
 - [ ] **RAL-16: Treat recorded text as untrusted.** Teams write text that the watchman and the web app
   later read. Done when: free text has a length limit, is marked as untrusted wherever it's shown to an

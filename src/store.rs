@@ -13,6 +13,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rusqlite::{Connection, TransactionBehavior, params};
@@ -230,6 +231,21 @@ impl Store {
         })
     }
 
+    /// After a lost or damaged head file, makes the current head the saved one, for the operator to
+    /// run on the host. Refuses if the chain itself is broken. This also accepts any removal of the
+    /// newest records that `check` was reporting, so a head saved elsewhere should be checked first.
+    pub fn adopt_head(&self) -> Result<Head, StoreError> {
+        let rows = read_chain(&self.connection)?;
+        let head = Head {
+            seq: rows.len() as u64,
+            hash: rows
+                .last()
+                .map_or_else(|| CHAIN_START.to_owned(), |(hash, _)| hash.clone()),
+        };
+        self.save_head(&head).map_err(StoreError::HeadMismatch)?;
+        Ok(head)
+    }
+
     /// Refuses unless the head file names a point on the current chain.
     fn check_head_on_chain(head_file: &Path, connection: &Connection) -> Result<(), StoreError> {
         let head = read_head_file(head_file)
@@ -259,12 +275,29 @@ impl Store {
     }
 
     fn save_head(&self, head: &Head) -> Result<(), String> {
+        // A name of its own, so that writers can't truncate each other's file before a rename.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let mut temporary = self.head_file.as_os_str().to_owned();
-        temporary.push(".new");
+        temporary.push(format!(
+            ".{}.{}.new",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         let temporary = PathBuf::from(temporary);
         let text = serde_json::to_string(head).map_err(|e| e.to_string())?;
         write_private(&temporary, text.as_bytes()).map_err(|e| e.to_string())?;
-        std::fs::rename(&temporary, &self.head_file).map_err(|e| e.to_string())
+        std::fs::rename(&temporary, &self.head_file).map_err(|e| e.to_string())?;
+        // Make the rename survive a crash. Otherwise a new ledger could end up with records and no
+        // head file, which refuses writes.
+        let directory = self.head_file.parent().unwrap_or_else(|| Path::new("."));
+        let directory = if directory.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            directory
+        };
+        std::fs::File::open(directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| e.to_string())
     }
 
     fn read_head(&self) -> Result<Option<Head>, String> {
@@ -718,6 +751,43 @@ mod tests {
         let mut head = store.verify(None).unwrap().head;
         head.hash = head.hash.to_uppercase();
         assert!(store.verify(Some(&head)).unwrap().ok);
+    }
+
+    #[test]
+    fn adopting_the_head_recovers_from_a_lost_head_file() {
+        let (_dir, path, mut store) = two_records();
+        let mut head_file = path.into_os_string();
+        head_file.push(".head");
+        std::fs::remove_file(&head_file).unwrap();
+        assert!(store.append(&release()).is_err());
+
+        let head = store.adopt_head().unwrap();
+        assert_eq!(head.seq, 2);
+        assert!(store.verify(None).unwrap().ok);
+        store.append(&release()).unwrap();
+    }
+
+    #[test]
+    fn adopting_the_head_refuses_a_broken_chain() {
+        let (_dir, _path, store) = two_records();
+        altered_record(&store);
+        assert!(matches!(
+            store.adopt_head(),
+            Err(StoreError::Tampered { seq: 1 })
+        ));
+    }
+
+    #[test]
+    fn no_temporary_head_files_are_left_behind() {
+        let (dir, _path, _store) = two_records();
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(
+            !names.iter().any(|name| name.ends_with(".new")),
+            "{names:?}"
+        );
     }
 
     #[test]

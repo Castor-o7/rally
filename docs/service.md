@@ -57,8 +57,14 @@ history is intact.
 Removing the newest records leaves a shorter chain that still holds, so ordinary reads don't notice: only
 `rally check` does. The head is kept in `<ledger>.head` for this, and `rally check` compares against it and
 prints the current head. Writes stop if that file is missing or isn't on the chain, because a write would
-otherwise replace the evidence. To recover, run `rally check`, then restore from a backup, keeping the
-damaged files to look at. A head file behind the ledger is allowed, because a crash leaves it that way.
+otherwise replace the evidence. A head file behind the ledger is allowed, because a crash leaves it that
+way.
+
+To recover, run `rally check`, keeping the damaged files to look at. Then either restore the ledger and its
+head file together from a backup, or, if the chain is intact and a head saved elsewhere still matches, run
+`rally --db <ledger> adopt-head` on the host. It refuses a broken chain, but it does accept any removal
+of the newest records that `check` was reporting, so don't use it to make a warning go away, and don't edit
+the head file by hand.
 
 Save that head somewhere other than the host from time to time, then check it with
 `rally check --expect SEQ:HASH`. That's the only protection against the case below.
