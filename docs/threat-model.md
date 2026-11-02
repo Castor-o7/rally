@@ -1,8 +1,8 @@
 # Rally threat model
 
-**Draft for [RAL-10](roadmap.md), 2026-11-02. The operator hasn't agreed it as a whole yet.** It assumes
-the hosting agreed under RAL-4 in [design.md](design.md). Nothing here is built, so these are
-requirements, not descriptions of working defenses.
+**Agreed by the operator on 2026-11-02 ([RAL-10](roadmap.md)).** It assumes the hosting agreed under
+RAL-4 in [design.md](design.md). These are requirements, and a defense exists only once its story is
+verified.
 
 It starts from Muster's model: all machines belong to one operator, and Rally must hold up against a
 malicious website and against one compromised session or paired machine. Other people with accounts on
