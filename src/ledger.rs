@@ -16,6 +16,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::record::{Kind, Record, Source};
 
+const MAX_TEAM_CHARS: usize = 64;
+const MAX_NOTE_CHARS: usize = 4_000;
+const MAX_EVIDENCE_CHARS: usize = 1_000;
+const MAX_STORY_ID_BYTES: usize = 32;
+
 /// A story's state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -159,6 +164,10 @@ pub enum LedgerError {
     InvalidStoryId(String),
     /// A required text field is empty. Holds the field's name.
     EmptyField(&'static str),
+    /// Text is over its limit. Holds the field's name and limit in characters.
+    TooLong(&'static str, usize),
+    /// A team's name has a control character.
+    ControlCharacter(&'static str),
     /// Records must be applied in order with no gaps.
     OutOfOrder {
         expected: u64,
@@ -199,6 +208,8 @@ impl fmt::Display for LedgerError {
             Self::InvalidChange(reason) => write!(f, "invalid change: {reason}"),
             Self::InvalidStoryId(id) => write!(f, "story ID {id:?} isn't in the form ABC-1"),
             Self::EmptyField(field) => write!(f, "{field} is empty"),
+            Self::TooLong(field, limit) => write!(f, "{field} is over {limit} characters"),
+            Self::ControlCharacter(field) => write!(f, "{field} has a control character"),
             Self::OutOfOrder { expected, found } => {
                 write!(f, "expected record {expected}, found record {found}")
             }
@@ -541,17 +552,44 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         if value.trim().is_empty() {
             return Err(LedgerError::EmptyField(name));
         }
+        check_limit(name, value)?;
+    }
+    // Optional fields aren't in the list above.
+    match change {
+        Change::Correct {
+            team: Some(team), ..
+        } => check_limit("team", team),
+        Change::TeamState {
+            note: Some(note), ..
+        } => check_limit("note", note),
+        _ => Ok(()),
+    }
+}
+
+/// Limits on text that teams write and others read (RAL-16). Names have to fit on a line.
+fn check_limit(name: &'static str, value: &str) -> Result<(), LedgerError> {
+    let limit = match name {
+        "team" => MAX_TEAM_CHARS,
+        "evidence" => MAX_EVIDENCE_CHARS,
+        _ => MAX_NOTE_CHARS,
+    };
+    if value.chars().count() > limit {
+        return Err(LedgerError::TooLong(name, limit));
+    }
+    if name == "team" && value.chars().any(char::is_control) {
+        return Err(LedgerError::ControlCharacter(name));
     }
     Ok(())
 }
 
 fn is_story_id(id: &str) -> bool {
-    id.split_once('-').is_some_and(|(prefix, number)| {
-        !prefix.is_empty()
-            && prefix.chars().all(|c| c.is_ascii_uppercase())
-            && !number.is_empty()
-            && number.chars().all(|c| c.is_ascii_digit())
-    })
+    id.len() <= MAX_STORY_ID_BYTES
+        && id.split_once('-').is_some_and(|(prefix, number)| {
+            !prefix.is_empty()
+                && prefix.chars().all(|c| c.is_ascii_uppercase())
+                && !number.is_empty()
+                && number.chars().all(|c| c.is_ascii_digit())
+        })
 }
 
 #[cfg(test)]
@@ -1224,6 +1262,27 @@ mod tests {
         assert_eq!(then.teams()["rally"].current.status, TeamStatus::Working);
         let now = ledger_with(&records);
         assert_eq!(now.teams()["rally"].current.status, TeamStatus::Available);
+    }
+
+    #[test]
+    fn refuses_text_over_its_limit() {
+        let mut ledger = ledger_with(&[ready(), claim()]);
+        let long = "x".repeat(4_001);
+        let body = json!({"change": "correct", "story": STORY, "corrects": 2, "note": long});
+        assert!(apply_next(&mut ledger, &team(body)).is_err());
+        let long = "x".repeat(1_001);
+        let body = json!({"change": "submit", "story": STORY, "team": "rally", "evidence": long});
+        assert!(apply_next(&mut ledger, &team(body)).is_err());
+        let long = "x".repeat(65);
+        let body = json!({"change": "team_state", "team": long, "status": "working"});
+        assert!(apply_next(&mut ledger, &team(body)).is_err());
+    }
+
+    #[test]
+    fn refuses_control_characters_in_team_names() {
+        let mut ledger = Ledger::default();
+        let body = json!({"change": "team_state", "team": "ral\nly", "status": "working"});
+        assert!(apply_next(&mut ledger, &team(body)).is_err());
     }
 
     #[test]

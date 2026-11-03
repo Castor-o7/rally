@@ -31,6 +31,13 @@ use serde_json::Value;
 /// The only record format this build reads and writes.
 pub const FORMAT_VERSION: u64 = 1;
 
+/// The longest credential or declared name, which others read and has to fit on a line.
+const MAX_NAME_CHARS: usize = 64;
+
+fn is_good_name(name: &str) -> bool {
+    name.chars().count() <= MAX_NAME_CHARS && !name.chars().any(char::is_control)
+}
+
 /// How a record is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -113,6 +120,8 @@ pub enum RecordError {
     MissingDeclaredName(Kind),
     /// An observed record claims a declared name.
     ObservedWithDeclaredName,
+    /// A credential or declared name is too long or has a control character. Holds the field's name.
+    BadName(&'static str),
     /// `at_ms` isn't after the Unix epoch.
     InvalidTime(i64),
     /// `body` isn't a JSON object.
@@ -136,6 +145,10 @@ impl fmt::Display for RecordError {
             Self::ObservedWithDeclaredName => {
                 write!(f, "an observed record can't have source.declared_name")
             }
+            Self::BadName(field) => write!(
+                f,
+                "{field} must be at most {MAX_NAME_CHARS} characters, with no control characters"
+            ),
             Self::InvalidTime(at_ms) => write!(f, "at_ms {at_ms} isn't after the Unix epoch"),
             Self::BodyNotObject => write!(f, "body isn't a JSON object"),
         }
@@ -218,6 +231,14 @@ impl Record {
                 return Err(RecordError::MissingDeclaredName(self.kind));
             }
             _ => {}
+        }
+        if !is_good_name(&self.source.credential) {
+            return Err(RecordError::BadName("source.credential"));
+        }
+        if let Some(name) = &self.source.declared_name
+            && !is_good_name(name)
+        {
+            return Err(RecordError::BadName("source.declared_name"));
         }
         if self.at_ms <= 0 {
             return Err(RecordError::InvalidTime(self.at_ms));
@@ -434,6 +455,20 @@ mod tests {
         value["points"] = json!(10);
         assert!(serde_json::from_value::<Record>(value).is_err());
         assert!(serde_json::from_value::<Record>(valid()).is_ok());
+    }
+
+    #[test]
+    fn refuses_a_long_or_control_character_name() {
+        for (field, bad) in [
+            ("credential", "x".repeat(65)),
+            ("declared_name", "x".repeat(65)),
+            ("declared_name", "a\u{1b}[31m".to_owned()),
+            ("credential", "a\nb".to_owned()),
+        ] {
+            let mut value = valid();
+            value["source"][field] = json!(bad);
+            assert!(parse(&value).is_err(), "{field}: {bad:?}");
+        }
     }
 
     #[test]

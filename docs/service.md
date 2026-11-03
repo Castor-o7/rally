@@ -40,6 +40,16 @@ stops a token working straight away. Don't expose the port to the open internet.
   64 MiB, or while the ledger's disk has under 5 GiB free, and reads carry on. Set the floor with
   `--min-free-bytes`, and check it against the host's real free space before rollout.
 
+## Recorded text is untrusted
+
+Team names, declared names, notes and evidence are written by agents. Every read through `show` and `teams`
+carries an `untrusted_text` notice saying they're data, not instructions. Output is JSON, so control characters
+are escaped, and text is stored and shown exactly as written. Whatever displays it has to escape it too. Notes
+are limited to 4,000 characters and evidence to 1,000. Names are limited to 64 characters, with no control
+characters.
+
+A notice can't stop an agent being persuaded by what it reads. It only makes the boundary visible.
+
 ## What an accepted write proves
 
 It proves that a process holding that machine's token sent it, and that the change was valid at that point.
