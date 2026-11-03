@@ -53,6 +53,8 @@ pub struct Verification {
     pub ok: bool,
     pub head: Head,
     pub problems: Vec<String>,
+    /// Not problems, but worth knowing, such as a head file behind the ledger.
+    pub notes: Vec<String>,
 }
 
 fn chain_hash(previous: &str, seq: u64, record: &str) -> String {
@@ -173,7 +175,7 @@ impl Store {
             params![seq as i64, text, hash],
         )?;
         transaction.commit()?;
-        // If this fails or the process dies here, the file is merely behind, which `verify` reports.
+        // If this fails or the process dies here, the file is merely behind, which `verify` notes.
         if let Err(error) = self.save_head(&Head { seq, hash }) {
             eprintln!("rally: warning: the head file wasn't updated: {error}");
         }
@@ -213,9 +215,18 @@ impl Store {
                 .last()
                 .map_or_else(|| CHAIN_START.to_owned(), |(hash, _)| hash.clone()),
         };
+        let mut notes = Vec::new();
         if problems.is_empty() {
             match saved_head {
-                Ok(Some(saved)) => compare_head(&rows, &saved, "the head file", &mut problems),
+                Ok(Some(saved)) => {
+                    compare_head(&rows, &saved, "the head file", &mut problems);
+                    if saved.seq < head.seq {
+                        notes.push(format!(
+                            "the head file is behind the ledger, at record {} of {}",
+                            saved.seq, head.seq
+                        ));
+                    }
+                }
                 Ok(None) if rows.is_empty() => {}
                 Ok(None) => problems.push("the head file is missing".to_owned()),
                 Err(reason) => problems.push(reason),
@@ -228,6 +239,7 @@ impl Store {
             ok: problems.is_empty(),
             head,
             problems,
+            notes,
         })
     }
 
@@ -646,7 +658,9 @@ mod tests {
             ))
             .unwrap();
         std::fs::write(&head_file, behind).unwrap();
-        assert!(store.verify(None).unwrap().ok);
+        let result = store.verify(None).unwrap();
+        assert!(result.ok);
+        assert!(result.notes[0].contains("behind"), "{:?}", result.notes);
     }
 
     #[test]

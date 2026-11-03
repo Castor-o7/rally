@@ -188,6 +188,22 @@ fn recorded_text_is_marked_untrusted_and_shown_only_as_text() {
 }
 
 #[test]
+fn reading_a_ledger_that_does_not_exist_is_refused_and_creates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("mistyped.db");
+    for args in [
+        vec!["check"],
+        vec!["show"],
+        vec!["teams"],
+        vec!["adopt-head"],
+    ] {
+        let error = refused(&db, "reader", &args);
+        assert!(error.contains("no ledger"), "{args:?}: {error}");
+    }
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn control_characters_in_recorded_text_are_escaped() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("ledger.db");
