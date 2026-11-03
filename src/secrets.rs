@@ -131,11 +131,13 @@ fn is_jwt(rest: &str) -> bool {
 
 /// A label word, such as `api_key` or `TOKEN`, then a separator, then a long run with a digit in it.
 fn labelled(rest: &str) -> bool {
-    let lower = rest.to_ascii_lowercase();
     // The label is the whole name, or its last part after `_` or `-` (`api_key`, `DB-PASSWORD`),
-    // so `monkey` and `turkey` don't count.
-    let name_len = lower.chars().take_while(|&c| word(c) || c == '-').count();
-    let name = &lower[..name_len];
+    // so `monkey` and `turkey` don't count. Only the name is lowercased: this runs at every word
+    // in a note, so lowercasing the rest of the text each time made a check quadratic in its length.
+    // The name's characters are all ASCII, so its length in characters is its length in bytes.
+    let name_len = rest.chars().take_while(|&c| word(c) || c == '-').count();
+    let name = rest[..name_len].to_ascii_lowercase();
+    let name = name.as_str();
     let is_label = |label: &&str| {
         name == *label
             || name
@@ -246,6 +248,41 @@ mod tests {
                 "{format:?} near miss was refused: {near_miss}"
             );
         }
+    }
+
+    #[test]
+    fn a_check_takes_time_in_proportion_to_the_text() {
+        // Measured before the fix: 4 times the text took about 7 times as long, in a release build.
+        let text = |n: usize| -> String {
+            (0..n)
+                .map(|i| {
+                    if i % 6 == 5 {
+                        ' '
+                    } else {
+                        char::from(b'a' + (i % 26) as u8)
+                    }
+                })
+                .collect()
+        };
+        let time = |n| {
+            let text = text(n);
+            (0..3)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    for _ in 0..5 {
+                        assert_eq!(find(&text), None);
+                    }
+                    started.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let (small, large) = (time(4_000), time(16_000));
+        let ratio = large.as_secs_f64() / small.as_secs_f64();
+        assert!(
+            ratio < 8.0,
+            "4 times the text took {ratio:.1} times as long ({small:?}, {large:?})"
+        );
     }
 
     #[test]
