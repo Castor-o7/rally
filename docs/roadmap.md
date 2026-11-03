@@ -74,7 +74,7 @@ The bones. Everything later reads from this.
   Rally can read a repository's Levi tasks through `levi --json`
   or its hub, labelled by how each fact is known, with Levi's text treated as untrusted and nothing
   written to Levi, with a test against a real `levi` run.
-- [ ] **RAL-42: Clear the source review's smaller findings.** From `dauntless-peacock`'s review of `a4dc39e`, all
+- [x] **RAL-42: Clear the source review's smaller findings.** From `dauntless-peacock`'s review of `a4dc39e`, all
   predicted from reading, not run. After RAL-39, since some concern the store. Done when: each is fixed, shown not
   to apply, or recorded as accepted: reads from a replaced ledger file; a submitter's verified annotation on their
   own story; an empty `cert.pem` passing; write failures reported as "can't be read"; leftover temporary head files;
