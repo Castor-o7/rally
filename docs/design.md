@@ -173,7 +173,7 @@ changing costs little now.
   None depends on SQLite. The ledger's logic stays pure, so it stays deterministic.
 - **Change:** each record becomes its own myko entity, appended only through a command that runs the same checks.
   Reads become myko queries. Muster's and Levi's hub are the patterns to follow.
-- **One door (recommended; the trade-off is the operator's).** No client talks to myko. Rally's TLS and token
+- **One door, chosen by the team with the operator's trust (2026-11-02).** No client talks to myko. Rally's TLS and token
   API stays the only way in, with myko behind it on loopback. There's no frame filter to get wrong, which
   is where Muster's bypasses came from. The cost: other myko clients can't subscribe to Rally directly yet. An
   allowlisted read-only subscription could come later, with its own review.
