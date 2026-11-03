@@ -160,6 +160,18 @@ impl StateDir {
         let pem = std::fs::read_to_string(&cert).map_err(|e| AccessError::Io(cert.clone(), e))?;
         let fingerprint =
             fingerprint_of_pem(&pem).ok_or_else(|| AccessError::BadFile(cert.clone()))?;
+        // An empty or damaged key would only fail when the service starts, after pair codes with
+        // this fingerprint were handed out.
+        let key_pem = std::fs::read(&key).map_err(|e| AccessError::Io(key.clone(), e))?;
+        {
+            use rustls::pki_types::PrivateKeyDer;
+            use rustls::pki_types::pem::PemObject;
+            let parsed = PrivateKeyDer::from_pem_slice(&key_pem)
+                .map_err(|_| AccessError::BadFile(key.clone()))?;
+            if parsed.secret_der().is_empty() {
+                return Err(AccessError::BadFile(key.clone()));
+            }
+        }
         Ok((cert, key, fingerprint))
     }
 
@@ -267,37 +279,17 @@ pub fn fingerprint_of_der(der: &[u8]) -> String {
     sha256_hex(der)
 }
 
+/// The fingerprint of the one certificate in `pem`, or `None` if it holds none. An empty file, or
+/// text that isn't a certificate, has none, rather than the fingerprint of nothing.
 fn fingerprint_of_pem(pem: &str) -> Option<String> {
-    let body: String = pem
-        .lines()
-        .filter(|line| !line.starts_with("-----"))
-        .collect();
-    decode_base64(&body).map(|der| fingerprint_of_der(&der))
-}
-
-fn decode_base64(text: &str) -> Option<Vec<u8>> {
-    let mut output = Vec::with_capacity(text.len() * 3 / 4);
-    let mut buffer = 0u32;
-    let mut bits = 0;
-    for byte in text.bytes() {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' => break,
-            _ => return None,
-        };
-        buffer = (buffer << 6) | u32::from(value);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            output.push((buffer >> bits) as u8);
-            buffer &= (1 << bits) - 1;
-        }
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::pem::PemObject;
+    let der = CertificateDer::from_pem_slice(pem.as_bytes()).ok()?;
+    // A certificate is a DER sequence, so it starts with 0x30.
+    if der.first() != Some(&0x30) {
+        return None;
     }
-    Some(output)
+    Some(fingerprint_of_der(&der))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -407,6 +399,39 @@ mod tests {
             );
         }
         assert!(state.add_machine(&"x".repeat(64), "x:1", false).is_ok());
+    }
+
+    #[test]
+    fn an_empty_or_damaged_certificate_or_key_is_refused() {
+        let real = {
+            let (_dir, state) = state();
+            state.certificate().unwrap();
+            (
+                std::fs::read_to_string(state.0.join(CERT_FILE)).unwrap(),
+                std::fs::read_to_string(state.0.join(KEY_FILE)).unwrap(),
+            )
+        };
+        let not_der = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+        for (cert, key) in [
+            ("", real.1.as_str()),
+            (not_der, real.1.as_str()),
+            ("just text\n", real.1.as_str()),
+            (real.0.as_str(), ""),
+            (
+                real.0.as_str(),
+                "-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----\n",
+            ),
+        ] {
+            let (_dir, state) = state();
+            write_private(&state.0.join(CERT_FILE), cert.as_bytes()).unwrap();
+            write_private(&state.0.join(KEY_FILE), key.as_bytes()).unwrap();
+            assert!(
+                state.certificate().is_err(),
+                "cert {:?}, key {:?} were accepted",
+                cert.get(..20),
+                key.get(..20)
+            );
+        }
     }
 
     #[test]

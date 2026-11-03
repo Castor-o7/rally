@@ -1201,6 +1201,9 @@ mod tests {
         }
     }
 
+    /// `check` agrees with `apply` on every record outside the rules for new records only, which
+    /// `check_new_rules` adds; the two shapes those refuse are tested at the end, where `check`
+    /// refuses what `apply` would still accept on replay.
     #[test]
     fn checking_a_record_agrees_with_applying_it_and_changes_nothing() {
         let candidates = [
@@ -1242,6 +1245,18 @@ mod tests {
                 );
             }
             assert!(ledger.check(ledger.last_seq() + 2, &ready()).is_err());
+        }
+        // Where they're meant to disagree: rules for new records only.
+        let submitted = ledger_with(&[ready(), claim(), submit()]);
+        let own_note = record(
+            Kind::Verified,
+            "alice",
+            json!({"change": "correct", "story": STORY, "corrects": 3, "note": "fine"}),
+        );
+        let padded = team(json!({"change": "ready", "story": "RAL-01"}));
+        for (ledger, record) in [(&submitted, &own_note), (&Ledger::default(), &padded)] {
+            assert!(ledger.check(ledger.last_seq() + 1, record).is_err());
+            assert!(ledger.clone().apply(ledger.last_seq() + 1, record).is_ok());
         }
     }
 
