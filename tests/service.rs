@@ -1021,3 +1021,80 @@ fn many_appends_and_repeated_restarts_hold_up() {
         assert_eq!(all["as_of"], seq);
     }
 }
+
+/// Resumes a stopped cluster when dropped.
+struct Resume<'a>(&'a Cluster);
+
+impl Drop for Resume<'_> {
+    fn drop(&mut self) {
+        signal_cluster(self.0, "-CONT");
+    }
+}
+
+/// Sends `signal` to the scratch cluster's own processes: its postmaster, named in its data
+/// directory, and that postmaster's children. Nothing else.
+fn signal_cluster(cluster: &Cluster, signal: &str) {
+    let data = cluster.directory().unwrap().join("data");
+    let text = std::fs::read_to_string(data.join("postmaster.pid")).unwrap();
+    let postmaster = text.lines().next().unwrap().trim().to_owned();
+    let command = Command::new("ps")
+        .args(["-o", "command=", "-p", &postmaster])
+        .output()
+        .unwrap();
+    let command = String::from_utf8_lossy(&command.stdout);
+    assert!(
+        command.contains(&*data.to_string_lossy()),
+        "{postmaster} isn't the scratch cluster: {command}"
+    );
+    let children = Command::new("pgrep")
+        .args(["-P", &postmaster])
+        .output()
+        .unwrap();
+    let mut pids: Vec<String> = String::from_utf8_lossy(&children.stdout)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    pids.push(postmaster);
+    assert!(
+        Command::new("kill")
+            .arg(signal)
+            .args(&pids)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[test]
+fn reads_carry_on_while_a_write_waits_on_a_hung_postgres() {
+    let cluster = Cluster::start();
+    let service = start_on(&cluster, &GENEROUS);
+    let a1 = service.add("a1", false);
+    assert_eq!(ready(&a1).status, 200);
+
+    signal_cluster(&cluster, "-STOP");
+    // However this test ends, the cluster isn't left stopped.
+    let _resume = Resume(&cluster);
+    let writer = {
+        let a1 = a1.clone();
+        std::thread::spawn(move || {
+            let body = json!({"change": "ready", "story": "RAL-2"});
+            write(&a1, "x", "declared", body)
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let started = std::time::Instant::now();
+    let reply = call(&a1, "GET", "/v1/stories", None);
+    let waited = started.elapsed();
+    signal_cluster(&cluster, "-CONT");
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert!(
+        waited < std::time::Duration::from_secs(3),
+        "the read waited {waited:?}"
+    );
+    // The write finishes once Postgres does, and is never a false success.
+    let written = writer.join().unwrap();
+    let all: Value = serde_json::from_str(&call(&a1, "GET", "/v1/stories", None).body).unwrap();
+    let recorded = all["stories"].as_object().unwrap().contains_key("RAL-2");
+    assert_eq!(written.status == 200, recorded, "{}", written.body);
+}

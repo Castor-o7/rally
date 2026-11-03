@@ -33,6 +33,10 @@ struct Cli {
     /// records shows.
     #[arg(long, env = "RALLY_HEAD_FILE")]
     head_file: Option<PathBuf>,
+    /// With --db: a file holding the Postgres role's password, readable only by this account, so
+    /// the password stays out of the command line and the URL.
+    #[arg(long, env = "RALLY_DB_PASSWORD_FILE")]
+    db_password_file: Option<PathBuf>,
     /// The pairing file. Defaults to ~/.config/rally/client.json.
     #[arg(long, env = "RALLY_CONFIG")]
     config: Option<PathBuf>,
@@ -352,9 +356,14 @@ fn create_new_private(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 fn location(
     db: Option<String>,
     head_file: Option<PathBuf>,
+    password_file: Option<PathBuf>,
 ) -> Result<Option<Location>, Box<dyn std::error::Error>> {
     match (db, head_file) {
-        (Some(url), Some(head_file)) => Ok(Some(Location { url, head_file })),
+        (Some(url), Some(head_file)) => Ok(Some(Location {
+            url,
+            head_file,
+            password_file,
+        })),
         (Some(_), None) => Err("--db needs --head-file or RALLY_HEAD_FILE".into()),
         (None, _) => Ok(None),
     }
@@ -448,7 +457,7 @@ fn run_service(
 }
 
 fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
-    let location = location(cli.db, cli.head_file)?;
+    let location = location(cli.db, cli.head_file, cli.db_password_file)?;
     let (kind, body) = match cli.command {
         Command::Serve {
             bind,
@@ -519,7 +528,8 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
         }
         Command::AdoptHead => {
             let location = location.ok_or("adopt-head needs --db, on the service's host")?;
-            let head = Store::open_read_only(&location)?.adopt_head()?;
+            // Under the writer lock, so it can't race the service and wind the head back.
+            let head = Store::adopt_head_at(&location)?;
             return Ok(json!({"adopted": head}).to_string());
         }
         Command::Check { expect } => {
@@ -627,7 +637,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
     let name = cli.name.ok_or("--as or RALLY_NAME is needed to write")?;
     let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, true)?;
     match backend {
-        Backend::File(mut store) => {
+        Backend::File(store) => {
             let credential = cli
                 .credential
                 .ok_or("--credential or RALLY_CREDENTIAL is needed to write with --db")?;

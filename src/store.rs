@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use myko::command::{CommandContext, CommandError, CommandHandler};
 use myko::request::RequestContext;
-use myko::server::{BlackholePersister, MykoServerContext, Persister};
+use myko::server::{BlackholePersister, MykoServerContext, MykoServerRuntime, Persister};
 use myko_server::MykoServer;
 use myko_server::postgres::PostgresConfig;
 use postgres::{Client, NoTls};
@@ -77,6 +77,14 @@ const MYKO_SCHEMA: &str = "
 /// Rally's protections: a record has one version, and rows are never changed or removed. Someone
 /// who can change the schema can remove these, which the chain and a saved head then have to catch.
 const RALLY_SCHEMA: &str = "
+    DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'rally_row_is_its_event') THEN
+            ALTER TABLE rally_events ADD CONSTRAINT rally_row_is_its_event CHECK (COALESCE(
+                item_type = event->>'itemType'
+                AND item_id = event->'item'->>'id'
+                AND change_type = event->>'changeType', false));
+        END IF;
+    END $$;
     CREATE UNIQUE INDEX IF NOT EXISTS rally_records_once
         ON rally_events (item_id) WHERE item_type = 'LedgerRecord';
     CREATE OR REPLACE FUNCTION rally_append_only() RETURNS trigger AS $$
@@ -113,30 +121,110 @@ const RALLY_SCHEMA: &str = "
 ";
 
 /// Where a ledger is: its Postgres database, and the head file kept beside the service, outside
-/// Postgres.
+/// Postgres. The password, if any, comes from a private file rather than the URL, so it stays out
+/// of process listings.
 #[derive(Clone, Debug)]
 pub struct Location {
+    /// A Postgres URL or `key=value` connection string.
     pub url: String,
     pub head_file: PathBuf,
+    /// A file holding the role's password and nothing else, readable only by this account.
+    pub password_file: Option<PathBuf>,
 }
 
 impl Location {
-    /// The database URL without any password, for messages.
+    /// The database's address without any password, for messages.
     pub fn redacted(&self) -> String {
         redact(&self.url)
     }
+
+    /// The connection settings, with the password from its file if there is one.
+    fn config(&self) -> Result<postgres::Config, StoreError> {
+        let mut config: postgres::Config = self.url.parse().map_err(|_| {
+            StoreError::Database(format!("{} isn't a Postgres address", self.redacted()))
+        })?;
+        if let Some(path) = &self.password_file {
+            config.password(read_password_file(path)?);
+        }
+        Ok(config)
+    }
 }
 
-/// A URL with any password removed.
-pub fn redact(url: &str) -> String {
-    match (url.find("://"), url.rfind('@')) {
-        (Some(scheme), Some(at)) if at > scheme => {
-            let user = &url[scheme + 3..at];
-            let user = user.split(':').next().unwrap_or_default();
-            format!("{}{user}{}", &url[..scheme + 3], &url[at..])
-        }
-        _ => url.to_owned(),
+/// Reads a password file, refusing one that anyone else could read.
+fn read_password_file(path: &Path) -> Result<String, StoreError> {
+    let refuse = |reason: String| {
+        StoreError::Database(format!("the password file {}: {reason}", path.display()))
+    };
+    let metadata = std::fs::metadata(path).map_err(|e| refuse(e.to_string()))?;
+    if !metadata.is_file() {
+        return Err(refuse("isn't a file".to_owned()));
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(refuse(
+                "can be read by other accounts; make it private with chmod 600".to_owned(),
+            ));
+        }
+        if metadata.uid() != rustix::process::getuid().as_raw() {
+            return Err(refuse("belongs to another account".to_owned()));
+        }
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| refuse(e.to_string()))?;
+    let password = text.strip_suffix('\n').unwrap_or(&text);
+    let password = password.strip_suffix('\r').unwrap_or(password);
+    if password.is_empty() || password.contains('\n') {
+        return Err(refuse("should hold one line, the password".to_owned()));
+    }
+    Ok(password.to_owned())
+}
+
+/// A database address with any password removed, rebuilt from its parsed settings so that no form
+/// of writing it (`user:pw@`, `?password=` or `password=`) survives.
+pub fn redact(url: &str) -> String {
+    match url.parse::<postgres::Config>() {
+        Ok(config) => conninfo(&config, false),
+        Err(_) => "an unreadable Postgres address".to_owned(),
+    }
+}
+
+/// Settings as a `key=value` connection string, with the password only if asked. myko is given
+/// one with the password; it stays in this process's memory.
+fn conninfo(config: &postgres::Config, with_password: bool) -> String {
+    fn quote(value: &str) -> String {
+        format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+    }
+    let mut parts = Vec::new();
+    let hosts: Vec<String> = config
+        .get_hosts()
+        .iter()
+        .map(|host| match host {
+            postgres::config::Host::Tcp(name) => name.clone(),
+            #[cfg(unix)]
+            postgres::config::Host::Unix(path) => path.display().to_string(),
+        })
+        .collect();
+    if !hosts.is_empty() {
+        parts.push(format!("host={}", quote(&hosts.join(","))));
+    }
+    let ports: Vec<String> = config.get_ports().iter().map(u16::to_string).collect();
+    if !ports.is_empty() {
+        parts.push(format!("port={}", quote(&ports.join(","))));
+    }
+    if let Some(user) = config.get_user() {
+        parts.push(format!("user={}", quote(user)));
+    }
+    if let Some(dbname) = config.get_dbname() {
+        parts.push(format!("dbname={}", quote(dbname)));
+    }
+    if with_password && let Some(password) = config.get_password() {
+        parts.push(format!(
+            "password={}",
+            quote(&String::from_utf8_lossy(password))
+        ));
+    }
+    parts.join(" ")
 }
 
 /// The newest record's position and chain hash. A copy kept elsewhere can show later that nothing
@@ -191,8 +279,11 @@ pub enum StoreError {
     Busy,
     /// There's no ledger at that location.
     NoLedger(String),
-    /// Postgres couldn't be reached or refused. A write that fails this way wasn't acknowledged.
+    /// Postgres couldn't be reached or refused, before anything was committed: nothing was
+    /// recorded.
     Database(String),
+    /// The commit was sent but its reply never came, so Postgres may or may not have the record.
+    Unknown(String),
     Io(std::io::Error),
 }
 
@@ -212,6 +303,10 @@ impl fmt::Display for StoreError {
             ),
             Self::NoLedger(at) => write!(f, "no ledger at {at}"),
             Self::Database(e) => write!(f, "database error: {e}"),
+            Self::Unknown(e) => write!(
+                f,
+                "the outcome is unknown; it may have been recorded, so check before retrying ({e})"
+            ),
             Self::Io(e) => write!(f, "can't open the ledger: {e}"),
         }
     }
@@ -246,6 +341,10 @@ fn writers() -> &'static Mutex<HashMap<Uuid, Arc<Writer>>> {
     WRITERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// A test's hook between an INSERT and its COMMIT, given the backend pid.
+#[cfg(test)]
+type CommitHook = Box<dyn FnOnce(i32) + Send>;
+
 /// The writing half: myko without a listener, and the connection holding the writer lock.
 struct Writer {
     server: MykoServer,
@@ -255,6 +354,9 @@ struct Writer {
     sql: Mutex<Client>,
     /// The typed reason for the last failed append, which a `CommandError` can't carry.
     failure: Mutex<Option<StoreError>>,
+    /// For tests: runs between the INSERT and the COMMIT, given the connection's backend pid.
+    #[cfg(test)]
+    before_commit: Mutex<Option<CommitHook>>,
 }
 
 /// An open ledger.
@@ -276,10 +378,8 @@ impl Drop for Store {
     }
 }
 
-fn config(url: &str, read_only: bool) -> Result<postgres::Config, StoreError> {
-    let mut config: postgres::Config = url
-        .parse()
-        .map_err(|_| StoreError::Database(format!("{} isn't a Postgres URL", redact(url))))?;
+fn config(location: &Location, read_only: bool) -> Result<postgres::Config, StoreError> {
+    let mut config = location.config()?;
     config.connect_timeout(Duration::from_secs(5));
     config.keepalives(true);
     config.keepalives_idle(Duration::from_secs(30));
@@ -294,7 +394,7 @@ fn config(url: &str, read_only: bool) -> Result<postgres::Config, StoreError> {
 }
 
 fn connect(location: &Location, read_only: bool) -> Result<Client, StoreError> {
-    config(&location.url, read_only)?
+    config(location, read_only)?
         .connect(NoTls)
         .map_err(|error| match error.code() {
             Some(code) if *code == postgres::error::SqlState::INVALID_CATALOG_NAME => {
@@ -339,6 +439,14 @@ impl Store {
         sql.batch_execute(RALLY_SCHEMA).map_err(|error| {
             match error.code() {
                 // The one-version index can't be made over a record that has two.
+                // Nor the constraint over a row whose columns don't match its event.
+                Some(code) if *code == postgres::error::SqlState::CHECK_VIOLATION => {
+                    StoreError::Diverged(
+                        "a row's columns don't match its event in Postgres, so the ledger was \
+                         changed past the append path; run `rally check`"
+                            .to_owned(),
+                    )
+                }
                 Some(code) if *code == postgres::error::SqlState::UNIQUE_VIOLATION => {
                     StoreError::Diverged(
                         "a record has more than one version in Postgres, so the ledger was \
@@ -356,7 +464,7 @@ impl Store {
         let blackhole: Arc<dyn Persister> = Arc::new(BlackholePersister);
         let server = MykoServer::builder()
             .with_postgres(PostgresConfig {
-                url: location.url.clone(),
+                url: conninfo(&location.config()?, true),
                 table: TABLE.to_owned(),
                 channel: CHANNEL.to_owned(),
             })
@@ -365,7 +473,21 @@ impl Store {
         server
             .init_postgres_and_wait(REPLAY_WAIT)
             .map_err(StoreError::Database)?;
-        let ctx = Arc::new(server.ctx());
+        // Not `server.ctx()`: that one sends every change to myko's saga channel, which only
+        // `run()` drains, so with no listener it would keep a copy of every record forever.
+        let ctx = Arc::new(MykoServerContext::new(
+            server.host_id,
+            server.registry.clone(),
+            server.handler_registry.clone(),
+            server.relationship_manager.clone(),
+            server.persisters.clone(),
+            server.search_index.clone(),
+            MykoServerRuntime {
+                peer_clients: Arc::default(),
+                event_sink: None,
+                history_replay: None,
+            },
+        ));
         let host_id = server.host_id;
         let writer = Arc::new(Writer {
             server,
@@ -373,6 +495,8 @@ impl Store {
             location: location.clone(),
             sql: Mutex::new(sql),
             failure: Mutex::new(None),
+            #[cfg(test)]
+            before_commit: Mutex::new(None),
         });
         writers()
             .lock()
@@ -444,7 +568,7 @@ impl Store {
 
     /// Checks a record against the current state and appends it, returning its position. It
     /// returns only once Postgres has committed the record.
-    pub fn append(&mut self, record: &Record) -> Result<u64, StoreError> {
+    pub fn append(&self, record: &Record) -> Result<u64, StoreError> {
         let Some(writer) = &self.writer else {
             return Err(StoreError::Database(
                 "this ledger was opened read-only".to_owned(),
@@ -558,13 +682,24 @@ impl Store {
     /// After a lost or damaged head file, makes the current head the saved one, for the operator to
     /// run on the host. Refuses if the chain itself is broken. This also accepts any removal of the
     /// newest records that `check` was reporting, so a head saved elsewhere should be checked first.
-    pub fn adopt_head(&self) -> Result<Head, StoreError> {
-        let (rows, history) = self.with_sql(durable_rows)?;
+    ///
+    /// It takes the writer lock, so it's refused while the service or another writer runs, which
+    /// could otherwise move the head between this reading the chain and saving it. It creates
+    /// nothing, and opens no myko.
+    pub fn adopt_head_at(location: &Location) -> Result<Head, StoreError> {
+        let mut sql = connect(location, false)?;
+        if !has_table(&mut sql)? {
+            return Err(StoreError::NoLedger(location.redacted()));
+        }
+        take_writer_lock(&mut sql, WRITER_WAIT)?;
+        let (rows, history) = durable_rows(&mut sql)?;
         if let Some(problem) = history.into_iter().next() {
             return Err(StoreError::Diverged(problem));
         }
         let head = head_of(&check_chain(rows, u64::MAX)?);
-        save_head(&self.location.head_file, &head).map_err(StoreError::HeadMismatch)?;
+        save_head(&location.head_file, &head).map_err(StoreError::HeadMismatch)?;
+        // The lock goes with the connection.
+        drop(sql);
         Ok(head)
     }
 
@@ -659,8 +794,24 @@ impl Writer {
             ],
         )?;
         // If the connection fails during the commit, Postgres may or may not have the record. It
-        // isn't acknowledged, and the next append's comparison refuses until a restart replays.
-        transaction.commit()?;
+        // isn't acknowledged, and says so; if Postgres did commit it, the next append finds
+        // Postgres ahead of myko's copy and refuses until a restart replays.
+        #[cfg(test)]
+        if let Some(hook) = self
+            .before_commit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            hook(
+                transaction
+                    .query_one("SELECT pg_backend_pid()", &[])?
+                    .get(0),
+            );
+        }
+        transaction
+            .commit()
+            .map_err(|error| StoreError::Unknown(describe(&error)))?;
 
         // Only now does myko's store hold it. Its persister is a blackhole, so this writes nothing
         // more to Postgres.
@@ -727,16 +878,18 @@ fn parse_seq(id: &str) -> Result<u64, StoreError> {
 }
 
 /// The last row Postgres committed for the ledger: its number and hash, or the start of a chain.
+/// It goes by the event, as myko does, not the row's columns.
 fn durable_tail(sql: &mut Client) -> Result<(u64, String), StoreError> {
     let row = sql.query_opt(
-        "SELECT item_id, event->'item'->>'hash' FROM rally_events
-         WHERE item_type = 'LedgerRecord' ORDER BY id DESC LIMIT 1",
+        "SELECT event->'item'->>'id', event->'item'->>'hash' FROM rally_events
+         WHERE event->>'itemType' = 'LedgerRecord' OR item_type = 'LedgerRecord'
+         ORDER BY id DESC LIMIT 1",
         &[],
     )?;
     match row {
         None => Ok((0, CHAIN_START.to_owned())),
         Some(row) => Ok((
-            parse_seq(&row.get::<_, String>(0))?,
+            parse_seq(&row.get::<_, Option<String>>(0).unwrap_or_default())?,
             row.get::<_, Option<String>>(1).unwrap_or_default(),
         )),
     }
@@ -751,26 +904,35 @@ fn durable_rows(sql: &mut Client) -> Result<(Vec<Row>, Vec<String>), StoreError>
         .read_only(true)
         .isolation_level(postgres::IsolationLevel::RepeatableRead)
         .start()?;
+    // myko applies an event by what the event says, its type, id and change, so this reads
+    // those, and reports any row whose columns say something else.
     let found = transaction.query(
-        "SELECT item_id, change_type, event->'item'->>'record', event->'item'->>'hash',
-                event->'item'->>'id'
-         FROM rally_events WHERE item_type = 'LedgerRecord' ORDER BY id",
+        "SELECT id, item_type, item_id, change_type, event->>'itemType', event->'item'->>'id',
+                event->>'changeType', event->'item'->>'record', event->'item'->>'hash'
+         FROM rally_events
+         WHERE event->>'itemType' = 'LedgerRecord' OR item_type = 'LedgerRecord'
+         ORDER BY id",
         &[],
     )?;
     transaction.commit()?;
-    // myko picks each entity's latest row by this column, then keys it by the id inside the event.
     let mut latest: HashMap<String, Option<(String, String, String)>> = HashMap::new();
     let mut versions: HashMap<String, usize> = HashMap::new();
+    let mut mismatched = Vec::new();
     for row in found {
-        let id: String = row.get(0);
-        let change: String = row.get(1);
-        let value = (change == "SET").then(|| {
-            (
-                row.get::<_, Option<String>>(2).unwrap_or_default(),
-                row.get::<_, Option<String>>(3).unwrap_or_default(),
-                row.get::<_, Option<String>>(4).unwrap_or_default(),
-            )
-        });
+        let text = |index: usize| row.get::<_, Option<String>>(index).unwrap_or_default();
+        let (row_id, columns) = (row.get::<_, i64>(0), (text(1), text(2), text(3)));
+        let event = (text(4), text(5), text(6));
+        if columns != event {
+            mismatched.push(format!(
+                "row {row_id} says {columns:?} in its columns but {event:?} in its event, so \
+                 it was written past the append path"
+            ));
+        }
+        if event.0 != ENTITY {
+            continue;
+        }
+        let id = event.1;
+        let value = (event.2 == "SET").then(|| (text(7), text(8), id.clone()));
         *versions.entry(id.clone()).or_default() += 1;
         latest.insert(id, value);
     }
@@ -799,9 +961,6 @@ fn durable_rows(sql: &mut Client) -> Result<(Vec<Row>, Vec<String>), StoreError>
             }
             continue;
         };
-        if own_id != id {
-            history.push(format!("record {id}'s row names itself {own_id:?}"));
-        }
         rows.push(Row {
             seq: parse_seq(&own_id)?,
             text,
@@ -809,6 +968,7 @@ fn durable_rows(sql: &mut Client) -> Result<(Vec<Row>, Vec<String>), StoreError>
         });
     }
     rows.sort_by_key(|row| row.seq);
+    history.extend(mismatched);
     Ok((rows, history))
 }
 
@@ -992,6 +1152,7 @@ mod tests {
             let location = Location {
                 url: db.url.clone(),
                 head_file: dir.path().join("ledger.head"),
+                password_file: None,
             };
             let store = Some(Store::open(&location).unwrap());
             Self {
@@ -1427,18 +1588,26 @@ mod tests {
         std::fs::remove_file(scratch.head_file()).unwrap();
         assert!(scratch.store().append(&release()).is_err());
 
-        let head = scratch.reader().adopt_head().unwrap();
+        // Refused while the writer holds the lock.
+        assert!(matches!(
+            Store::adopt_head_at(&scratch.location),
+            Err(StoreError::Busy)
+        ));
+        scratch.store = None;
+        let head = Store::adopt_head_at(&scratch.location).unwrap();
         assert_eq!(head.seq, 2);
+        scratch.restart();
         assert!(scratch.store().verify(None).unwrap().ok);
         scratch.store().append(&release()).unwrap();
     }
 
     #[test]
     fn adopting_the_head_refuses_a_broken_chain() {
-        let scratch = two_records();
+        let mut scratch = two_records();
         altered_record(&scratch);
+        scratch.store = None;
         assert!(matches!(
-            scratch.reader().adopt_head(),
+            Store::adopt_head_at(&scratch.location),
             Err(StoreError::Tampered { seq: 1 })
         ));
     }
@@ -1459,7 +1628,7 @@ mod tests {
     #[test]
     fn a_read_only_store_reads_but_cannot_write() {
         let scratch = two_records();
-        let mut reader = scratch.reader();
+        let reader = scratch.reader();
         assert_eq!(reader.ledger(None).unwrap().last_seq(), 2);
         assert!(reader.verify(None).unwrap().ok);
         assert!(reader.append(&release()).is_err());
@@ -1479,6 +1648,7 @@ mod tests {
         let location = Location {
             url: db.url.clone(),
             head_file: dir.path().join("ledger.head"),
+            password_file: None,
         };
         assert!(matches!(
             Store::open_read_only(&location),
@@ -1487,6 +1657,7 @@ mod tests {
         let missing = Location {
             url: format!("{}_missing", db.url),
             head_file: location.head_file.clone(),
+            password_file: None,
         };
         assert!(matches!(
             Store::open_read_only(&missing),
@@ -1537,7 +1708,7 @@ mod tests {
                 std::thread::spawn(move || {
                     // Each is a writer of its own, as separate processes would be, so only the
                     // Postgres lock keeps them apart.
-                    let mut store = Store::open_waiting(&location, Duration::from_secs(120))?;
+                    let store = Store::open_waiting(&location, Duration::from_secs(120))?;
                     let mut seqs = Vec::new();
                     for _ in 0..3 {
                         seqs.push(store.append(&note())?);
@@ -1645,8 +1816,9 @@ mod tests {
         let location = Location {
             url: db.url.clone(),
             head_file: dir.path().join("ledger.head"),
+            password_file: None,
         };
-        let mut store = Store::open(&location).unwrap();
+        let store = Store::open(&location).unwrap();
         let mut acknowledged = vec![
             store.append(&ready()).unwrap(),
             store.append(&claim()).unwrap(),
@@ -1671,7 +1843,7 @@ mod tests {
         acknowledged.push(store.append(&release()).unwrap());
         assert_eq!(acknowledged, [1, 2, 3]);
         drop(store);
-        let mut store = Store::open(&location).unwrap();
+        let store = Store::open(&location).unwrap();
         assert_eq!(
             store.records(None).unwrap(),
             vec![ready(), claim(), release()]
@@ -1683,6 +1855,54 @@ mod tests {
         let directory = cluster.directory().unwrap().to_owned();
         drop(cluster);
         assert!(!directory.exists(), "the scratch Postgres was left behind");
+    }
+
+    #[test]
+    fn a_commit_whose_outcome_is_unknown_is_never_reported_as_nothing_recorded() {
+        let mut scratch = two_records();
+        let url = scratch.db.url.clone();
+        // The connection ends after the INSERT is sent and before the COMMIT is answered.
+        *scratch
+            .store()
+            .writer
+            .as_ref()
+            .unwrap()
+            .before_commit
+            .lock()
+            .unwrap() = Some(Box::new(move |pid| {
+            let mut other = postgres::Client::connect(&url, NoTls).unwrap();
+            other
+                .execute("SELECT pg_terminate_backend($1)", &[&pid])
+                .unwrap();
+        }));
+        let error = scratch.store().append(&release()).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("outcome is unknown") && message.contains("may have been recorded"),
+            "{message}"
+        );
+        // Here the server rolled back, so after reconnecting the writer carries on from 2.
+        assert_eq!(scratch.store().append(&release()).unwrap(), 3);
+        assert!(scratch.store().verify(None).unwrap().ok);
+    }
+
+    #[test]
+    fn a_failure_before_the_insert_says_nothing_was_recorded() {
+        let cluster = Cluster::start();
+        let db = cluster.database();
+        let dir = tempfile::tempdir().unwrap();
+        let location = Location {
+            url: db.url.clone(),
+            head_file: dir.path().join("ledger.head"),
+            password_file: None,
+        };
+        let store = Store::open(&location).unwrap();
+        cluster.stop();
+        let error = store.append(&ready()).unwrap_err();
+        assert!(matches!(error, StoreError::Database(_)), "{error:?}");
+        cluster.restart();
+        drop(store);
+        drop(db);
     }
 
     #[cfg(unix)]

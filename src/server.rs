@@ -57,7 +57,9 @@ impl Default for RateLimit {
 }
 
 struct Service {
-    store: Mutex<Store>,
+    // No lock of its own: appends queue on the writer's lock inside the store, and reads of
+    // myko's copy need none, so a write stuck on Postgres doesn't hold up reads.
+    store: Store,
     state_dir: StateDir,
     limit: RateLimit,
     buckets: Mutex<HashMap<(String, bool), (f64, Instant)>>,
@@ -87,7 +89,7 @@ pub async fn serve(
 
 fn router(store: Store, state_dir: StateDir, limit: RateLimit) -> Router {
     let service = Arc::new(Service {
-        store: Mutex::new(store),
+        store,
         state_dir,
         limit,
         buckets: Mutex::new(HashMap::new()),
@@ -176,11 +178,8 @@ impl Service {
     }
 
     /// Runs `work` on the store. Postgres calls block, so they leave this worker free for others.
-    fn with_store<T>(&self, work: impl FnOnce(&mut Store) -> T) -> T {
-        tokio::task::block_in_place(|| {
-            let mut store = self.store.lock().expect("no panics hold this lock");
-            work(&mut store)
-        })
+    fn with_store<T>(&self, work: impl FnOnce(&Store) -> T) -> T {
+        tokio::task::block_in_place(|| work(&self.store))
     }
 
     fn ledger(&self, as_of: Option<u64>) -> Result<Ledger, StoreError> {
@@ -257,6 +256,13 @@ async fn write_record(
                 failure(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "the ledger's database can't be reached, so nothing was recorded",
+                )
+            }
+            Err(error @ StoreError::Unknown(_)) => {
+                eprintln!("rally: {error}");
+                failure(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the outcome is unknown; it may have been recorded, so check before retrying",
                 )
             }
             Err(error) => internal(&error),

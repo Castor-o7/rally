@@ -94,9 +94,12 @@ impl Cluster {
             .args(["-U", "rally", "-A", "trust", "-E", "UTF8", "--no-sync"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
-            .expect("initdb runs");
-        assert!(status.success(), "initdb failed");
+            .status();
+        if !status.as_ref().is_ok_and(std::process::ExitStatus::success) {
+            // Nothing else owns the directory yet, so it goes before the test fails.
+            let _ = std::fs::remove_dir_all(&dir);
+            panic!("initdb in {} failed: {status:?}", bin.display());
+        }
         let mut cluster = Self {
             base: String::new(),
             admin_db: "postgres".to_owned(),
@@ -201,8 +204,10 @@ pub fn shared() -> &'static Cluster {
     static SHARED: OnceLock<Cluster> = OnceLock::new();
     SHARED.get_or_init(|| {
         if let Ok(url) = std::env::var("RALLY_TEST_POSTGRES_URL") {
+            if let Err(reason) = safe_to_use(&url) {
+                panic!("RALLY_TEST_POSTGRES_URL: {reason}");
+            }
             let (base, admin_db) = url.rsplit_once('/').expect("a URL ending in /database");
-            assert!(!base.ends_with(":5432"), "tests refuse port 5432");
             return Cluster {
                 base: base.to_owned(),
                 admin_db: admin_db.to_owned(),
@@ -234,6 +239,19 @@ pub fn shared() -> &'static Cluster {
     })
 }
 
+/// Refuses a server URL that names port 5432, or no port, which means 5432, or that can't be read.
+pub fn safe_to_use(url: &str) -> Result<(), String> {
+    if !url.starts_with("postgres://") && !url.starts_with("postgresql://") {
+        return Err("give a postgres:// URL ending in an administration database".to_owned());
+    }
+    let config: postgres::Config = url.parse().map_err(|e| format!("can't be read: {e}"))?;
+    let ports = config.get_ports();
+    if ports.is_empty() || ports.contains(&5432) {
+        return Err("tests refuse port 5432, which a URL with no port also means".to_owned());
+    }
+    Ok(())
+}
+
 /// A database for one test.
 pub struct Database<'a> {
     pub url: String,
@@ -256,5 +274,25 @@ impl Drop for Database<'_> {
             let drop = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.name);
             let _ = admin.batch_execute(&drop);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_to_use;
+
+    #[test]
+    fn the_default_port_is_refused_however_it_is_written() {
+        for url in [
+            "postgres://postgres@127.0.0.1/postgres",
+            "postgres://postgres@127.0.0.1:5432/postgres",
+            "postgresql://postgres@localhost/postgres",
+            "postgres://postgres@127.0.0.1:54329,127.0.0.1:5432/postgres",
+            "host=127.0.0.1 port=54329 dbname=postgres",
+            "postgres://postgres@127.0.0.1:not-a-port/postgres",
+        ] {
+            assert!(safe_to_use(url).is_err(), "{url}");
+        }
+        assert!(safe_to_use("postgres://postgres:pw@127.0.0.1:54329/postgres").is_ok());
     }
 }
