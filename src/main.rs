@@ -18,7 +18,7 @@ use rally::ledger::{State, TeamStatus};
 use rally::record::{Kind, Record, Source};
 use rally::server::{self, RateLimit};
 use rally::store::{Head, Location, Store};
-use rally::views;
+use rally::views::{self, Page};
 use rally::web::{self, DEFAULT_PROJECTS, LedgerReader, Project};
 
 /// A ledger of progress for a muster of agents.
@@ -92,6 +92,12 @@ enum Command {
         /// Failed token attempts an address regains per second.
         #[arg(long, default_value_t = RateLimit::default().failed_token_per_second)]
         failed_token_per_second: f64,
+        /// Checks and past-state reads a credential can make at once.
+        #[arg(long, default_value_t = RateLimit::default().heavy_burst)]
+        heavy_burst: f64,
+        /// Checks and past-state reads a credential regains per second.
+        #[arg(long, default_value_t = RateLimit::default().heavy_per_second)]
+        heavy_per_second: f64,
     },
     /// Run the read-only viewer on this machine's loopback address. See docs/web.md.
     Web {
@@ -207,6 +213,12 @@ enum Command {
         /// Show the state as it stood after this record.
         #[arg(long)]
         as_of: Option<u64>,
+        /// For the list: the entries after this one, as the last page's `next` gave it.
+        #[arg(long)]
+        after: Option<String>,
+        /// For a history: the entries before this record, as the last page's `earlier` gave it.
+        #[arg(long)]
+        before: Option<u64>,
     },
     /// Show the state of every story, or one story with its history.
     Show {
@@ -214,6 +226,12 @@ enum Command {
         /// Show the state as it stood after this record.
         #[arg(long)]
         as_of: Option<u64>,
+        /// For the list: the entries after this one, as the last page's `next` gave it.
+        #[arg(long)]
+        after: Option<String>,
+        /// For a history: the entries before this record, as the last page's `earlier` gave it.
+        #[arg(long)]
+        before: Option<u64>,
     },
 }
 
@@ -306,24 +324,80 @@ impl Backend {
         )?))
     }
 
-    fn read(
+    /// One page of a read, as a value.
+    fn read_value(
         &self,
         path: &str,
         as_of: Option<u64>,
-        local: impl FnOnce(&rally::ledger::Ledger) -> Result<Value, String>,
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        let value = match self {
-            Self::File(store) => local(&store.ledger(as_of)?)?,
+        page: &Page,
+        local: impl FnOnce(&rally::ledger::Ledger, &Page) -> Result<Value, String>,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
+        Ok(match self {
+            Self::File(store) => store.with_ledger(as_of, |ledger| local(ledger, page))??,
             Self::Service(pairing) => {
-                let path = match as_of {
-                    Some(seq) => format!("{path}?as_of={seq}"),
-                    None => path.to_owned(),
+                let mut query = Vec::new();
+                if let Some(seq) = as_of {
+                    query.push(format!("as_of={seq}"));
+                }
+                if let Some(after) = &page.after {
+                    query.push(format!("after={}", encode(after)));
+                }
+                if let Some(before) = page.before {
+                    query.push(format!("before={before}"));
+                }
+                let path = if query.is_empty() {
+                    path.to_owned()
+                } else {
+                    format!("{path}?{}", query.join("&"))
                 };
                 let reply = client::request(pairing, "GET", &path, None, &[])?;
                 reply_value(&reply)?
             }
-        };
+        })
+    }
+
+    fn read(
+        &self,
+        path: &str,
+        as_of: Option<u64>,
+        page: &Page,
+        local: impl FnOnce(&rally::ledger::Ledger, &Page) -> Result<Value, String>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let value = self.read_value(path, as_of, page, local)?;
         Ok(serde_json::to_string_pretty(&value)?)
+    }
+
+    /// Every page of a list, up to `max_pages`, merged into one map under `field`, and whether
+    /// there was more than that.
+    fn read_all(
+        &self,
+        path: &str,
+        field: &str,
+        max_pages: usize,
+        local: impl Fn(&rally::ledger::Ledger, &Page) -> Result<Value, String>,
+    ) -> Result<(Value, bool), Box<dyn std::error::Error>> {
+        let mut page = Page::default();
+        let mut merged = serde_json::Map::new();
+        let mut first: Option<Value> = None;
+        for _ in 0..max_pages {
+            let value = self.read_value(path, None, &page, &local)?;
+            if let Some(entries) = value[field].as_object() {
+                merged.extend(entries.clone());
+            }
+            let next = value["next"].as_str().map(str::to_owned);
+            first.get_or_insert(value);
+            match next {
+                Some(next) => page.after = Some(next),
+                None => {
+                    let mut value = first.unwrap_or_default();
+                    value[field] = Value::Object(merged);
+                    return Ok((value, false));
+                }
+            }
+        }
+        let mut value = first.unwrap_or_default();
+        value[field] = Value::Object(merged);
+        Ok((value, true))
     }
 }
 
@@ -397,6 +471,9 @@ fn config_path(config: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::E
     }
 }
 
+/// The most pages of each list the viewer reads, each of up to [`views::LIST_LIMIT`] entries.
+const VIEWER_PAGES: usize = 20;
+
 /// Reads the ledger's stories, teams and check, from its database or through the service.
 fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
     let read = move || -> Result<Value, Box<dyn std::error::Error>> {
@@ -415,17 +492,21 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
         if check["ok"] != json!(true) {
             return Ok(json!({"check": check, "read_only": read_only}));
         }
-        let stories: Value =
-            serde_json::from_str(
-                &backend.read("/v1/stories", None, |ledger| views::stories(ledger, None))?,
-            )?;
-        let teams: Value = serde_json::from_str(
-            &backend.read("/v1/teams", None, |ledger| views::teams(ledger, None))?,
-        )?;
+        // Pages of a list may come from different moments if writes land in between; each
+        // shows its own `as_of`, and the first page's is the one reported.
+        let (stories, more_stories) =
+            backend.read_all("/v1/stories", "stories", VIEWER_PAGES, |ledger, page| {
+                views::stories(ledger, None, page)
+            })?;
+        let (teams, more_teams) =
+            backend.read_all("/v1/teams", "teams", VIEWER_PAGES, |ledger, page| {
+                views::teams(ledger, None, page)
+            })?;
         Ok(json!({
             "as_of": stories["as_of"],
             "stories": stories["stories"],
             "teams": teams["teams"],
+            "truncated": more_stories || more_teams,
             "check": check,
             "read_only": read_only,
         }))
@@ -497,10 +578,35 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             connection_seconds,
             failed_token_burst,
             failed_token_per_second,
+            heavy_burst,
+            heavy_per_second,
         } => {
             let location = location.ok_or("serve needs --db and --head-file")?;
             if !(connection_seconds > 0.0 && connection_seconds.is_finite()) {
                 return Err("--connection-seconds must be a positive number".into());
+            }
+            // A burst below 1 would refuse everything, which is never what was meant.
+            for (name, burst, per_second) in [
+                ("burst", burst, per_second),
+                ("write-burst", write_burst, write_per_second),
+                (
+                    "failed-token-burst",
+                    failed_token_burst,
+                    failed_token_per_second,
+                ),
+                ("heavy-burst", heavy_burst, heavy_per_second),
+            ] {
+                if !(burst >= 1.0 && burst.is_finite()) {
+                    return Err(format!("--{name} must be at least 1").into());
+                }
+                if !(per_second >= 0.0 && per_second.is_finite()) {
+                    return Err(
+                        format!("the rate that goes with --{name} can't be negative").into(),
+                    );
+                }
+            }
+            if max_connections == 0 || max_connections_per_address == 0 {
+                return Err("connection limits must be at least 1".into());
             }
             let limit = RateLimit {
                 burst,
@@ -514,6 +620,8 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 connection_seconds,
                 failed_token_burst,
                 failed_token_per_second,
+                heavy_burst,
+                heavy_per_second,
             };
             return run_service(&location, &bind, &state_dir, limit);
         }
@@ -587,23 +695,37 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             return Err(format!("the ledger failed its check:\n{text}").into());
         }
-        Command::Show { story, as_of } => {
+        Command::Show {
+            story,
+            as_of,
+            after,
+            before,
+        } => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             let path = match &story {
                 Some(id) => format!("/v1/stories/{}", encode(id)),
                 None => "/v1/stories".to_owned(),
             };
-            return backend.read(&path, as_of, |ledger| {
-                views::stories(ledger, story.as_deref())
+            let page = Page { after, before };
+            return backend.read(&path, as_of, &page, |ledger, page| {
+                views::stories(ledger, story.as_deref(), page)
             });
         }
-        Command::Teams { team, as_of } => {
+        Command::Teams {
+            team,
+            as_of,
+            after,
+            before,
+        } => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             let path = match &team {
                 Some(name) => format!("/v1/teams/{}", encode(name)),
                 None => "/v1/teams".to_owned(),
             };
-            return backend.read(&path, as_of, |ledger| views::teams(ledger, team.as_deref()));
+            let page = Page { after, before };
+            return backend.read(&path, as_of, &page, |ledger, page| {
+                views::teams(ledger, team.as_deref(), page)
+            });
         }
         Command::TeamState {
             team,

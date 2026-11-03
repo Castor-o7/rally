@@ -51,6 +51,10 @@ pub struct RateLimit {
     /// second. Past that, its requests are refused before their token is looked at.
     pub failed_token_burst: f64,
     pub failed_token_per_second: f64,
+    /// Checks and reads of a past state, which read or replay the whole ledger, that a credential
+    /// can make at once, and regains per second. They also count as reads.
+    pub heavy_burst: f64,
+    pub heavy_per_second: f64,
 }
 
 impl Default for RateLimit {
@@ -72,6 +76,9 @@ impl Default for RateLimit {
             connection_seconds: 60.0,
             failed_token_burst: 20.0,
             failed_token_per_second: 0.2,
+            // The viewer checks every 30 seconds.
+            heavy_burst: 10.0,
+            heavy_per_second: 0.2,
         }
     }
 }
@@ -82,10 +89,42 @@ struct Service {
     store: Store,
     state_dir: StateDir,
     limit: RateLimit,
-    buckets: Mutex<HashMap<(String, bool), (f64, Instant)>>,
+    buckets: Mutex<HashMap<(String, Bucket), (f64, Instant)>>,
+    /// Reads of the kept state running at once, and checks or past-state replays running at once.
+    /// Each holds memory while it runs, so these bound the service's memory, not just its time.
+    reads: Arc<tokio::sync::Semaphore>,
+    heavy: Arc<tokio::sync::Semaphore>,
     /// Failed token attempts, by address.
     failures: Mutex<HashMap<IpAddr, (f64, Instant)>>,
 }
+
+/// Which limit a request counts against, for its credential.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Bucket {
+    Request,
+    Write,
+    Heavy,
+}
+
+/// What a request does with the store, which decides how many can run at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Work {
+    /// A read of the kept state.
+    Read,
+    /// A check, or a read of a past state: each reads or replays the whole ledger.
+    Heavy,
+    /// An append. These already queue one at a time on the writer's lock.
+    Write,
+}
+
+/// Reads of the kept state running at once.
+const READS_AT_ONCE: usize = 8;
+
+/// Checks and past-state replays running at once. Checks also run one at a time in the store.
+const HEAVY_AT_ONCE: usize = 1;
+
+/// How long a request waits for its turn before it's told the service is busy.
+const QUEUE_SECONDS: u64 = 10;
 
 /// How long a request's headers may take to arrive. A connection's own deadline is shorter if
 /// it's set lower.
@@ -142,6 +181,8 @@ fn router(store: Store, state_dir: StateDir, limit: RateLimit) -> Router {
         state_dir,
         limit,
         buckets: Mutex::new(HashMap::new()),
+        reads: Arc::new(tokio::sync::Semaphore::new(READS_AT_ONCE)),
+        heavy: Arc::new(tokio::sync::Semaphore::new(HEAVY_AT_ONCE)),
         failures: Mutex::new(HashMap::new()),
     });
     Router::new()
@@ -200,7 +241,7 @@ async fn guard(State(service): State<Arc<Service>>, mut request: Request, next: 
             return failure(StatusCode::INTERNAL_SERVER_ERROR, "can't check the token");
         }
     };
-    if !service.allow(&identity.credential, false) {
+    if !service.allow(&identity.credential, Bucket::Request) {
         return failure(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
     // Checked here rather than in each handler, so that a future route can't forget.
@@ -208,7 +249,7 @@ async fn guard(State(service): State<Arc<Service>>, mut request: Request, next: 
         if identity.read_only {
             return failure(StatusCode::FORBIDDEN, "this credential is read-only");
         }
-        if !service.allow(&identity.credential, true) {
+        if !service.allow(&identity.credential, Bucket::Write) {
             return failure(StatusCode::TOO_MANY_REQUESTS, "too many writes");
         }
     }
@@ -222,17 +263,17 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
 }
 
 impl Service {
-    /// A token bucket per credential, with a separate one for its writes.
-    fn allow(&self, credential: &str, write: bool) -> bool {
-        let (burst, per_second) = if write {
-            (self.limit.write_burst, self.limit.write_per_second)
-        } else {
-            (self.limit.burst, self.limit.per_second)
+    /// A token bucket per credential, with separate ones for its writes and its heavy reads.
+    fn allow(&self, credential: &str, bucket: Bucket) -> bool {
+        let (burst, per_second) = match bucket {
+            Bucket::Request => (self.limit.burst, self.limit.per_second),
+            Bucket::Write => (self.limit.write_burst, self.limit.write_per_second),
+            Bucket::Heavy => (self.limit.heavy_burst, self.limit.heavy_per_second),
         };
         let now = Instant::now();
         let mut buckets = self.buckets.lock().expect("no panics hold this lock");
         let (level, last) = buckets
-            .entry((credential.to_owned(), write))
+            .entry((credential.to_owned(), bucket))
             .or_insert((burst, now));
         let refill = now.duration_since(*last).as_secs_f64() * per_second;
         *level = (*level + refill).min(burst);
@@ -281,19 +322,57 @@ impl Service {
         bucket.0 = (bucket.0 - 1.0).max(0.0);
     }
 
-    /// Runs `work` on the store. Postgres calls block, so they leave this worker free for others.
-    fn with_store<T>(&self, work: impl FnOnce(&Store) -> T) -> T {
-        tokio::task::block_in_place(|| work(&self.store))
+    /// Runs `job` on the store in Tokio's blocking pool, so that neither Postgres nor a replay
+    /// holds up the service's workers, once there's room for this kind of work. If there isn't
+    /// within [`QUEUE_SECONDS`], the reply says the service is busy.
+    async fn run<T: Send + 'static>(
+        self: &Arc<Self>,
+        work: Work,
+        job: impl FnOnce(&Store) -> T + Send + 'static,
+    ) -> Result<T, NotRun> {
+        let turn = match work {
+            Work::Read => Some(&self.reads),
+            Work::Heavy => Some(&self.heavy),
+            Work::Write => None,
+        };
+        let _permit = match turn {
+            None => None,
+            Some(turn) => {
+                let wait = Duration::from_secs(QUEUE_SECONDS);
+                match tokio::time::timeout(wait, turn.clone().acquire_owned()).await {
+                    Ok(Ok(permit)) => Some(permit),
+                    _ => return Err(NotRun::Busy),
+                }
+            }
+        };
+        let service = self.clone();
+        tokio::task::spawn_blocking(move || job(&service.store))
+            .await
+            .map_err(|_| {
+                eprintln!("rally: a request's work on the store panicked");
+                NotRun::Failed
+            })
     }
+}
 
-    /// Runs `read` on the ledger's state. The current state is the one the service keeps, read
-    /// without a copy; a past state is replayed.
-    fn with_ledger<T>(
-        &self,
-        as_of: Option<u64>,
-        read: impl FnOnce(&Ledger) -> T,
-    ) -> Result<T, StoreError> {
-        self.with_store(|store| store.with_ledger(as_of, read))
+/// Why a request's work on the store didn't finish.
+#[derive(Debug)]
+enum NotRun {
+    /// There was no room for it in time.
+    Busy,
+    /// It panicked.
+    Failed,
+}
+
+impl IntoResponse for NotRun {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Busy => failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the service is busy; try again shortly",
+            ),
+            Self::Failed => failure(StatusCode::INTERNAL_SERVER_ERROR, "the request failed"),
+        }
     }
 }
 
@@ -496,7 +575,14 @@ async fn write_record(
         Ok(record) => record,
         Err(error) => return failure(StatusCode::BAD_REQUEST, error.to_string()),
     };
-    service.with_store(|store| match store.append(&record) {
+    let appended = service
+        .run(Work::Write, move |store| store.append(&record))
+        .await;
+    let appended = match appended {
+        Ok(appended) => appended,
+        Err(not_run) => return not_run.into_response(),
+    };
+    match appended {
         Ok(seq) => Json(json!({"recorded": seq})).into_response(),
         Err(StoreError::Refused(error)) => failure(StatusCode::CONFLICT, error.to_string()),
         Err(error @ StoreError::Database(_)) => {
@@ -526,24 +612,64 @@ async fn write_record(
             )
         }
         Err(error) => internal(&error),
-    })
+    }
 }
 
+/// What a read may ask for: a past state, and which page of a list or history.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AsOf {
+struct ReadQuery {
     as_of: Option<u64>,
+    after: Option<String>,
+    before: Option<u64>,
 }
 
-fn view(
-    service: &Service,
-    as_of: AsOf,
-    read: impl FnOnce(&Ledger) -> Result<Value, String>,
+/// The longest `after` accepted, well past any story ID or team name.
+const MAX_AFTER_CHARS: usize = 256;
+
+async fn view(
+    service: Arc<Service>,
+    identity: Identity,
+    query: ReadQuery,
+    read: impl FnOnce(&Ledger, &views::Page) -> Result<Value, String> + Send + 'static,
 ) -> Response {
-    match service.with_ledger(as_of.as_of, read) {
-        Ok(Ok(value)) => Json(value).into_response(),
-        Ok(Err(message)) => failure(StatusCode::NOT_FOUND, message),
-        Err(error) => internal(&error),
+    if query
+        .after
+        .as_ref()
+        .is_some_and(|after| after.chars().count() > MAX_AFTER_CHARS)
+    {
+        return failure(StatusCode::BAD_REQUEST, "after is too long");
+    }
+    // A past state is replayed, which costs about as much as a check.
+    let work = if query.as_of.is_some() {
+        if !service.allow(&identity.credential, Bucket::Heavy) {
+            return failure(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many checks and past-state reads",
+            );
+        }
+        Work::Heavy
+    } else {
+        Work::Read
+    };
+    let page = views::Page {
+        after: query.after,
+        before: query.before,
+    };
+    let as_of = query.as_of;
+    let result = service
+        .run(work, move |store| {
+            // Serialized here, still under the kept state's read lock but bounded by the page.
+            store.with_ledger(as_of, |ledger| {
+                read(ledger, &page).map(|value| value.to_string())
+            })
+        })
+        .await;
+    match result {
+        Ok(Ok(Ok(body))) => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
+        Ok(Ok(Err(message))) => failure(StatusCode::NOT_FOUND, message),
+        Ok(Err(error)) => internal(&error),
+        Err(not_run) => not_run.into_response(),
     }
 }
 
@@ -555,15 +681,29 @@ struct Expected {
 }
 
 /// Checks the ledger. A failed check is still a successful reply: the problems are the answer.
-async fn check(State(service): State<Arc<Service>>, Query(expected): Query<Expected>) -> Response {
+async fn check(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(expected): Query<Expected>,
+) -> Response {
     let expected = match (expected.seq, expected.hash) {
         (Some(seq), Some(hash)) => Some(Head { seq, hash }),
         (None, None) => None,
         _ => return failure(StatusCode::BAD_REQUEST, "seq and hash go together"),
     };
-    match service.with_store(|store| store.verify(expected.as_ref())) {
-        Ok(result) => Json(result).into_response(),
-        Err(error) => internal(&error),
+    if !service.allow(&identity.credential, Bucket::Heavy) {
+        return failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many checks and past-state reads",
+        );
+    }
+    let result = service
+        .run(Work::Heavy, move |store| store.verify(expected.as_ref()))
+        .await;
+    match result {
+        Ok(Ok(result)) => Json(result).into_response(),
+        Ok(Err(error)) => internal(&error),
+        Err(not_run) => not_run.into_response(),
     }
 }
 
@@ -573,26 +713,48 @@ async fn whoami(Extension(identity): Extension<Identity>) -> Response {
         .into_response()
 }
 
-async fn list_stories(State(service): State<Arc<Service>>, Query(as_of): Query<AsOf>) -> Response {
-    view(&service, as_of, |ledger| views::stories(ledger, None))
+async fn list_stories(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    view(service, identity, query, |ledger, page| {
+        views::stories(ledger, None, page)
+    })
+    .await
 }
 
 async fn one_story(
     State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
     UrlPath(id): UrlPath<String>,
-    Query(as_of): Query<AsOf>,
+    Query(query): Query<ReadQuery>,
 ) -> Response {
-    view(&service, as_of, |ledger| views::stories(ledger, Some(&id)))
+    view(service, identity, query, move |ledger, page| {
+        views::stories(ledger, Some(&id), page)
+    })
+    .await
 }
 
-async fn list_teams(State(service): State<Arc<Service>>, Query(as_of): Query<AsOf>) -> Response {
-    view(&service, as_of, |ledger| views::teams(ledger, None))
+async fn list_teams(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    view(service, identity, query, |ledger, page| {
+        views::teams(ledger, None, page)
+    })
+    .await
 }
 
 async fn one_team(
     State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
     UrlPath(name): UrlPath<String>,
-    Query(as_of): Query<AsOf>,
+    Query(query): Query<ReadQuery>,
 ) -> Response {
-    view(&service, as_of, |ledger| views::teams(ledger, Some(&name)))
+    view(service, identity, query, move |ledger, page| {
+        views::teams(ledger, Some(&name), page)
+    })
+    .await
 }

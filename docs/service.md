@@ -67,19 +67,37 @@ stops a token working straight away. Don't expose the port to the open internet.
   and regains one every 5 seconds (`--failed-token-burst`, `--failed-token-per-second`). Past that, its requests
   get a 429 before their token is looked at, so a guess can't tell a right token from a wrong one. That also
   refuses a real machine at that address until it recovers, so a machine with a mistyped token can lock itself
-  out for a while.
+  out for a while. A request with no token counts as a failure too, so a health probe that sends none spends
+  one each time. Each limit must be at least 1, and the service won't start otherwise.
+- **Checks and past states have their own limits (RAL-35).** A check reads all of Postgres and replays it, and
+  a read `as_of` a past record replays up to that record, so each costs about as much as the ledger. A
+  credential may make 10 of them at once and regains one every 5 seconds (`--heavy-burst`,
+  `--heavy-per-second`); past that, they get a 429 and reads of the current state carry on. Only one runs at a
+  time across the service, and up to 8 reads of the current state; a request that can't start within 10
+  seconds gets a 503 saying the service is busy. All work on the store runs in Tokio's blocking pool, so
+  neither Postgres nor a replay holds up the service's own workers.
+- **Responses are bounded (RAL-35).** A list of stories or teams gives at most 200, in order, with `next`
+  when there are more: ask again with `?after=<next>`, or `rally show --after`. A story's or team's history
+  gives its newest 100 entries, with `history_total` and, when there are more, `earlier`: ask again with
+  `?before=<earlier>`, or `--before`. Pages are read separately, so writes in between can shift what a later
+  page shows; each says its own `as_of`. The viewer reads up to 20 pages of each list and says when there was
+  more.
 - **A write is acknowledged only once Postgres has committed it.** If Postgres can't be reached before the
   record is sent, the write fails with a 503 saying nothing was recorded. If the connection fails after the
   commit is sent and before Postgres answers, the reply is a 503 saying the outcome is unknown: it may have
-  been recorded, so check with `rally show` or `rally check` before retrying. If it was recorded, the service
+  been recorded, so check with `rally show` or `rally check` before retrying. The same holds if the client's
+  connection ends before the reply arrives, including when the connection's 60-second deadline passes during
+  a slow write: the client then gets no reply at all, and should check the same way. If it was recorded, the service
   refuses further writes until it's restarted and replays it. Any error from the commit counts as unknown, even
   one where Postgres clearly refused, as a precaution. If Postgres has a record that the service's own copy
   then fails to take, the reply is a 500 saying it was recorded and the service must be restarted. Each write's
   reply is its own, however many arrive at once. Reads of what the service already holds carry on either way,
   and when Postgres is back the service reconnects by itself.
-- **Reads don't wait for writes.** They're served from the service's copy without the writer's lock, so a write
-  waiting on Postgres doesn't hold them up. `check` reads Postgres and the service's copy together under that
-  lock, so a write in progress can't look like a difference between them, and so it does wait.
+- **Reads don't wait for writes.** They're served from the state the service keeps, without the writer's lock,
+  so a write waiting on Postgres doesn't hold them up. `check` reads Postgres on a connection of its own,
+  without that lock, and then takes it only long enough to read the service's copy, so that a write in progress
+  can't look like a difference between them. So a check waits for at most one write, and writes don't wait for
+  a check.
 - **One writer.** The service holds a lock in Postgres for as long as it runs, so a second service or a `--db`
   write is refused rather than forking the chain.
 - **Append-only in Postgres too.** The table refuses updates, deletes, `TRUNCATE`, deletion events, a second
@@ -178,13 +196,16 @@ records, or removes every record and the head file, which looks like a new ledge
   the state it keeps between requests, so that a read of the current state or an append doesn't replay the whole
   ledger (RAL-35). An append keeps about 24.6 KB for a 12.2 KB record, measured by the allocator. A check still
   reads all of Postgres and replays it, on a connection of its own and without the writer's lock, one check at a
-  time. A read `as_of` a past record still replays up to that record, and nothing yet limits how many of those
-  run at once.
+  time. A read `as_of` a past record still replays up to that record, copying only the records it needs, one at
+  a time across the service.
   Measured with a release build on a1 at the 64 MiB limit, with 64,001 typical 300-character records: 1.3 s to
   start, under 0.01 s for a read, 0.36 s for a check and 0.05 s for a write through the service, and 201 to 214 MiB
   held. With 4,751 worst-case records of about 12 KB: 0.7 s, under 0.01 s, 0.34 s and 0.02 s, and 205 to 220 MiB.
   With four read-only credentials checking in a loop, writes still took 0.04 to 0.06 s and the service held
-  415 MiB; before the kept state, they took 0.7 to 0.9 s and it held 606 MiB.
+  292 MiB; before the kept state, they took 0.7 to 0.9 s and it held 606 MiB. With eight read-only loops of
+  `show --as-of 60000`, it held 314 to 318 MiB; before they ran one at a time, 1,058 to 1,118 MiB. Both were
+  measured with the per-credential limit on checks and past states lifted, so they show the one-at-a-time
+  limit alone.
   The limit stays at 64 MiB until the rest of RAL-35 is done: the host shares its memory with Muster's daemon.
 - A damaged `machines.json` logs a line for each request, before any rate limit, until it's fixed.
 - If `cert.pem` or `key.pem` goes missing, the service refuses to start rather than making a new
