@@ -191,6 +191,17 @@ enum Command {
         #[arg(long, value_parser = parse_head)]
         expect: Option<Head>,
     },
+    /// From another machine, through the service: pull what's new into a backup directory, after
+    /// rechecking it. Refuses, writing nothing, if the service's ledger no longer extends the
+    /// backup's saved head. See docs/service.md.
+    Backup {
+        /// The backup directory, made private if it's new.
+        #[arg(long)]
+        to: PathBuf,
+        /// When the service can't be reached, say the backup is overdue past this many hours.
+        #[arg(long, default_value_t = 24.0)]
+        max_age_hours: f64,
+    },
     /// On the service's host, with --db: accept the current head after a lost or damaged head file.
     /// Refuses a broken chain. This also accepts any removal `check` was reporting, so compare with a
     /// head saved elsewhere first.
@@ -670,6 +681,50 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
         }
         Command::Web { bind, projects } => {
             return run_viewer(&bind, projects, location, config_path(cli.config)?);
+        }
+        Command::Backup { to, max_age_hours } => {
+            if location.is_some() {
+                return Err(
+                    "backup reads through the service, from another machine; drop --db".into(),
+                );
+            }
+            let Backend::Service(pairing) =
+                Backend::choose(None, &config_path(cli.config)?, false)?
+            else {
+                unreachable!("without --db, the backend is the service");
+            };
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as i64);
+            let fetch = |after: u64| -> Result<rally::backup::Page, String> {
+                let path = format!("/v1/export?after={after}");
+                let reply = client::request(&pairing, "GET", &path, None, &[])
+                    .map_err(|e| e.to_string())?;
+                let value = reply_value(&reply).map_err(|e| e.to_string())?;
+                serde_json::from_value(value).map_err(|_| "the export can't be read".to_owned())
+            };
+            return match rally::backup::pull(&to, now, fetch) {
+                Ok(pulled) => Ok(json!({
+                    "backed_up_to": pulled.head.seq,
+                    "added": pulled.added,
+                    "expect": format!("{}:{}", pulled.head.seq, pulled.head.hash),
+                })
+                .to_string()),
+                Err(error) => {
+                    let age = rally::backup::saved(&to)
+                        .ok()
+                        .flatten()
+                        .map(|saved| (now - saved.at_ms) as f64 / 3_600_000.0);
+                    let when = match age {
+                        Some(hours) if hours > max_age_hours => {
+                            format!("; the last backup was {hours:.1} hours ago, which is overdue")
+                        }
+                        Some(hours) => format!("; the last backup was {hours:.1} hours ago"),
+                        None => "; there's no backup yet".to_owned(),
+                    };
+                    Err(format!("{error}{when}").into())
+                }
+            };
         }
         Command::AdoptHead => {
             let location = location.ok_or("adopt-head needs --db, on the service's host")?;

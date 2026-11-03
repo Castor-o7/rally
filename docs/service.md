@@ -165,6 +165,26 @@ true. So a head saved elsewhere is the real protection: a head file reset to rec
 passes `check` and allows writes. Without a saved head, this also goes unseen if someone winds the head file back along with the
 records, or removes every record and the head file, which looks like a new ledger.
 
+## Backups
+
+From another machine, with a read-only credential (RAL-15):
+
+```bash
+rally add-machine backup --read-only --address <LAN address>:6300 --out backup.pair   # on the host
+rally --config ~/.config/rally/backup.json pair < backup.pair && rm backup.pair       # on the other machine
+rally --config ~/.config/rally/backup.json backup --to ~/.local/state/rally-backup
+```
+
+The backup directory is private, and holds `records.jsonl`, every record exactly as stored, one per line,
+and `head.json`, the head they reach and when it was saved. Each run rechecks the local copy against its
+head, pulls only the records after it through `/v1/export`, and checks that each new one chains on from it.
+If the service's ledger no longer extends the saved head (records removed, or any record changed), it refuses
+with "rewrite" and writes nothing: that's the host's ledger being rewritten, as `rally check --expect` would
+show. The output's `expect` is the head to pass to `rally check --expect`. When the service can't be reached,
+it fails and says how long ago the last backup was, and that it's overdue past `--max-age-hours` (24).
+
+Run it by hand for now; scheduling it on a machine that sleeps, and restoring from it, come next.
+
 ## Known limits
 
 - `--db` works on the ledger's database directly, with no service and no checks on who is writing. It's for
@@ -190,7 +210,8 @@ records, or removes every record and the head file, which looks like a new ledge
   checked (RAL-42). Keep it in a directory only this account can write.
 - Tests show a commit cut off before Postgres committed it (rolled back), and one that committed with its reply
   lost; a real reply lost in transit isn't reproduced.
-- Backups (RAL-15) aren't built. One now means the Postgres database and the head file together.
+- Restoring from a backup (RAL-15) isn't built yet, and backups aren't scheduled. Until then, a backup means
+  the backup directory above, or the Postgres database and the head file together.
 - Write limits are per machine, so all of a machine's sessions share them. Watch for 429s in real use.
 - One compromised credential could reach the 64 MiB stop in about 6 hours, and several credentials
   proportionally faster, which blocks everyone's writes
