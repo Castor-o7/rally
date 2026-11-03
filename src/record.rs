@@ -34,7 +34,8 @@ pub const FORMAT_VERSION: u64 = 1;
 /// The longest credential or declared name, which others read and has to fit on a line.
 const MAX_NAME_CHARS: usize = 64;
 
-fn is_good_name(name: &str) -> bool {
+/// Whether a credential or declared name is one a record may carry.
+pub fn is_good_name(name: &str) -> bool {
     name.chars().count() <= MAX_NAME_CHARS && !name.chars().any(char::is_control)
 }
 
