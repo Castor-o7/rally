@@ -523,6 +523,18 @@ struct Row {
     hash: String,
 }
 
+/// The most records in one page of an export (RAL-15). Each is at most a few tens of KiB, so a
+/// page stays a few MiB.
+pub const EXPORT_LIMIT: usize = 200;
+
+/// One record as stored, for a backup: its number, its text byte for byte, and its chain hash.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Exported {
+    pub seq: u64,
+    pub record: String,
+    pub hash: String,
+}
+
 /// The writers in this process, by myko host id, so the command handler can find its own.
 fn writers() -> &'static Mutex<HashMap<Uuid, Arc<Writer>>> {
     static WRITERS: OnceLock<Mutex<HashMap<Uuid, Arc<Writer>>>> = OnceLock::new();
@@ -1031,6 +1043,50 @@ impl Store {
             None => self.with_sql(durable_rows)?.0,
         };
         parse_rows(&check_chain(rows, limit)?)
+    }
+
+    /// Up to [`EXPORT_LIMIT`] records after `after`, as stored, with the head they belong to. A
+    /// writer reads myko's copy, checked against its kept hashes, without replaying anything; a
+    /// reader reads Postgres. The chain isn't rechecked here: the backup rechecks it.
+    pub fn export(&self, after: u64) -> Result<(Vec<Exported>, Head), StoreError> {
+        match &self.writer {
+            Some(writer) => {
+                writer.ensure_kept()?;
+                let items = writer.memory_items()?;
+                let kept = writer.kept();
+                let kept = kept.as_ref().ok_or_else(|| {
+                    StoreError::Database("the service's state isn't loaded".to_owned())
+                })?;
+                writer.check_memory(kept)?;
+                let head = kept.head();
+                let rows = items
+                    .into_iter()
+                    .filter(|(seq, _)| *seq > after && *seq <= head.seq)
+                    .take(EXPORT_LIMIT)
+                    .map(|(seq, item)| Exported {
+                        seq,
+                        record: item.record.clone(),
+                        hash: item.hash.clone(),
+                    })
+                    .collect();
+                Ok((rows, head))
+            }
+            None => {
+                let rows = self.with_sql(durable_rows)?.0;
+                let head = head_of(&rows);
+                let rows = rows
+                    .into_iter()
+                    .filter(|row| row.seq > after)
+                    .take(EXPORT_LIMIT)
+                    .map(|row| Exported {
+                        seq: row.seq,
+                        record: row.text,
+                        hash: row.hash,
+                    })
+                    .collect();
+                Ok((rows, head))
+            }
+        }
     }
 
     /// The state as of the latest record, or as of `as_of`.
@@ -2169,6 +2225,25 @@ mod tests {
                 Err(error) => error.to_string(),
             };
             assert!(error.contains(word), "{setting}: {error}");
+        }
+    }
+
+    #[test]
+    fn an_export_is_the_same_from_the_writer_and_from_postgres() {
+        let mut scratch = two_records();
+        scratch.store().append(&note()).unwrap();
+        let reader = scratch.reader();
+        for after in [0, 1, 3, 9] {
+            let from_writer = scratch.store().export(after).unwrap();
+            let from_postgres = reader.export(after).unwrap();
+            assert_eq!(from_writer, from_postgres, "after {after}");
+            assert_eq!(from_writer.1.seq, 3, "the head is the whole chain's");
+            let seqs: Vec<u64> = from_writer.0.iter().map(|row| row.seq).collect();
+            assert_eq!(
+                seqs,
+                ((after + 1).min(4)..=3).collect::<Vec<_>>(),
+                "after {after}"
+            );
         }
     }
 

@@ -1339,3 +1339,52 @@ fn writes_behind_one_stuck_on_a_hung_postgres_are_told_the_service_is_busy() {
     signal_cluster(&cluster, "-CONT");
     let _ = first.join();
 }
+
+#[test]
+fn export_gives_every_record_with_its_hash_a_page_at_a_time_to_a_read_only_credential() {
+    let service = start();
+    let writer = service.add("a1", false);
+    let backup = service.add("backup", true);
+    let total = rally::store::EXPORT_LIMIT + 3;
+    for i in 0..total {
+        let body = json!({"change": "team_state", "team": "rally", "status": "working",
+                          "note": format!("state {i}")});
+        assert_eq!(write(&writer, "x", "declared", body).status, 200);
+    }
+    let mut seen = Vec::new();
+    let mut previous = "0".repeat(64);
+    let mut after = 0;
+    loop {
+        let reply = call(&backup, "GET", &format!("/v1/export?after={after}"), None);
+        assert_eq!(reply.status, 200, "{}", reply.body);
+        let page: Value = serde_json::from_str(&reply.body).unwrap();
+        assert!(page["untrusted_text"].is_string());
+        assert_eq!(page["head"]["seq"], total);
+        let records = page["records"].as_array().unwrap();
+        assert!(records.len() <= rally::store::EXPORT_LIMIT);
+        for entry in records {
+            let seq = entry["seq"].as_u64().unwrap();
+            let record = entry["record"].as_str().unwrap();
+            let hash = entry["hash"].as_str().unwrap();
+            // The backup can recheck the chain from what it's given alone.
+            assert_eq!(chain_hash(&previous, seq, record), hash, "record {seq}");
+            previous = hash.to_owned();
+            seen.push(seq);
+        }
+        match page["next"].as_u64() {
+            Some(next) => after = next,
+            None => break,
+        }
+    }
+    assert_eq!(seen, (1..=total as u64).collect::<Vec<_>>());
+    let page: Value = serde_json::from_str(
+        &call(&backup, "GET", &format!("/v1/export?after={total}"), None).body,
+    )
+    .unwrap();
+    assert!(page["records"].as_array().unwrap().is_empty());
+    assert_eq!(
+        call(&service.wrong_token(), "GET", "/v1/export", None).status,
+        401
+    );
+    assert_eq!(call(&backup, "POST", "/v1/export", Some("{}")).status, 403);
+}
