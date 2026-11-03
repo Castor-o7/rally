@@ -157,6 +157,56 @@ fn recorded_text_arrives_as_json_data_with_the_notice() {
     assert!(!get(&viewer, "/").1.contains("alert(1)"));
 }
 
+#[test]
+fn a_broken_chain_is_reported_as_a_failed_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("ledger.db");
+    let projects = dir.path().join("projects.json");
+    std::fs::write(&projects, "[]").unwrap();
+    assert!(
+        rally()
+            .arg("--db")
+            .arg(&db)
+            .args(["--credential", "a1", "--as", "someone"])
+            .args(["team-state", "rally", "working"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute_batch(
+            "DROP TRIGGER records_no_update;
+             UPDATE records SET record = replace(record, 'someone', 'mallory');",
+        )
+        .unwrap();
+    drop(connection);
+    let mut child = rally()
+        .arg("--db")
+        .arg(&db)
+        .args(["web", "--bind", "127.0.0.1:0", "--projects"])
+        .arg(&projects)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let started: Value = serde_json::from_str(&line).unwrap();
+    let viewer = Viewer {
+        child,
+        address: started["listening"].as_str().unwrap().to_owned(),
+        _dir: dir,
+    };
+    let text = wait_for_ledger(&viewer).1;
+    let body = text.split_once("\r\n\r\n").unwrap().1;
+    let value: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(value["ledger"]["available"], true, "{body}");
+    assert_eq!(value["ledger"]["check"]["ok"], false, "{body}");
+    assert!(value["ledger"]["stories"].is_null(), "{body}");
+}
+
 fn wait_for_ledger(viewer: &Viewer) -> (u16, String) {
     for _ in 0..100 {
         let reply = get(viewer, "/api/status");

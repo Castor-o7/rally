@@ -204,6 +204,25 @@ fn reading_a_ledger_that_does_not_exist_is_refused_and_creates_nothing() {
 }
 
 #[test]
+fn every_terminal_control_and_invisible_direction_character_is_escaped() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("ledger.db");
+    let hostile = "a\u{9b}2J\u{7f}\u{202e}b\u{200b}c\u{2066}d";
+    ok(
+        &db,
+        "author",
+        &["team-state", "rally", "blocked", "--note", hostile],
+    );
+    let output = rally(&db, "reader", &["teams"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    for c in ['\u{9b}', '\u{7f}', '\u{202e}', '\u{200b}', '\u{2066}'] {
+        assert!(!text.contains(c), "{c:?} reached the terminal");
+    }
+    let value: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(value["teams"]["rally"]["note"], hostile);
+}
+
+#[test]
 fn control_characters_in_recorded_text_are_escaped() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("ledger.db");

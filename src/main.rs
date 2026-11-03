@@ -216,14 +216,34 @@ fn parse_status(text: &str) -> Result<TeamStatus, String> {
         .map_err(|_| format!("{text:?} isn't a state: available, working or blocked"))
 }
 
+/// Escapes what can move a terminal or disguise text: controls, including C1 and DEL, and invisible
+/// and direction characters. JSON doesn't escape most of these, and they can only be in its strings,
+/// where `\\uXXXX` means the same thing, so JSON output stays valid and unchanged in meaning.
+fn escape_for_terminal(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        let invisible = matches!(
+            c,
+            '\u{ad}' | '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{2069}' | '\u{feff}'
+        );
+        if (c.is_control() && c != '\n') || invisible {
+            escaped.push_str(&format!("\\u{:04x}", u32::from(c)));
+        } else {
+            escaped.push(c);
+        }
+    }
+    escaped
+}
+
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(output) => {
-            println!("{output}");
+            println!("{}", escape_for_terminal(&output));
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("rally: {error}");
+            eprintln!("rally: {}", escape_for_terminal(&error.to_string()));
             ExitCode::FAILURE
         }
     }
@@ -340,13 +360,7 @@ fn ledger_reader(db: Option<PathBuf>, config: PathBuf) -> LedgerReader {
                 None => Backend::choose(None, &config)?,
             }
         };
-        let stories: Value =
-            serde_json::from_str(
-                &backend.read("/v1/stories", None, |ledger| views::stories(ledger, None))?,
-            )?;
-        let teams: Value = serde_json::from_str(
-            &backend.read("/v1/teams", None, |ledger| views::teams(ledger, None))?,
-        )?;
+        // Check first: reads refuse a broken chain, and the failure itself is what has to show.
         let (check, read_only) = match &backend {
             // Opened read-only above.
             Backend::File(store) => (json!(store.verify(None)?), json!(true)),
@@ -356,6 +370,16 @@ fn ledger_reader(db: Option<PathBuf>, config: PathBuf) -> LedgerReader {
                 (check, who["read_only"].clone())
             }
         };
+        if check["ok"] != json!(true) {
+            return Ok(json!({"check": check, "read_only": read_only}));
+        }
+        let stories: Value =
+            serde_json::from_str(
+                &backend.read("/v1/stories", None, |ledger| views::stories(ledger, None))?,
+            )?;
+        let teams: Value = serde_json::from_str(
+            &backend.read("/v1/teams", None, |ledger| views::teams(ledger, None))?,
+        )?;
         Ok(json!({
             "as_of": stories["as_of"],
             "stories": stories["stories"],
