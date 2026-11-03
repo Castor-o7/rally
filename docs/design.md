@@ -171,8 +171,16 @@ changing costs little now.
 
 - **Keep:** the record format, state rules, replay, hash chain, head checks, text limits and access rules.
   None depends on SQLite. The ledger's logic stays pure, so it stays deterministic.
-- **Change:** records become a myko entity, appended only through a command that runs the same checks. Reads
-  become myko queries. Muster's and Levi's hub are the patterns to follow.
+- **Change:** each record becomes its own myko entity, appended only through a command that runs the same checks.
+  Reads become myko queries. Muster's and Levi's hub are the patterns to follow.
+- **One door, chosen by the team with the operator's trust (2026-11-02).** No client talks to myko. Rally's TLS and token
+  API stays the only way in, with myko behind it on loopback. There's no frame filter to get wrong, which
+  is where Muster's bypasses came from. The cost: other myko clients can't subscribe to Rally directly yet. An
+  allowlisted read-only subscription could come later, with its own review.
+- **The loopback port is the real hole.** myko-server 6.9.0 only binds TCP, so a Unix socket with file permissions
+  isn't available without changing myko, and its port has no authentication. Any process on the host can reach
+  it and write past the checks, as with MUS-7. The chain detects that but doesn't prevent it, and the docs
+  must say so.
 - **Raw events are the main risk.** myko's WebSocket handler passes a client's events straight to the store,
   and it has no authorization hook (Muster's `docs/session-binding.md`, MUS-41). So every guarantee Rally has
   would be bypassed unless something refuses them. Rally needs the equivalent of Muster's gate in front of it,
@@ -183,6 +191,9 @@ changing costs little now.
   has no authentication (MUS-7), so a process on the host gets past the gate; that has to be bound and stated.
 - **The chain must stay checkable from outside myko,** with `rally check --expect` against a head saved on a1.
   Otherwise RAL-14's guarantee is only as good as the store's access control.
+- **History:** from its source, myko's Postgres persister inserts events into a table and replays them, which suits
+  a record per entity. Muster calls this latest-state-per-entity, so it has to be shown rather than assumed. The
+  deciding test: append three records, save the head, restart, replay, and `rally check --expect` passes.
 - **Durability:** myko without Postgres keeps state in memory only, per Muster's and Levi's docs, and Postgres is
   the only durable persister that ships with myko-server 6.9.0. `Persister` is a public trait, but nobody has
   checked how replay would work with another one (MUS-17). So plan on Postgres on Murph. The backup story,
@@ -199,7 +210,8 @@ repository in `refs/levi/events`. A task's status is a function of git history, 
 read has stable `--json`, and its optional hub is a myko server. It overlaps with Rally on stories and claims.
 
 **Proposal, for RAL-40:** Levi says what the work is and what git history shows, and Rally stays the ledger of
-verification, evidence, team state and history. Rally reads Levi and doesn't write to it at first. "Closed at
+verification, evidence, team state and history. Rally reads Levi from a checkout with `levi --json`, labelling each fact as declared unless it comes from git,
+and doesn't write to it at first. It doesn't trust a Levi hub, which by its own warning has no authentication. "Closed at
 a commit that's an ancestor of HEAD" is the kind of observed fact Rally wants, and could help RAL-5.
 What's in a Levi task is written by agents, so it's untrusted text, and a Levi claim is declared, not proof.
 **Claims live in Levi,** on the operator's word, so there's one source of truth for them. What that means for
