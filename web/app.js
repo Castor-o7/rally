@@ -350,7 +350,7 @@ function renderMuster(status, now) {
   if (verified.length) {
     const done = verified.reduce((sum, v) => sum + v.verified, 0);
     const tracked = verified.reduce((sum, v) => sum + v.tracked, 0);
-    root.append(figure("Verified in the ledger", done + " of " + tracked, tracked ? done / tracked : 0,
+    root.append(figure("Verified in the ledger · the sum of each project's Verified", done + " of " + tracked, tracked ? done / tracked : 0,
       done + " of " + tracked + " verified"));
   }
   const writeup = el("div", "group");

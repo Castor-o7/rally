@@ -463,6 +463,9 @@ fn muster_summary(projects: &[Project], roadmaps: &[Value]) -> Value {
         .unwrap_or_else(|| json!({"reason": format!("{RALLY_REPO} isn't in the project list.")}))
 }
 
+/// Reads every project's roadmap, day summary and merged PRs one after another, each `gh` call with its
+/// own 20-second limit. With a handful of projects that fits the five-minute cadence easily; if gh
+/// is slow for many projects at once, one refresh can run longer than that, and the page shows the age.
 fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
     projects
         .iter()
