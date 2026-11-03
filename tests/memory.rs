@@ -1,7 +1,8 @@
 //! Memory kept per append, counted by the allocator rather than guessed from the process size.
 //!
 //! With no listener, myko's saga channel is never drained, so anything sent to it stays forever.
-//! The store's own copy of each record is expected; nothing else should grow with every append.
+//! Two copies of each record are expected: myko's store holds its text, and the state the service
+//! keeps between requests holds it parsed (RAL-35). Nothing else should grow with every append.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -35,7 +36,7 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 #[test]
-fn an_append_keeps_no_more_than_the_stores_copy() {
+fn an_append_keeps_no_more_than_the_store_and_the_kept_state() {
     let db = scratch_pg::shared().database();
     let dir = tempfile::tempdir().unwrap();
     let location = Location {
@@ -68,10 +69,11 @@ fn an_append_keeps_no_more_than_the_stores_copy() {
     }
     let kept = (LIVE.load(Ordering::Relaxed) - before) / count as i64;
     eprintln!("each append kept {kept} bytes for a {size}-byte record");
-    // The store holds the record's text once, with its hash and id. A second copy anywhere, such
-    // as an event on an undrained channel, at least doubles that.
+    // myko's store holds the record's text once, with its hash and id, and the kept state holds
+    // its note once more. A third copy anywhere, such as an event on an undrained channel, adds
+    // at least another record's size.
     assert!(
-        kept < size * 3 / 2,
+        kept < size * 5 / 2,
         "each append kept {kept} bytes for a {size}-byte record"
     );
 }

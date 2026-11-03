@@ -162,15 +162,18 @@ records, or removes every record and the head file, which looks like a new ledge
 - A failed token attempt isn't rate limited, and connections aren't capped or timed out while they're
   still unauthenticated. Tokens are 256 random bits, so guessing isn't practical, but a flood or slow
   connections could still load the service (RAL-35). This is why it stays off the open internet.
-- The service holds every record in memory, in myko's store, for as long as it runs, about once each: an append
-  keeps about 12.4 KB for a 12.2 KB record, measured by the allocator. Each request still replays the whole
-  ledger from that copy; a check reads all of Postgres as well.
-  Measured with a release build on a1 at the 64 MiB limit: with 64,001 typical 300-character records, 1.1 s to
-  replay at start, 0.2 s for a read and 0.3 s for a check through the service, and about 150 to 230 MiB held by
-  the service; with 4,751 worst-case records of about 12 KB, 0.6 s, 0.1 s and 0.3 s, and about 130 to 150 MiB.
-  At 256 MiB (256,501 typical records), 4.1 s, 0.9 s and 1.7 s, and about 520 to 730 MiB, so it grows linearly.
-  That's why the limit stays at 64 MiB: the host shares its memory with Muster's daemon, and a read-only
-  credential can trigger the reads too. Don't raise it before RAL-35.
+- The service holds every record in memory twice for as long as it runs: as text in myko's store, and parsed in
+  the state it keeps between requests, so that a read of the current state or an append doesn't replay the whole
+  ledger (RAL-35). An append keeps about 24.6 KB for a 12.2 KB record, measured by the allocator. A check still
+  reads all of Postgres and replays it, on a connection of its own and without the writer's lock, one check at a
+  time. A read `as_of` a past record still replays up to that record, and nothing yet limits how many of those
+  run at once.
+  Measured with a release build on a1 at the 64 MiB limit, with 64,001 typical 300-character records: 1.3 s to
+  start, under 0.01 s for a read, 0.36 s for a check and 0.05 s for a write through the service, and 201 to 214 MiB
+  held. With 4,751 worst-case records of about 12 KB: 0.7 s, under 0.01 s, 0.34 s and 0.02 s, and 205 to 220 MiB.
+  With four read-only credentials checking in a loop, writes still took 0.04 to 0.06 s and the service held
+  415 MiB; before the kept state, they took 0.7 to 0.9 s and it held 606 MiB.
+  The limit stays at 64 MiB until the rest of RAL-35 is done: the host shares its memory with Muster's daemon.
 - A damaged `machines.json` logs a line for each request, before any rate limit, until it's fixed.
 - If `cert.pem` or `key.pem` goes missing, the service refuses to start rather than making a new
   certificate, which would break every machine's pin. Restore it, or remove both and pair every machine
