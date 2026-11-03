@@ -342,8 +342,8 @@ and each round found real problems:
 3. **Third read:** a stray password-file setting blocked commands that never use the database.
 
 Each was shown by a failing test before its fix, except the port guard, which couldn't be tested without touching the
-operator's Postgres. The lesson the watchman drew: a fix round can introduce regressions, so concurrent tests belong
-in the first round, not the third.
+operator's Postgres. The team's lesson: a fix round can introduce regressions, so concurrent tests belong in the first
+round, not the second.
 
 ## Levi
 
