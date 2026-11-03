@@ -174,10 +174,16 @@ changing costs little now.
 - **Raw events are the main risk.** myko's WebSocket handler passes a client's events straight to the store,
   and it has no authorization hook (Muster's `docs/session-binding.md`, MUS-41). So every guarantee Rally has
   would be bypassed unless something refuses them. Rally needs the equivalent of Muster's gate in front of it,
-  with a test that a raw event is refused, or a hook upstream. Muster's filter had three bypasses, so RAL-39
-  should prefer whatever MUS-41 decides.
-- **Durability:** myko without Postgres keeps state in memory only, per Muster's and Levi's docs. A ledger
-  has to survive a restart, so Rally needs Postgres on Murph, or a myko persister that fits. The backup story,
+  with a test that a raw event is refused. MUS-41 has no direction yet and myko 6.9.0 has no hook, so Rally can't
+  wait for one. Muster's bypasses came from parsing frames separately from myko, so the gate should refuse by
+  default, allow no client events at all, and refuse anything ambiguous (NUL in keys or values, positional bodies,
+  unparseable frames). `crates/daemon/src/gate_filter.rs` in Muster shows these. myko's internal loopback port
+  has no authentication (MUS-7), so a process on the host gets past the gate; that has to be bound and stated.
+- **The chain must stay checkable from outside myko,** with `rally check --expect` against a head saved on a1.
+  Otherwise RAL-14's guarantee is only as good as the store's access control.
+- **Durability:** myko without Postgres keeps state in memory only, per Muster's and Levi's docs, and Postgres is
+  the only durable persister that ships with myko-server 6.9.0. `Persister` is a public trait, but nobody has
+  checked how replay would work with another one (MUS-17). So plan on Postgres on Murph. The backup story,
   the size limits and the disk floor (RAL-15, RAL-36) have to be redone for that. Replay memory (RAL-35)
   may improve.
 - **Order:** myko applies events in arrival order, and the chain needs one writer. Appending through one
