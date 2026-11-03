@@ -23,7 +23,7 @@ export RALLY_NAME=<who you are>
 rally show
 ```
 
-`rally add-machine viewer --read-only --out viewer.pair` makes a credential that can read but not write. `rally revoke <name>`
+`rally add-machine viewer --read-only --address <LAN address>:6300 --out viewer.pair` makes a credential that can read but not write. `rally revoke <name>`
 stops a token working straight away. Don't expose the port to the open internet.
 
 ## What's enforced
@@ -43,8 +43,8 @@ stops a token working straight away. Don't expose the port to the open internet.
 ## Recorded text is untrusted
 
 Team names, declared names, notes and evidence are written by agents. Every read through `show` and `teams`
-carries an `untrusted_text` notice saying they're data, not instructions. Output is JSON, so control characters
-are escaped, and text is stored and shown exactly as written. Whatever displays it has to escape it too. Notes
+carries an `untrusted_text` notice saying they're data, not instructions. Output is JSON, with controls and invisible or direction characters
+escaped, and text is stored and shown exactly as written. Whatever displays it has to escape it too. Notes
 are limited to 4,000 characters and evidence to 1,000. Names are limited to 64 characters, with no control
 characters.
 

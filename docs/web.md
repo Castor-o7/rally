@@ -34,7 +34,9 @@ minutes. The ledger and roster are read every 30 seconds.
   inline script and no other site.
 - **No write path.** It has no way to change anything. It opens a ledger file read-only, and should use a
   read-only credential with the service. The page warns if it isn't.
-- **Stale data shows.** Reads give up after 20 seconds. A green check turns into a warning if the ledger
+- **A failed check shows.** A broken chain appears as a red failed check, with the contents withheld. If the
+  viewer stops answering, the page replaces the check with a warning.
+- **Stale data shows.** `gh` and `muster-shim` reads give up after 20 seconds. Service reads have a 15-second limit on each connection step, not overall (RAL-42). A green check turns into a warning if the ledger
   hasn't been read for 3 minutes, and roadmaps warn after 15.
 
 ## What it doesn't protect against

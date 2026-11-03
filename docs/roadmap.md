@@ -72,6 +72,12 @@ The bones. Everything later reads from this.
   Rally can read a repository's Levi tasks through `levi --json`
   or its hub, labelled by how each fact is known, with Levi's text treated as untrusted and nothing
   written to Levi, with a test against a real `levi` run.
+- [ ] **RAL-42: Clear the source review's smaller findings.** From `dauntless-peacock`'s review of `a4dc39e`, all
+  predicted from reading, not run. After RAL-39, since some concern the store. Done when: each is fixed, shown not
+  to apply, or recorded as accepted: reads from a replaced ledger file; a submitter's verified annotation on their
+  own story; an empty `cert.pem` passing; write failures reported as "can't be read"; leftover temporary head files;
+  no overall deadline or reply cap in the client; unbounded command output; roadmap code-fence edge cases; story
+  IDs with leading zeros; names `add-machine` accepts that the ledger refuses; and other loopback addresses.
 - [ ] **RAL-41: Tighten text and name checks.** From the reads of RAL-16. Done when: zero-width and direction
   characters are refused in names, so `alice` and a look-alike can't pass as different people; `/v1/check`
   carries the untrusted-text notice; and limits don't apply on replay in a way that makes an old ledger
@@ -91,7 +97,10 @@ The bones. Everything later reads from this.
 - [x] **RAL-13: Control who can write and read.** Depends on RAL-4 and RAL-10. Done when: an
   unauthorized write or read is refused, shown by a test for each route into the service, and the docs
   say what an accepted write does and doesn't prove about who sent it.
-- [ ] **RAL-35: Limit load on the service.** From the second read of RAL-13. Done when: connections are
+- [ ] **RAL-35: Limit load on the service.** From the second read of RAL-13, and now required before the trial,
+  because a source review predicts one read-only credential could stall everything and pin gigabytes on a host
+  shared with Muster. Measure these first; they're predictions. Done when: response memory is bounded, replay
+  isn't quadratic in a story's corrections, the read limit fits what the store can serve, and connections are
   capped and time out before they authenticate, failed token attempts are limited, and reads don't replay
   the whole ledger under the store's lock or block the service's workers, with a test for each, and with
   memory and time measured at the ledger's limit before that limit is raised.

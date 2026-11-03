@@ -98,6 +98,10 @@ function renderLedger(ledger, now) {
     root.append(el("p", "muted", "Record " + check.head.seq + ", read " + age(ledger.read_at_ms, now)
       + ". This check can't show a rewrite of the whole host without a saved head."));
   }
+  if (check && !check.ok) {
+    root.append(el("p", "muted", "Its contents aren't shown, because they can't be trusted."));
+    return;
+  }
   const stories = Object.entries(ledger.stories || {});
   if (stories.length === 0) {
     root.append(el("p", "muted", "No stories have been recorded yet."));
@@ -236,6 +240,9 @@ async function refresh() {
     status = await response.json();
   } catch (error) {
     freshness.textContent = "⚠ Can't reach the viewer, so this may be out of date";
+    // Don't leave an earlier green check standing when nothing can back it up.
+    const ledger = document.getElementById("ledger");
+    ledger.replaceChildren(el("p", "warning", "⚠ The viewer isn't answering, so the ledger's state is unknown"));
     return;
   }
   try {
