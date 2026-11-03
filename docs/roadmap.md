@@ -65,8 +65,8 @@ The bones. Everything later reads from this.
 
 - [ ] **RAL-39: Make Rally a myko service.** Requested by the operator on 2026-11-02. See the design. Done
   when: records are myko entities appended through one command with today's checks; every existing guarantee
-  still has a passing test; a test shows a raw event from a client is refused; records survive a restart; and
-  the operator has decided the licence.
+  still has a passing test; a test shows a raw event from a client is refused; `rally check --expect` can check
+  the chain from outside myko; records survive a restart; and the operator has decided the licence.
 - [ ] **RAL-40: Interface with Levi.** Requested by the operator on 2026-11-02. See the design. Done when: the
   operator has decided where claims live, and Rally can read a repository's Levi tasks through `levi --json`
   or its hub, labelled by how each fact is known, with Levi's text treated as untrusted and nothing
