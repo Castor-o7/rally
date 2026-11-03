@@ -1388,3 +1388,94 @@ fn export_gives_every_record_with_its_hash_a_page_at_a_time_to_a_read_only_crede
     );
     assert_eq!(call(&backup, "POST", "/v1/export", Some("{}")).status, 403);
 }
+
+#[test]
+fn a_backup_through_the_service_holds_a_head_that_check_expect_accepts() {
+    let service = start();
+    let writer = service.add("a1", false);
+    let code = {
+        let out = service.dir.path().join("backup.pair");
+        let output = rally()
+            .args([
+                "add-machine",
+                "backup",
+                "--read-only",
+                "--address",
+                &service.address,
+            ])
+            .arg("--state-dir")
+            .arg(service.state_dir())
+            .arg("--out")
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        std::fs::read_to_string(&out).unwrap()
+    };
+    // On "another machine": outside the service's own directory, which goes when it stops.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let config = elsewhere.path().join("backup.json");
+    assert!(pair(&config, &code).status.success());
+    let backup = elsewhere.path().join("backup");
+    let run = || {
+        rally()
+            .arg("--config")
+            .arg(&config)
+            .args(["backup", "--to"])
+            .arg(&backup)
+            .output()
+            .unwrap()
+    };
+    for _ in 0..3 {
+        assert_eq!(ready_with(&writer).status, 200);
+    }
+    let output = run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let first: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        (first["added"].as_u64(), first["backed_up_to"].as_u64()),
+        (Some(3), Some(3))
+    );
+    assert_eq!(ready_with(&writer).status, 200);
+    let second: Value = serde_json::from_slice(&run().stdout).unwrap();
+    assert_eq!(
+        (second["added"].as_u64(), second["backed_up_to"].as_u64()),
+        (Some(1), Some(4))
+    );
+    // The saved head is the one `check --expect` takes.
+    let expect = second["expect"].as_str().unwrap();
+    let output = rally()
+        .arg("--config")
+        .arg(&config)
+        .args(["check", "--expect", expect])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // With the service gone, it fails and says how old the backup is.
+    drop(service);
+    let output = run();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("hours ago"), "{error}");
+}
+
+/// A new story each time, so that writes can repeat.
+fn ready_with(pairing: &Pairing) -> Reply {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(100);
+    let story = format!("RAL-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    write(
+        pairing,
+        "someone",
+        "declared",
+        json!({"change": "ready", "story": story}),
+    )
+}

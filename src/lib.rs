@@ -1,6 +1,7 @@
 //! Rally: a ledger of progress for a muster of agents. See `docs/roadmap.md`.
 
 pub mod access;
+pub mod backup;
 pub mod client;
 pub mod entity;
 pub mod ledger;

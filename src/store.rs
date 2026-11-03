@@ -52,7 +52,7 @@ pub const WRITER_WAIT: Duration = Duration::from_secs(5);
 const REPLAY_WAIT: Duration = Duration::from_secs(300);
 
 /// The chain's hash before the first record.
-const CHAIN_START: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+pub const CHAIN_START: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// myko's own schema, created first so that Rally's protections can go on it. myko runs the same
 /// statements, which do nothing once the table exists. Copied from myko-server 6.9.0's
@@ -415,7 +415,7 @@ pub struct Verification {
     pub notes: Vec<String>,
 }
 
-pub(crate) fn chain_hash(previous: &str, seq: u64, record: &str) -> String {
+pub fn chain_hash(previous: &str, seq: u64, record: &str) -> String {
     let mut hash = Sha256::new();
     hash.update(previous.as_bytes());
     hash.update(b"\n");
@@ -1071,6 +1071,8 @@ impl Store {
                     .collect();
                 Ok((rows, head))
             }
+            // Reads the whole table for each page, so a `--db` export of a big ledger costs pages
+            // times the ledger. Backups go through the service, which reads its kept copy instead.
             None => {
                 let rows = self.with_sql(durable_rows)?.0;
                 let head = head_of(&rows);
