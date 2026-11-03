@@ -172,6 +172,13 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
 - [ ] **RAL-27: Show the current ledger.** Done when: the web app shows each team's state, stories,
   evidence, blockers and track record, says for each whether it's observed, declared or verified and how
   fresh it is, and the operator has seen it running.
+- [ ] **RAL-37: Show each roadmap's progress.** Requested by the operator on 2026-11-02. Done when: the
+  web app shows ticks from each roadmap file as a percentage, labelled with what a tick means there and
+  with the file, commit and read time; Verified is a separate figure from the ledger, or "not available
+  yet"; the two are never merged; and a test covers the counting.
+- [ ] **RAL-38: Show what each team is working on.** Requested by the operator on 2026-11-02. Depends on
+  the rollout of MUS-44. Done when: the web app shows each team's declared state and Muster's roster with
+  Muster's own labels and each fact's age, and the operator has seen it with live data.
 - [ ] **RAL-28: Show past ledgers.** Depends on RAL-12. Done when: a viewer can pick a past moment and
   see the ledger as it stood then, with corrections made since shown as later, and a test shows that the
   view matches a replay to that moment.
