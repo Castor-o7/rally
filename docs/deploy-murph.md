@@ -1,7 +1,8 @@
 # Deploying Rally on Murph
 
 One sitting, once the operator says deploy. Setup details are in [service.md](service.md); this page is the order
-of work. Murph is the Linux host that runs Muster's daemon, at 192.168.1.241 on the LAN ([design.md](design.md)).
+of work. Murph is the host that runs Muster's daemon, at 192.168.1.241 on the LAN ([design.md](design.md)). It runs
+Manjaro Linux, a rolling release, per its `/etc/os-release` as read by `vibrant-mink` on 2026-11-03.
 
 ## Before this page is used
 
@@ -14,8 +15,9 @@ operator approves the deployment itself, directly, not through a relayed message
 
 1. **Reserve Murph's address on the router:** a DHCP reservation of 192.168.1.241 for Murph's network
    interface, so that the address in every pair code stays right.
-2. **Install Postgres on Murph** (16 or later, from the distribution's packages), listening on loopback only
-   (`listen_addresses = 'localhost'` in `postgresql.conf`), and make Rally's role and database:
+2. **Give Rally a role and database on Murph's Postgres.** Postgres 18.6, from Manjaro's `extra` repository, is
+   already installed and running there for Muster's daemon (`vibrant-mink`, 2026-11-03), so nothing is installed.
+   Check that it listens on loopback only (`listen_addresses = 'localhost'` in `postgresql.conf`), then:
    ```sql
    CREATE ROLE rally LOGIN PASSWORD '<a new random password>';
    CREATE DATABASE rally OWNER rally;
@@ -54,9 +56,11 @@ operator approves the deployment itself, directly, not through a relayed message
    It uses the default limits (`docs/service.md`, "What's enforced"). It prints its certificate's
    fingerprint when it starts: record that too.
 4. **Pair:** `rally add-machine a1 --address 192.168.1.241:6300 --out a1.pair`, and `rally add-machine viewer
-   --read-only …` for a1's viewer. Each pair code holds a secret: move it to a1 without showing it (over SSH if
-   the operator has it set up between the two, or by the operator's hand), then on a1 `rally pair < a1.pair &&
-   rm a1.pair`, and `rally --config ~/.config/rally/viewer.json pair < viewer.pair && rm viewer.pair`.
+   --read-only …` for a1's viewer. Each pair code holds a secret: move it to a1 without showing it. a1 accepts
+   SSH (Remote Login is on) and Murph runs no `sshd`, so the only ways are `scp` run on Murph with the operator
+   typing their a1 password, or the operator's hand; nothing an agent holds, and no settings change. Then on a1
+   `rally pair < a1.pair && rm a1.pair`, and `rally --config ~/.config/rally/viewer.json pair < viewer.pair && rm
+   viewer.pair`.
 
 ## The first check
 
