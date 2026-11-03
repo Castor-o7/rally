@@ -14,13 +14,17 @@ On the host, with a Postgres database for the ledger that only this account can 
 export RALLY_STATE_DIR=~/.local/state/rally
 export RALLY_DB=postgres://rally@127.0.0.1/rally
 export RALLY_HEAD_FILE=~/.local/state/rally/ledger.head
+# Only if the role has a password: one line, in a file only you can read (chmod 600).
+export RALLY_DB_PASSWORD_FILE=~/.local/state/rally/db-password
 rally serve --bind <LAN address>:6300
 rally add-machine a1 --address <LAN address>:6300 --out a1.pair
 ```
 
 `--db` (`RALLY_DB`) is the Postgres URL, and `--head-file` (`RALLY_HEAD_FILE`) is the ledger's head file, kept
-outside Postgres (see "Detecting tampering"). Keep any password out of the URL, in `~/.pgpass`, because the URL can
-show in process listings. Rally makes its table, `rally_events`, on first start. Its role needs to be able to create
+outside Postgres (see "Detecting tampering"). Keep any password out of the URL, because the URL can show in
+process listings, and Rally's Postgres library doesn't read `~/.pgpass`. Put it in the file named by
+`--db-password-file` (`RALLY_DB_PASSWORD_FILE`) instead: Rally refuses one that other accounts can read or that
+another account owns. Messages show the address rebuilt without any password, however the URL gave it. Rally makes its table, `rally_events`, on first start. Its role needs to be able to create
 it, and to read `data_directory` for the disk floor, which a superuser or a member of `pg_read_all_settings` can.
 Postgres must be on the same host, with that directory visible to Rally.
 
@@ -51,13 +55,20 @@ stops a token working straight away. Don't expose the port to the open internet.
   Postgres, with its indexes, reaches 64 MiB, or while the disk under Postgres's data directory has under 5 GiB
   free, and reads carry on. If either can't be checked, writes stop too. Set the floor with `--min-free-bytes`,
   and check it against the host's real free space before rollout.
-- **A write is acknowledged only once Postgres has committed it.** With Postgres down, writes fail with a 503
-  saying nothing was recorded, and reads of what the service already holds carry on. When Postgres is back, the
-  service reconnects by itself.
+- **A write is acknowledged only once Postgres has committed it.** If Postgres can't be reached before the
+  record is sent, the write fails with a 503 saying nothing was recorded. If the connection fails after the
+  commit is sent and before Postgres answers, the reply is a 503 saying the outcome is unknown: it may have
+  been recorded, so check with `rally show` or `rally check` before retrying. If it was recorded, the service
+  refuses further writes until it's restarted and replays it. Reads of what the service already holds carry on
+  either way, and when Postgres is back the service reconnects by itself.
+- **Reads don't wait for writes.** They're served from the service's copy without the writer's lock, so a write
+  waiting on Postgres doesn't hold them up. `check` reads Postgres, so it does wait.
 - **One writer.** The service holds a lock in Postgres for as long as it runs, so a second service or a `--db`
   write is refused rather than forking the chain.
-- **Append-only in Postgres too.** The table refuses updates, deletes, `TRUNCATE`, deletion events and a second
-  version of a record. That catches mistakes: whoever owns the database can lift it.
+- **Append-only in Postgres too.** The table refuses updates, deletes, `TRUNCATE`, deletion events, a second
+  version of a record, and any row whose columns say something other than its event, which myko would load by
+  the event alone. That catches mistakes: whoever owns the database can lift it. `rally check` reads by the
+  event too, and reports any row whose columns don't match, and a service won't start over one.
 
 ## Recorded text is untrusted
 
@@ -95,7 +106,8 @@ To recover, run `rally check`, keeping the damaged files to look at. Then either
 head file together from a backup, or, if the chain is intact and a head saved elsewhere still matches, run
 `rally --db <url> --head-file <file> adopt-head` on the host. It refuses a broken chain, but it does accept any removal
 of the newest records that `check` was reporting, so don't use it to make a warning go away, and don't edit
-the head file by hand.
+the head file by hand. It takes the writer lock, so stop the service first: while it runs, `adopt-head` is
+refused, because the service could move the head in between.
 
 Save that head somewhere other than the host from time to time, then check it with
 `rally check --expect SEQ:HASH`. That's the only protection against the case below.
@@ -120,6 +132,12 @@ records, or removes every record and the head file, which looks like a new ledge
   indexes, not the write-ahead log.
 - Postgres must be durable for an acknowledged write to be: keep `fsync` and `synchronous_commit` on, as they are
   by default.
+- A Postgres that hangs rather than stops, for example a stopped process, holds a
+  write until it recovers, with no deadline of Rally's own: the operating system keeps the connection open, so
+  it can be indefinite. Later writes and checks queue behind it; reads carry on. If the connection does fail
+  after the commit was sent, the outcome is reported as unknown (RAL-42).
+- myko is given the database's address with its password in this process's memory. Rally installs no logger
+  for myko, so its own error messages, which can include that address, aren't printed.
 - Backups (RAL-15) aren't built. One now means the Postgres database and the head file together.
 - Write limits are per machine, so all of a machine's sessions share them. Watch for 429s in real use.
 - One compromised credential could reach the 64 MiB stop in about 6 hours, and several credentials
@@ -130,8 +148,9 @@ records, or removes every record and the head file, which looks like a new ledge
 - A failed token attempt isn't rate limited, and connections aren't capped or timed out while they're
   still unauthenticated. Tokens are 256 random bits, so guessing isn't practical, but a flood or slow
   connections could still load the service (RAL-35). This is why it stays off the open internet.
-- The service holds every record in memory, in myko's store, for as long as it runs, and each request still
-  replays the whole ledger from that copy, holding the store's lock; a check reads all of Postgres as well.
+- The service holds every record in memory, in myko's store, for as long as it runs, about once each: an append
+  keeps about 12.4 KB for a 12.2 KB record, measured by the allocator. Each request still replays the whole
+  ledger from that copy; a check reads all of Postgres as well.
   Measured with a release build on a1 at the 64 MiB limit: with 64,001 typical 300-character records, 1.1 s to
   replay at start, 0.2 s for a read and 0.3 s for a check through the service, and about 150 to 230 MiB held by
   the service; with 4,751 worst-case records of about 12 KB, 0.6 s, 0.1 s and 0.3 s, and about 130 to 150 MiB.

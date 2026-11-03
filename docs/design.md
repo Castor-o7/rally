@@ -269,8 +269,10 @@ it:
    a blackhole, so it never writes a second copy. Tests stop a scratch Postgres under a running writer and a running
    service: writes fail promptly (the tests allow 30 s), with no success reply, myko's copy doesn't take the record, and after Postgres
    comes back the writer reconnects, retakes its lock and carries on, with every acknowledged record present after a
-   restart. If the connection dies during a commit, Postgres may have the record without its being acknowledged; the
-   next append then finds Postgres ahead of myko's copy and refuses until a restart replays it.
+   restart. If the connection dies after the commit is sent, Postgres may have the record without its being
+   acknowledged, so that write reports the outcome as unknown, never as nothing recorded (a test ends the backend
+   between the INSERT and the COMMIT). If it was recorded, the next append finds Postgres ahead of myko's copy and
+   refuses until a restart replays it.
 3. **One writer lock:** a Postgres advisory lock, held by the service or a `--db` writer for as long as it's open, so it
    works across processes, and Rally's own lock inside one. Tests run eight writers each holding its own store, eight
    threads sharing one, six `rally` processes, and eight machines writing through the service: every success has its
@@ -290,13 +292,26 @@ it:
    route to myko: `myko_cant_be_reached_through_the_door`. Run inside the process anyway, as a test does, they change
    only myko's copy, never Postgres, and `check` reports the difference.
 
-The table also refuses updates, deletes, `TRUNCATE` and deletion events. That catches mistakes, not someone who owns
-the database, who can lift it.
+The table also refuses updates, deletes, `TRUNCATE` and deletion events, and a check constraint makes each row's
+`item_type`, `item_id` and `change_type` columns equal its event's `itemType`, `item.id` and `changeType`. Without it,
+a row with other columns and a `LedgerRecord` event would pass every protection, since they key on the columns, while
+myko loaded it by the event. Reads and checks go by the event too, and report any row that doesn't match. That
+catches mistakes, not someone who owns the database, who can lift it.
+
+**The saga channel.** `server.ctx()` gives a context that sends every change to myko's saga channel, which only
+`run()` drains. With no listener, that kept a second copy of every appended record for as long as the process ran:
+25.6 KB per 12.2 KB record, counted by the allocator. Rally builds its own context with no saga sink, and the same
+count is 12.4 KB, the store's own copy; `tests/memory.rs` fails if an append keeps more than 1.5 times the record.
+
+**Reads and a hung Postgres.** Reads come from myko's copy without the writer's lock, so a write waiting on a hung
+Postgres doesn't block them; a test stops the scratch Postgres's processes with SIGSTOP mid-write. Before, the read
+waited behind the write for as long as Postgres stayed stopped. The write itself has no deadline of Rally's own; see
+`docs/service.md`.
 
 **What this does to RAL-15 and RAL-35.** Neither is done. For RAL-15, a backup is now the Postgres database (for
 example `pg_dump` of `rally_events`) together with the head file, which lives outside Postgres, and a restore has to
 rebuild both and pass `rally check --expect`; none of that is built. For RAL-35, reads still replay the whole ledger,
-now from myko's in-memory copy rather than a file, and the service now holds every record in memory for as long as
+now from myko's in-memory copy rather than a file, and the service now holds every record in memory, about once, for as long as
 it runs. Measured on a1 with a release build, at the 64 MiB limit on the table's size: 64,001 typical 300-character
 records take 1.1 s to replay at start, a read through the service 0.2 s and a check 0.3 s, and the service holds
 about 150 to 230 MiB. 4,751 worst-case records of 4,000 random CJK characters (about 12 KB) take 0.6 s and about
