@@ -1,5 +1,5 @@
 //! The `rally` command. It reads and writes through the service once paired, or works directly on a
-//! ledger file with `--db`, where nothing checks who is writing.
+//! ledger's Postgres database with `--db`, where nothing checks who is writing.
 //!
 //! All output is JSON, so that control characters in recorded text are escaped rather than reaching
 //! the terminal.
@@ -17,7 +17,7 @@ use rally::client;
 use rally::ledger::{State, TeamStatus};
 use rally::record::{Kind, Record, Source};
 use rally::server::{self, RateLimit};
-use rally::store::{Head, Store};
+use rally::store::{Head, Location, Store};
 use rally::views;
 use rally::web::{self, DEFAULT_PROJECTS, LedgerReader, Project};
 
@@ -25,13 +25,18 @@ use rally::web::{self, DEFAULT_PROJECTS, LedgerReader, Project};
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// Work directly on this ledger file rather than through the service.
+    /// Work directly on the ledger in this Postgres database, such as
+    /// postgres://rally@127.0.0.1/rally, rather than through the service. Needs --head-file.
     #[arg(long, env = "RALLY_DB")]
-    db: Option<PathBuf>,
+    db: Option<String>,
+    /// With --db: the ledger's head file, kept outside Postgres so that removing the newest
+    /// records shows.
+    #[arg(long, env = "RALLY_HEAD_FILE")]
+    head_file: Option<PathBuf>,
     /// The pairing file. Defaults to ~/.config/rally/client.json.
     #[arg(long, env = "RALLY_CONFIG")]
     config: Option<PathBuf>,
-    /// The credential to record when writing directly to a file. The service sets its own.
+    /// The credential to record when writing directly with --db. The service sets its own.
     #[arg(long, env = "RALLY_CREDENTIAL")]
     credential: Option<String>,
     /// Who you declare yourself to be.
@@ -43,7 +48,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the service on this machine. Needs --db. Prints where it's listening.
+    /// Run the service on this machine. Needs --db and --head-file. Prints where it's listening.
     Serve {
         /// The address to listen on, such as a LAN address and port. Never the open internet.
         #[arg(long)]
@@ -62,10 +67,10 @@ enum Command {
         /// Writes a credential regains per second.
         #[arg(long, default_value_t = RateLimit::default().write_per_second)]
         write_per_second: f64,
-        /// Refuse writes once the ledger file reaches this size.
+        /// Refuse writes once the ledger's table in Postgres, with its indexes, reaches this size.
         #[arg(long, default_value_t = RateLimit::default().max_ledger_bytes)]
         max_ledger_bytes: u64,
-        /// Refuse writes while the ledger's disk has less free space than this.
+        /// Refuse writes while the disk under Postgres's data has less free space than this.
         #[arg(long, default_value_t = RateLimit::default().min_free_bytes)]
         min_free_bytes: u64,
     },
@@ -251,18 +256,29 @@ fn main() -> ExitCode {
 
 /// Where reads and writes go.
 enum Backend {
-    File(Store),
+    /// Directly on the ledger's database, on the host.
+    File(Box<Store>),
     Service(Pairing),
 }
 
 impl Backend {
-    fn choose(db: Option<&Path>, config: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        if let Some(db) = db {
-            return Ok(Self::File(Store::open(db)?));
+    /// Writes go through the writer lock. Reads go straight to Postgres, read-only.
+    fn choose(
+        location: Option<&Location>,
+        config: &Path,
+        write: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        if let Some(location) = location {
+            let store = if write {
+                Store::open(location)?
+            } else {
+                Store::open_read_only(location)?
+            };
+            return Ok(Self::File(Box::new(store)));
         }
         let text = std::fs::read_to_string(config).map_err(|_| {
             format!(
-                "no pairing at {}: run `rally pair`, or use --db for a local file",
+                "no pairing at {}: run `rally pair`, or use --db on the host",
                 config.display()
             )
         })?;
@@ -332,11 +348,15 @@ fn create_new_private(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Reading shouldn't create a ledger: a mistyped path would otherwise look like a healthy empty one.
-fn require_ledger(db: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
-    match db {
-        Some(db) if !db.exists() => Err(format!("no ledger at {}", db.display()).into()),
-        _ => Ok(()),
+/// The ledger named by --db and --head-file, if any.
+fn location(
+    db: Option<String>,
+    head_file: Option<PathBuf>,
+) -> Result<Option<Location>, Box<dyn std::error::Error>> {
+    match (db, head_file) {
+        (Some(url), Some(head_file)) => Ok(Some(Location { url, head_file })),
+        (Some(_), None) => Err("--db needs --head-file or RALLY_HEAD_FILE".into()),
+        (None, _) => Ok(None),
     }
 }
 
@@ -350,16 +370,11 @@ fn config_path(config: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::E
     }
 }
 
-/// Reads the ledger's stories, teams and check, from a file or through the service.
-fn ledger_reader(db: Option<PathBuf>, config: PathBuf) -> LedgerReader {
+/// Reads the ledger's stories, teams and check, from its database or through the service.
+fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
     let read = move || -> Result<Value, Box<dyn std::error::Error>> {
-        let backend = {
-            require_ledger(db.as_deref())?;
-            match &db {
-                Some(db) => Backend::File(Store::open_read_only(db)?),
-                None => Backend::choose(None, &config)?,
-            }
-        };
+        // Read-only, straight from Postgres: the viewer has no write path.
+        let backend = Backend::choose(location.as_ref(), &config, false)?;
         // Check first: reads refuse a broken chain, and the failure itself is what has to show.
         let (check, read_only) = match &backend {
             // Opened read-only above.
@@ -394,7 +409,7 @@ fn ledger_reader(db: Option<PathBuf>, config: PathBuf) -> LedgerReader {
 fn run_viewer(
     bind: &str,
     projects: Option<PathBuf>,
-    db: Option<PathBuf>,
+    location: Option<Location>,
     config: PathBuf,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let text = match projects {
@@ -410,13 +425,13 @@ fn run_viewer(
     let listening = listener.local_addr()?;
     println!("{}", json!({"listening": listening.to_string()}));
     std::io::Write::flush(&mut std::io::stdout())?;
-    let reader = ledger_reader(db, config);
+    let reader = ledger_reader(location, config);
     tokio::runtime::Runtime::new()?.block_on(web::serve(listener, projects, reader))?;
     Ok(json!({"stopped": true}).to_string())
 }
 
 fn run_service(
-    db: &Path,
+    location: &Location,
     bind: &str,
     state_dir: &Path,
     limit: RateLimit,
@@ -428,11 +443,12 @@ fn run_service(
         json!({"listening": listener.local_addr()?.to_string(), "fingerprint": fingerprint});
     println!("{listening}");
     std::io::Write::flush(&mut std::io::stdout())?;
-    tokio::runtime::Runtime::new()?.block_on(server::serve(listener, db, state, limit))?;
+    tokio::runtime::Runtime::new()?.block_on(server::serve(listener, location, state, limit))?;
     Ok(json!({"stopped": true}).to_string())
 }
 
 fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
+    let location = location(cli.db, cli.head_file)?;
     let (kind, body) = match cli.command {
         Command::Serve {
             bind,
@@ -444,7 +460,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             max_ledger_bytes,
             min_free_bytes,
         } => {
-            let db = cli.db.ok_or("serve needs --db or RALLY_DB")?;
+            let location = location.ok_or("serve needs --db and --head-file")?;
             let limit = RateLimit {
                 burst,
                 per_second,
@@ -453,7 +469,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 max_ledger_bytes,
                 min_free_bytes,
             };
-            return run_service(&db, &bind, &state_dir, limit);
+            return run_service(&location, &bind, &state_dir, limit);
         }
         Command::AddMachine {
             name,
@@ -499,19 +515,15 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             return Ok(json!({"paired": pairing.address, "config": path}).to_string());
         }
         Command::Web { bind, projects } => {
-            return run_viewer(&bind, projects, cli.db, config_path(cli.config)?);
+            return run_viewer(&bind, projects, location, config_path(cli.config)?);
         }
         Command::AdoptHead => {
-            require_ledger(cli.db.as_deref())?;
-            let db = cli
-                .db
-                .ok_or("adopt-head needs --db, on the service's host")?;
-            let head = Store::open(&db)?.adopt_head()?;
+            let location = location.ok_or("adopt-head needs --db, on the service's host")?;
+            let head = Store::open_read_only(&location)?.adopt_head()?;
             return Ok(json!({"adopted": head}).to_string());
         }
         Command::Check { expect } => {
-            require_ledger(cli.db.as_deref())?;
-            let backend = Backend::choose(cli.db.as_deref(), &config_path(cli.config)?)?;
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             let result: Value = match &backend {
                 Backend::File(store) => json!(store.verify(expect.as_ref())?),
                 Backend::Service(pairing) => {
@@ -529,8 +541,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             return Err(format!("the ledger failed its check:\n{text}").into());
         }
         Command::Show { story, as_of } => {
-            require_ledger(cli.db.as_deref())?;
-            let backend = Backend::choose(cli.db.as_deref(), &config_path(cli.config)?)?;
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             let path = match &story {
                 Some(id) => format!("/v1/stories/{}", encode(id)),
                 None => "/v1/stories".to_owned(),
@@ -540,8 +551,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             });
         }
         Command::Teams { team, as_of } => {
-            require_ledger(cli.db.as_deref())?;
-            let backend = Backend::choose(cli.db.as_deref(), &config_path(cli.config)?)?;
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             let path = match &team {
                 Some(name) => format!("/v1/teams/{}", encode(name)),
                 None => "/v1/teams".to_owned(),
@@ -615,12 +625,12 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
     };
 
     let name = cli.name.ok_or("--as or RALLY_NAME is needed to write")?;
-    let backend = Backend::choose(cli.db.as_deref(), &config_path(cli.config)?)?;
+    let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, true)?;
     match backend {
         Backend::File(mut store) => {
             let credential = cli
                 .credential
-                .ok_or("--credential or RALLY_CREDENTIAL is needed to write to a file")?;
+                .ok_or("--credential or RALLY_CREDENTIAL is needed to write with --db")?;
             let source = Source {
                 credential,
                 declared_name: Some(name),
