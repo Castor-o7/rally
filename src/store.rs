@@ -972,11 +972,22 @@ impl Store {
     /// Every record in order, or those up to and including `as_of`. A writer reads myko's store;
     /// a reader reads Postgres.
     pub fn records(&self, as_of: Option<u64>) -> Result<Vec<Record>, StoreError> {
+        let limit = as_of.unwrap_or(u64::MAX);
         let rows = match &self.writer {
-            Some(writer) => writer.memory_rows()?,
+            // Only the records up to `as_of` are copied out of myko's store.
+            Some(writer) => writer
+                .memory_items()?
+                .into_iter()
+                .take_while(|(seq, _)| *seq <= limit)
+                .map(|(seq, item)| Row {
+                    seq,
+                    text: item.record.clone(),
+                    hash: item.hash.clone(),
+                })
+                .collect(),
             None => self.with_sql(durable_rows)?.0,
         };
-        parse_rows(&check_chain(rows, as_of.unwrap_or(u64::MAX))?)
+        parse_rows(&check_chain(rows, limit)?)
     }
 
     /// The state as of the latest record, or as of `as_of`.

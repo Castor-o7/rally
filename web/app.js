@@ -102,6 +102,10 @@ function renderLedger(ledger, now) {
     root.append(el("p", "muted", "Its contents aren't shown, because they can't be trusted."));
     return;
   }
+  if (ledger.truncated === true) {
+    root.append(el("p", "warning", "⚠ The ledger has more stories or teams than the viewer reads, "
+      + "so only the first 4,000 of each are shown. Use rally show --after for the rest."));
+  }
   const stories = Object.entries(ledger.stories || {});
   if (stories.length === 0) {
     root.append(el("p", "muted", "No stories have been recorded yet."));

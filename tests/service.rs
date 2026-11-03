@@ -105,10 +105,12 @@ fn start_with(limits: &[&str]) -> Service<'static> {
     start_on(scratch_pg::shared(), limits)
 }
 
-const GENEROUS: [&str; 6] = [
+const GENEROUS: [&str; 8] = [
     "--burst",
     "1000",
     "--write-burst",
+    "1000",
+    "--heavy-burst",
     "1000",
     "--min-free-bytes",
     "0",
@@ -1174,4 +1176,107 @@ fn failed_token_attempts_are_limited_per_address() {
     assert_eq!(reply.status, 429, "{}", reply.body);
     // Refused before the token is looked at, so a guess can't tell a right token from a wrong one.
     assert_eq!(call(&pairing, "GET", "/v1/whoami", None).status, 429);
+}
+
+#[test]
+fn checks_and_past_state_reads_have_their_own_limit_and_plain_reads_carry_on() {
+    let service = start_with(&[
+        "--burst",
+        "1000",
+        "--write-burst",
+        "1000",
+        "--min-free-bytes",
+        "0",
+        "--heavy-burst",
+        "3",
+        "--heavy-per-second",
+        "0.001",
+    ]);
+    let pairing = service.add("a1", false);
+    assert_eq!(ready(&pairing).status, 200);
+    assert_eq!(call(&pairing, "GET", "/v1/check", None).status, 200);
+    assert_eq!(
+        call(&pairing, "GET", "/v1/stories?as_of=1", None).status,
+        200
+    );
+    assert_eq!(call(&pairing, "GET", "/v1/check", None).status, 200);
+    for path in [
+        "/v1/check",
+        "/v1/stories?as_of=1",
+        "/v1/teams/rally?as_of=1",
+    ] {
+        let reply = call(&pairing, "GET", path, None);
+        assert_eq!(reply.status, 429, "{path}: {}", reply.body);
+    }
+    // Another credential has its own, and the current state is still read freely.
+    let other = service.add("a2", true);
+    assert_eq!(call(&other, "GET", "/v1/check", None).status, 200);
+    for _ in 0..20 {
+        assert_eq!(call(&pairing, "GET", "/v1/stories", None).status, 200);
+    }
+}
+
+#[test]
+fn lists_and_histories_come_in_pages_through_the_service() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let total = rally::views::HISTORY_LIMIT + 5;
+    for i in 0..total {
+        let body = json!({"change": "team_state", "team": "rally", "status": "working",
+                          "note": format!("state {i}")});
+        assert_eq!(write(&pairing, "someone", "declared", body).status, 200);
+    }
+    let page: Value =
+        serde_json::from_str(&call(&pairing, "GET", "/v1/teams/rally", None).body).unwrap();
+    assert_eq!(page["history_total"], total);
+    assert_eq!(
+        page["detail"]["history"].as_array().unwrap().len(),
+        rally::views::HISTORY_LIMIT
+    );
+    let earlier = page["earlier"].as_u64().unwrap();
+    let path = format!("/v1/teams/rally?before={earlier}");
+    let page: Value = serde_json::from_str(&call(&pairing, "GET", &path, None).body).unwrap();
+    assert_eq!(page["detail"]["history"].as_array().unwrap().len(), 5);
+    assert!(page.get("earlier").is_none());
+
+    assert_eq!(ready(&pairing).status, 200);
+    let list: Value =
+        serde_json::from_str(&call(&pairing, "GET", "/v1/stories", None).body).unwrap();
+    assert!(list["stories"]["RAL-13"].is_object());
+    assert!(list.get("next").is_none());
+    let after: Value =
+        serde_json::from_str(&call(&pairing, "GET", "/v1/stories?after=RAL-13", None).body)
+            .unwrap();
+    assert!(after["stories"].as_object().unwrap().is_empty());
+    let long = format!("/v1/stories?after={}", "x".repeat(300));
+    assert_eq!(call(&pairing, "GET", &long, None).status, 400);
+}
+
+#[test]
+fn limits_below_one_are_refused_at_start() {
+    let service = start();
+    for (flag, value) in [
+        ("--failed-token-burst", "0"),
+        ("--heavy-burst", "0.5"),
+        ("--write-per-second=-1", ""),
+        ("--max-connections", "0"),
+    ] {
+        let output = rally()
+            .arg("--db")
+            .arg(&service.db.url)
+            .arg("--head-file")
+            .arg(service.head_file())
+            .args(["serve", "--bind", "127.0.0.1:0", flag])
+            .args([value].into_iter().filter(|value| !value.is_empty()))
+            .arg("--state-dir")
+            .arg(service.state_dir())
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{flag} {value} was accepted");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("must") || error.contains("can't"),
+            "{flag}: {error}"
+        );
+    }
 }
