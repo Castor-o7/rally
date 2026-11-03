@@ -204,6 +204,11 @@ pub enum LedgerError {
         name: String,
     },
     /// A correction names a record that isn't an earlier record of this story.
+    /// Text looks like a secret (RAL-17). Holds the field and the format, never the text.
+    SecretLike {
+        field: String,
+        format: &'static str,
+    },
     InvalidCorrectionTarget {
         story: String,
         corrects: u64,
@@ -233,6 +238,10 @@ impl fmt::Display for LedgerError {
             Self::SelfVerification { story, name } => {
                 write!(f, "{name} submitted {story}, so can't verify it")
             }
+            Self::SecretLike { field, format } => write!(
+                f,
+                "{field} looks like it holds a {format}, so it wasn't recorded; if it's real, revoke it"
+            ),
             Self::InvalidCorrectionTarget { story, corrects } => {
                 write!(f, "record {corrects} isn't an earlier record of {story}")
             }
@@ -305,6 +314,9 @@ impl Ledger {
     /// Rules for new records that replay doesn't apply (RAL-42). A record they'd refuse isn't
     /// invalid in a ledger that already holds it.
     fn check_new_rules(&self, record: &Record) -> Result<(), LedgerError> {
+        // Before anything else: a refused record must not reach the ledger, whatever else is wrong
+        // with it, and the ledger can't forget one it took (RAL-17).
+        check_secrets(record)?;
         // A body that isn't a change is refused by `apply`, with its own reason.
         let Ok(change) = serde_json::from_value::<Change>(record.body().clone()) else {
             return Ok(());
@@ -627,6 +639,30 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         } => check_limit("note", note),
         _ => Ok(()),
     }
+}
+
+/// Refuses a record with secret-looking text in any string its body carries, or in its declared
+/// name. Not the credential, which is how the service knows the writer, not text it wrote.
+fn check_secrets(record: &Record) -> Result<(), LedgerError> {
+    fn walk(field: &str, value: &serde_json::Value) -> Result<(), LedgerError> {
+        match value {
+            serde_json::Value::String(text) => match crate::secrets::find(text) {
+                Some(format) => Err(LedgerError::SecretLike {
+                    field: field.to_owned(),
+                    format: format.name(),
+                }),
+                None => Ok(()),
+            },
+            serde_json::Value::Array(items) => items.iter().try_for_each(|v| walk(field, v)),
+            serde_json::Value::Object(map) => map.iter().try_for_each(|(k, v)| walk(k, v)),
+            _ => Ok(()),
+        }
+    }
+    walk("body", record.body())?;
+    if let Some(name) = &record.source().declared_name {
+        walk("declared name", &serde_json::Value::String(name.clone()))?;
+    }
+    Ok(())
 }
 
 /// Limits on text that teams write and others read (RAL-16). Names have to fit on a line.
@@ -1254,10 +1290,70 @@ mod tests {
             json!({"change": "correct", "story": STORY, "corrects": 3, "note": "fine"}),
         );
         let padded = team(json!({"change": "ready", "story": "RAL-01"}));
-        for (ledger, record) in [(&submitted, &own_note), (&Ledger::default(), &padded)] {
+        let leaked = team(json!({
+            "change": "team_state", "team": "rally", "status": "working",
+            "note": format!("pasted ghp_{}", "a".repeat(36)),
+        }));
+        for (ledger, record) in [
+            (&submitted, &own_note),
+            (&Ledger::default(), &padded),
+            (&Ledger::default(), &leaked),
+        ] {
             assert!(ledger.check(ledger.last_seq() + 1, record).is_err());
             assert!(ledger.clone().apply(ledger.last_seq() + 1, record).is_ok());
         }
+    }
+
+    #[test]
+    fn a_secret_in_any_text_is_refused_by_name_not_by_value() {
+        let token = format!("AKIA{}", "Q".repeat(16));
+        let cases = [
+            (
+                team(
+                    json!({"change": "team_state", "team": "rally", "status": "working", "note": token}),
+                ),
+                "note",
+            ),
+            (
+                team(json!({"change": "claim", "story": STORY, "team": token})),
+                "team",
+            ),
+            (
+                record(
+                    Kind::Declared,
+                    &token,
+                    json!({"change": "ready", "story": STORY}),
+                ),
+                "declared name",
+            ),
+        ];
+        for (rec, field) in cases {
+            let err = Ledger::default().check(1, &rec).unwrap_err();
+            assert!(
+                matches!(&err, LedgerError::SecretLike { field: f, format: "AWS access key" } if f == field),
+                "{field}: {err:?}"
+            );
+            assert!(
+                !err.to_string().contains(&token),
+                "the refusal mustn't echo the secret"
+            );
+        }
+        let mut ledger = ledger_with(&[ready(), claim()]);
+        let evidence = team(json!({
+            "change": "submit", "story": STORY, "team": "rally",
+            "evidence": format!("token: {}", "0123456789abcdef".repeat(3)),
+        }));
+        assert!(matches!(
+            ledger.check(ledger.last_seq() + 1, &evidence),
+            Err(LedgerError::SecretLike { .. })
+        ));
+        // A plain commit hash is evidence, not a secret.
+        let commit = team(json!({
+            "change": "submit", "story": STORY, "team": "rally",
+            "evidence": format!("Castor-o7/rally {}", "0123456789abcdef".repeat(3)),
+        }));
+        assert!(ledger.check(ledger.last_seq() + 1, &commit).is_ok());
+        assert!(apply_next(&mut ledger, &commit).is_ok());
     }
 
     #[test]

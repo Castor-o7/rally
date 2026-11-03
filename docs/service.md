@@ -125,6 +125,21 @@ characters.
 
 A notice can't stop an agent being persuaded by what it reads. It only makes the boundary visible.
 
+## Secrets
+
+A write is refused if any text in it, including its declared name, looks like a secret (RAL-17): a GitHub,
+AWS, Slack, Google, Anthropic or OpenAI key or token, a JSON web token, a PEM private key, or a long hex or
+base64 run straight after a word like `token`, `key`, `secret` or `password`. The refusal names the field and
+the kind of secret, never the text, so the secret doesn't reach the client's output or the service's log. A
+plain commit hash isn't refused. The formats are in `src/secrets.rs`.
+
+A hex run of exactly 40 or 64 characters isn't counted even after a label, because the ledger cites
+commits, chain hashes and certificate fingerprints of those lengths, so a hex secret of exactly that length
+gets through too. The check only recognizes those formats, so a secret in any other form gets through. If one does, revoke it at
+its source straight away: that's what makes it harmless. The ledger is append-only, so the record stays, and
+a later correction can't remove it. Record a correction saying the text was a revoked secret, so readers know
+not to try it, and tell the operator, who decides whether the backups that hold it need handling too.
+
 ## What an accepted write proves
 
 It proves that a process holding that machine's token sent it, and that the change was valid at that point.
