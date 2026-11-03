@@ -63,7 +63,7 @@ The web app comes after this.
 
 The bones. Everything later reads from this.
 
-- [ ] **RAL-39: Make Rally a myko service.** Requested by the operator on 2026-11-02. See the design. Done
+- [x] **RAL-39: Make Rally a myko service.** Requested by the operator on 2026-11-02. See the design. Done
   when: records are myko entities appended through one command with today's checks; every existing guarantee
   still has a passing test; a test shows a raw event from a client is refused; `rally check --expect` can check
   the chain from outside myko; records survive a restart; an append isn't acknowledged until Postgres has it, with
