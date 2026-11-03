@@ -9,7 +9,7 @@
 //! The check that a verifier isn't the submitter compares declared names, so it catches mistakes,
 //! not forgery. See `docs/threat-model.md`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -131,6 +131,10 @@ pub struct Story {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub submitted_by: Option<String>,
     pub history: Vec<HistoryEntry>,
+    /// The declared names of everyone who ever claimed or submitted it, compared as
+    /// [`same_name`] does, so that checking a verifier doesn't search the whole history.
+    #[serde(skip)]
+    authors: BTreeSet<String>,
 }
 
 /// One declared state of a team.
@@ -330,6 +334,7 @@ impl Ledger {
                     team: None,
                     submitted_by: None,
                     history: Vec::new(),
+                    authors: BTreeSet::new(),
                 },
             );
         } else {
@@ -341,6 +346,11 @@ impl Ledger {
         }
 
         let story = self.stories.get_mut(&id).expect("the story exists by now");
+        if matches!(change, Change::Claim { .. } | Change::Submit { .. })
+            && let Some(name) = &record.source().declared_name
+        {
+            story.authors.insert(name_key(name));
+        }
         story.history.push(HistoryEntry {
             seq,
             kind: record.kind(),
@@ -417,7 +427,11 @@ fn transition(
             team,
             ..
         } => {
-            let target = story.history.iter().position(|e| e.seq == *corrects);
+            // History is in record order, so the target can be found without a scan.
+            let target = story
+                .history
+                .binary_search_by_key(corrects, |entry| entry.seq)
+                .ok();
             let Some(target) = target else {
                 return Err(LedgerError::InvalidCorrectionTarget {
                     story: id.to_owned(),
@@ -493,14 +507,7 @@ fn require_verifier(story: &Story, id: &str, record: &Record) -> Result<(), Ledg
     };
     // Anyone who ever claimed or submitted this story counts as an author, as does the team
     // holding it.
-    let authored = story.history.iter().any(|entry| {
-        matches!(entry.change, Change::Claim { .. } | Change::Submit { .. })
-            && entry
-                .source
-                .declared_name
-                .as_deref()
-                .is_some_and(|submitter| same_name(submitter, name))
-    });
+    let authored = story.authors.contains(&name_key(name));
     let holds = story
         .team
         .as_deref()
@@ -516,7 +523,11 @@ fn require_verifier(story: &Story, id: &str, record: &Record) -> Result<(), Ledg
 
 /// Compares declared names, ignoring case and surrounding space, to catch honest slips.
 fn same_name(a: &str, b: &str) -> bool {
-    a.trim().to_lowercase() == b.trim().to_lowercase()
+    name_key(a) == name_key(b)
+}
+
+fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
 }
 
 fn check_fields(change: &Change) -> Result<(), LedgerError> {
@@ -1054,6 +1065,36 @@ mod tests {
             "change": "correct", "story": STORY, "corrects": corrects, "note": "x",
             "state": target, "team": "rally"
         })
+    }
+
+    /// Applies `n` corrections to one story, each naming the newest record, which is the slowest
+    /// one to find by searching from the start. Verified ones with a state also check authorship.
+    fn time_corrections(n: u64) -> std::time::Duration {
+        let mut ledger = ledger_with(&[ready(), claim(), submit()]);
+        let started = std::time::Instant::now();
+        for _ in 0..n {
+            let newest = ledger.last_seq();
+            let body = if newest.is_multiple_of(2) {
+                json!({"change": "correct", "story": STORY, "corrects": newest, "note": "x"})
+            } else {
+                json!({"change": "correct", "story": STORY, "corrects": newest, "note": "x",
+                       "state": "in_review"})
+            };
+            apply_next(&mut ledger, &verifier(body)).unwrap();
+        }
+        started.elapsed()
+    }
+
+    #[test]
+    fn corrections_replay_in_linear_time() {
+        // Measured before the fix, in a release build: 4 times the corrections took 9 times as long.
+        let time = |n| (0..3).map(|_| time_corrections(n)).min().unwrap();
+        let (small, large) = (time(3_000), time(12_000));
+        let ratio = large.as_secs_f64() / small.as_secs_f64();
+        assert!(
+            ratio < 8.0,
+            "4 times the corrections took {ratio:.1} times as long ({small:?}, {large:?})"
+        );
     }
 
     #[test]
