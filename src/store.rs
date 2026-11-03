@@ -2,7 +2,7 @@
 //!
 //! Each record is a `LedgerRecord` entity in myko's events table. A writer runs myko in this
 //! process without its listener, so nothing but Rally can reach it, and appends only through
-//! [`AppendLedgerRecord`], which checks the record against the replayed state. The row is committed
+//! [`AppendLedgerRecord`], which checks the record against the state kept since the last replay. The row is committed
 //! to Postgres before the record enters myko's store or is acknowledged, so a refused or failed
 //! append leaves no trace. One writer at a time holds a Postgres advisory lock, and the table
 //! refuses updates, deletes and a second version of any record, which catches mistakes.
@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use myko::command::{CommandContext, CommandError, CommandHandler};
@@ -490,6 +490,27 @@ fn writers() -> &'static Mutex<HashMap<Uuid, Arc<Writer>>> {
 #[cfg(test)]
 type CommitHook = Box<dyn FnOnce(i32) + Send>;
 
+/// The state as of the newest record, kept up to date by each append, so that neither reads nor
+/// appends replay the whole ledger (RAL-35). It's built by replaying myko's copy when the writer
+/// opens, and changed only by an append, under the writer's lock, after Postgres has the record.
+struct Kept {
+    ledger: Ledger,
+    /// Each record's chain hash: record `n` is at `n - 1`.
+    hashes: Vec<String>,
+}
+
+impl Kept {
+    fn head(&self) -> Head {
+        Head {
+            seq: self.ledger.last_seq(),
+            hash: self
+                .hashes
+                .last()
+                .map_or_else(|| CHAIN_START.to_owned(), Clone::clone),
+        }
+    }
+}
+
 /// The writing half: myko without a listener, and the connection holding the writer lock.
 struct Writer {
     server: MykoServer,
@@ -508,9 +529,21 @@ struct Writer {
     reply_lost: Mutex<bool>,
     /// The size limit and disk floor, checked under the writer's lock before each append.
     space: Mutex<Option<SpaceLimits>>,
+    /// The current state, or `None` until it can be built: if myko's copy doesn't replay, each
+    /// read and append tries again and reports why it can't.
+    kept: RwLock<Option<Kept>>,
+    /// A read-only connection of its own for checks, so a check never holds the writer's lock
+    /// while it reads Postgres. One check runs at a time, which also bounds their memory.
+    check_sql: Mutex<Option<Client>>,
     /// For tests: widens the gaps between steps where another request could get in.
     #[cfg(test)]
     pause: Mutex<Duration>,
+    /// For tests: how long a check's read of Postgres takes, at least.
+    #[cfg(test)]
+    slow_check: Mutex<Duration>,
+    /// For tests: how many times this writer has replayed the whole ledger.
+    #[cfg(test)]
+    replays: AtomicU64,
 }
 
 /// An open ledger.
@@ -651,13 +684,22 @@ impl Store {
             sql: Mutex::new(sql),
             failures: Mutex::new(HashMap::new()),
             space: Mutex::new(None),
+            kept: RwLock::new(None),
+            check_sql: Mutex::new(None),
             #[cfg(test)]
             before_commit: Mutex::new(None),
             #[cfg(test)]
             reply_lost: Mutex::new(false),
             #[cfg(test)]
             pause: Mutex::new(Duration::ZERO),
+            #[cfg(test)]
+            slow_check: Mutex::new(Duration::ZERO),
+            #[cfg(test)]
+            replays: AtomicU64::new(0),
         });
+        // A ledger that doesn't replay still opens, so that `check` can say what's wrong.
+        let kept = writer.build_kept().ok();
+        *writer.kept_mut() = kept;
         writers()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -793,20 +835,57 @@ impl Store {
         // Read the head first: a write in between then leaves it behind, which is allowed, rather
         // than ahead, which looks like records were removed.
         let saved_head = read_head_file(&self.location.head_file);
-        // Both copies are read under the writer's lock, which an append holds from its own check
-        // until myko's copy has the record, so an append in flight can't look like a difference.
-        let (rows, mut history, memory) = self.with_sql(|sql| {
-            let (rows, history) = durable_rows(sql)?;
-            #[cfg(test)]
-            if let Some(writer) = &self.writer {
-                writer.pause();
+        let (rows, mut history, memory) = match &self.writer {
+            None => {
+                let (rows, history) = self.with_sql(durable_rows)?;
+                (rows, history, None)
             }
-            let memory = match &self.writer {
-                Some(writer) => Some(writer.memory_rows()?),
-                None => None,
-            };
-            Ok((rows, history, memory))
-        })?;
+            Some(writer) => {
+                // Postgres is read on the check's own connection, without the writer's lock, and
+                // one check at a time.
+                let mut check_sql = writer
+                    .check_sql
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if check_sql
+                    .as_mut()
+                    .is_none_or(|sql| sql.is_closed() || sql.simple_query("SELECT 1").is_err())
+                {
+                    *check_sql = Some(connect(&self.location, true)?);
+                }
+                let (rows, mut history) =
+                    durable_rows(check_sql.as_mut().expect("connected above"))?;
+                #[cfg(test)]
+                {
+                    writer.pause();
+                    std::thread::sleep(*writer.slow_check.lock().unwrap());
+                }
+                // Then myko's copy, under the writer's lock just long enough to wait out an append
+                // in flight. Every record Postgres had is in it by then. Records beyond those are
+                // allowed only if they're the service's own appends since, which the kept state
+                // records; anything else in myko's copy is a difference.
+                let (memory, own_appends) = {
+                    let _sql = writer
+                        .sql
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let memory = writer.memory_items()?;
+                    let kept = writer.kept();
+                    let own_appends = match kept.as_ref() {
+                        Some(kept) => match writer.check_memory(kept) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                history.push(error.to_string());
+                                false
+                            }
+                        },
+                        None => false,
+                    };
+                    (memory, own_appends)
+                };
+                (rows, history, Some((memory, own_appends)))
+            }
+        };
         match check_chain(rows.clone(), u64::MAX) {
             Ok(read) => chain = read,
             Err(error @ (StoreError::Tampered { .. } | StoreError::Inconsistent(_))) => {
@@ -830,11 +909,12 @@ impl Store {
             }
         }
         // Not part of the chain's own story, so they don't stop the head comparisons below.
-        if let Some(memory) = &memory
-            && let Some(reason) = differs(memory, &rows)
+        if let Some((memory, own_appends)) = &memory
+            && let Some(reason) = differs(memory, &rows, *own_appends)
         {
             history.push(reason);
         }
+        drop(memory);
         let head = head_of(&chain);
         let mut notes = Vec::new();
         if problems.is_empty() {
@@ -901,7 +981,26 @@ impl Store {
 
     /// The state as of the latest record, or as of `as_of`.
     pub fn ledger(&self, as_of: Option<u64>) -> Result<Ledger, StoreError> {
-        replay(&self.records(as_of)?)
+        self.with_ledger(as_of, Ledger::clone)
+    }
+
+    /// Runs `read` on the state as of the latest record, or as of `as_of`. A writer reads its kept
+    /// state without copying it; a past state, or a reader's, is replayed as far as it needs to be.
+    pub fn with_ledger<T>(
+        &self,
+        as_of: Option<u64>,
+        read: impl FnOnce(&Ledger) -> T,
+    ) -> Result<T, StoreError> {
+        if let Some(writer) = &self.writer {
+            writer.ensure_kept()?;
+            let kept = writer.kept();
+            if let Some(kept) = kept.as_ref()
+                && as_of.is_none_or(|seq| seq >= kept.ledger.last_seq())
+            {
+                return Ok(read(&kept.ledger));
+            }
+        }
+        Ok(read(&replay(&self.records(as_of)?)?))
     }
 }
 
@@ -915,25 +1014,94 @@ impl Writer {
         std::thread::sleep(pause);
     }
 
-    /// Every record in myko's store, sorted by number, because the store keeps no order.
-    fn memory_rows(&self) -> Result<Vec<Row>, StoreError> {
+    /// Every record in myko's store, shared rather than copied, sorted by number, because the
+    /// store keeps no order.
+    fn memory_items(&self) -> Result<Vec<(u64, Arc<LedgerRecord>)>, StoreError> {
         let request = Arc::new(RequestContext::internal(
             Arc::from(Uuid::new_v4().to_string()),
             self.server.host_id,
             "rally",
         ));
         let items = self.ctx.query_snapshot(GetAllLedgerRecords {}, request);
-        let mut rows = Vec::with_capacity(items.len());
+        let mut sorted = Vec::with_capacity(items.len());
         for item in items {
-            let seq = parse_seq(&item.id.0)?;
-            rows.push(Row {
+            sorted.push((parse_seq(&item.id.0)?, item));
+        }
+        sorted.sort_by_key(|(seq, _)| *seq);
+        Ok(sorted)
+    }
+
+    /// Every record in myko's store, sorted by number.
+    fn memory_rows(&self) -> Result<Vec<Row>, StoreError> {
+        Ok(self
+            .memory_items()?
+            .into_iter()
+            .map(|(seq, item)| Row {
                 seq,
                 text: item.record.clone(),
                 hash: item.hash.clone(),
-            });
+            })
+            .collect())
+    }
+
+    /// Replays myko's whole copy, checking its chain.
+    fn build_kept(&self) -> Result<Kept, StoreError> {
+        #[cfg(test)]
+        self.replays.fetch_add(1, Ordering::Relaxed);
+        let chain = check_chain(self.memory_rows()?, u64::MAX)?;
+        let ledger = replay(&parse_rows(&chain)?)?;
+        let hashes = chain.into_iter().map(|row| row.hash).collect();
+        Ok(Kept { ledger, hashes })
+    }
+
+    fn kept(&self) -> std::sync::RwLockReadGuard<'_, Option<Kept>> {
+        self.kept
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn kept_mut(&self) -> std::sync::RwLockWriteGuard<'_, Option<Kept>> {
+        self.kept
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Builds the kept state if there isn't one yet, or says why it can't be.
+    fn ensure_kept(&self) -> Result<(), StoreError> {
+        if self.kept().is_some() {
+            return Ok(());
         }
-        rows.sort_by_key(|row| row.seq);
-        Ok(rows)
+        // Under the writer's lock, so no append changes myko's copy while this replays it.
+        let _sql = self
+            .sql
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.kept().is_none() {
+            let kept = self.build_kept()?;
+            *self.kept_mut() = Some(kept);
+        }
+        Ok(())
+    }
+
+    /// Refuses if myko's copy no longer holds exactly the records the kept state was built from,
+    /// which only something writing into myko past the append path could cause. It compares
+    /// numbers and hashes, without copying or rehashing any record; `verify` compares the rest.
+    fn check_memory(&self, kept: &Kept) -> Result<(), StoreError> {
+        let items = self.memory_items()?;
+        let same =
+            items.len() == kept.hashes.len()
+                && items.iter().zip(&kept.hashes).enumerate().all(
+                    |(index, ((seq, item), hash))| *seq == index as u64 + 1 && item.hash == *hash,
+                );
+        if same {
+            Ok(())
+        } else {
+            Err(StoreError::Diverged(
+                "the service's copy of the ledger in myko was changed past the append path; \
+                 restart it to replay, then run `rally check`"
+                    .to_owned(),
+            ))
+        }
     }
 
     /// The append itself, holding the writer lock throughout.
@@ -955,12 +1123,21 @@ impl Writer {
         if let Some(space) = space {
             check_space(&mut sql, space)?;
         }
-        let chain = check_chain(self.memory_rows()?, u64::MAX)?;
-        let mut ledger = replay(&parse_rows(&chain)?)?;
-        check_head_on_chain(&self.location.head_file, &chain)?;
-        let seq = ledger.last_seq() + 1;
-        ledger.apply(seq, &record).map_err(StoreError::Refused)?;
-        let previous = head_of(&chain);
+        if self.kept().is_none() {
+            let kept = self.build_kept()?;
+            *self.kept_mut() = Some(kept);
+        }
+        let (seq, previous) = {
+            let kept = self.kept();
+            let kept = kept.as_ref().expect("built above");
+            self.check_memory(kept)?;
+            check_head_on_chain(&self.location.head_file, &kept.hashes)?;
+            let seq = kept.ledger.last_seq() + 1;
+            kept.ledger
+                .check(seq, &record)
+                .map_err(StoreError::Refused)?;
+            (seq, kept.head())
+        };
         let hash = chain_hash(&previous.hash, seq, &text);
 
         // Postgres must still hold exactly what this writer replayed, or the chain would fork.
@@ -1033,6 +1210,17 @@ impl Writer {
             seq,
             reason: e.to_string(),
         })?;
+        {
+            let mut kept = self.kept_mut();
+            let applied = kept
+                .as_mut()
+                .map(|kept| kept.ledger.apply(seq, &record).map(|()| &mut kept.hashes));
+            match applied {
+                Some(Ok(hashes)) => hashes.push(hash.clone()),
+                // `check` accepted it, so this can't happen; if it does, the next read replays.
+                _ => *kept = None,
+            }
+        }
         // If this fails or the process dies here, the file is merely behind, which `verify` notes.
         let head = Head { seq, hash };
         if let Err(error) = save_head(&self.location.head_file, &head) {
@@ -1196,16 +1384,22 @@ fn durable_rows(sql: &mut Client) -> Result<(Vec<Row>, Vec<String>), StoreError>
     Ok((rows, history))
 }
 
-/// Says how myko's copy differs from Postgres, if it does.
-fn differs(memory: &[Row], durable: &[Row]) -> Option<String> {
-    if memory == durable {
+/// Says how myko's copy differs from Postgres, if it does. myko's copy was read after Postgres, so
+/// it may hold records appended since, beyond the end of what Postgres gave.
+fn differs(
+    memory: &[(u64, Arc<LedgerRecord>)],
+    durable: &[Row],
+    allow_more: bool,
+) -> Option<String> {
+    let same = |(seq, item): &(u64, Arc<LedgerRecord>), row: &Row| {
+        *seq == row.seq && item.record == row.text && item.hash == row.hash
+    };
+    let first = memory.iter().zip(durable).position(|(a, b)| !same(a, b));
+    let lengths_fit = memory.len() == durable.len() || (allow_more && memory.len() > durable.len());
+    if first.is_none() && lengths_fit {
         return None;
     }
-    let first = memory
-        .iter()
-        .zip(durable)
-        .position(|(a, b)| a != b)
-        .unwrap_or_else(|| memory.len().min(durable.len()));
+    let first = first.unwrap_or_else(|| memory.len().min(durable.len()));
     Some(format!(
         "the service's copy of the ledger differs from Postgres from position {} \
          ({} records in the copy, {} in Postgres)",
@@ -1266,7 +1460,7 @@ fn parse_rows(chain: &[Row]) -> Result<Vec<Record>, StoreError> {
 }
 
 /// Refuses unless the head file names a point on the current chain.
-fn check_head_on_chain(head_file: &Path, chain: &[Row]) -> Result<(), StoreError> {
+fn check_head_on_chain(head_file: &Path, hashes: &[String]) -> Result<(), StoreError> {
     let head = read_head_file(head_file)
         .map_err(StoreError::HeadMismatch)?
         .ok_or_else(|| StoreError::HeadMismatch("the head file is missing".to_owned()))?;
@@ -1275,8 +1469,8 @@ fn check_head_on_chain(head_file: &Path, chain: &[Row]) -> Result<(), StoreError
     } else {
         usize::try_from(head.seq - 1)
             .ok()
-            .and_then(|index| chain.get(index))
-            .map(|row| row.hash.as_str())
+            .and_then(|index| hashes.get(index))
+            .map(String::as_str)
     };
     match hash {
         Some(hash) if hash.eq_ignore_ascii_case(&head.hash) => Ok(()),
@@ -2161,6 +2355,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn replays(store: &Store) -> u64 {
+        store
+            .writer
+            .as_ref()
+            .unwrap()
+            .replays
+            .load(Ordering::Relaxed)
+    }
+
+    #[test]
+    fn reads_and_appends_use_the_kept_state_without_replaying() {
+        let mut scratch = two_records();
+        let before = replays(scratch.store());
+        for i in 0..5 {
+            scratch.store().append(&note()).unwrap();
+            assert!(scratch.store().append(&ready()).is_err(), "a refusal, {i}");
+            assert_eq!(scratch.store().ledger(None).unwrap().last_seq(), 3 + i);
+        }
+        assert_eq!(
+            replays(scratch.store()),
+            before,
+            "nothing replayed the whole ledger"
+        );
+        // The kept state is what a replay from Postgres gives.
+        assert_eq!(
+            scratch.store().ledger(None).unwrap(),
+            scratch.reader().ledger(None).unwrap()
+        );
+        // A past state still replays, as far as it needs to.
+        assert_eq!(scratch.store().ledger(Some(2)).unwrap().last_seq(), 2);
+    }
+
+    #[test]
+    fn an_append_is_not_held_up_by_a_check_reading_postgres() {
+        let mut scratch = two_records();
+        let store = Arc::new(scratch.store.take().unwrap());
+        *store.writer.as_ref().unwrap().slow_check.lock().unwrap() = Duration::from_millis(1500);
+        let checker = {
+            let store = store.clone();
+            std::thread::spawn(move || store.verify(None).unwrap())
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        let started = Instant::now();
+        assert_eq!(store.append(&note()).unwrap(), 3);
+        let waited = started.elapsed();
+        assert!(checker.join().unwrap().ok);
+        assert!(
+            waited < Duration::from_millis(1000),
+            "the append waited {waited:?}"
+        );
+        assert!(store.verify(None).unwrap().ok);
     }
 
     #[test]

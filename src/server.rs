@@ -46,9 +46,9 @@ impl Default for RateLimit {
             per_second: 5.0,
             write_burst: 30.0,
             write_per_second: 0.2,
-            // The size of the ledger's table in Postgres, with its indexes. Each request replays
-            // the whole ledger in memory, on a host shared with Muster: see `docs/service.md` for
-            // what this costs. Raise this only after RAL-35.
+            // The size of the ledger's table in Postgres, with its indexes. The service holds the
+            // whole ledger in memory, and a check replays it, on a host shared with Muster: see
+            // `docs/service.md` for what this costs. Raise this only after RAL-35.
             max_ledger_bytes: 64 * 1024 * 1024,
             min_free_bytes: 5 * 1024 * 1024 * 1024,
         }
@@ -185,8 +185,14 @@ impl Service {
         tokio::task::block_in_place(|| work(&self.store))
     }
 
-    fn ledger(&self, as_of: Option<u64>) -> Result<Ledger, StoreError> {
-        self.with_store(|store| store.ledger(as_of))
+    /// Runs `read` on the ledger's state. The current state is the one the service keeps, read
+    /// without a copy; a past state is replayed.
+    fn with_ledger<T>(
+        &self,
+        as_of: Option<u64>,
+        read: impl FnOnce(&Ledger) -> T,
+    ) -> Result<T, StoreError> {
+        self.with_store(|store| store.with_ledger(as_of, read))
     }
 }
 
@@ -278,13 +284,10 @@ fn view(
     as_of: AsOf,
     read: impl FnOnce(&Ledger) -> Result<Value, String>,
 ) -> Response {
-    let ledger = match service.ledger(as_of.as_of) {
-        Ok(ledger) => ledger,
-        Err(error) => return internal(&error),
-    };
-    match read(&ledger) {
-        Ok(value) => Json(value).into_response(),
-        Err(message) => failure(StatusCode::NOT_FOUND, message),
+    match service.with_ledger(as_of.as_of, read) {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(message)) => failure(StatusCode::NOT_FOUND, message),
+        Err(error) => internal(&error),
     }
 }
 

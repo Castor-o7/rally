@@ -133,6 +133,10 @@ pub struct Story {
     pub history: Vec<HistoryEntry>,
     /// The declared names of everyone who ever claimed or submitted it, compared as
     /// [`same_name`] does, so that checking a verifier doesn't search the whole history.
+    ///
+    /// Not serialized, so a `Story` must only ever be built by [`Ledger::apply`], never read back
+    /// from JSON: one rebuilt without it would let an author verify their own story. The state the
+    /// service keeps between requests is this same in-memory `Ledger`, built by replay and apply.
     #[serde(skip)]
     authors: BTreeSet<String>,
 }
@@ -272,6 +276,27 @@ impl Ledger {
     /// Teams by name, in lower case without surrounding space, so `Rally` and `rally` are one team.
     pub fn teams(&self) -> &BTreeMap<String, Team> {
         &self.teams
+    }
+
+    /// Says whether [`apply`](Self::apply) would accept this record next, without changing
+    /// anything. It copies only the one story the record is about, so it costs that story's size,
+    /// not the ledger's.
+    pub fn check(&self, seq: u64, record: &Record) -> Result<(), LedgerError> {
+        let mut trial = Self {
+            last_seq: self.last_seq,
+            ..Self::default()
+        };
+        // A team's state never depends on what came before, and a change that doesn't parse is
+        // refused the same way with or without its story.
+        if let Ok(change) = serde_json::from_value::<Change>(record.body().clone())
+            && !matches!(change, Change::TeamState { .. })
+            && let Some(story) = self.stories.get(change.story())
+        {
+            trial
+                .stories
+                .insert(change.story().to_owned(), story.clone());
+        }
+        trial.apply(seq, record)
     }
 
     /// Applies one record, or refuses it and leaves the state unchanged.
@@ -1095,6 +1120,50 @@ mod tests {
             ratio < 8.0,
             "4 times the corrections took {ratio:.1} times as long ({small:?}, {large:?})"
         );
+    }
+
+    #[test]
+    fn checking_a_record_agrees_with_applying_it_and_changes_nothing() {
+        let candidates = [
+            ready(),
+            claim(),
+            release(),
+            submit(),
+            verify(),
+            send_back(),
+            verify_as("alice"),
+            verify_as("rally"),
+            verifier(correct_to("claimed", 2)),
+            team(correct_to("in_review", 3)),
+            team(json!({"change": "correct", "story": STORY, "corrects": 99, "note": "x"})),
+            team(json!({"change": "claim", "story": "RAL-9", "team": "rally"})),
+            team(json!({"change": "team_state", "team": "rally", "status": "working"})),
+            team(json!({"change": "nonsense"})),
+        ];
+        let prefixes: [&[Record]; 5] = [
+            &[],
+            &[ready()],
+            &[ready(), claim()],
+            &[ready(), claim(), submit()],
+            &[ready(), claim(), submit(), send_back()],
+        ];
+        for prefix in prefixes {
+            let ledger = ledger_with(prefix);
+            for record in &candidates {
+                let before = ledger.clone();
+                let checked = ledger.check(ledger.last_seq() + 1, record);
+                assert_eq!(ledger, before);
+                let mut applied = ledger.clone();
+                let result = apply_next(&mut applied, record);
+                assert_eq!(
+                    checked,
+                    result,
+                    "after {} records: {record:?}",
+                    prefix.len()
+                );
+            }
+            assert!(ledger.check(ledger.last_seq() + 2, &ready()).is_err());
+        }
     }
 
     #[test]
