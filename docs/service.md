@@ -24,7 +24,8 @@ rally add-machine a1 --address <LAN address>:6300 --out a1.pair
 outside Postgres (see "Detecting tampering"). Keep any password out of the URL, because the URL can show in
 process listings, and Rally's Postgres library doesn't read `~/.pgpass`. Put it in the file named by
 `--db-password-file` (`RALLY_DB_PASSWORD_FILE`) instead: Rally refuses one that other accounts can read or that
-another account owns. Messages show the address rebuilt without any password, however the URL gave it. Rally makes its table, `rally_events`, on first start. Its role needs to be able to create
+another account owns, and a password given in both the URL and the file. Messages show the address rebuilt
+without any password, however the URL gave it, and `--help` doesn't show the values of these variables. Rally makes its table, `rally_events`, on first start. Its role needs to be able to create
 it, and to read `data_directory` for the disk floor, which a superuser or a member of `pg_read_all_settings` can.
 Postgres must be on the same host, with that directory visible to Rally.
 
@@ -53,16 +54,22 @@ stops a token working straight away. Don't expose the port to the open internet.
 - **Limits.** 16 KiB per request, and for each credential a request rate and a much lower write rate. The
   defaults allow about 17,000 writes a day, so up to about 280 MB. Writes stop when the ledger's table in
   Postgres, with its indexes, reaches 64 MiB, or while the disk under Postgres's data directory has under 5 GiB
-  free, and reads carry on. If either can't be checked, writes stop too. Set the floor with `--min-free-bytes`,
-  and check it against the host's real free space before rollout.
+  free, and reads carry on. If either can't be checked, writes stop too. Both are checked under the writer's
+  lock, so concurrent writes can't pass them together, but Postgres grows its table in pages, so the size can
+  end up to one write's growth past the limit. Set the floor with `--min-free-bytes`, and check it against the
+  host's real free space before rollout.
 - **A write is acknowledged only once Postgres has committed it.** If Postgres can't be reached before the
   record is sent, the write fails with a 503 saying nothing was recorded. If the connection fails after the
   commit is sent and before Postgres answers, the reply is a 503 saying the outcome is unknown: it may have
   been recorded, so check with `rally show` or `rally check` before retrying. If it was recorded, the service
-  refuses further writes until it's restarted and replays it. Reads of what the service already holds carry on
-  either way, and when Postgres is back the service reconnects by itself.
+  refuses further writes until it's restarted and replays it. Any error from the commit counts as unknown, even
+  one where Postgres clearly refused, as a precaution. If Postgres has a record that the service's own copy
+  then fails to take, the reply is a 500 saying it was recorded and the service must be restarted. Each write's
+  reply is its own, however many arrive at once. Reads of what the service already holds carry on either way,
+  and when Postgres is back the service reconnects by itself.
 - **Reads don't wait for writes.** They're served from the service's copy without the writer's lock, so a write
-  waiting on Postgres doesn't hold them up. `check` reads Postgres, so it does wait.
+  waiting on Postgres doesn't hold them up. `check` reads Postgres and the service's copy together under that
+  lock, so a write in progress can't look like a difference between them, and so it does wait.
 - **One writer.** The service holds a lock in Postgres for as long as it runs, so a second service or a `--db`
   write is refused rather than forking the chain.
 - **Append-only in Postgres too.** The table refuses updates, deletes, `TRUNCATE`, deletion events, a second
@@ -134,10 +141,17 @@ records, or removes every record and the head file, which looks like a new ledge
   by default.
 - A Postgres that hangs rather than stops, for example a stopped process, holds a
   write until it recovers, with no deadline of Rally's own: the operating system keeps the connection open, so
-  it can be indefinite. Later writes and checks queue behind it; reads carry on. If the connection does fail
-  after the commit was sent, the outcome is reported as unknown (RAL-42).
-- myko is given the database's address with its password in this process's memory. Rally installs no logger
-  for myko, so its own error messages, which can include that address, aren't printed.
+  it can be indefinite. Later writes and checks queue behind it, each holding one of the service's blocking
+  threads, so reads carry on only until those run out (RAL-42). If the connection does fail after the commit
+  was sent, the outcome is reported as unknown.
+- myko is given the database's address as a URL, with the password percent-encoded in the part myko hides in
+  its own messages, and Rally also removes the password from any myko error it passes on. That URL keeps only
+  the host, port, user, database and password, so other connection settings in `--db` don't reach myko's
+  connections (RAL-42). Rally installs no logger for myko.
+- The password file is checked, then read, so a file swapped in between isn't caught, and its directory isn't
+  checked (RAL-42). Keep it in a directory only this account can write.
+- Tests show a commit cut off before Postgres committed it (rolled back), and one that committed with its reply
+  lost; a real reply lost in transit isn't reproduced.
 - Backups (RAL-15) aren't built. One now means the Postgres database and the head file together.
 - Write limits are per machine, so all of a machine's sessions share them. Watch for 429s in real use.
 - One compromised credential could reach the 64 MiB stop in about 6 hours, and several credentials

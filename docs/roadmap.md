@@ -80,8 +80,10 @@ The bones. Everything later reads from this.
   own story; an empty `cert.pem` passing; write failures reported as "can't be read"; leftover temporary head files;
   no overall deadline or reply cap in the client; unbounded command output; roadmap code-fence edge cases; story
   IDs with leading zeros; names `add-machine` accepts that the ledger refuses; and other loopback addresses. From the
-  second read of RAL-39: a write to a Postgres that hangs rather than stops has no deadline of Rally's own, and
-  later writes and checks queue behind it, though reads don't.
+  second and third reads of RAL-39: a write to a Postgres that hangs rather than stops has no deadline of
+  Rally's own, and later writes and checks queue behind it, each holding a blocking thread, so reads last only
+  until the pool runs out; the address given to myko keeps only host, port, user, database and password; the
+  password file is checked then read, with no check of its directory.
 - [ ] **RAL-41: Tighten text and name checks.** From the reads of RAL-16. Done when: zero-width and direction
   characters are refused in names, so `alice` and a look-alike can't pass as different people; `/v1/check`
   carries the untrusted-text notice; and limits don't apply on replay in a way that makes an old ledger

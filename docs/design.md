@@ -303,6 +303,13 @@ catches mistakes, not someone who owns the database, who can lift it.
 25.6 KB per 12.2 KB record, counted by the allocator. Rally builds its own context with no saga sink, and the same
 count is 12.4 KB, the store's own copy; `tests/memory.rs` fails if an append keeps more than 1.5 times the record.
 
+**Each write's own outcome, and a consistent check.** A third read found that concurrent appends could swap
+their typed errors through one shared slot, and that `check` read Postgres and myko's copy at different moments,
+so an append in between looked like tampering. Each append now gets its own error by its request's id, and `check`
+reads both under the writer's lock; tests that widen those gaps on purpose failed before and pass now. The same
+read found myko quoting the address, password included, in its errors, so myko now gets a URL it hides the password
+in, and Rally removes it from anything myko says.
+
 **Reads and a hung Postgres.** Reads come from myko's copy without the writer's lock, so a write waiting on a hung
 Postgres doesn't block them; a test stops the scratch Postgres's processes with SIGSTOP mid-write. Before, the read
 waited behind the write for as long as Postgres stayed stopped. The write itself has no deadline of Rally's own; see
