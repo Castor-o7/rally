@@ -24,6 +24,21 @@ What Rally gives a team, each part built and verified by the watchman:
 - **Untrusted text kept out of terminals and pages.** Text agents write has length limits, is marked untrusted
   wherever an agent reads it, and is shown only as text, never as markup or terminal control (RAL-16).
 
+## Where Rally came from
+
+[Muster](https://github.com/Castor-o7/muster) lets Claude Code sessions find each other and talk, on one
+machine or across the operator's network: a message wakes an idle session, so teams of agents can ask each
+other for help, hand off work and report a story ready for review. It's built on myko, in Rust, with one daemon
+serving every paired machine over pinned TLS.
+
+Rally came out of using it. Once several teams were working through roadmaps over Muster, the work itself was
+tracked on a hand-kept board (Muster's `docs/board.md`), and the stories for doing better were on Muster's own
+roadmap: a native board (MUS-23), showing whether a team is available, working or blocked (MUS-28), and a
+ledger design (MUS-32). The operator decided on 2026-11-02 that tracking work is a different job from carrying
+messages, and split it out. Those stories continue here as RAL-3, RAL-2 and RAL-1, and Muster keeps only the
+facts it can observe about a session, such as whether it can be woken (MUS-44). See
+[docs/handoff.md](docs/handoff.md).
+
 ## Rally and Muster
 
 [Muster](https://github.com/Castor-o7/muster) is how agents securely reach and coordinate
@@ -36,6 +51,36 @@ with each other. Rally tracks their work.
 
 Rally depends on Muster, and Muster never depends on Rally. Muster has to work the same with
 Rally down.
+
+## Rally and Levi
+
+[Levi](https://github.com/ignition-is-go/levi) is an agent-first issue tracker whose events travel with a
+repository, in `refs/levi/events`, so a task's status follows from git history. The two are meant to split the
+work like this:
+
+- **Levi says what the work is**, and who has claimed it. Claims live in Levi, on the operator's word, so there's
+  one source of truth for them.
+- **Rally records what happened to it:** evidence, verification by someone other than the author, team state,
+  and a history that can't be quietly rewritten.
+
+Rally will read Levi from a checkout with `levi --json`, write nothing to it, and label each fact by how it's
+known: a task closed at a commit that's in the branch's history is observed, while a task's text and claims are
+declared, and treated as untrusted. **None of this is built yet.** It's RAL-40, and what happens to Rally's own
+claim commands and to projects not on Levi is still to settle. See "Levi" in [docs/design.md](docs/design.md).
+
+## What this gives the operator
+
+- **Coordination without polling.** The aim is that the watchman reads which teams are working, blocked or
+  quiet, and what they've submitted, from the ledger, instead of messaging each team to ask, and that a possible
+  stall is flagged for the watchman to take up with the team. Stories and submissions are recorded today; team
+  states (RAL-2), the live view (RAL-27) and stall flags (RAL-7) aren't verified yet.
+- **Progress you can recompute.** The analysis is as deterministic as the facts allow. Replaying the ledger
+  always gives the same state, and `rally check` shows it hasn't been rewritten. Whether a state change was
+  valid, or a commit exists, can be decided by a program. Whether work meets its "done when" line can't, so
+  Rally records who judged it and on what evidence. Every figure says which kind it is, observed, declared or
+  verified, and they're never blended into one score.
+- **One view across projects.** The viewer shows each roadmap's progress beside what the ledger has verified,
+  kept as separate figures, with where each came from and how fresh it is.
 
 ## Principles
 
