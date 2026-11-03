@@ -170,17 +170,20 @@ fn run_with_timeout(mut command: Command, limit: Duration) -> Result<Vec<u8>, St
         .map_err(|e| format!("can't run it: {e}"))?;
     let mut stdout = child.stdout.take().ok_or("no output")?;
     // Read on another thread, so that a full pipe can't block the child while we wait for it.
-    let reader = std::thread::spawn(move || {
+    let (sender, output) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
+        let _ = sender.send(stdout.read_to_end(&mut bytes).map(|_| bytes));
     });
     let started = Instant::now();
     loop {
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) if status.success() => {
-                return reader
-                    .join()
-                    .map_err(|_| "reading its output failed".to_owned())?
+                // Something it left running could hold its output open, so this needs a limit too.
+                let left = limit.saturating_sub(started.elapsed());
+                return output
+                    .recv_timeout(left.max(Duration::from_millis(100)))
+                    .map_err(|_| "its output didn't finish".to_owned())?
                     .map_err(|e| e.to_string());
             }
             Some(_) => return Err("it reported a failure".to_owned()),
@@ -279,7 +282,6 @@ pub fn shape_roster(value: &Value, read_at_ms: u64) -> Value {
                 "wake": session["wake"],
                 // Only `waiting` comes from the daemon. The other wake values are declared.
                 "wake_observed": session["wake"] == "waiting",
-                "observed": session["observed"],
                 "current_task": declared["current_task"],
                 "activity": declared["activity"],
                 "last_activity_at": declared["last_activity_at"],
@@ -524,7 +526,6 @@ mod tests {
         assert_eq!(shaped["sessions"][0]["machine"], "a1");
         assert_eq!(shaped["sessions"][0]["nickname"], "x");
         assert_eq!(shaped["sessions"][0]["wake_observed"], true);
-        assert_eq!(shaped["sessions"][0]["observed"]["waiting"], true);
         let declared_wake = json!({"sessions": [{"wake": "channel", "declared": {}}]});
         assert_eq!(
             shape_roster(&declared_wake, 9)["sessions"][0]["wake_observed"],
@@ -552,6 +553,17 @@ mod tests {
         command.args(["-c", "head -c 1000000 /dev/zero"]);
         let output = run_with_timeout(command, Duration::from_secs(10)).unwrap();
         assert_eq!(output.len(), 1_000_000);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn something_left_holding_the_output_open_is_given_up_on() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & exit 0"]);
+        let started = Instant::now();
+        let error = run_with_timeout(command, Duration::from_millis(300)).unwrap_err();
+        assert!(error.contains("output"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[cfg(unix)]
