@@ -272,7 +272,8 @@ it:
    restart. If the connection dies after the commit is sent, Postgres may have the record without its being
    acknowledged, so that write reports the outcome as unknown, never as nothing recorded (a test ends the backend
    between the INSERT and the COMMIT). If it was recorded, the next append finds Postgres ahead of myko's copy and
-   refuses until a restart replays it.
+   refuses until a restart replays it. So the recovery is a restart of the service; a writer stuck this way refuses
+   for good otherwise.
 3. **One writer lock:** a Postgres advisory lock, held by the service or a `--db` writer for as long as it's open, so it
    works across processes, and Rally's own lock inside one. Tests run eight writers each holding its own store, eight
    threads sharing one, six `rally` processes, and eight machines writing through the service: every success has its
@@ -324,7 +325,25 @@ records take 1.1 s to replay at start, a read through the service 0.2 s and a ch
 about 150 to 230 MiB. 4,751 worst-case records of 4,000 random CJK characters (about 12 KB) take 0.6 s and about
 130 to 150 MiB in the service, and a direct `--db` write peaks at 244 MiB. At 256 MiB (256,501 typical records) it's
 4.1 s, 0.9 s, 1.7 s and about 520 to 730 MiB, so growth is linear. The service's memory now stays in use between
-requests rather than rising and falling.
+requests rather than rising and falling. An append through the running service, at the 64 MiB limit with typical
+records, took 0.22 to 0.29 s end to end from a fresh `rally` process, including its start and the TLS connection,
+with the service at 143 MiB. Worst-case records weren't timed for appends.
+
+**What three reads changed.** RAL-39 was read three times before merging, by `plush-geyser` and `dauntless-peacock`,
+and each round found real problems:
+
+1. **First read:** a row whose columns didn't match its event JSON got past every protection and fooled `--db check`; a
+   commit with an unknown outcome was reported as "nothing was recorded"; the documented password setup couldn't work;
+   redaction missed some address forms; `adopt-head` raced the service; myko's saga channel kept a second copy of every
+   record; reads hung behind a hung Postgres; and the test guard could reach port 5432.
+2. **Second read:** the fixes for those opened three new problems: concurrent appends shared one error slot and could
+   swap replies; myko's own error text could carry the password; and a check during an append could report a false
+   difference.
+3. **Third read:** a stray password-file setting blocked commands that never use the database.
+
+Each was shown by a failing test before its fix, except the port guard, which couldn't be tested without touching the
+operator's Postgres. The lesson the watchman drew: a fix round can introduce regressions, so concurrent tests belong
+in the first round, not the third.
 
 ## Levi
 
