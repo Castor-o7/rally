@@ -7,6 +7,7 @@ pub mod ledger;
 pub mod record;
 #[doc(hidden)]
 pub mod scratch_pg;
+pub mod secrets;
 pub mod server;
 pub mod store;
 pub mod views;

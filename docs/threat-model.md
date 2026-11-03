@@ -58,7 +58,10 @@ Say these plainly wherever a reader might assume otherwise:
   Rally's account.
 - **A declared state may be false.** Rally records that it was said, and by which credential.
 - **Verification is one reader's judgment.** Rally records who judged and on what evidence.
-- **Secret detection is incomplete.** It only recognizes known formats.
+- **Secret detection is incomplete.** It only recognizes known formats: see the list in `service.md`. A secret
+  that gets through can't be removed, because the ledger is append-only, so the response is to revoke it at
+  its source and record a correction saying so. The record, and every backup holding it, still contains the
+  text.
 
 ## Settled under RAL-4
 
