@@ -17,6 +17,9 @@ should go back to the operator if they change.
   unblock teams, and to record and plan so as to maximize progress while respecting each team.
 - Rally maintains a relationship to security, of the information and of the environment.
 - A visually appealing web app showing the current ledger and past ledgers is a goal.
+- Rally should stay a myko service if it can, for uniformity with Muster (2026-11-02). This replaces the
+  earlier agreement on SQLite written by Rally's own service. See "Rally as a myko service" below.
+- Rally should interface with [Levi](https://github.com/ignition-is-go/levi) (2026-11-02). See "Levi" below.
 
 ## Carried over from Muster's roadmap
 
@@ -159,11 +162,47 @@ terminals went unresponsive and were restarted. The crash entries on 09-26 are s
 
 So Rally's first transport is the LAN, protected by its own TLS and tokens rather than a mesh.
 
+## Rally as a myko service
+
+**Proposal, for RAL-39.** What's built today uses SQLite and its own service, and it isn't deployed, so
+changing costs little now.
+
+- **Keep:** the record format, state rules, replay, hash chain, head checks, text limits and access rules.
+  None depends on SQLite. The ledger's logic stays pure, so it stays deterministic.
+- **Change:** records become a myko entity, appended only through a command that runs the same checks. Reads
+  become myko queries. Muster's and Levi's hub are the patterns to follow.
+- **Raw events are the main risk.** myko's WebSocket handler passes a client's events straight to the store,
+  and it has no authorization hook (Muster's `docs/session-binding.md`, MUS-41). So every guarantee Rally has
+  would be bypassed unless something refuses them. Rally needs the equivalent of Muster's gate in front of it,
+  with a test that a raw event is refused, or a hook upstream. Muster's filter had three bypasses, so RAL-39
+  should prefer whatever MUS-41 decides.
+- **Durability:** myko without Postgres keeps state in memory only, per Muster's and Levi's docs. A ledger
+  has to survive a restart, so Rally needs Postgres on Murph, or a myko persister that fits. The backup story,
+  the size limits and the disk floor (RAL-15, RAL-36) have to be redone for that. Replay memory (RAL-35)
+  may improve.
+- **Order:** myko applies events in arrival order, and the chain needs one writer. Appending through one
+  command on one service keeps that, but it has to be tested.
+- **Licence:** myko is AGPL-3.0-or-later, and Rally is MIT OR Apache-2.0. **The operator should decide** what
+  Rally's licence should be before this merges. Levi is AGPL to match, and Muster declares MIT OR Apache-2.0.
+
+## Levi
+
+[Levi](https://github.com/ignition-is-go/levi) is an agent-first issue tracker whose events travel with a
+repository in `refs/levi/events`. A task's status is a function of git history, it has advisory claims, every
+read has stable `--json`, and its optional hub is a myko server. It overlaps with Rally on stories and claims.
+
+**Proposal, for RAL-40:** Levi says what the work is and what git history shows, and Rally stays the ledger of
+verification, evidence, team state and history. Rally reads Levi and doesn't write to it at first. "Closed at
+a commit that's an ancestor of HEAD" is the kind of observed fact Rally wants, and could help RAL-5.
+What's in a Levi task is written by agents, so it's untrusted text, and a Levi claim is declared, not proof.
+Whether claims live in Levi or Rally is **for the operator**, since two sources of truth for a claim would
+disagree. No Rally project has been checked for Levi use yet.
+
 ## Open questions
 
 1. **Where does Rally run, and how do both machines reach it?** Answered by RAL-4 above.
-2. **How is Rally's state stored?** An append-only log of events in SQLite on the host, written
-   by Rally's Rust service, not myko. It gives the history the Version 0 table lacks, lets a wrong entry
+2. **How is Rally's state stored?** Being revisited under RAL-39, on the operator's word. Built so far: an
+   append-only log of events in SQLite on the host, written by Rally's Rust service, not myko. It gives the history the Version 0 table lacks, lets a wrong entry
    be corrected without erasing it, and can rebuild the past ledgers the web app has to show. A single
    writer and a plain file also keep replay and backups simple. Muster's decision to stay on myko doesn't
    bind Rally.
