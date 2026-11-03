@@ -46,22 +46,38 @@ fn on(db: &Database, dir: &std::path::Path) -> Command {
 /// Starts on a ledger holding text written to attack whoever displays it, with no projects, so the
 /// test doesn't need GitHub.
 fn start() -> Viewer {
+    start_with("[]", None)
+}
+
+/// Like `start`, with these projects, and `gh` replaced by the script in `fake_gh` when given.
+fn start_with(projects_json: &str, fake_gh: Option<&str>) -> Viewer {
     let dir = tempfile::tempdir().unwrap();
     let db = scratch_pg::shared().database();
     let projects = dir.path().join("projects.json");
-    std::fs::write(&projects, "[]").unwrap();
+    std::fs::write(&projects, projects_json).unwrap();
+    let bin = dir.path().join("bin");
+    if let Some(script) = fake_gh {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(bin.join("gh"), script).unwrap();
+        std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let status = on(&db, dir.path())
         .args(["--credential", "a1", "--as", "someone"])
         .args(["team-state", "rally", "blocked", "--note", ATTACK])
         .status()
         .unwrap();
     assert!(status.success());
-    let mut child = on(&db, dir.path())
+    let mut command = on(&db, dir.path());
+    command
         .args(["web", "--bind", "127.0.0.1:0", "--projects"])
         .arg(&projects)
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .stdout(Stdio::piped());
+    if fake_gh.is_some() {
+        let path = std::env::var("PATH").unwrap_or_default();
+        command.env("PATH", format!("{}:{path}", bin.display()));
+    }
+    let mut child = command.spawn().unwrap();
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)
@@ -238,4 +254,58 @@ fn it_refuses_to_listen_beyond_loopback() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("loopback"));
+}
+
+/// A `gh` that answers the viewer's reads for one project with text written to attack the page.
+const FAKE_GH: &str = r#"#!/bin/sh
+case "$*" in
+  *commits/HEAD*) echo 0123456789abcdef0123456789abcdef01234567 ;;
+  *graphql*docs/muster*) printf '2026-11-02.md\n2026-11-03.md\nnotes.md\n' ;;
+  *contents/docs/muster/2026-11-03.md*) printf '<script>alert(3)</script> the day went well' ;;
+  *contents/docs/roadmap.md*) printf '## Open\n- [ ] **RAL-1: <img src=x onerror=alert(4)>**\n' ;;
+  "pr list"*) printf '[{"number":7,"title":"<script>alert(5)</script>","mergedAt":"2026-11-03T00:00:00Z"}]' ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#;
+
+#[cfg(unix)]
+#[test]
+fn a_project_page_s_summary_stories_and_pr_titles_arrive_only_as_json_data() {
+    let projects = r#"[{"name": "Rally", "prefix": "RAL", "repo": "Castor-o7/rally",
+        "path": "docs/roadmap.md", "tick_meaning": "Verified by the watchman"}]"#;
+    let viewer = start_with(projects, Some(FAKE_GH));
+    let mut value = Value::Null;
+    for _ in 0..100 {
+        let (status, text) = get(&viewer, "/api/status");
+        assert_eq!(status, 200);
+        value = serde_json::from_str(text.split_once("\r\n\r\n").unwrap().1).unwrap();
+        if value["projects"][0]["summary"]["text"].is_string() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let project = &value["projects"][0];
+    assert_eq!(project["summary"]["file"], "docs/muster/2026-11-03.md");
+    assert_eq!(
+        project["summary"]["text"],
+        "<script>alert(3)</script> the day went well"
+    );
+    assert_eq!(
+        project["stories"][0]["title"],
+        "<img src=x onerror=alert(4)>"
+    );
+    assert_eq!(
+        project["merged"]["prs"][0]["title"],
+        "<script>alert(5)</script>"
+    );
+    assert_eq!(
+        value["muster_summary"], project["summary"],
+        "Rally's own summary is the muster's"
+    );
+    for path in ["/", "/app.js"] {
+        let page = get(&viewer, path).1;
+        for attack in ["alert(3)", "alert(4)", "alert(5)"] {
+            assert!(!page.contains(attack), "{path} carries {attack}");
+        }
+    }
 }

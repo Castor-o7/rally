@@ -25,6 +25,22 @@ minutes. The ledger and roster are read every 30 seconds.
   attested or declared. "Can be woken" is observed only when the daemon sees a wait, and it's a best guess, and nothing here proves a session is alive.
 - **Ledger check** repeats `rally check`. It can't show a rewrite of the whole host without a saved head.
 
+## Project pages (RAL-43)
+
+Each project's name in the roadmap list opens its own page (`#/project/<prefix>`), built only from
+`/api/status` for a project in the list; any other prefix shows "Unknown project". A page shows:
+
+- the roadmap's stories, open and ticked, from the same boxes the overview counts;
+- the ledger's records for that prefix, or a "not deployed yet" line until the service is (RAL-27);
+- the team's day summary: the newest `docs/muster/YYYY-MM-DD.md` in that project's repository at the
+  roadmap's commit, with its file, commit and read time. Other names in that folder are ignored;
+- the last 20 merged pull requests, number, title and date only. Dated ticks aren't shown yet.
+
+The overview ends with the roadmap boxes across projects (ticks still mean different things in each)
+and the watchman's writeup: the day summary on Rally's own entry. Summaries and PR titles are written by
+agents, so they're shown as text with the untrusted-text notice, like everything else recorded. All of
+it is read through `gh` with the roadmaps, on their five-minute cadence and with their time and size limits.
+
 ## What protects it
 
 - **Loopback only.** It refuses any other address. Viewing from a phone is RAL-34, with its own review.

@@ -138,7 +138,11 @@ function renderRoadmaps(projects, now) {
   for (const project of projects) {
     const card = el("article", "roadmap");
     const head = el("div", "roadmap-head");
-    head.append(el("h3", "", project.name), el("span", "muted", project.prefix));
+    const title = el("h3");
+    const link = el("a", "", project.name);
+    link.href = "#/project/" + encodeURIComponent(project.prefix);
+    title.append(link);
+    head.append(title, el("span", "muted", project.prefix));
     card.append(head);
     const boxes = project.boxes;
     if (boxes && boxes.total > 0) {
@@ -235,6 +239,151 @@ function renderTeams(status, now) {
   root.append(live);
 }
 
+// A day summary from docs/muster/, as text only, with where it came from and the untrusted notice.
+function summaryBlock(summary, notice, now) {
+  const wrap = el("div");
+  if (!summary || summary.reason) {
+    wrap.append(el("p", "muted", "Not available yet" + (summary && summary.reason ? ": " + summary.reason : ".")));
+    return wrap;
+  }
+  if (summary.missing) {
+    wrap.append(el("p", "muted", "No day summary in docs/muster/ yet."));
+  } else if (typeof summary.text === "string") {
+    wrap.append(el("p", "muted", notice));
+    wrap.append(el("pre", "summary", summary.text));
+    wrap.append(el("p", "source muted", summary.file + " at " + String(summary.commit).slice(0, 7)
+      + ", read " + age(summary.read_at_ms, now)));
+  }
+  if (summary.error) wrap.append(el("p", "warning", "⚠ Last read failed: " + summary.error));
+  return wrap;
+}
+
+function storyList(stories) {
+  const list = el("ul", "stories");
+  for (const story of stories) {
+    const item = el("li");
+    item.append(el("span", "story-id", story.id || "·"), " ", story.title);
+    list.append(item);
+  }
+  return list;
+}
+
+// One project's page (RAL-43). Built only from /api/status, and only for a project the viewer lists.
+function renderProject(status, prefix, now) {
+  const root = document.getElementById("project-page");
+  root.replaceChildren();
+  const back = el("a", "back", "← All projects");
+  back.href = "#/";
+  root.append(back);
+  const project = status.projects.find((p) => p.prefix === prefix);
+  if (!project) {
+    root.append(el("h2", "", "Unknown project"), el("p", "muted", "This viewer doesn't list a project with that prefix."));
+    return;
+  }
+  root.append(el("h2", "", project.name + " · " + project.prefix));
+
+  const roadmap = el("section", "panel");
+  roadmap.append(el("h3", "", "Roadmap"));
+  const stories = project.stories || [];
+  if (project.boxes && project.boxes.total > 0) {
+    roadmap.append(figure("Ticked · a tick here means: " + project.tick_meaning,
+      project.boxes.ticked + " of " + project.boxes.total, project.boxes.ticked / project.boxes.total,
+      project.boxes.ticked + " of " + project.boxes.total + " ticked"));
+  }
+  const open = stories.filter((s) => !s.ticked);
+  const done = stories.filter((s) => s.ticked);
+  for (const [name, group] of [["Open", open], ["Ticked", done]]) {
+    const details = el("details", "sections");
+    if (name === "Open") details.open = true;
+    details.append(el("summary", "", name + " (" + group.length + ")"));
+    details.append(storyList(group));
+    roadmap.append(details);
+  }
+  roadmap.append(el("p", "source muted", project.repo + " " + project.path
+    + (project.commit ? " at " + project.commit.slice(0, 7) : "") + ", read " + age(project.read_at_ms, now)));
+  if (project.error) roadmap.append(el("p", "warning", "⚠ Last read failed: " + project.error));
+
+  const ledger = el("section", "panel");
+  ledger.append(el("h3", "", "Ledger records"));
+  const records = status.ledger.available && status.ledger.stories
+    ? Object.entries(status.ledger.stories).filter(([id]) => id.startsWith(project.prefix + "-")) : [];
+  if (records.length) {
+    ledger.append(el("p", "muted", status.untrusted_text));
+    ledger.append(table(["Story", "State"], records.map(([id, story]) => [id, story.state])));
+  } else {
+    ledger.append(el("p", "muted", "Not deployed yet: the ledger service comes with RAL-27, and nothing for "
+      + project.prefix + " is recorded here."));
+  }
+
+  const day = el("section", "panel");
+  day.append(el("h3", "", "The team's day"));
+  day.append(summaryBlock(project.summary, status.untrusted_text, now));
+
+  const facts = el("section", "panel");
+  facts.append(el("h3", "", "From the repository"));
+  const merged = project.merged || {};
+  if (merged.prs && merged.prs.length) {
+    facts.append(el("p", "muted", "Recently merged pull requests. Titles are written by agents: "
+      + status.untrusted_text));
+    facts.append(table(["PR", "Title", "Merged"], merged.prs.map((pr) => [
+      "#" + pr.number, { text: pr.title, className: "text" }, pr.merged_at.slice(0, 10)])));
+    facts.append(el("p", "source muted", "Read " + age(merged.read_at_ms, now)
+      + ". Dated ticks aren't shown yet."));
+  } else {
+    facts.append(el("p", "muted", "No merged pull requests read yet."));
+  }
+  if (merged.error) facts.append(el("p", "warning", "⚠ Last read failed: " + merged.error));
+
+  root.append(roadmap, ledger, day, facts);
+}
+
+// The end of the overview: totals across projects, then the watchman's writeup of the whole muster.
+function renderMuster(status, now) {
+  const root = document.getElementById("muster");
+  root.replaceChildren();
+  const read = status.projects.filter((p) => p.boxes && p.boxes.total > 0);
+  const ticked = read.reduce((sum, p) => sum + p.boxes.ticked, 0);
+  const total = read.reduce((sum, p) => sum + p.boxes.total, 0);
+  root.append(figure("Roadmap boxes across " + read.length + " projects · ticks mean different things in each",
+    ticked + " of " + total, total ? ticked / total : 0, ticked + " of " + total + " ticked"));
+  const verified = status.projects.map((p) => p.verified).filter((v) => v && v.available);
+  if (verified.length) {
+    const done = verified.reduce((sum, v) => sum + v.verified, 0);
+    const tracked = verified.reduce((sum, v) => sum + v.tracked, 0);
+    root.append(figure("Verified in the ledger", done + " of " + tracked, tracked ? done / tracked : 0,
+      done + " of " + tracked + " verified"));
+  }
+  const writeup = el("div", "group");
+  writeup.append(el("h3", "", "The watchman's writeup"));
+  writeup.append(summaryBlock(status.muster_summary, status.untrusted_text, now));
+  root.append(writeup);
+}
+
+let lastStatus = null;
+
+function show(status, now) {
+  const match = /^#\/project\/([^/]+)$/.exec(location.hash);
+  const page = document.getElementById("project-page");
+  const overview = document.getElementById("overview");
+  page.hidden = !match;
+  overview.hidden = Boolean(match);
+  if (match) {
+    let prefix = "";
+    try { prefix = decodeURIComponent(match[1]); } catch (error) { prefix = ""; }
+    renderProject(status, prefix, now);
+  } else {
+    renderLedger(status.ledger, now);
+    renderRoadmaps(status.projects, now);
+    renderTeams(status, now);
+    renderMuster(status, now);
+  }
+}
+
+window.addEventListener("hashchange", () => {
+  if (lastStatus) show(lastStatus, Date.now());
+  window.scrollTo(0, 0); // a new page starts at its top
+});
+
 async function refresh() {
   const freshness = document.getElementById("freshness");
   let status;
@@ -251,9 +400,8 @@ async function refresh() {
   }
   try {
     const now = Date.now();
-    renderLedger(status.ledger, now);
-    renderRoadmaps(status.projects, now);
-    renderTeams(status, now);
+    lastStatus = status;
+    show(status, now);
     freshness.textContent = "Updated " + new Date(now).toLocaleTimeString();
   } catch (error) {
     freshness.textContent = "⚠ This page couldn't display what it read, so it may be out of date";
