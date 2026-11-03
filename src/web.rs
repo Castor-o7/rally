@@ -65,7 +65,6 @@ pub struct Section {
     pub total: u32,
 }
 
-/// Counts a roadmap's checkboxes overall and by `##` heading, ignoring examples in code fences.
 /// A fence line's character, its length and what follows it: three or more backticks or tildes,
 /// indented by at most three spaces. A backtick fence's info string can't hold a backtick.
 fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
@@ -86,8 +85,10 @@ fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
     Some((kind, length, after))
 }
 
-pub fn parse_roadmap(text: &str) -> (Boxes, Vec<Section>) {
-    let mut sections: Vec<Section> = Vec::new();
+/// Every checkbox line outside code fences: the `##` heading it's under, whether it's ticked, and
+/// the text after the box. The counts and the story list both read lines through this.
+fn roadmap_items(text: &str) -> Vec<(String, bool, String)> {
+    let mut items = Vec::new();
     let mut current = "Before the first heading".to_owned();
     // The open fence's character and length, as CommonMark has them.
     let mut fence: Option<(char, usize)> = None;
@@ -120,12 +121,19 @@ pub fn parse_roadmap(text: &str) -> (Boxes, Vec<Section>) {
             Some(" ]") => false,
             _ => continue,
         };
-        if sections
-            .last()
-            .is_none_or(|section| section.name != current)
-        {
+        let after = item.and_then(|rest| rest.get(2..)).unwrap_or("").trim();
+        items.push((current.clone(), ticked, after.to_owned()));
+    }
+    items
+}
+
+/// Counts a roadmap's checkboxes overall and by `##` heading, ignoring examples in code fences.
+pub fn parse_roadmap(text: &str) -> (Boxes, Vec<Section>) {
+    let mut sections: Vec<Section> = Vec::new();
+    for (name, ticked, _) in roadmap_items(text) {
+        if sections.last().is_none_or(|section| section.name != name) {
             sections.push(Section {
-                name: current.clone(),
+                name,
                 ticked: 0,
                 total: 0,
             });
@@ -146,6 +154,91 @@ pub fn parse_roadmap(text: &str) -> (Boxes, Vec<Section>) {
         },
         sections,
     )
+}
+
+/// One story on a roadmap, for a project's page (RAL-43). The title is the roadmap's own words.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Story {
+    pub id: Option<String>,
+    pub title: String,
+    pub ticked: bool,
+    pub section: String,
+}
+
+const MAX_TITLE_CHARS: usize = 200;
+
+/// The stories on a roadmap, the same boxes `parse_roadmap` counts. A line written as
+/// `**PFX-1: Title.** …` gives the id and title; anything else keeps its opening words as the title.
+pub fn parse_stories(text: &str, prefix: &str) -> Vec<Story> {
+    roadmap_items(text)
+        .into_iter()
+        .map(|(section, ticked, after)| {
+            let lead = after
+                .strip_prefix("**")
+                .and_then(|rest| rest.split_once("**"))
+                .map_or(after.as_str(), |(bold, _)| bold)
+                .trim();
+            let (id, title) = match lead.split_once(':') {
+                Some((id, title))
+                    if id
+                        .strip_prefix(prefix)
+                        .and_then(|n| n.strip_prefix('-'))
+                        .is_some_and(|n| {
+                            !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())
+                        }) =>
+                {
+                    (Some(id.to_owned()), title.trim().trim_end_matches('.'))
+                }
+                _ => (None, lead),
+            };
+            Story {
+                id,
+                title: title.chars().take(MAX_TITLE_CHARS).collect(),
+                ticked,
+                section,
+            }
+        })
+        .collect()
+}
+
+/// Whether a `docs/muster` file name is a day summary: exactly `YYYY-MM-DD.md`.
+fn is_day_file(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    bytes.len() == 13
+        && name.ends_with(".md")
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && [0, 1, 2, 3, 5, 6, 8, 9]
+            .iter()
+            .all(|&i| bytes[i].is_ascii_digit())
+}
+
+/// The newest day summary in a `docs/muster` listing, ignoring every other name.
+pub fn latest_summary(names: &[String]) -> Option<String> {
+    names.iter().filter(|name| is_day_file(name)).max().cloned()
+}
+
+const MAX_PR_TITLE_CHARS: usize = 300;
+
+/// A project's recently merged PRs from `gh pr list --json number,title,mergedAt`, newest first,
+/// keeping only those three fields. Titles are agent-written, so the page shows them as untrusted text.
+pub fn shape_merged(value: &Value) -> Value {
+    let mut rows: Vec<Value> = value
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|pr| {
+                    Some(json!({
+                        "number": pr["number"].as_u64()?,
+                        "title": pr["title"].as_str()?.chars().take(MAX_PR_TITLE_CHARS).collect::<String>(),
+                        "merged_at": pr["mergedAt"].as_str()?,
+                    }))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    rows.sort_by(|a, b| b["merged_at"].as_str().cmp(&a["merged_at"].as_str()));
+    json!(rows)
 }
 
 /// The verified figure for a project's stories. It comes only from the ledger, never from ticks.
@@ -178,6 +271,8 @@ pub type LedgerReader = Box<dyn Fn() -> Result<Value, String> + Send>;
 struct Snapshot {
     /// Each project's latest roadmap reading, kept after a failed read so that its age shows.
     roadmaps: Vec<Value>,
+    /// The watchman's day writeup for the whole muster, from Rally's own repository (RAL-43).
+    muster_summary: Option<Value>,
     ledger: Option<Value>,
     roster: Option<Value>,
 }
@@ -299,6 +394,75 @@ fn read_roadmap(project: &Project) -> Result<(String, String), String> {
     Ok((commit, text))
 }
 
+/// Rally's own repository, whose day summary is the watchman's writeup of the whole muster.
+pub const RALLY_REPO: &str = "Castor-o7/rally";
+
+/// Lists a folder at `commit` through GraphQL, which answers a missing folder with nothing rather than
+/// an error, so "no summaries yet" isn't mistaken for a failed read.
+const LIST_FOLDER: &str = "query($owner:String!,$name:String!,$expr:String!){repository(owner:$owner,name:$name)\
+{object(expression:$expr){... on Tree{entries{name}}}}}";
+
+/// The newest `docs/muster/YYYY-MM-DD.md` in a repository at `commit`, as text with its file and
+/// commit, or `{"missing": true}` when there's none. Read with the same caps as a roadmap.
+fn read_summary(repo: &str, commit: &str) -> Result<Value, String> {
+    let (owner, name) = repo
+        .split_once('/')
+        .ok_or("the repository isn't owner/name")?;
+    let names = run_gh(&[
+        "api",
+        "graphql",
+        "-F",
+        &format!("owner={owner}"),
+        "-F",
+        &format!("name={name}"),
+        "-F",
+        &format!("expr={commit}:docs/muster"),
+        "-f",
+        &format!("query={LIST_FOLDER}"),
+        "--jq",
+        ".data.repository.object.entries[]?.name",
+    ])?;
+    let names: Vec<String> = names.lines().map(str::to_owned).collect();
+    let Some(name) = latest_summary(&names) else {
+        return Ok(json!({"missing": true, "read_at_ms": now_ms()}));
+    };
+    let file = format!("docs/muster/{name}");
+    let contents = format!("repos/{repo}/contents/{file}?ref={commit}");
+    let text = run_gh(&["api", &contents, "-H", "Accept: application/vnd.github.raw"])?;
+    Ok(json!({"file": file, "commit": commit, "text": text, "read_at_ms": now_ms()}))
+}
+
+/// A project's last 20 merged PRs, shaped by `shape_merged`.
+fn read_merged(repo: &str) -> Result<Value, String> {
+    let output = run_gh(&[
+        "pr",
+        "list",
+        "-R",
+        repo,
+        "--state",
+        "merged",
+        "--limit",
+        "20",
+        "--json",
+        "number,title,mergedAt",
+    ])?;
+    let value: Value =
+        serde_json::from_str(&output).map_err(|_| "gh returned something unreadable".to_owned())?;
+    Ok(json!({"prs": shape_merged(&value), "read_at_ms": now_ms()}))
+}
+
+/// The watchman's writeup: the day summary on Rally's own entry in the project list. Not read
+/// separately, so the viewer makes no GitHub call that isn't for a listed project.
+fn muster_summary(projects: &[Project], roadmaps: &[Value]) -> Value {
+    projects
+        .iter()
+        .position(|project| project.repo == RALLY_REPO)
+        .and_then(|index| roadmaps.get(index))
+        .and_then(|row| row.get("summary"))
+        .cloned()
+        .unwrap_or_else(|| json!({"reason": format!("{RALLY_REPO} isn't in the project list.")}))
+}
+
 fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
     projects
         .iter()
@@ -306,9 +470,25 @@ fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
         .map(|(index, project)| match read_roadmap(project) {
             Ok((commit, text)) => {
                 let (boxes, sections) = parse_roadmap(&text);
+                let kept = |field: &str, error: String| {
+                    let mut value = previous
+                        .get(index)
+                        .and_then(|row| row.get(field))
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    value["error"] = json!(error);
+                    value
+                };
+                let summary = read_summary(&project.repo, &commit)
+                    .unwrap_or_else(|error| kept("summary", error));
+                let merged =
+                    read_merged(&project.repo).unwrap_or_else(|error| kept("merged", error));
                 json!({
                     "boxes": boxes,
                     "sections": sections,
+                    "stories": parse_stories(&text, &project.prefix),
+                    "summary": summary,
+                    "merged": merged,
                     "commit": commit,
                     "read_at_ms": now_ms(),
                 })
@@ -430,7 +610,11 @@ fn refresh_forever(app: &App, ledger: &LedgerReader) {
         if Instant::now() >= roadmaps_due {
             let previous = app.snapshot.lock().expect("no panics").roadmaps.clone();
             let roadmaps = refresh_roadmaps(&app.projects, &previous);
-            app.snapshot.lock().expect("no panics").roadmaps = roadmaps;
+            let summary = muster_summary(&app.projects, &roadmaps);
+            let mut snapshot = app.snapshot.lock().expect("no panics");
+            snapshot.roadmaps = roadmaps;
+            snapshot.muster_summary = Some(summary);
+            drop(snapshot);
             roadmaps_due = Instant::now() + ROADMAPS_EVERY;
         }
         let ledger_value = match ledger() {
@@ -484,11 +668,16 @@ async fn status(State(app): State<Arc<App>>) -> Response {
             row
         })
         .collect();
+    let muster_summary = snapshot
+        .muster_summary
+        .clone()
+        .unwrap_or_else(|| json!({"reason": "still reading it."}));
     Json(json!({
         "untrusted_text": UNTRUSTED_TEXT,
         "ledger": ledger,
         "roster": roster,
         "projects": projects,
+        "muster_summary": muster_summary,
     }))
     .into_response()
 }
@@ -571,6 +760,75 @@ mod tests {
     #[test]
     fn an_empty_roadmap_has_no_percentage_to_divide() {
         assert_eq!(parse_roadmap("# nothing").0, Boxes::default());
+    }
+
+    #[test]
+    fn stories_come_from_the_same_boxes_the_counts_use() {
+        let text = "## Open\n- [ ] **RAL-43: Give each project an info page.** Requested…\n\
+                    ```\n- [x] **RAL-9: An example.**\n```\n\
+                    ## Done\n- [x] **RAL-1: Keep a ledger.** Done when…\n- [x] plain words, no id\n\
+                    - [ ] **RALLY-2: Another prefix.**\n";
+        let stories = parse_stories(text, "RAL");
+        assert_eq!(stories.len() as u32, parse_roadmap(text).0.total);
+        assert_eq!(stories[0].id.as_deref(), Some("RAL-43"));
+        assert_eq!(stories[0].title, "Give each project an info page");
+        assert_eq!(
+            (stories[0].ticked, stories[0].section.as_str()),
+            (false, "Open")
+        );
+        assert_eq!(
+            (stories[1].id.as_deref(), stories[1].ticked),
+            (Some("RAL-1"), true)
+        );
+        assert_eq!(
+            (stories[2].id.as_deref(), stories[2].title.as_str()),
+            (None, "plain words, no id")
+        );
+        assert_eq!(
+            stories[3].id, None,
+            "another project's prefix isn't this one's id"
+        );
+        let long = format!("- [ ] {}\n", "x".repeat(5000));
+        assert_eq!(
+            parse_stories(&long, "RAL")[0].title.chars().count(),
+            MAX_TITLE_CHARS
+        );
+    }
+
+    #[test]
+    fn only_a_dated_day_file_is_a_summary_and_the_latest_wins() {
+        let names: Vec<String> = [
+            "2026-11-02.md",
+            "2026-11-03.md",
+            "notes.md",
+            "2026-11-04.md.bak",
+            "2026-1-05.md",
+            "9999-99-99.txt",
+            "../2026-12-01.md",
+            "2026-11-03-extra.md",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(latest_summary(&names).as_deref(), Some("2026-11-03.md"));
+        assert_eq!(latest_summary(&["README.md".to_owned()]), None);
+    }
+
+    #[test]
+    fn merged_prs_keep_three_fields_newest_first() {
+        let value = json!([
+            {"number": 1, "title": "older", "mergedAt": "2026-11-02T10:00:00Z", "author": {"login": "x"}},
+            {"number": 2, "title": "newer", "mergedAt": "2026-11-03T10:00:00Z", "body": "secret"},
+            {"number": "bad", "title": "skipped", "mergedAt": "2026-11-03T11:00:00Z"},
+        ]);
+        let shaped = shape_merged(&value);
+        assert_eq!(
+            shaped,
+            json!([
+                {"number": 2, "title": "newer", "merged_at": "2026-11-03T10:00:00Z"},
+                {"number": 1, "title": "older", "merged_at": "2026-11-02T10:00:00Z"},
+            ])
+        );
+        assert_eq!(shape_merged(&json!("nope")), json!([]));
     }
 
     #[test]

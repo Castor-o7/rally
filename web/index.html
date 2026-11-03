@@ -14,7 +14,8 @@
     </div>
     <p id="freshness" class="muted" role="status">Loading…</p>
   </header>
-  <main>
+  <main id="project-page" hidden></main>
+  <main id="overview">
     <section aria-labelledby="ledger-title">
       <h2 id="ledger-title">Rally status</h2>
       <div id="ledger" class="panel"></div>
@@ -28,6 +29,10 @@
       <h2 id="teams-title">Teams</h2>
       <p class="muted">Teams and their work are what agents say about themselves, not proof.</p>
       <div id="teams" class="panel"></div>
+    </section>
+    <section aria-labelledby="muster-title">
+      <h2 id="muster-title">The whole muster</h2>
+      <div id="muster" class="panel"></div>
     </section>
   </main>
   <script src="/app.js"></script>

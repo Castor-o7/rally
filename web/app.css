@@ -98,3 +98,12 @@ td, .section-name, .source { unicode-bidi: isolate; }
 .label { display: inline-block; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--text-2); font-size: 11px; }
 .group { margin-top: 16px; }
 .group:first-child { margin-top: 0; }
+
+/* A project's page (RAL-43). */
+.back { display: inline-block; margin-bottom: 12px; font-size: 13px; color: var(--text-2); }
+.stories { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13px; }
+.stories li { padding: 4px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; unicode-bidi: isolate; }
+.stories li:last-child { border-bottom: 0; }
+.story-id { display: inline-block; min-width: 64px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.summary { margin: 8px 0 0; padding: 12px; max-height: 480px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  unicode-bidi: isolate; background: var(--track); border-radius: 6px; font: 13px/1.5 ui-monospace, monospace; }
