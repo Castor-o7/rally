@@ -38,6 +38,14 @@ const LIMITS: Limits = Limits {
     max_reply_bytes: MAX_REPLY_BYTES,
 };
 
+/// Gives the next read on `socket` at most `left`. macOS refuses the setting with "invalid argument"
+/// on a socket the other end has already closed, as the service does once it has replied, so a
+/// refusal is ignored: the read that follows then sees the close, or falls back on the previous
+/// timeout, which is never more than [`TIMEOUT`], and the deadline is checked again after it.
+fn shorten_reads(socket: &TcpStream, left: Duration) {
+    let _ = socket.set_read_timeout(Some(left));
+}
+
 /// The time left before `deadline`, or an error if there's none.
 fn left(deadline: Instant) -> Result<Duration, Box<dyn std::error::Error>> {
     let left = deadline.saturating_duration_since(Instant::now());
@@ -142,7 +150,7 @@ fn connect_by(
     let mut stream = StreamOwned::new(connection, socket);
     while stream.conn.is_handshaking() {
         // Each step gets only the time left, so a server that drips the handshake can't stretch it.
-        stream.sock.set_read_timeout(Some(left(deadline)?))?;
+        shorten_reads(&stream.sock, left(deadline)?);
         stream.conn.complete_io(&mut stream.sock)?;
     }
     Ok(stream)
@@ -189,7 +197,7 @@ fn request_within(
     let mut raw = Vec::new();
     let mut piece = [0u8; 16 * 1024];
     loop {
-        stream.sock.set_read_timeout(Some(left(deadline)?))?;
+        shorten_reads(&stream.sock, left(deadline)?);
         match stream.read(&mut piece) {
             Ok(0) => break,
             Ok(read) => {
