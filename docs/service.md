@@ -82,7 +82,8 @@ Save that head somewhere other than the host from time to time, then check it wi
 This detects and doesn't prevent. **Someone with write access to the host can rewrite the whole ledger,
 its hashes and the head file together, and `rally check` alone will pass.** Only a head saved elsewhere
 would show it, and it can't show anything changed after that head was saved, or show which version is
-true. Without a saved head, this also goes unseen if someone winds the head file back along with the
+true. So a head saved elsewhere is the real protection: a head file reset to record 0 with records present
+passes `check` and allows writes. Without a saved head, this also goes unseen if someone winds the head file back along with the
 records, or removes every record and the head file, which looks like a new ledger.
 
 ## Known limits

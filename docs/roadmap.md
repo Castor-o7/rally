@@ -26,7 +26,8 @@ still be refined as each story is taken.
 
 Rally can run on Murph, as the ledger of record for Rally's own stories first, once these are done:
 
-1. RAL-13: the service and its access control, so both machines can reach it. RAL-36, so it can't fill the
+1. RAL-39: Rally as a myko service, first, so that the items below are only built once. RAL-13: the service
+   and its access control, so both machines can reach it. RAL-36, so it can't fill the
    disk Muster's daemon needs, and a check of Murph's free disk before rollout.
 2. RAL-15: backups to a1, with a real restore, so nothing is lost.
 3. RAL-14, RAL-16 and RAL-17: tamper detection, untrusted text and secrets, because an append-only ledger
@@ -62,6 +63,18 @@ The web app comes after this.
 
 The bones. Everything later reads from this.
 
+- [ ] **RAL-39: Make Rally a myko service.** Requested by the operator on 2026-11-02. See the design. Done
+  when: records are myko entities appended through one command with today's checks; every existing guarantee
+  still has a passing test; a test shows a raw event from a client is refused; records survive a restart; and
+  the operator has decided the licence.
+- [ ] **RAL-40: Interface with Levi.** Requested by the operator on 2026-11-02. See the design. Done when: the
+  operator has decided where claims live, and Rally can read a repository's Levi tasks through `levi --json`
+  or its hub, labelled by how each fact is known, with Levi's text treated as untrusted and nothing
+  written to Levi, with a test against a real `levi` run.
+- [ ] **RAL-41: Tighten text and name checks.** From the reads of RAL-16. Done when: zero-width and direction
+  characters are refused in names, so `alice` and a look-alike can't pass as different people; `/v1/check`
+  carries the untrusted-text notice; and limits don't apply on replay in a way that makes an old ledger
+  unreadable if they tighten, with a test for each. Decide this before deployment.
 - [x] **RAL-11: Define the ledger's record format.** Done when: every record has a versioned format
   giving its kind (observed, declared or verified), source and time, and a record missing any of them
   is refused, with a test for each.
@@ -84,7 +97,7 @@ The bones. Everything later reads from this.
 - [x] **RAL-36: Stop before the disk fills.** Rally shares Murph with Muster's daemon. Required before the
   trial. Done when: the service refuses writes while free space on the ledger's disk is below a set floor,
   reads carry on, the error says why, and a test shows it. The docs say what isn't covered.
-- [ ] **RAL-14: Make tampering detectable.** Done when: a check reports any altered, removed or
+- [x] **RAL-14: Make tampering detectable.** Done when: a check reports any altered, removed or
   reordered record, including the newest records being removed, which doesn't show as a gap in the
   sequence; a test covers each; and the docs say what this can't catch, such as someone with full access
   rewriting the whole ledger.
@@ -93,7 +106,7 @@ The bones. Everything later reads from this.
   protection as the ledger; and because a1 is only available with its lid open, backups catch up
   afterwards and alert when overdue. Each backup keeps the ledger and its head file together, also saves the ledger's head on a1, and the watchman can
   run `rally check --expect` against it (RAL-14), so that a rewrite on the host shows.
-- [ ] **RAL-16: Treat recorded text as untrusted.** Teams write text that the watchman and the web app
+- [x] **RAL-16: Treat recorded text as untrusted.** Teams write text that the watchman and the web app
   later read. Done when: free text has a length limit, is marked as untrusted wherever it's shown to an
   agent, and a test shows that text written as instructions or markup is displayed only as text.
 - [ ] **RAL-17: Keep secrets out of the ledger.** An append-only ledger can't simply forget one. Done
