@@ -908,7 +908,8 @@ fn concurrent_writers_through_the_service_keep_one_chain() {
             std::thread::spawn(move || {
                 (0..10)
                     .map(|j| {
-                        let body = json!({"change": "ready", "story": format!("RAL-{i}{j:02}")});
+                        let story = format!("RAL-{}", (i + 1) * 100 + j);
+                        let body = json!({"change": "ready", "story": story});
                         let reply = write(&pairing, "x", "declared", body);
                         assert_eq!(reply.status, 200, "{}", reply.body);
                         let value: Value = serde_json::from_str(&reply.body).unwrap();

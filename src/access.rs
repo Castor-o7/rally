@@ -91,6 +91,8 @@ pub enum AccessError {
     AlreadyPaired(String),
     UnknownMachine(String),
     EmptyName,
+    /// The name is one the ledger would refuse as a record's credential.
+    BadName,
     /// An address is empty, or has a character a pair code can't carry.
     BadAddress,
     Certificate(String),
@@ -106,6 +108,11 @@ impl fmt::Display for AccessError {
             Self::AlreadyPaired(name) => write!(f, "{name} is already paired"),
             Self::UnknownMachine(name) => write!(f, "{name} isn't paired"),
             Self::EmptyName => write!(f, "the machine's name is empty"),
+            Self::BadName => write!(
+                f,
+                "the machine's name must be at most 64 characters, with no control characters, \
+                 because each record carries it"
+            ),
             Self::BadAddress => write!(f, "the address must be a host and port"),
             Self::Certificate(reason) => write!(f, "certificate error: {reason}"),
             Self::NoRandomness => write!(f, "can't get secure random bytes"),
@@ -166,6 +173,11 @@ impl StateDir {
         let name = name.trim();
         if name.is_empty() {
             return Err(AccessError::EmptyName);
+        }
+        // The service puts this name on every record the machine writes, so a name the ledger
+        // refuses would make every write fail.
+        if !crate::record::is_good_name(name) {
+            return Err(AccessError::BadName);
         }
         if address.is_empty() || address.contains(|c: char| c == '/' || c.is_whitespace()) {
             return Err(AccessError::BadAddress);
@@ -380,6 +392,21 @@ mod tests {
             state.add_machine(" ", "x:1", false),
             Err(AccessError::EmptyName)
         ));
+    }
+
+    #[test]
+    fn refuses_a_name_the_ledger_would_refuse_as_a_credential() {
+        let (_dir, state) = state();
+        for name in ["x".repeat(65), "a\tb".to_owned(), "a\u{85}b".to_owned()] {
+            assert!(
+                matches!(
+                    state.add_machine(&name, "x:1", false),
+                    Err(AccessError::BadName)
+                ),
+                "{name:?} was accepted"
+            );
+        }
+        assert!(state.add_machine(&"x".repeat(64), "x:1", false).is_ok());
     }
 
     #[test]

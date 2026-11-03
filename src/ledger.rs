@@ -278,10 +278,13 @@ impl Ledger {
         &self.teams
     }
 
-    /// Says whether [`apply`](Self::apply) would accept this record next, without changing
-    /// anything. It copies only the one story the record is about, so it costs that story's size,
-    /// not the ledger's.
+    /// Says whether a new record may be appended next, without changing anything: whether
+    /// [`apply`](Self::apply) would accept it, and whether it meets the rules added since records
+    /// were first written. Those apply to new records only, so a ledger written before them still
+    /// replays (RAL-41). It copies only the one story the record is about, so it costs that
+    /// story's size, not the ledger's.
     pub fn check(&self, seq: u64, record: &Record) -> Result<(), LedgerError> {
+        self.check_new_rules(record)?;
         let mut trial = Self {
             last_seq: self.last_seq,
             ..Self::default()
@@ -297,6 +300,30 @@ impl Ledger {
                 .insert(change.story().to_owned(), story.clone());
         }
         trial.apply(seq, record)
+    }
+
+    /// Rules for new records that replay doesn't apply (RAL-42). A record they'd refuse isn't
+    /// invalid in a ledger that already holds it.
+    fn check_new_rules(&self, record: &Record) -> Result<(), LedgerError> {
+        // A body that isn't a change is refused by `apply`, with its own reason.
+        let Ok(change) = serde_json::from_value::<Change>(record.body().clone()) else {
+            return Ok(());
+        };
+        // So that `RAL-1` and `RAL-01` can't be two stories.
+        let id = change.story();
+        let names_a_story = !matches!(change, Change::TeamState { story: None, .. });
+        if names_a_story && has_leading_zero(id) {
+            return Err(LedgerError::InvalidStoryId(id.to_owned()));
+        }
+        // A verified note, even one that changes no state, reads as a check by someone else, so
+        // its author mustn't be one of the story's.
+        if let Change::Correct { state: None, .. } = &change
+            && record.kind() == Kind::Verified
+            && let Some(story) = self.stories.get(id)
+        {
+            require_verifier(story, id, record)?;
+        }
+        Ok(())
     }
 
     /// Applies one record, or refuses it and leaves the state unchanged.
@@ -616,6 +643,12 @@ fn check_limit(name: &'static str, value: &str) -> Result<(), LedgerError> {
         return Err(LedgerError::ControlCharacter(name));
     }
     Ok(())
+}
+
+/// Whether a story ID's number starts with a zero, other than the number 0 itself.
+fn has_leading_zero(id: &str) -> bool {
+    id.split_once('-')
+        .is_some_and(|(_, number)| number.len() > 1 && number.starts_with('0'))
 }
 
 fn is_story_id(id: &str) -> bool {
@@ -1120,6 +1153,52 @@ mod tests {
             ratio < 8.0,
             "4 times the corrections took {ratio:.1} times as long ({small:?}, {large:?})"
         );
+    }
+
+    #[test]
+    fn a_submitter_cannot_add_a_verified_annotation_to_their_own_story() {
+        let ledger = ledger_with(&[ready(), claim(), submit()]);
+        let note =
+            json!({"change": "correct", "story": STORY, "corrects": 3, "note": "looks good"});
+        for author in ["alice", "rally"] {
+            let own = record(Kind::Verified, author, note.clone());
+            assert!(
+                matches!(
+                    ledger.check(4, &own),
+                    Err(LedgerError::SelfVerification { .. })
+                ),
+                "{author}"
+            );
+        }
+        // Someone else's verified note, and the author's declared one, are fine.
+        assert!(ledger.check(4, &verifier(note.clone())).is_ok());
+        assert!(ledger.check(4, &team(note)).is_ok());
+    }
+
+    #[test]
+    fn a_new_story_id_with_a_leading_zero_is_refused_but_an_old_one_still_replays() {
+        let padded = [
+            team(json!({"change": "ready", "story": "RAL-01"})),
+            team(
+                json!({"change": "team_state", "team": "rally", "status": "working",
+                        "story": "RAL-007"}),
+            ),
+        ];
+        for record in &padded {
+            assert!(
+                matches!(
+                    Ledger::default().check(1, record),
+                    Err(LedgerError::InvalidStoryId(_))
+                ),
+                "{record:?}"
+            );
+            // A ledger written before the rule still replays.
+            assert!(Ledger::replay([record]).is_ok());
+        }
+        for id in ["RAL-1", "RAL-10", "RAL-0"] {
+            let record = team(json!({"change": "ready", "story": id}));
+            assert!(Ledger::default().check(1, &record).is_ok(), "{id}");
+        }
     }
 
     #[test]
