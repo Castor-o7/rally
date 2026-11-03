@@ -145,6 +145,23 @@ impl Location {
         let mut config: postgres::Config = self.url.parse().map_err(|_| {
             StoreError::Database(format!("{} isn't a Postgres address", self.redacted()))
         })?;
+        // myko is given only the host, port, user, database and password (`myko_url`), so a setting
+        // beyond those would apply to Rally's connections but not to myko's, which could then read
+        // somewhere else, such as another schema through `search_path`.
+        if config.get_options().is_some() {
+            return Err(StoreError::Database(
+                "the database address sets options, which myko wouldn't be given; set them on the \
+                 Postgres role instead"
+                    .to_owned(),
+            ));
+        }
+        if config.get_ssl_mode() == postgres::config::SslMode::Require {
+            return Err(StoreError::Database(
+                "the database address requires TLS, which Rally doesn't use for Postgres; keep \
+                 Postgres on the same host"
+                    .to_owned(),
+            ));
+        }
         if let Some(path) = &self.password_file {
             if config.get_password().is_some() {
                 return Err(StoreError::Database(
@@ -2129,6 +2146,30 @@ mod tests {
         std::os::unix::fs::symlink(&password, &link).unwrap();
         assert!(read_password_file(&link).is_err());
         std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn an_address_with_settings_myko_would_not_get_is_refused() {
+        let scratch = Scratch::new();
+        for (setting, word) in [
+            ("options=-c%20search_path%3Delsewhere", "options"),
+            ("sslmode=require", "TLS"),
+        ] {
+            let separator = if scratch.location.url.contains('?') {
+                '&'
+            } else {
+                '?'
+            };
+            let location = Location {
+                url: format!("{}{separator}{setting}", scratch.location.url),
+                ..scratch.location.clone()
+            };
+            let error = match Store::open_read_only(&location) {
+                Ok(_) => panic!("{setting} was accepted"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains(word), "{setting}: {error}");
+        }
     }
 
     #[test]
