@@ -66,18 +66,47 @@ pub struct Section {
 }
 
 /// Counts a roadmap's checkboxes overall and by `##` heading, ignoring examples in code fences.
+/// A fence line's character, its length and what follows it: three or more backticks or tildes,
+/// indented by at most three spaces. A backtick fence's info string can't hold a backtick.
+fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    if indent > 3 {
+        return None;
+    }
+    let rest = &line[indent..];
+    let kind = rest.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let length = rest.len() - rest.trim_start_matches(kind).len();
+    if length < 3 {
+        return None;
+    }
+    let after = &rest[length..];
+    if kind == '`' && after.contains('`') {
+        return None;
+    }
+    Some((kind, length, after))
+}
+
 pub fn parse_roadmap(text: &str) -> (Boxes, Vec<Section>) {
     let mut sections: Vec<Section> = Vec::new();
     let mut current = "Before the first heading".to_owned();
-    let mut in_fence = false;
+    // The open fence's character and length, as CommonMark has them.
+    let mut fence: Option<(char, usize)> = None;
     for line in text.lines() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
-            continue;
+        let marker = fence_marker(line);
+        match (fence, marker) {
+            (None, Some((kind, length, _))) => {
+                fence = Some((kind, length));
+                continue;
+            }
+            (Some((open, open_length)), Some((kind, length, rest)))
+                if kind == open && length >= open_length && rest.trim().is_empty() =>
+            {
+                fence = None;
+                continue;
+            }
+            (Some(_), _) => continue,
+            (None, None) => {}
         }
         if let Some(heading) = trimmed.strip_prefix("## ") {
             current = heading.trim().to_owned();
@@ -161,6 +190,9 @@ fn now_ms() -> u64 {
 
 /// Runs a command, giving up after `limit`, so that a hung program can't freeze the page's data.
 /// Returns its standard output if it succeeded.
+/// The most output a command may give: a roadmap or the roster, with plenty of room.
+const MAX_COMMAND_OUTPUT: u64 = 8 * 1024 * 1024;
+
 fn run_with_timeout(mut command: Command, limit: Duration) -> Result<Vec<u8>, String> {
     let mut child = command
         .stdin(Stdio::null())
@@ -173,27 +205,74 @@ fn run_with_timeout(mut command: Command, limit: Duration) -> Result<Vec<u8>, St
     let (sender, output) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        let _ = sender.send(stdout.read_to_end(&mut bytes).map(|_| bytes));
+        // One byte past the limit says it was exceeded; the rest is never read, and the child
+        // is killed below if that leaves it blocked.
+        let read = (&mut stdout)
+            .take(MAX_COMMAND_OUTPUT + 1)
+            .read_to_end(&mut bytes);
+        let _ = sender.send(read.map(|_| bytes));
     });
     let started = Instant::now();
+    // Output the reader finished with before the child was seen to exit.
+    let mut early: Option<std::io::Result<Vec<u8>>> = None;
+    let collect = |early: &mut Option<std::io::Result<Vec<u8>>>, wait: Duration| {
+        let read = match early.take() {
+            Some(read) => read,
+            None => output
+                .recv_timeout(wait)
+                .map_err(|_| "its output didn't finish".to_owned())?,
+        };
+        read.map_err(|e| e.to_string()).and_then(too_much)
+    };
     loop {
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) if status.success() => {
                 // Something it left running could hold its output open, so this needs a limit too.
                 let left = limit.saturating_sub(started.elapsed());
-                return output
-                    .recv_timeout(left.max(Duration::from_millis(100)))
-                    .map_err(|_| "its output didn't finish".to_owned())?
-                    .map_err(|e| e.to_string());
+                return collect(&mut early, left.max(Duration::from_millis(100)));
             }
-            Some(_) => return Err("it reported a failure".to_owned()),
+            Some(_) => {
+                // Stopping at the limit ends a command still writing with a broken pipe, which it
+                // reports as a failure; say what really happened.
+                collect(&mut early, Duration::from_millis(100))?;
+                return Err("it reported a failure".to_owned());
+            }
             None if started.elapsed() >= limit => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!("it didn't finish within {}s", limit.as_secs()));
             }
-            None => std::thread::sleep(Duration::from_millis(50)),
+            None => {
+                if early.is_none()
+                    && let Ok(read) = output.try_recv()
+                {
+                    early = Some(read);
+                }
+                // Past the limit the reader stops, and a child still writing would block on a
+                // full pipe until its time ran out, so end it now.
+                if early.as_ref().is_some_and(|read| {
+                    read.as_ref()
+                        .is_ok_and(|bytes| bytes.len() as u64 > MAX_COMMAND_OUTPUT)
+                }) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return collect(&mut early, Duration::ZERO);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
+    }
+}
+
+/// Refuses output over [`MAX_COMMAND_OUTPUT`].
+fn too_much(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    if bytes.len() as u64 > MAX_COMMAND_OUTPUT {
+        Err(format!(
+            "it printed too much, over {} MiB",
+            MAX_COMMAND_OUTPUT / 1024 / 1024
+        ))
+    } else {
+        Ok(bytes)
     }
 }
 
@@ -335,12 +414,14 @@ fn allowed_hosts(address: SocketAddr) -> Result<Vec<String>, String> {
              own review (RAL-34)"
         ));
     }
-    let port = address.port();
-    Ok(vec![
-        format!("127.0.0.1:{port}"),
-        format!("localhost:{port}"),
-        format!("[::1]:{port}"),
-    ])
+    // The address it listens on, and `localhost` only for the addresses that name usually means.
+    let mut hosts = vec![address.to_string()];
+    let usual = address.ip() == std::net::Ipv4Addr::LOCALHOST
+        || address.ip() == std::net::Ipv6Addr::LOCALHOST;
+    if usual {
+        hosts.push(format!("localhost:{}", address.port()));
+    }
+    Ok(hosts)
 }
 
 fn refresh_forever(app: &App, ledger: &LedgerReader) {
@@ -572,6 +653,46 @@ mod tests {
         let mut command = Command::new("sh");
         command.args(["-c", "exit 3"]);
         assert!(run_with_timeout(command, Duration::from_secs(5)).is_err());
+    }
+
+    #[test]
+    fn a_command_that_prints_too_much_is_refused() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "head -c 9000000 /dev/zero"]);
+        let error = run_with_timeout(command, Duration::from_secs(10)).unwrap_err();
+        assert!(error.contains("too much"), "{error}");
+    }
+
+    #[test]
+    fn fences_open_and_close_as_markdown_says() {
+        let count = |text: &str| parse_roadmap(text).0;
+        // A longer fence isn't closed by a shorter one.
+        let longer = "````\n```\n- [x] inside\n````\n- [ ] outside\n";
+        assert_eq!((count(longer).ticked, count(longer).total), (0, 1));
+        // Nor by the other kind.
+        let other = "```\n~~~\n- [x] inside\n```\n- [ ] outside\n";
+        assert_eq!((count(other).ticked, count(other).total), (0, 1));
+        // A closing fence can't have text after it.
+        let text_after = "```\n``` not a close\n- [x] inside\n```\n- [ ] outside\n";
+        assert_eq!((count(text_after).ticked, count(text_after).total), (0, 1));
+        // Four spaces of indent is code, not a fence, so what follows still counts.
+        let indented = "    ```\n- [x] counted\n";
+        assert_eq!((count(indented).ticked, count(indented).total), (1, 1));
+        // An info string is fine on an opening fence.
+        let info = "```rust\n- [x] inside\n```\n- [ ] outside\n";
+        assert_eq!((count(info).ticked, count(info).total), (0, 1));
+    }
+
+    #[test]
+    fn each_loopback_address_allows_its_own_host() {
+        let hosts = allowed_hosts("127.0.0.2:7300".parse().unwrap()).unwrap();
+        assert!(hosts.contains(&"127.0.0.2:7300".to_owned()), "{hosts:?}");
+        assert!(!hosts.contains(&"localhost:7300".to_owned()), "{hosts:?}");
+        assert!(!hosts.contains(&"127.0.0.1:7300".to_owned()), "{hosts:?}");
+        let hosts = allowed_hosts("127.0.0.1:7300".parse().unwrap()).unwrap();
+        assert_eq!(hosts, ["127.0.0.1:7300", "localhost:7300"]);
+        let hosts = allowed_hosts("[::1]:7300".parse().unwrap()).unwrap();
+        assert_eq!(hosts, ["[::1]:7300", "localhost:7300"]);
     }
 
     #[test]
