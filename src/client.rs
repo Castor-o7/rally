@@ -76,14 +76,12 @@ pub struct Reply {
     pub body: String,
 }
 
-/// Sends one request. `extra_headers` lets tests send what a real client wouldn't.
-pub fn request(
-    pairing: &Pairing,
-    method: &str,
-    path: &str,
-    body: Option<&str>,
-    extra_headers: &[(&str, &str)],
-) -> Result<Reply, Box<dyn std::error::Error>> {
+/// A TLS connection to the service, pinned to its certificate, with the handshake done.
+pub type Connection = StreamOwned<ClientConnection, TcpStream>;
+
+/// Connects to the service and completes the TLS handshake, sending no request. [`request`] uses
+/// it; tests use it to hold a connection open.
+pub fn connect(pairing: &Pairing) -> Result<Connection, Box<dyn std::error::Error>> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier = Arc::new(PinnedCertificate {
         fingerprint: pairing.fingerprint.clone(),
@@ -106,7 +104,21 @@ pub fn request(
     socket.set_read_timeout(Some(TIMEOUT))?;
     socket.set_write_timeout(Some(TIMEOUT))?;
     let mut stream = StreamOwned::new(connection, socket);
+    while stream.conn.is_handshaking() {
+        stream.conn.complete_io(&mut stream.sock)?;
+    }
+    Ok(stream)
+}
 
+/// Sends one request. `extra_headers` lets tests send what a real client wouldn't.
+pub fn request(
+    pairing: &Pairing,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    extra_headers: &[(&str, &str)],
+) -> Result<Reply, Box<dyn std::error::Error>> {
+    let mut stream = connect(pairing)?;
     let body = body.unwrap_or_default();
     let mut head = format!(
         "{method} {path} HTTP/1.1\r\nHost: rally\r\nConnection: close\r\n\

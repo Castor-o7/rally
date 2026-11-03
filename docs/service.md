@@ -58,6 +58,16 @@ stops a token working straight away. Don't expose the port to the open internet.
   lock, so concurrent writes can't pass them together, but Postgres grows its table in pages, so the size can
   end up to one write's growth past the limit. Set the floor with `--min-free-bytes`, and check it against the
   host's real free space before rollout.
+- **Connections are capped and timed (RAL-35).** At most 64 connections are open at once, and 16 from any one
+  address (`--max-connections`, `--max-connections-per-address`); past that, a new connection is closed before
+  its TLS handshake. Each connection has 10 seconds to finish its handshake and 10 more to send its request's
+  headers, and lasts at most 60 seconds in all (`--connection-seconds`), whether or not it has authenticated.
+  60 seconds is longer than a write can wait on Postgres, so a slow write still gets its answer.
+- **Failed tokens are limited by address (RAL-35).** An address may present 20 missing or wrong tokens at once,
+  and regains one every 5 seconds (`--failed-token-burst`, `--failed-token-per-second`). Past that, its requests
+  get a 429 before their token is looked at, so a guess can't tell a right token from a wrong one. That also
+  refuses a real machine at that address until it recovers, so a machine with a mistyped token can lock itself
+  out for a while.
 - **A write is acknowledged only once Postgres has committed it.** If Postgres can't be reached before the
   record is sent, the write fails with a 503 saying nothing was recorded. If the connection fails after the
   commit is sent and before Postgres answers, the reply is a 503 saying the outcome is unknown: it may have
@@ -159,9 +169,11 @@ records, or removes every record and the head file, which looks like a new ledge
   while reads carry on. If that happens, revoke the credential and find its records by credential with
   `rally show`. Those records stay in the ledger, because it's append-only. Raising
   `--max-ledger-bytes` restores writes but costs memory, as below, so check the host's memory first.
-- A failed token attempt isn't rate limited, and connections aren't capped or timed out while they're
-  still unauthenticated. Tokens are 256 random bits, so guessing isn't practical, but a flood or slow
-  connections could still load the service (RAL-35). This is why it stays off the open internet.
+- Connection and failed-token limits go by address, so many addresses can still share out the 64 connections,
+  and a machine sharing an address with an attacker, such as another account on the same host, shares its
+  limits. A closed connection is refused at TCP level, after the operating system accepts it, so a flood still
+  costs the host something. Tokens are 256 random bits, so guessing isn't practical either way. This is why the
+  service stays off the open internet.
 - The service holds every record in memory twice for as long as it runs: as text in myko's store, and parsed in
   the state it keeps between requests, so that a read of the current state or an append doesn't replay the whole
   ledger (RAL-35). An append keeps about 24.6 KB for a 12.2 KB record, measured by the allocator. A check still
