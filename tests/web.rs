@@ -4,11 +4,13 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 
+use rally::scratch_pg::{self, Database};
 use serde_json::Value;
 
 struct Viewer {
     child: Child,
     address: String,
+    _db: Database<'static>,
     _dir: tempfile::TempDir,
 }
 
@@ -21,9 +23,23 @@ impl Drop for Viewer {
 
 fn rally() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_rally"));
-    for name in ["RALLY_DB", "RALLY_CONFIG", "RALLY_CREDENTIAL", "RALLY_NAME"] {
+    for name in [
+        "RALLY_DB",
+        "RALLY_HEAD_FILE",
+        "RALLY_CONFIG",
+        "RALLY_CREDENTIAL",
+        "RALLY_NAME",
+    ] {
         command.env_remove(name);
     }
+    command
+}
+
+/// `rally` on this test's own scratch ledger.
+fn on(db: &Database, dir: &std::path::Path) -> Command {
+    let mut command = rally();
+    command.arg("--db").arg(&db.url);
+    command.arg("--head-file").arg(dir.join("ledger.head"));
     command
 }
 
@@ -31,20 +47,16 @@ fn rally() -> Command {
 /// test doesn't need GitHub.
 fn start() -> Viewer {
     let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("ledger.db");
+    let db = scratch_pg::shared().database();
     let projects = dir.path().join("projects.json");
     std::fs::write(&projects, "[]").unwrap();
-    let status = rally()
-        .arg("--db")
-        .arg(&db)
+    let status = on(&db, dir.path())
         .args(["--credential", "a1", "--as", "someone"])
         .args(["team-state", "rally", "blocked", "--note", ATTACK])
         .status()
         .unwrap();
     assert!(status.success());
-    let mut child = rally()
-        .arg("--db")
-        .arg(&db)
+    let mut child = on(&db, dir.path())
         .args(["web", "--bind", "127.0.0.1:0", "--projects"])
         .arg(&projects)
         .stdout(Stdio::piped())
@@ -58,6 +70,7 @@ fn start() -> Viewer {
     Viewer {
         child,
         address: started["listening"].as_str().unwrap().to_owned(),
+        _db: db,
         _dir: dir,
     }
 }
@@ -160,30 +173,26 @@ fn recorded_text_arrives_as_json_data_with_the_notice() {
 #[test]
 fn a_broken_chain_is_reported_as_a_failed_check() {
     let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("ledger.db");
+    let db = scratch_pg::shared().database();
     let projects = dir.path().join("projects.json");
     std::fs::write(&projects, "[]").unwrap();
     assert!(
-        rally()
-            .arg("--db")
-            .arg(&db)
+        on(&db, dir.path())
             .args(["--credential", "a1", "--as", "someone"])
             .args(["team-state", "rally", "working"])
             .status()
             .unwrap()
             .success()
     );
-    let connection = rusqlite::Connection::open(&db).unwrap();
-    connection
-        .execute_batch(
-            "DROP TRIGGER records_no_update;
-             UPDATE records SET record = replace(record, 'someone', 'mallory');",
+    db.connect()
+        .batch_execute(
+            "ALTER TABLE rally_events DISABLE TRIGGER rally_no_update;
+             UPDATE rally_events SET event = jsonb_set(event, '{item,record}',
+                 to_jsonb(replace(event->'item'->>'record', 'someone', 'mallory')))
+             WHERE item_type = 'LedgerRecord';",
         )
         .unwrap();
-    drop(connection);
-    let mut child = rally()
-        .arg("--db")
-        .arg(&db)
+    let mut child = on(&db, dir.path())
         .args(["web", "--bind", "127.0.0.1:0", "--projects"])
         .arg(&projects)
         .stdout(Stdio::piped())
@@ -197,6 +206,7 @@ fn a_broken_chain_is_reported_as_a_failed_check() {
     let viewer = Viewer {
         child,
         address: started["listening"].as_str().unwrap().to_owned(),
+        _db: db,
         _dir: dir,
     };
     let text = wait_for_ledger(&viewer).1;
@@ -221,10 +231,8 @@ fn wait_for_ledger(viewer: &Viewer) -> (u16, String) {
 #[test]
 fn it_refuses_to_listen_beyond_loopback() {
     let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("ledger.db");
-    let output = rally()
-        .arg("--db")
-        .arg(&db)
+    let db = scratch_pg::shared().database();
+    let output = on(&db, dir.path())
         .args(["web", "--bind", "0.0.0.0:0"])
         .output()
         .unwrap();

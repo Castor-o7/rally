@@ -2,8 +2,11 @@
 
 pub mod access;
 pub mod client;
+pub mod entity;
 pub mod ledger;
 pub mod record;
+#[doc(hidden)]
+pub mod scratch_pg;
 pub mod server;
 pub mod store;
 pub mod views;

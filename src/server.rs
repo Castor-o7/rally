@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,7 +20,7 @@ use serde_json::{Value, json};
 use crate::access::{Identity, StateDir};
 use crate::ledger::Ledger;
 use crate::record::{Kind, Record, Source};
-use crate::store::{Head, Store, StoreError};
+use crate::store::{Head, Location, SpaceLimits, Store, StoreError};
 use crate::views;
 
 /// The largest request body accepted.
@@ -47,9 +46,9 @@ impl Default for RateLimit {
             per_second: 5.0,
             write_burst: 30.0,
             write_per_second: 0.2,
-            // Each request currently replays the whole ledger in memory: about 150 MB of memory at
-            // this size in the worst case, and 2.3 GB at 1 GiB, on a host shared with Muster.
-            // Raise this only after RAL-35.
+            // The size of the ledger's table in Postgres, with its indexes. Each request replays
+            // the whole ledger in memory, on a host shared with Muster: see `docs/service.md` for
+            // what this costs. Raise this only after RAL-35.
             max_ledger_bytes: 64 * 1024 * 1024,
             min_free_bytes: 5 * 1024 * 1024 * 1024,
         }
@@ -57,8 +56,9 @@ impl Default for RateLimit {
 }
 
 struct Service {
-    store: Mutex<Store>,
-    db: PathBuf,
+    // No lock of its own: appends queue on the writer's lock inside the store, and reads of
+    // myko's copy need none, so a write stuck on Postgres doesn't hold up reads.
+    store: Store,
     state_dir: StateDir,
     limit: RateLimit,
     buckets: Mutex<HashMap<(String, bool), (f64, Instant)>>,
@@ -67,7 +67,7 @@ struct Service {
 /// Runs the service on `listener` until the process ends.
 pub async fn serve(
     listener: TcpListener,
-    db: &Path,
+    location: &Location,
     state_dir: StateDir,
     limit: RateLimit,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -75,7 +75,14 @@ pub async fn serve(
     let _ = rustls::crypto::ring::default_provider().install_default();
     let (cert, key, _) = state_dir.certificate()?;
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
-    let app = router(Store::open(db)?, db.to_owned(), state_dir, limit);
+    // Opening replays the ledger through myko, which never listens: this service is the only way
+    // in. It also takes the writer lock, so a second writer can't fork the chain.
+    let store = tokio::task::block_in_place(|| Store::open(location))?;
+    store.limit_space(SpaceLimits {
+        max_ledger_bytes: limit.max_ledger_bytes,
+        min_free_bytes: limit.min_free_bytes,
+    });
+    let app = router(store, state_dir, limit);
     listener.set_nonblocking(true)?;
     axum_server::from_tcp_rustls(listener, tls)?
         .serve(app.into_make_service())
@@ -83,10 +90,9 @@ pub async fn serve(
     Ok(())
 }
 
-fn router(store: Store, db: PathBuf, state_dir: StateDir, limit: RateLimit) -> Router {
+fn router(store: Store, state_dir: StateDir, limit: RateLimit) -> Router {
     let service = Arc::new(Service {
-        store: Mutex::new(store),
-        db,
+        store,
         state_dir,
         limit,
         buckets: Mutex::new(HashMap::new()),
@@ -174,9 +180,13 @@ impl Service {
         }
     }
 
+    /// Runs `work` on the store. Postgres calls block, so they leave this worker free for others.
+    fn with_store<T>(&self, work: impl FnOnce(&Store) -> T) -> T {
+        tokio::task::block_in_place(|| work(&self.store))
+    }
+
     fn ledger(&self, as_of: Option<u64>) -> Result<Ledger, StoreError> {
-        let store = self.store.lock().expect("no panics hold this lock");
-        store.ledger(as_of)
+        self.with_store(|store| store.ledger(as_of))
     }
 }
 
@@ -187,19 +197,6 @@ fn internal(error: &StoreError) -> Response {
         StatusCode::INTERNAL_SERVER_ERROR,
         "the ledger can't be read",
     )
-}
-
-/// Space available on the disk holding `path` to an account like this one, excluding what's
-/// reserved for the system.
-#[cfg(unix)]
-fn free_bytes(path: &Path) -> std::io::Result<u64> {
-    let stats = rustix::fs::statvfs(path)?;
-    Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
-}
-
-#[cfg(not(unix))]
-fn free_bytes(_path: &Path) -> std::io::Result<u64> {
-    Err(std::io::Error::other("only Unix hosts are supported"))
 }
 
 /// What a client sends to write. It has no credential or time, because the service sets those.
@@ -216,34 +213,6 @@ async fn write_record(
     Extension(identity): Extension<Identity>,
     text: String,
 ) -> Response {
-    // If either check can't be made, refuse the write rather than risk the disk.
-    match std::fs::metadata(&service.db) {
-        Ok(metadata) if metadata.len() < service.limit.max_ledger_bytes => {}
-        Ok(_) => return failure(StatusCode::INSUFFICIENT_STORAGE, "the ledger is full"),
-        Err(error) => {
-            eprintln!("rally: can't check the ledger's size: {error}");
-            return failure(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "the ledger can't be read",
-            );
-        }
-    }
-    match free_bytes(&service.db) {
-        Ok(free) if free >= service.limit.min_free_bytes => {}
-        Ok(_) => {
-            return failure(
-                StatusCode::INSUFFICIENT_STORAGE,
-                "the ledger's disk is low on free space",
-            );
-        }
-        Err(error) => {
-            eprintln!("rally: can't check free disk space: {error}");
-            return failure(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "free disk space can't be checked",
-            );
-        }
-    }
     let request: WriteRequest = match serde_json::from_str(&text) {
         Ok(request) => request,
         Err(error) => return failure(StatusCode::BAD_REQUEST, error.to_string()),
@@ -265,16 +234,37 @@ async fn write_record(
         Ok(record) => record,
         Err(error) => return failure(StatusCode::BAD_REQUEST, error.to_string()),
     };
-    let appended = service
-        .store
-        .lock()
-        .expect("no panics hold this lock")
-        .append(&record);
-    match appended {
+    service.with_store(|store| match store.append(&record) {
         Ok(seq) => Json(json!({"recorded": seq})).into_response(),
         Err(StoreError::Refused(error)) => failure(StatusCode::CONFLICT, error.to_string()),
+        Err(error @ StoreError::Database(_)) => {
+            eprintln!("rally: {error}");
+            failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the ledger's database can't be reached, so nothing was recorded",
+            )
+        }
+        Err(StoreError::Full(reason)) => failure(StatusCode::INSUFFICIENT_STORAGE, reason),
+        Err(error @ StoreError::SpaceUnchecked(_)) => {
+            failure(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+        }
+        Err(error @ StoreError::Unloaded { .. }) => {
+            eprintln!("rally: {error}");
+            failure(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "it was recorded, but the service couldn't load it; it must be restarted \
+                     before writing again",
+            )
+        }
+        Err(error @ StoreError::Unknown(_)) => {
+            eprintln!("rally: {error}");
+            failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the outcome is unknown; it may have been recorded, so check before retrying",
+            )
+        }
         Err(error) => internal(&error),
-    }
+    })
 }
 
 #[derive(Deserialize)]
@@ -312,8 +302,7 @@ async fn check(State(service): State<Arc<Service>>, Query(expected): Query<Expec
         (None, None) => None,
         _ => return failure(StatusCode::BAD_REQUEST, "seq and hash go together"),
     };
-    let store = service.store.lock().expect("no panics hold this lock");
-    match store.verify(expected.as_ref()) {
+    match service.with_store(|store| store.verify(expected.as_ref())) {
         Ok(result) => Json(result).into_response(),
         Err(error) => internal(&error),
     }

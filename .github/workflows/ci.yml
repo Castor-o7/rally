@@ -12,12 +12,42 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    services:
+      # The ledger's tests need Postgres, and fail rather than skip without it.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          # Not 5432: the tests refuse it, so they can never meet a Postgres someone is using.
+          - 54329:5432
+        # The same path inside and out, so the disk-floor check can find Postgres's data.
+        volumes:
+          - /var/lib/postgresql/data:/var/lib/postgresql/data
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      RALLY_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:54329/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # Tests that stop Postgres start a scratch cluster of their own with initdb and pg_ctl, and
+      # the socket test reads lsof.
+      - name: Postgres binaries and lsof
+        run: |
+          if ! ls /usr/lib/postgresql/*/bin/initdb >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y postgresql
+          fi
+          command -v lsof >/dev/null || sudo apt-get install -y lsof
+          bin="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)"
+          test -x "$bin/initdb" && test -x "$bin/pg_ctl"
+          echo "RALLY_TEST_PG_BIN=$bin" >> "$GITHUB_ENV"
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test

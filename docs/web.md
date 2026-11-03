@@ -6,8 +6,8 @@ It runs on your own machine, on a loopback address only.
 ```bash
 # Pair with a read-only credential first (see service.md), then:
 rally web --bind 127.0.0.1:7300
-# Or, before the service is deployed, read a ledger file directly:
-rally --db ledger.db web --bind 127.0.0.1:7300
+# Or, on the host, read the ledger's database directly and read-only:
+rally --db postgres://rally@127.0.0.1/rally --head-file ledger.head web --bind 127.0.0.1:7300
 ```
 
 Then open <http://127.0.0.1:7300>. It needs `gh` signed in to read roadmap files, and reads them every 5
@@ -32,7 +32,7 @@ minutes. The ledger and roster are read every 30 seconds.
   any `Origin` must be its own. There are no CORS headers.
 - **Recorded text can't run.** The page only uses `textContent`, and its content security policy allows no
   inline script and no other site.
-- **No write path.** It has no way to change anything. It opens a ledger file read-only, and should use a
+- **No write path.** It has no way to change anything. With `--db` its Postgres connection is read-only, and it should use a
   read-only credential with the service. The page warns if it isn't.
 - **A failed check shows.** A broken chain appears as a red failed check, with the contents withheld. If the
   viewer stops answering, the page replaces the check with a warning.

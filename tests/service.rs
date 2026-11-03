@@ -6,6 +6,7 @@ use std::process::{Child, Command, Stdio};
 
 use rally::access::Pairing;
 use rally::client::{Reply, request};
+use rally::scratch_pg::{self, Cluster, Database};
 use serde_json::{Value, json};
 
 const ROUTES: [(&str, &str); 7] = [
@@ -18,14 +19,17 @@ const ROUTES: [(&str, &str); 7] = [
     ("GET", "/v1/whoami"),
 ];
 
-struct Service {
+struct Service<'a> {
     child: Child,
+    // Dropped after the child is killed, in `Drop`.
+    db: Database<'a>,
     dir: tempfile::TempDir,
     address: String,
     fingerprint: String,
+    limits: Vec<String>,
 }
 
-impl Drop for Service {
+impl Drop for Service<'_> {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -36,6 +40,7 @@ fn rally() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_rally"));
     for name in [
         "RALLY_DB",
+        "RALLY_HEAD_FILE",
         "RALLY_CONFIG",
         "RALLY_CREDENTIAL",
         "RALLY_NAME",
@@ -46,15 +51,17 @@ fn rally() -> Command {
     command
 }
 
-fn start_with(limits: &[&str]) -> Service {
-    let dir = tempfile::tempdir().unwrap();
+/// Starts the service, and returns it with the address it's listening on and its fingerprint.
+fn spawn(db: &Database, dir: &Path, limits: &[String]) -> (Child, String, String) {
     let mut child = rally()
         .arg("--db")
-        .arg(dir.path().join("ledger.db"))
+        .arg(&db.url)
+        .arg("--head-file")
+        .arg(dir.join("ledger.head"))
         .args(["serve", "--bind", "127.0.0.1:0"])
         .args(limits)
         .arg("--state-dir")
-        .arg(dir.path().join("state"))
+        .arg(dir.join("state"))
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -63,26 +70,98 @@ fn start_with(limits: &[&str]) -> Service {
         .read_line(&mut line)
         .unwrap();
     let started: Value = serde_json::from_str(&line).unwrap();
+    // It prints its address before replaying, so wait until it answers.
+    let address = started["listening"].as_str().unwrap().to_owned();
+    for _ in 0..600 {
+        if std::net::TcpStream::connect(&address).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    (
+        child,
+        address,
+        started["fingerprint"].as_str().unwrap().to_owned(),
+    )
+}
+
+fn start_on<'a>(cluster: &'a Cluster, limits: &[&str]) -> Service<'a> {
+    let dir = tempfile::tempdir().unwrap();
+    let db = cluster.database();
+    let limits: Vec<String> = limits.iter().map(|s| (*s).to_owned()).collect();
+    let (child, address, fingerprint) = spawn(&db, dir.path(), &limits);
     Service {
         child,
-        address: started["listening"].as_str().unwrap().to_owned(),
-        fingerprint: started["fingerprint"].as_str().unwrap().to_owned(),
+        db,
         dir,
+        address,
+        fingerprint,
+        limits,
     }
 }
 
-fn start() -> Service {
-    start_with(&[
-        "--burst",
-        "1000",
-        "--write-burst",
-        "1000",
-        "--min-free-bytes",
-        "0",
-    ])
+fn start_with(limits: &[&str]) -> Service<'static> {
+    start_on(scratch_pg::shared(), limits)
 }
 
-impl Service {
+const GENEROUS: [&str; 6] = [
+    "--burst",
+    "1000",
+    "--write-burst",
+    "1000",
+    "--min-free-bytes",
+    "0",
+];
+
+fn start() -> Service<'static> {
+    start_with(&GENEROUS)
+}
+
+impl Service<'_> {
+    /// A real restart: the process ends, and the new one replays the ledger from Postgres.
+    fn restart(&mut self, signal: &str) {
+        let pid = self.child.id().to_string();
+        assert!(
+            Command::new("kill")
+                .args([signal, &pid])
+                .status()
+                .unwrap()
+                .success()
+        );
+        self.child.wait().unwrap();
+        let (child, address, fingerprint) = spawn(&self.db, self.dir.path(), &self.limits);
+        assert_eq!(fingerprint, self.fingerprint, "the certificate changed");
+        self.child = child;
+        self.address = address;
+    }
+
+    /// Tries to start it, and returns why it wouldn't.
+    fn refuses_to_start(&self) -> String {
+        let output = rally()
+            .arg("--db")
+            .arg(&self.db.url)
+            .arg("--head-file")
+            .arg(self.head_file())
+            .args(["serve", "--bind", "127.0.0.1:0"])
+            .arg("--state-dir")
+            .arg(self.dir.path().join("state"))
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "it started");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+
+    /// Starts it again after it was stopped.
+    fn restart_after_stop(&mut self) {
+        let (child, address, _) = spawn(&self.db, self.dir.path(), &self.limits);
+        self.child = child;
+        self.address = address;
+    }
+
+    fn head_file(&self) -> PathBuf {
+        self.dir.path().join("ledger.head")
+    }
+
     fn state_dir(&self) -> PathBuf {
         self.dir.path().join("state")
     }
@@ -529,4 +608,493 @@ fn the_saved_pairing_is_private() {
     assert!(!printed.contains(&pairing.token), "the token was printed");
     let mode = std::fs::metadata(config).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
+}
+
+/// Every TCP and UDP socket the process has open, as `lsof` lists them.
+fn sockets(pid: u32, listening_only: bool) -> Vec<String> {
+    let mut command = Command::new("lsof");
+    command.args(["-nP", "-a", "-p", &pid.to_string()]);
+    if listening_only {
+        command.args(["-iTCP", "-sTCP:LISTEN"]);
+    } else {
+        command.arg("-i");
+    }
+    let output = command.output().expect("lsof is needed to inspect sockets");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .skip(1)
+        .map(|line| {
+            line.split_whitespace()
+                .skip(7)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect()
+}
+
+#[test]
+fn nothing_listens_but_the_door() {
+    let service = start();
+    let a1 = service.add("a1", false);
+    // Wait until it has replayed and served, so every socket it will open is open.
+    assert_eq!(ready(&a1).status, 200);
+    let listening = sockets(service.child.id(), true);
+    assert_eq!(listening.len(), 1, "{listening:?}");
+    assert!(
+        listening[0].contains(&format!("TCP {} (LISTEN)", service.address)),
+        "{listening:?}"
+    );
+    // Every other socket is a connection out to Postgres; none is UDP.
+    let port = service
+        .db
+        .url
+        .rsplit_once(':')
+        .unwrap()
+        .1
+        .split('/')
+        .next()
+        .unwrap();
+    for socket in sockets(service.child.id(), false) {
+        let to_postgres =
+            socket.starts_with("TCP ") && socket.contains(&format!("->127.0.0.1:{port} "));
+        assert!(
+            socket.contains("(LISTEN)") || to_postgres,
+            "unexpected socket: {socket}"
+        );
+    }
+}
+
+#[test]
+fn myko_cant_be_reached_through_the_door() {
+    // Raw events and the generated DeleteLedgerRecord need a myko connection. The door has no
+    // route to one, so they can't arrive: with a valid token, myko's paths are simply missing.
+    let service = start();
+    let a1 = service.add("a1", false);
+    assert_eq!(ready(&a1).status, 200);
+    for (method, path) in [
+        ("GET", "/myko"),
+        ("GET", "/myko/mcp"),
+        ("POST", "/myko/mcp"),
+        ("POST", "/v1/records/1"),
+        ("DELETE", "/v1/records"),
+    ] {
+        let status = call(&a1, method, path, Some("{}")).status;
+        assert!(matches!(status, 404 | 405), "{method} {path}: {status}");
+    }
+    let event = json!({
+        "item": {"id": "1", "record": "forged", "hash": "0".repeat(64)},
+        "changeType": "DEL", "itemType": "LedgerRecord"
+    })
+    .to_string();
+    assert_eq!(call(&a1, "POST", "/v1/records", Some(&event)).status, 400);
+    let check: Value = serde_json::from_str(&call(&a1, "GET", "/v1/check", None).body).unwrap();
+    assert_eq!(check["ok"], true);
+    assert_eq!(check["head"]["seq"], 1);
+}
+
+fn host_check(service: &Service, expect: Option<&str>) -> std::process::Output {
+    let mut command = rally();
+    command.arg("--db").arg(&service.db.url);
+    command.arg("--head-file").arg(service.head_file());
+    command.arg("check");
+    if let Some(expect) = expect {
+        command.args(["--expect", expect]);
+    }
+    command.output().unwrap()
+}
+
+fn stopped<'a>(service: &mut Service<'a>) {
+    let _ = service.child.kill();
+    let _ = service.child.wait();
+}
+
+/// Writes rows as myko itself would for an event that reached it: a new version of a record, or a
+/// deletion. Rally's table refuses both, so this lifts the protections first, as someone with the
+/// database's owner credentials could.
+/// A record number, `SET` or `DEL`, and for a `SET` the record and its hash.
+type MykoRow<'a> = (u64, &'a str, Option<(&'a str, &'a str)>);
+
+fn as_myko_would(service: &Service, rows: &[MykoRow]) {
+    let mut sql = service.db.connect();
+    sql.batch_execute(
+        "DROP INDEX rally_records_once;
+         ALTER TABLE rally_events DISABLE TRIGGER rally_only_sets;",
+    )
+    .unwrap();
+    for (seq, change, item) in rows {
+        let item = match item {
+            Some((record, hash)) => json!({"id": seq.to_string(), "record": record, "hash": hash}),
+            None => json!({"id": seq.to_string()}),
+        };
+        let event = json!({
+            "item": item, "changeType": change, "itemType": "LedgerRecord",
+            "createdAt": "2026-11-03T00:00:00Z", "tx": "forged", "sourceId": "forger"
+        });
+        sql.execute(
+            "INSERT INTO rally_events (item_type, item_id, change_type, tx, source_id, event)
+             VALUES ('LedgerRecord', $1, $2, 'forged', 'forger', ($3::text)::jsonb)",
+            &[&seq.to_string(), change, &event.to_string()],
+        )
+        .unwrap();
+    }
+}
+
+fn chain_hash(previous: &str, seq: u64, record: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(format!("{previous}\n{seq}\n{record}").as_bytes());
+    hex::encode(hash.finalize())
+}
+
+fn stored(service: &Service, seq: u64) -> (String, String) {
+    let row = service
+        .db
+        .connect()
+        .query_one(
+            "SELECT event->'item'->>'record', event->'item'->>'hash' FROM rally_events
+             WHERE item_type = 'LedgerRecord' AND item_id = $1 ORDER BY id LIMIT 1",
+            &[&seq.to_string()],
+        )
+        .unwrap();
+    (row.get(0), row.get(1))
+}
+
+#[test]
+fn the_deciding_test_three_real_records_a_saved_head_a_real_restart_and_check() {
+    let mut service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    for args in [
+        vec!["ready", "RAL-39"],
+        vec!["claim", "RAL-39", "--team", "rally"],
+        vec![
+            "submit",
+            "RAL-39",
+            "--team",
+            "rally",
+            "--evidence",
+            "Castor-o7/rally abc",
+        ],
+    ] {
+        let output = cli(&config, "silken-tanager", &args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let checked = cli(&config, "x", &["check"]);
+    assert!(checked.status.success());
+    let checked: Value = serde_json::from_slice(&checked.stdout).unwrap();
+    let head = format!("3:{}", checked["head"]["hash"].as_str().unwrap());
+
+    for signal in ["-TERM", "-KILL"] {
+        service.restart(signal);
+        // The pairing names the old port; the restarted service has a new one.
+        let mut moved = pairing.clone();
+        moved.address = service.address.clone();
+        assert!(pair(&config, &moved.code()).status.success());
+        let output = cli(&config, "x", &["check", "--expect", &head]);
+        assert!(
+            output.status.success(),
+            "{signal}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let shown = cli(&config, "x", &["show", "RAL-39"]);
+        let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
+        assert_eq!(shown["detail"]["state"], "in_review", "{signal}");
+        // On the host, read-only from Postgres, without myko, while the service runs.
+        let output = host_check(&service, Some(&head));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // Rewriting record 2 and re-signing 3, as events through myko's store would.
+    stopped(&mut service);
+    let (text2, _) = stored(&service, 2);
+    let (text3, _) = stored(&service, 3);
+    assert!(text2.contains("silken-tanager"));
+    let (_, hash1) = stored(&service, 1);
+    let forged2 = text2.replace("silken-tanager", "mallory");
+    let hash2 = chain_hash(&hash1, 2, &forged2);
+    let hash3 = chain_hash(&hash2, 3, &text3);
+    as_myko_would(
+        &service,
+        &[
+            (2, "SET", Some((&forged2, &hash2))),
+            (3, "SET", Some((&text3, &hash3))),
+        ],
+    );
+    let forged_head = format!("3:{hash3}");
+    std::fs::write(
+        service.head_file(),
+        json!({"seq": 3, "hash": hash3}).to_string(),
+    )
+    .unwrap();
+    // A writer won't start over a record with two versions, so this ledger can't grow.
+    assert!(service.refuses_to_start().contains("more than one version"));
+    let output = host_check(&service, Some(&head));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("rewritten"));
+    // The history shows it even without a saved head, while the old rows are there.
+    let output = host_check(&service, Some(&forged_head));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("versions in Postgres"));
+
+    // With the old rows gone too, only the saved head shows it.
+    stopped(&mut service);
+    let mut sql = service.db.connect();
+    sql.batch_execute(
+        "ALTER TABLE rally_events DISABLE TRIGGER rally_no_delete;
+         DELETE FROM rally_events WHERE tx <> 'forged' AND item_id IN ('2', '3');",
+    )
+    .unwrap();
+    service.restart_after_stop();
+    let fooled = host_check(&service, None);
+    assert!(
+        fooled.status.success(),
+        "fooled without a saved head: {}",
+        String::from_utf8_lossy(&fooled.stderr)
+    );
+    let output = host_check(&service, Some(&head));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("rewritten"));
+}
+
+#[test]
+fn truncation_through_the_store_is_caught_by_a_saved_head() {
+    let mut service = start();
+    let a1 = service.add("a1", false);
+    for story in ["RAL-1", "RAL-2", "RAL-3"] {
+        let body = json!({"change": "ready", "story": story});
+        assert_eq!(write(&a1, "x", "declared", body).status, 200);
+    }
+    let first: Value = serde_json::from_str(&call(&a1, "GET", "/v1/check", None).body).unwrap();
+    let head = format!("3:{}", first["head"]["hash"].as_str().unwrap());
+    let (_, hash2) = stored(&service, 2);
+
+    // A deletion of the newest record, as a DEL event through myko would leave it, with the head
+    // file wound back to match.
+    stopped(&mut service);
+    as_myko_would(&service, &[(3, "DEL", None)]);
+    std::fs::write(
+        service.head_file(),
+        json!({"seq": 2, "hash": hash2}).to_string(),
+    )
+    .unwrap();
+    let output = host_check(&service, Some(&head));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("removed"));
+    // Writes stop too: no writer starts over the deletion's second version of record 3.
+    assert!(service.refuses_to_start().contains("more than one version"));
+}
+
+#[test]
+fn concurrent_writers_through_the_service_keep_one_chain() {
+    let service = start();
+    let writers: Vec<Pairing> = (0..8)
+        .map(|i| service.add(&format!("m{i}"), false))
+        .collect();
+    let threads: Vec<_> = writers
+        .into_iter()
+        .enumerate()
+        .map(|(i, pairing)| {
+            std::thread::spawn(move || {
+                (0..10)
+                    .map(|j| {
+                        let body = json!({"change": "ready", "story": format!("RAL-{i}{j:02}")});
+                        let reply = write(&pairing, "x", "declared", body);
+                        assert_eq!(reply.status, 200, "{}", reply.body);
+                        let value: Value = serde_json::from_str(&reply.body).unwrap();
+                        value["recorded"].as_u64().unwrap()
+                    })
+                    .collect::<Vec<u64>>()
+            })
+        })
+        .collect();
+    let mut recorded: Vec<u64> = threads
+        .into_iter()
+        .flat_map(|t| t.join().unwrap())
+        .collect();
+    recorded.sort_unstable();
+    assert_eq!(recorded, (1..=80).collect::<Vec<u64>>());
+    let output = host_check(&service, None);
+    assert!(output.status.success());
+    let check: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(check["head"]["seq"], 80);
+}
+
+#[test]
+fn a_direct_write_is_refused_while_the_service_holds_the_ledger() {
+    let service = start();
+    let a1 = service.add("a1", false);
+    assert_eq!(ready(&a1).status, 200);
+    let output = rally()
+        .arg("--db")
+        .arg(&service.db.url)
+        .arg("--head-file")
+        .arg(service.head_file())
+        .args(["--credential", "local", "--as", "x", "ready", "RAL-2"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("another process is writing"));
+    let check: Value = serde_json::from_str(&call(&a1, "GET", "/v1/check", None).body).unwrap();
+    assert_eq!(check["head"]["seq"], 1);
+}
+
+#[test]
+fn with_postgres_stopped_a_write_fails_and_nothing_acknowledged_is_lost() {
+    let cluster = Cluster::start();
+    let mut service = start_on(&cluster, &GENEROUS);
+    let a1 = service.add("a1", false);
+    let mark = |pairing: &Pairing, story: &str| {
+        write(
+            pairing,
+            "x",
+            "declared",
+            json!({"change": "ready", "story": story}),
+        )
+    };
+    assert_eq!(mark(&a1, "RAL-1").status, 200);
+    assert_eq!(mark(&a1, "RAL-2").status, 200);
+
+    cluster.stop();
+    for story in ["RAL-3", "RAL-4"] {
+        let started = std::time::Instant::now();
+        let reply = mark(&a1, story);
+        assert_ne!(reply.status, 200, "a false success: {}", reply.body);
+        assert!(!reply.body.contains("\"recorded\":"), "{}", reply.body);
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
+    }
+    cluster.restart();
+    assert_eq!(mark(&a1, "RAL-5").status, 200);
+    let all: Value = serde_json::from_str(&call(&a1, "GET", "/v1/stories", None).body).unwrap();
+    let stories: Vec<&String> = all["stories"].as_object().unwrap().keys().collect();
+    assert_eq!(stories, ["RAL-1", "RAL-2", "RAL-5"]);
+
+    service.restart("-KILL");
+    let mut a1 = a1;
+    a1.address = service.address.clone();
+    let check: Value = serde_json::from_str(&call(&a1, "GET", "/v1/check", None).body).unwrap();
+    assert_eq!(check["ok"], true, "{check}");
+    assert_eq!(check["head"]["seq"], 3);
+    drop(service);
+}
+
+#[test]
+fn many_appends_and_repeated_restarts_hold_up() {
+    // Longer than the spike's brief run: a thousand appends through the door, and restarts in
+    // between with both signals, checking against a saved head each time.
+    let mut service = start_with(&[
+        "--burst",
+        "100000",
+        "--write-burst",
+        "100000",
+        "--min-free-bytes",
+        "0",
+    ]);
+    let mut a1 = service.add("a1", false);
+    let mut seq = 0;
+    for round in 0..5 {
+        for i in 0..200 {
+            let body = json!({"change": "ready", "story": format!("RAL-{}", round * 1000 + i)});
+            let reply = write(&a1, "x", "declared", body);
+            assert_eq!(reply.status, 200, "{}", reply.body);
+            seq += 1;
+        }
+        let check: Value = serde_json::from_str(&call(&a1, "GET", "/v1/check", None).body).unwrap();
+        assert_eq!(check["ok"], true);
+        let head = format!("{seq}:{}", check["head"]["hash"].as_str().unwrap());
+        service.restart(if round % 2 == 0 { "-KILL" } else { "-TERM" });
+        a1.address = service.address.clone();
+        let output = host_check(&service, Some(&head));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let all: Value = serde_json::from_str(&call(&a1, "GET", "/v1/stories", None).body).unwrap();
+        assert_eq!(all["as_of"], seq);
+    }
+}
+
+/// Resumes a stopped cluster when dropped.
+struct Resume<'a>(&'a Cluster);
+
+impl Drop for Resume<'_> {
+    fn drop(&mut self) {
+        signal_cluster(self.0, "-CONT");
+    }
+}
+
+/// Sends `signal` to the scratch cluster's own processes: its postmaster, named in its data
+/// directory, and that postmaster's children. Nothing else.
+fn signal_cluster(cluster: &Cluster, signal: &str) {
+    let data = cluster.directory().unwrap().join("data");
+    let text = std::fs::read_to_string(data.join("postmaster.pid")).unwrap();
+    let postmaster = text.lines().next().unwrap().trim().to_owned();
+    let command = Command::new("ps")
+        .args(["-o", "command=", "-p", &postmaster])
+        .output()
+        .unwrap();
+    let command = String::from_utf8_lossy(&command.stdout);
+    assert!(
+        command.contains(&*data.to_string_lossy()),
+        "{postmaster} isn't the scratch cluster: {command}"
+    );
+    let children = Command::new("pgrep")
+        .args(["-P", &postmaster])
+        .output()
+        .unwrap();
+    let mut pids: Vec<String> = String::from_utf8_lossy(&children.stdout)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    pids.push(postmaster);
+    assert!(
+        Command::new("kill")
+            .arg(signal)
+            .args(&pids)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[test]
+fn reads_carry_on_while_a_write_waits_on_a_hung_postgres() {
+    let cluster = Cluster::start();
+    let service = start_on(&cluster, &GENEROUS);
+    let a1 = service.add("a1", false);
+    assert_eq!(ready(&a1).status, 200);
+
+    signal_cluster(&cluster, "-STOP");
+    // However this test ends, the cluster isn't left stopped.
+    let _resume = Resume(&cluster);
+    let writer = {
+        let a1 = a1.clone();
+        std::thread::spawn(move || {
+            let body = json!({"change": "ready", "story": "RAL-2"});
+            write(&a1, "x", "declared", body)
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let started = std::time::Instant::now();
+    let reply = call(&a1, "GET", "/v1/stories", None);
+    let waited = started.elapsed();
+    signal_cluster(&cluster, "-CONT");
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert!(
+        waited < std::time::Duration::from_secs(3),
+        "the read waited {waited:?}"
+    );
+    // The write finishes once Postgres does, and is never a false success.
+    let written = writer.join().unwrap();
+    let all: Value = serde_json::from_str(&call(&a1, "GET", "/v1/stories", None).body).unwrap();
+    let recorded = all["stories"].as_object().unwrap().contains_key("RAL-2");
+    assert_eq!(written.status == 200, recorded, "{}", written.body);
 }
