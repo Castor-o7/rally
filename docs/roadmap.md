@@ -128,7 +128,7 @@ The bones. Everything later reads from this.
 - [x] **RAL-16: Treat recorded text as untrusted.** Teams write text that the watchman and the web app
   later read. Done when: free text has a length limit, is marked as untrusted wherever it's shown to an
   agent, and a test shows that text written as instructions or markup is displayed only as text.
-- [ ] **RAL-17: Keep secrets out of the ledger.** An append-only ledger can't simply forget one. Done
+- [x] **RAL-17: Keep secrets out of the ledger.** An append-only ledger can't simply forget one. Done
   when: submissions matching common token and key formats are refused, a test covers each format, and
   the docs say how a secret that gets through is handled and that this check isn't complete.
 
