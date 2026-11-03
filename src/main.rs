@@ -460,7 +460,13 @@ fn run_service(
 }
 
 fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
-    let location = location(cli.db, cli.head_file, cli.db_password_file)?;
+    // These never touch the database, so a stray password file setting mustn't block them.
+    let uses_database = !matches!(
+        cli.command,
+        Command::AddMachine { .. } | Command::Revoke { .. } | Command::Pair
+    );
+    let password_file = cli.db_password_file.filter(|_| uses_database);
+    let location = location(cli.db, cli.head_file, password_file)?;
     let (kind, body) = match cli.command {
         Command::Serve {
             bind,

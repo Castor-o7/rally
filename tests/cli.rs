@@ -307,6 +307,47 @@ fn every_terminal_control_and_invisible_direction_character_is_escaped() {
 }
 
 #[test]
+fn a_stray_password_file_setting_does_not_block_commands_that_never_use_the_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let password = dir.path().join("password");
+    std::fs::write(&password, "x\n").unwrap();
+    let state = dir.path().join("state");
+    let out = dir.path().join("a1.pair");
+    let output = Command::new(env!("CARGO_BIN_EXE_rally"))
+        .env_remove("RALLY_DB")
+        .env("RALLY_DB_PASSWORD_FILE", &password)
+        .args([
+            "add-machine",
+            "a1",
+            "--address",
+            "127.0.0.1:1",
+            "--state-dir",
+        ])
+        .arg(&state)
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_rally"))
+        .env_remove("RALLY_DB")
+        .env("RALLY_DB_PASSWORD_FILE", &password)
+        .args(["revoke", "a1", "--state-dir"])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn control_characters_in_recorded_text_are_escaped() {
     let db = Ledger::new();
     ok(&db, "author", &["ready", "RAL-3"]);
