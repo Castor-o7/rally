@@ -132,10 +132,17 @@ fn is_jwt(rest: &str) -> bool {
 /// A label word, such as `api_key` or `TOKEN`, then a separator, then a long run with a digit in it.
 fn labelled(rest: &str) -> bool {
     let lower = rest.to_ascii_lowercase();
-    // A label can carry a prefix like `api_` or `secret_`, so look for one inside the first word.
+    // The label is the whole name, or its last part after `_` or `-` (`api_key`, `DB-PASSWORD`),
+    // so `monkey` and `turkey` don't count.
     let name_len = lower.chars().take_while(|&c| word(c) || c == '-').count();
     let name = &lower[..name_len];
-    if !LABELS.iter().any(|label| name.ends_with(label)) {
+    let is_label = |label: &&str| {
+        name == *label
+            || name
+                .strip_suffix(label)
+                .is_some_and(|prefix| prefix.ends_with(['_', '-']))
+    };
+    if !LABELS.iter().any(is_label) {
         return false;
     }
     let after = &rest[name_len..];
@@ -150,7 +157,10 @@ fn labelled(rest: &str) -> bool {
         .chars()
         .take_while(|&c| base64ish(c))
         .collect();
-    run.len() >= LABELLED_MIN && run.chars().any(|c| c.is_ascii_digit())
+    // A git commit (40 hex) or a SHA-256 (64 hex), which the ledger cites as evidence: chain hashes,
+    // certificate fingerprints. A hex secret of exactly those lengths gets through.
+    let is_hash = matches!(run.len(), 40 | 64) && run.chars().all(|c| c.is_ascii_hexdigit());
+    run.len() >= LABELLED_MIN && run.chars().any(|c| c.is_ascii_digit()) && !is_hash
 }
 
 #[cfg(test)]
@@ -165,6 +175,7 @@ mod tests {
     /// Each format, with a near miss that must pass.
     fn cases() -> Vec<(Format, String, String)> {
         let hex40 = "0123456789abcdef".repeat(3)[..40].to_string();
+        let hex48 = "0123456789abcdef".repeat(3);
         let mixed = format!("Ab9{}", rep('x', 33));
         vec![
             (
@@ -219,7 +230,7 @@ mod tests {
             ),
             (
                 Format::LabelledSecret,
-                format!("PASSWORD: \"{hex40}\""),
+                format!("PASSWORD: \"{hex48}\""),
                 format!("the key fix is in {hex40}"),
             ),
         ]
@@ -234,6 +245,27 @@ mod tests {
                 None,
                 "{format:?} near miss was refused: {near_miss}"
             );
+        }
+    }
+
+    #[test]
+    fn hashes_beside_the_word_key_pass() {
+        // Shaped like the notes Rally's team writes, from its read of #53.
+        let hex64 = "0123456789abcdef".repeat(4);
+        let hex40 = &hex64[..40];
+        for text in [
+            format!("head key {hex64}"),
+            format!("the kept key: {hex40}"),
+            format!("fingerprint key {hex64}"),
+            format!("monkey: {hex40}"),
+            format!("turkey = {}", "Ab9".repeat(12)),
+        ] {
+            assert_eq!(find(&text), None, "{text}");
+        }
+        // A label as the last part of a name still counts.
+        for label in ["api_key", "DB-PASSWORD", "secret_token", "passwd"] {
+            let text = format!("{label}: {}", "Ab9".repeat(12));
+            assert_eq!(find(&text), Some(Format::LabelledSecret), "{label}");
         }
     }
 

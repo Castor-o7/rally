@@ -133,7 +133,9 @@ base64 run straight after a word like `token`, `key`, `secret` or `password`. Th
 the kind of secret, never the text, so the secret doesn't reach the client's output or the service's log. A
 plain commit hash isn't refused. The formats are in `src/secrets.rs`.
 
-The check only recognizes those formats, so a secret in any other form gets through. If one does, revoke it at
+A hex run of exactly 40 or 64 characters isn't counted even after a label, because the ledger cites
+commits, chain hashes and certificate fingerprints of those lengths, so a hex secret of exactly that length
+gets through too. The check only recognizes those formats, so a secret in any other form gets through. If one does, revoke it at
 its source straight away: that's what makes it harmless. The ledger is append-only, so the record stays, and
 a later correction can't remove it. Record a correction saying the text was a revoked secret, so readers know
 not to try it, and tell the operator, who decides whether the backups that hold it need handling too.
