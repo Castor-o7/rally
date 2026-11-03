@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::net::TcpListener;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,7 +20,7 @@ use serde_json::{Value, json};
 use crate::access::{Identity, StateDir};
 use crate::ledger::Ledger;
 use crate::record::{Kind, Record, Source};
-use crate::store::{Head, Location, Store, StoreError};
+use crate::store::{Head, Location, SpaceLimits, Store, StoreError};
 use crate::views;
 
 /// The largest request body accepted.
@@ -79,6 +78,10 @@ pub async fn serve(
     // Opening replays the ledger through myko, which never listens: this service is the only way
     // in. It also takes the writer lock, so a second writer can't fork the chain.
     let store = tokio::task::block_in_place(|| Store::open(location))?;
+    store.limit_space(SpaceLimits {
+        max_ledger_bytes: limit.max_ledger_bytes,
+        min_free_bytes: limit.min_free_bytes,
+    });
     let app = router(store, state_dir, limit);
     listener.set_nonblocking(true)?;
     axum_server::from_tcp_rustls(listener, tls)?
@@ -196,19 +199,6 @@ fn internal(error: &StoreError) -> Response {
     )
 }
 
-/// Space available on the disk holding `path` to an account like this one, excluding what's
-/// reserved for the system.
-#[cfg(unix)]
-fn free_bytes(path: &Path) -> std::io::Result<u64> {
-    let stats = rustix::fs::statvfs(path)?;
-    Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
-}
-
-#[cfg(not(unix))]
-fn free_bytes(_path: &Path) -> std::io::Result<u64> {
-    Err(std::io::Error::other("only Unix hosts are supported"))
-}
-
 /// What a client sends to write. It has no credential or time, because the service sets those.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -244,70 +234,37 @@ async fn write_record(
         Ok(record) => record,
         Err(error) => return failure(StatusCode::BAD_REQUEST, error.to_string()),
     };
-    service.with_store(|store| {
-        if let Some(refusal) = space_refusal(store, &service.limit) {
-            return refusal;
-        }
-        match store.append(&record) {
-            Ok(seq) => Json(json!({"recorded": seq})).into_response(),
-            Err(StoreError::Refused(error)) => failure(StatusCode::CONFLICT, error.to_string()),
-            Err(error @ StoreError::Database(_)) => {
-                eprintln!("rally: {error}");
-                failure(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "the ledger's database can't be reached, so nothing was recorded",
-                )
-            }
-            Err(error @ StoreError::Unknown(_)) => {
-                eprintln!("rally: {error}");
-                failure(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "the outcome is unknown; it may have been recorded, so check before retrying",
-                )
-            }
-            Err(error) => internal(&error),
-        }
-    })
-}
-
-/// Refuses a write when the ledger is full or its disk is low. If either check can't be made, it
-/// refuses rather than risk the disk.
-fn space_refusal(store: &Store, limit: &RateLimit) -> Option<Response> {
-    match store.size_bytes() {
-        Ok(size) if size < limit.max_ledger_bytes => {}
-        Ok(_) => {
-            return Some(failure(
-                StatusCode::INSUFFICIENT_STORAGE,
-                "the ledger is full",
-            ));
-        }
-        Err(error) => {
-            eprintln!("rally: can't check the ledger's size: {error}");
-            return Some(failure(
+    service.with_store(|store| match store.append(&record) {
+        Ok(seq) => Json(json!({"recorded": seq})).into_response(),
+        Err(StoreError::Refused(error)) => failure(StatusCode::CONFLICT, error.to_string()),
+        Err(error @ StoreError::Database(_)) => {
+            eprintln!("rally: {error}");
+            failure(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "the ledger's size can't be checked, so nothing was recorded",
-            ));
+                "the ledger's database can't be reached, so nothing was recorded",
+            )
         }
-    }
-    // Postgres keeps the ledger on this host, so the disk to watch is the one under its data.
-    let free = store
-        .data_directory()
-        .map_err(|error| error.to_string())
-        .and_then(|directory| free_bytes(&directory).map_err(|error| error.to_string()));
-    match free {
-        Ok(free) if free >= limit.min_free_bytes => None,
-        Ok(_) => Some(failure(
-            StatusCode::INSUFFICIENT_STORAGE,
-            "the ledger's disk is low on free space",
-        )),
-        Err(error) => {
-            eprintln!("rally: can't check free disk space: {error}");
-            Some(failure(
+        Err(StoreError::Full(reason)) => failure(StatusCode::INSUFFICIENT_STORAGE, reason),
+        Err(error @ StoreError::SpaceUnchecked(_)) => {
+            failure(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+        }
+        Err(error @ StoreError::Unloaded { .. }) => {
+            eprintln!("rally: {error}");
+            failure(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "free disk space can't be checked",
-            ))
+                "it was recorded, but the service couldn't load it; it must be restarted \
+                     before writing again",
+            )
         }
-    }
+        Err(error @ StoreError::Unknown(_)) => {
+            eprintln!("rally: {error}");
+            failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the outcome is unknown; it may have been recorded, so check before retrying",
+            )
+        }
+        Err(error) => internal(&error),
+    })
 }
 
 #[derive(Deserialize)]

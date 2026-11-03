@@ -27,7 +27,7 @@ use rally::web::{self, DEFAULT_PROJECTS, LedgerReader, Project};
 struct Cli {
     /// Work directly on the ledger in this Postgres database, such as
     /// postgres://rally@127.0.0.1/rally, rather than through the service. Needs --head-file.
-    #[arg(long, env = "RALLY_DB")]
+    #[arg(long, env = "RALLY_DB", hide_env_values = true)]
     db: Option<String>,
     /// With --db: the ledger's head file, kept outside Postgres so that removing the newest
     /// records shows.
@@ -35,7 +35,7 @@ struct Cli {
     head_file: Option<PathBuf>,
     /// With --db: a file holding the Postgres role's password, readable only by this account, so
     /// the password stays out of the command line and the URL.
-    #[arg(long, env = "RALLY_DB_PASSWORD_FILE")]
+    #[arg(long, env = "RALLY_DB_PASSWORD_FILE", hide_env_values = true)]
     db_password_file: Option<PathBuf>,
     /// The pairing file. Defaults to ~/.config/rally/client.json.
     #[arg(long, env = "RALLY_CONFIG")]
@@ -365,6 +365,9 @@ fn location(
             password_file,
         })),
         (Some(_), None) => Err("--db needs --head-file or RALLY_HEAD_FILE".into()),
+        (None, _) if password_file.is_some() => {
+            Err("--db-password-file is only for --db, on the host".into())
+        }
         (None, _) => Ok(None),
     }
 }

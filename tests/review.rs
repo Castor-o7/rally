@@ -239,3 +239,139 @@ fn a_password_comes_from_a_private_file() {
     assert_eq!(value["head"]["seq"], json!(1));
     assert!(!stderr(&output).contains("correct horse"));
 }
+
+/// A cluster with a role, `secret`, that needs the password "correct horse", and its URL.
+fn password_cluster(cluster: &Cluster) -> (Database<'_>, String) {
+    let db = cluster.database();
+    let mut admin = db.connect();
+    admin
+        .batch_execute(
+            "CREATE ROLE secret LOGIN PASSWORD 'correct horse';
+             GRANT ALL ON SCHEMA public TO secret;",
+        )
+        .unwrap();
+    let data = cluster.directory().unwrap().join("data");
+    std::fs::write(
+        data.join("pg_hba.conf"),
+        "host all secret 127.0.0.1/32 scram-sha-256\nhost all all 127.0.0.1/32 trust\n",
+    )
+    .unwrap();
+    admin.batch_execute("SELECT pg_reload_conf()").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let url = db.url.replacen("rally@", "secret@", 1);
+    (db, url)
+}
+
+fn private_password_file(dir: &Path) -> std::path::PathBuf {
+    let password = dir.join("password");
+    std::fs::write(&password, "correct horse\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&password, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    password
+}
+
+#[test]
+fn a_failure_inside_myko_never_shows_the_password() {
+    let cluster = Cluster::start();
+    let (db, url) = password_cluster(&cluster);
+    let dir = tempfile::tempdir().unwrap();
+    let password = private_password_file(dir.path());
+    let write = || {
+        on(&url, dir.path())
+            .env("RALLY_DB_PASSWORD_FILE", &password)
+            .args(["--credential", "a1", "--as", "x", "ready", "RAL-1"])
+            .output()
+            .unwrap()
+    };
+    let output = write();
+    assert!(output.status.success(), "{}", stderr(&output));
+    // Enough rows that myko's replay can't finish within the role's own one-millisecond limit,
+    // which Rally's connections override and myko's don't, so only myko's startup fails.
+    db.connect()
+        .batch_execute(
+            "INSERT INTO rally_events (item_type, item_id, change_type, tx, event)
+             SELECT 'LedgerRecord', n::text, 'SET', 't', jsonb_build_object(
+                 'item', jsonb_build_object('id', n::text, 'record', 'x', 'hash', 'y'),
+                 'changeType', 'SET', 'itemType', 'LedgerRecord')
+             FROM generate_series(2, 60000) n;
+             ALTER ROLE secret SET statement_timeout = 1;",
+        )
+        .unwrap();
+    let output = write();
+    assert!(!output.status.success(), "myko's replay was meant to fail");
+    let text = format!(
+        "{}{}",
+        stderr(&output),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        text.contains("statement timeout") || text.contains("replay"),
+        "{text}"
+    );
+    for secret in ["correct horse", "correct%20horse", "correct+horse"] {
+        assert!(!text.contains(secret), "the password showed: {text}");
+    }
+}
+
+#[test]
+fn help_never_shows_the_database_address_or_password_file() {
+    let output = rally()
+        .env(
+            "RALLY_DB",
+            "postgres://rally:hunter2secret@127.0.0.1:1/rally",
+        )
+        .env("RALLY_DB_PASSWORD_FILE", "/secret/place/hunter2file")
+        .arg("--help")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("--db"), "{text}");
+    assert!(!text.contains("hunter2"), "{text}");
+}
+
+#[test]
+fn a_password_twice_or_a_password_file_alone_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let password = private_password_file(dir.path());
+    let both = on("postgres://rally:inline@127.0.0.1:1/rally", dir.path())
+        .env("RALLY_DB_PASSWORD_FILE", &password)
+        .arg("check")
+        .output()
+        .unwrap();
+    assert!(!both.status.success());
+    assert!(stderr(&both).contains("both"), "{}", stderr(&both));
+    let alone = rally()
+        .env("RALLY_DB_PASSWORD_FILE", &password)
+        .args(["--config", "/nonexistent/client.json", "check"])
+        .output()
+        .unwrap();
+    assert!(!alone.status.success());
+    assert!(stderr(&alone).contains("--db"), "{}", stderr(&alone));
+}
+
+/// Record 3 with its id as a number in the event, and as text in the column.
+const NUMERIC_ID: &str = "INSERT INTO rally_events (item_type, item_id, change_type, tx, event)
+    VALUES ('LedgerRecord', '3', 'SET', 'forged', jsonb_build_object(
+        'item', jsonb_build_object('id', 3, 'record', 'forged', 'hash', repeat('f', 64)),
+        'changeType', 'SET', 'itemType', 'LedgerRecord'))";
+
+#[test]
+fn a_record_whose_id_isnt_text_is_refused_and_reported() {
+    let db = scratch_pg::shared().database();
+    let dir = tempfile::tempdir().unwrap();
+    two_records(&db, dir.path());
+    assert!(
+        db.connect().batch_execute(NUMERIC_ID).is_err(),
+        "Postgres took a record whose id is a number"
+    );
+    db.connect()
+        .batch_execute(&format!(
+            "ALTER TABLE rally_events DROP CONSTRAINT rally_row_is_its_event; {NUMERIC_ID}"
+        ))
+        .unwrap();
+    let output = on(&db.url, dir.path()).arg("check").output().unwrap();
+    assert!(!output.status.success(), "check passed over it");
+}

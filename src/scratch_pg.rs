@@ -244,6 +244,10 @@ pub fn safe_to_use(url: &str) -> Result<(), String> {
     if !url.starts_with("postgres://") && !url.starts_with("postgresql://") {
         return Err("give a postgres:// URL ending in an administration database".to_owned());
     }
+    // Settings after '?' can move the port or host, and the database name must end the URL.
+    if url.contains('?') {
+        return Err("give the URL without settings after '?'".to_owned());
+    }
     let config: postgres::Config = url.parse().map_err(|e| format!("can't be read: {e}"))?;
     let ports = config.get_ports();
     if ports.is_empty() || ports.contains(&5432) {
@@ -290,6 +294,8 @@ mod tests {
             "postgres://postgres@127.0.0.1:54329,127.0.0.1:5432/postgres",
             "host=127.0.0.1 port=54329 dbname=postgres",
             "postgres://postgres@127.0.0.1:not-a-port/postgres",
+            "postgres://postgres@127.0.0.1:54329/postgres?port=5432",
+            "postgres://postgres@127.0.0.1:54329/postgres?host=127.0.0.1",
         ] {
             assert!(safe_to_use(url).is_err(), "{url}");
         }
