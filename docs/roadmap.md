@@ -178,14 +178,14 @@ The bones. Everything later reads from this.
 
 Read-only. Changes go through the ledger's commands, so a flaw in the web app can't rewrite the ledger.
 
-- [ ] **RAL-25: Give the ledger a read-only API.** Done when: it's documented, it uses RAL-13's access
+- [x] **RAL-25: Give the ledger a read-only API.** Done when: it's documented, it uses RAL-13's access
   control, and a test shows no request through it can change the ledger.
 - [ ] **RAL-26: Agree the look with the operator.** Done when: the operator has approved a visual design
   covering the current and past views, on a phone as well as a desktop.
 - [ ] **RAL-27: Show the current ledger.** Done when: the web app shows each team's state, stories,
   evidence, blockers and track record, says for each whether it's observed, declared or verified and how
   fresh it is, and the operator has seen it running.
-- [ ] **RAL-37: Show each roadmap's progress.** Requested by the operator on 2026-11-02. Done when: the
+- [x] **RAL-37: Show each roadmap's progress.** Requested by the operator on 2026-11-02. Done when: the
   web app shows ticks from each roadmap file as a percentage, labelled with what a tick means there and
   with the file, commit and read time; Verified is a separate figure from the ledger, or "not available
   yet"; the two are never merged; and a test covers the counting.
