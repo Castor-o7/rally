@@ -7,7 +7,7 @@
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
@@ -17,6 +17,35 @@ use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, SignatureSch
 use crate::access::{Pairing, fingerprint_of_der};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The most a whole request may take, from connecting to the end of the reply. Longer than the
+/// service's own 60-second limit on a connection, so a slow write still gets its answer.
+const TOTAL: Duration = Duration::from_secs(75);
+
+/// The largest reply read. The service's replies are bounded by its pages (RAL-35), and are far
+/// smaller than this.
+const MAX_REPLY_BYTES: usize = 16 * 1024 * 1024;
+
+/// How long a request may take and how large its reply may be.
+#[derive(Clone, Copy, Debug)]
+struct Limits {
+    total: Duration,
+    max_reply_bytes: usize,
+}
+
+const LIMITS: Limits = Limits {
+    total: TOTAL,
+    max_reply_bytes: MAX_REPLY_BYTES,
+};
+
+/// The time left before `deadline`, or an error if there's none.
+fn left(deadline: Instant) -> Result<Duration, Box<dyn std::error::Error>> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err("the service took too long to reply".into());
+    }
+    Ok(left.min(TIMEOUT))
+}
 
 #[derive(Debug)]
 struct PinnedCertificate {
@@ -82,6 +111,13 @@ pub type Connection = StreamOwned<ClientConnection, TcpStream>;
 /// Connects to the service and completes the TLS handshake, sending no request. [`request`] uses
 /// it; tests use it to hold a connection open.
 pub fn connect(pairing: &Pairing) -> Result<Connection, Box<dyn std::error::Error>> {
+    connect_by(pairing, Instant::now() + TOTAL)
+}
+
+fn connect_by(
+    pairing: &Pairing,
+    deadline: Instant,
+) -> Result<Connection, Box<dyn std::error::Error>> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier = Arc::new(PinnedCertificate {
         fingerprint: pairing.fingerprint.clone(),
@@ -100,11 +136,13 @@ pub fn connect(pairing: &Pairing) -> Result<Connection, Box<dyn std::error::Erro
         .to_socket_addrs()?
         .next()
         .ok_or("the service's address doesn't resolve")?;
-    let socket = TcpStream::connect_timeout(&address, TIMEOUT)?;
+    let socket = TcpStream::connect_timeout(&address, left(deadline)?)?;
     socket.set_read_timeout(Some(TIMEOUT))?;
     socket.set_write_timeout(Some(TIMEOUT))?;
     let mut stream = StreamOwned::new(connection, socket);
     while stream.conn.is_handshaking() {
+        // Each step gets only the time left, so a server that drips the handshake can't stretch it.
+        stream.sock.set_read_timeout(Some(left(deadline)?))?;
         stream.conn.complete_io(&mut stream.sock)?;
     }
     Ok(stream)
@@ -118,7 +156,19 @@ pub fn request(
     body: Option<&str>,
     extra_headers: &[(&str, &str)],
 ) -> Result<Reply, Box<dyn std::error::Error>> {
-    let mut stream = connect(pairing)?;
+    request_within(pairing, method, path, body, extra_headers, LIMITS)
+}
+
+fn request_within(
+    pairing: &Pairing,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    extra_headers: &[(&str, &str)],
+    limits: Limits,
+) -> Result<Reply, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + limits.total;
+    let mut stream = connect_by(pairing, deadline)?;
     let body = body.unwrap_or_default();
     let mut head = format!(
         "{method} {path} HTTP/1.1\r\nHost: rally\r\nConnection: close\r\n\
@@ -134,11 +184,33 @@ pub fn request(
     stream.write_all(body.as_bytes())?;
     stream.flush()?;
 
+    // Read in pieces, so that neither a reply that never ends nor one that arrives a byte at a
+    // time can hold this past its deadline or its size.
     let mut raw = Vec::new();
-    if let Err(error) = stream.read_to_end(&mut raw) {
-        // The server may close without a TLS close message once it has replied in full.
-        if raw.is_empty() || error.kind() != std::io::ErrorKind::UnexpectedEof {
-            return Err(error.into());
+    let mut piece = [0u8; 16 * 1024];
+    loop {
+        stream.sock.set_read_timeout(Some(left(deadline)?))?;
+        match stream.read(&mut piece) {
+            Ok(0) => break,
+            Ok(read) => {
+                if raw.len() + read > limits.max_reply_bytes {
+                    return Err("the service's reply was too large".into());
+                }
+                raw.extend_from_slice(&piece[..read]);
+            }
+            // The server may close without a TLS close message once it has replied in full.
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof && !raw.is_empty() => {
+                break;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && Instant::now() >= deadline =>
+            {
+                return Err("the service took too long to reply".into());
+            }
+            Err(error) => return Err(error.into()),
         }
     }
     parse_reply(&raw)
@@ -175,6 +247,93 @@ fn parse_reply(raw: &[u8]) -> Result<Reply, Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustls::pki_types::PrivatePkcs8KeyDer;
+    use rustls::{ServerConfig, ServerConnection};
+
+    /// A TLS server on loopback that reads one request, then sends `reply` with `pause` between
+    /// pieces, `times` times or until the client goes. Returns a pairing for it.
+    fn fake_service(reply: &'static [u8], pause: Duration, times: usize) -> Pairing {
+        let generated = rcgen::generate_simple_self_signed(vec!["rally".to_owned()]).unwrap();
+        let der = generated.cert.der().clone();
+        let key = PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der());
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![der.clone()], key.into())
+            .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let connection = ServerConnection::new(Arc::new(config)).unwrap();
+            let mut stream = StreamOwned::new(connection, socket);
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                request.push(byte[0]);
+            }
+            for _ in 0..times {
+                if stream
+                    .write_all(reply)
+                    .and_then(|()| stream.flush())
+                    .is_err()
+                {
+                    return;
+                }
+                std::thread::sleep(pause);
+            }
+        });
+        Pairing {
+            address,
+            fingerprint: crate::access::fingerprint_of_der(&der),
+            token: "t".into(),
+        }
+    }
+
+    #[test]
+    fn a_reply_that_drips_is_cut_off_at_the_deadline() {
+        let pairing = fake_service(b"x", Duration::from_millis(100), 1_000);
+        let limits = Limits {
+            total: Duration::from_secs(2),
+            max_reply_bytes: MAX_REPLY_BYTES,
+        };
+        let started = Instant::now();
+        let result = request_within(&pairing, "GET", "/", None, &[], limits);
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("too long"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_reply_that_never_ends_is_cut_off_at_its_size() {
+        static PIECE: [u8; 64 * 1024] = [b'x'; 64 * 1024];
+        let pairing = fake_service(&PIECE, Duration::ZERO, 1_000);
+        let limits = Limits {
+            total: TOTAL,
+            max_reply_bytes: 1024 * 1024,
+        };
+        let error = request_within(&pairing, "GET", "/", None, &[], limits)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("too large"), "{error}");
+    }
+
+    #[test]
+    fn a_whole_reply_within_the_limits_is_read() {
+        let pairing = fake_service(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+            Duration::ZERO,
+            1,
+        );
+        let reply = request_within(&pairing, "GET", "/", None, &[], LIMITS).unwrap();
+        assert_eq!((reply.status, reply.body.as_str()), (200, "{}"));
+    }
 
     #[test]
     fn a_complete_reply_is_read() {
