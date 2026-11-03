@@ -109,7 +109,10 @@ The bones. Everything later reads from this.
   isn't quadratic in a story's corrections, the read limit fits what the store can serve, and connections are
   capped and time out before they authenticate, failed token attempts are limited, and reads don't replay
   the whole ledger under the store's lock or block the service's workers, with a test for each, and with
-  memory and time measured at the ledger's limit before that limit is raised.
+  memory and time measured at the ledger's limit before that limit is raised. Since RAL-39, the starting point
+  measured on a1 is 143 to 230 MiB held for as long as the service runs at the 64 MiB limit, beside Muster's
+  daemon on Murph. Also: a check holds the writer lock for a full Postgres read, so it stalls every write, and a
+  read-only credential can trigger it.
 - [x] **RAL-36: Stop before the disk fills.** Rally shares Murph with Muster's daemon. Required before the
   trial. Done when: the service refuses writes while free space on the ledger's disk is below a set floor,
   reads carry on, the error says why, and a test shows it. The docs say what isn't covered.
