@@ -277,28 +277,54 @@ fn scrub(message: &str, config: &postgres::Config) -> String {
     scrubbed
 }
 
-/// Reads a password file, refusing one that anyone else could read.
+/// Reads a password file, refusing one that anyone else could read or replace. The checks are made
+/// on the file as opened, and it's read from that same handle, so it can't be swapped in between.
 fn read_password_file(path: &Path) -> Result<String, StoreError> {
+    use std::io::Read;
     let refuse = |reason: String| {
         StoreError::Database(format!("the password file {}: {reason}", path.display()))
     };
-    let metadata = std::fs::metadata(path).map_err(|e| refuse(e.to_string()))?;
+    let mut file = std::fs::File::open(path).map_err(|e| refuse(e.to_string()))?;
+    let metadata = file.metadata().map_err(|e| refuse(e.to_string()))?;
     if !metadata.is_file() {
         return Err(refuse("isn't a file".to_owned()));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let me = rustix::process::getuid().as_raw();
         if metadata.permissions().mode() & 0o077 != 0 {
             return Err(refuse(
                 "can be read by other accounts; make it private with chmod 600".to_owned(),
             ));
         }
-        if metadata.uid() != rustix::process::getuid().as_raw() {
+        if metadata.uid() != me {
             return Err(refuse("belongs to another account".to_owned()));
         }
+        // Whoever can write to its directory can replace it, so that directory has to be this
+        // account's or root's, and writable by no one else unless its sticky bit stops them
+        // replacing other accounts' files. Both the directory named and, through a link, the
+        // file's own count.
+        let real = std::fs::canonicalize(path).map_err(|e| refuse(e.to_string()))?;
+        for file_path in [path, real.as_path()] {
+            let directory = match file_path.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => parent,
+                _ => Path::new("."),
+            };
+            let dir = std::fs::metadata(directory).map_err(|e| refuse(e.to_string()))?;
+            let mode = dir.permissions().mode();
+            let others_can_replace = mode & 0o022 != 0 && mode & 0o1000 == 0;
+            if (dir.uid() != me && dir.uid() != 0) || others_can_replace {
+                return Err(refuse(format!(
+                    "is in a directory, {}, that another account could replace it in",
+                    directory.display()
+                )));
+            }
+        }
     }
-    let text = std::fs::read_to_string(path).map_err(|e| refuse(e.to_string()))?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)
+        .map_err(|e| refuse(e.to_string()))?;
     let password = text.strip_suffix('\n').unwrap_or(&text);
     let password = password.strip_suffix('\r').unwrap_or(password);
     if password.is_empty() || password.contains('\n') {
@@ -2077,6 +2103,32 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
         assert_eq!(names, ["ledger.head"], "{names:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_password_file_in_a_directory_others_can_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        let password = shared.join("password");
+        write_private(&password, b"correct horse\n").unwrap();
+        assert_eq!(read_password_file(&password).unwrap(), "correct horse");
+        for mode in [0o777, 0o775, 0o757] {
+            std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(mode)).unwrap();
+            let error = read_password_file(&password).unwrap_err().to_string();
+            assert!(error.contains("directory"), "{mode:o}: {error}");
+        }
+        // Like /tmp: others can write, but the sticky bit stops them replacing this file.
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        assert_eq!(read_password_file(&password).unwrap(), "correct horse");
+        // Reached through a link in a private directory, the file's own directory still counts.
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&password, &link).unwrap();
+        assert!(read_password_file(&link).is_err());
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]
