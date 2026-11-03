@@ -94,7 +94,10 @@ pub fn saved(dir: &Path) -> Result<Option<Saved>, BackupError> {
     }
 }
 
-/// Rechecks the local records and returns the head they reach, which must be the saved one.
+/// Rechecks the local records and returns the head they reach. The saved head must be a point on
+/// them: records past it that chain correctly mean only that a pull stopped between appending them
+/// and saving the head, as when a laptop's lid closes, so the head is merely behind and the next pull
+/// saves it again. Records that don't chain, or a saved head they don't reach, are damage.
 fn recheck(dir: &Path) -> Result<Head, BackupError> {
     let damaged = |why: String| BackupError::Damaged(why);
     let saved = saved(dir)?;
@@ -102,6 +105,8 @@ fn recheck(dir: &Path) -> Result<Head, BackupError> {
         seq: 0,
         hash: CHAIN_START.to_owned(),
     };
+    // Whether the saved head was found on the records, checked as they're read.
+    let mut saved_on_chain = saved.as_ref().is_some_and(|saved| saved.seq == 0);
     match std::fs::File::open(records_path(dir)) {
         Ok(file) => {
             for line in std::io::BufReader::new(file).lines() {
@@ -113,6 +118,11 @@ fn recheck(dir: &Path) -> Result<Head, BackupError> {
                 {
                     return Err(damaged(format!("record {} doesn't chain", head.seq + 1)));
                 }
+                if let Some(saved) = &saved
+                    && saved.seq == record.seq
+                {
+                    saved_on_chain = saved.hash.eq_ignore_ascii_case(&record.hash);
+                }
                 head = Head {
                     seq: record.seq,
                     hash: record.hash,
@@ -123,15 +133,22 @@ fn recheck(dir: &Path) -> Result<Head, BackupError> {
         Err(error) => return Err(BackupError::Io(error.to_string())),
     }
     match saved {
-        Some(saved) if saved.seq == head.seq && saved.hash.eq_ignore_ascii_case(&head.hash) => {}
-        None if head.seq == 0 => {}
-        Some(saved) => {
+        // At the records' head, or behind it on the same chain.
+        Some(saved) if saved_on_chain && saved.seq <= head.seq => {}
+        Some(saved) if saved.seq > head.seq => {
             return Err(damaged(format!(
-                "head.json says record {}, but the records reach {}",
+                "head.json says record {}, but the records reach only {}",
                 saved.seq, head.seq
             )));
         }
-        None => return Err(damaged("records.jsonl has no head.json".to_owned())),
+        Some(saved) => {
+            return Err(damaged(format!(
+                "head.json's hash for record {} isn't the records'",
+                saved.seq
+            )));
+        }
+        // Lost before it was first saved, or since: the records alone are what's here.
+        None => {}
     }
     Ok(head)
 }
@@ -343,11 +360,47 @@ mod tests {
         let error = pull(&backup, 2, service(chain(6), 10)).unwrap_err();
         assert!(matches!(error, BackupError::Damaged(_)), "{error}");
         assert_eq!(files(&backup), (changed, head));
-        std::fs::remove_file(head_path(&backup)).unwrap();
+        // A saved head that isn't on the records is damage too.
+        std::fs::write(records_path(&backup), &records).unwrap();
+        let wrong = Saved {
+            seq: 2,
+            hash: "f".repeat(64),
+            at_ms: 1,
+        };
+        std::fs::write(head_path(&backup), serde_json::to_string(&wrong).unwrap()).unwrap();
         assert!(matches!(
             pull(&backup, 3, service(chain(6), 10)),
             Err(BackupError::Damaged(_))
         ));
+        // As is one past the records' end.
+        let ahead = Saved {
+            seq: 9,
+            hash: chain(9)[8].hash.clone(),
+            at_ms: 1,
+        };
+        std::fs::write(head_path(&backup), serde_json::to_string(&ahead).unwrap()).unwrap();
+        assert!(matches!(
+            pull(&backup, 4, service(chain(9), 10)),
+            Err(BackupError::Damaged(_))
+        ));
+    }
+
+    #[test]
+    fn a_pull_cut_off_before_saving_its_head_is_picked_up_by_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("b");
+        pull(&backup, 1, service(chain(3), 10)).unwrap();
+        let behind = std::fs::read_to_string(head_path(&backup)).unwrap();
+        pull(&backup, 2, service(chain(6), 10)).unwrap();
+        // As if the lid closed after the records were appended but before the head was saved.
+        std::fs::write(head_path(&backup), &behind).unwrap();
+        let pulled = pull(&backup, 3, service(chain(8), 10)).unwrap();
+        assert_eq!((pulled.added, pulled.head.seq), (2, 8));
+        // And with the head file gone altogether.
+        std::fs::remove_file(head_path(&backup)).unwrap();
+        let pulled = pull(&backup, 4, service(chain(9), 10)).unwrap();
+        assert_eq!((pulled.added, pulled.head.seq), (1, 9));
+        assert_eq!(files(&backup).0.lines().count(), 9);
     }
 
     #[test]
