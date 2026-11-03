@@ -66,7 +66,9 @@ The bones. Everything later reads from this.
 - [ ] **RAL-39: Make Rally a myko service.** Requested by the operator on 2026-11-02. See the design. Done
   when: records are myko entities appended through one command with today's checks; every existing guarantee
   still has a passing test; a test shows a raw event from a client is refused; `rally check --expect` can check
-  the chain from outside myko; and records survive a restart. The licence is AGPL-3.0-or-later, decided by the operator.
+  the chain from outside myko; records survive a restart; an append isn't acknowledged until Postgres has it, with
+  a test that stops Postgres; concurrent appends keep one chain; and the design's choice of no listener or loopback
+  is recorded with its evidence. The licence is AGPL-3.0-or-later, decided by the operator.
 - [ ] **RAL-40: Interface with Levi.** Requested by the operator on 2026-11-02. See the design. Claims live in
   Levi. Done when: the design says what happens to Rally's own claim commands and to projects not on Levi, and
   Rally can read a repository's Levi tasks through `levi --json`

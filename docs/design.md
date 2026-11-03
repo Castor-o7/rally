@@ -203,6 +203,34 @@ changing costs little now.
   command on one service keeps that, but it has to be tested.
 - **Licence:** decided: Rally is AGPL-3.0-or-later, as myko and Levi are.
 
+### What the spike showed
+
+`spikes/myko-ledger` ran myko 6.9.0 against a scratch Postgres on 2026-11-02. **myko can hold this ledger, on the
+conditions below.** It's a throwaway proof with arbitrary text, not Rally's real records or `rally check`.
+
+- **Records survive.** Three records and the saved head came back identical after both SIGTERM and SIGKILL restarts.
+- **The store holds only the latest version of each record.** The events table keeps earlier versions, but replay
+  doesn't use them, and the table can't say who wrote a row.
+- **Anyone who reaches the port can rewrite the ledger.** A raw event or the generated `DeleteLedgerRecord` command
+  writes past the append path, with no refusal. So blocking raw events alone isn't enough.
+- **A saved head is required.** Re-signing the rest of the chain, or deleting the newest record, passes a chain check
+  with no saved head. A head saved elsewhere catches both. So does a later honest append that reuses the number.
+
+So what's built has to do this:
+
+1. **No listener, if it holds up.** The proof ran with no listening port, by not calling `run()`, and reached records
+   through a command handler directly. That removes the loopback hole rather than stating it. It skips myko's search
+   index, relations, sagas and health check, nothing documents it as supported, and it ran only briefly, so it needs
+   its own check. If it fails, the fallback is loopback with the limit stated.
+2. **Wait for Postgres before acknowledging an append.** myko acknowledges first. With Postgres stopped, two appends
+   returned success and were lost. `PersistHealth.queued` told the truth, but it's one counter for the whole queue.
+3. **One writer lock.** Without one, 8 concurrent clients got success for overwritten records and a broken chain.
+4. **Never set a fixed host id.** With one, replay silently returned an empty ledger while the table held every row.
+5. **Sort by numeric sequence.** The store doesn't provide an order.
+
+Not tested: `/myko/mcp`, direct SQL tampering, Postgres restarting under a running server, backups, and replay beyond
+5,000 records, which took about 160 to 270 ms and about 13 MiB in the server process.
+
 ## Levi
 
 [Levi](https://github.com/ignition-is-go/levi) is an agent-first issue tracker whose events travel with a
