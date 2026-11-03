@@ -20,6 +20,8 @@ should go back to the operator if they change.
 - Rally should stay a myko service if it can, for uniformity with Muster (2026-11-02). This replaces the
   earlier agreement on SQLite written by Rally's own service. See "Rally as a myko service" below.
 - Rally should interface with [Levi](https://github.com/ignition-is-go/levi) (2026-11-02). See "Levi" below.
+- Rally's licence is AGPL-3.0-or-later, matching myko (2026-11-02).
+- Claims live in Levi (2026-11-02). See "Levi" below.
 
 ## Carried over from Muster's roadmap
 
@@ -188,8 +190,7 @@ changing costs little now.
   may improve.
 - **Order:** myko applies events in arrival order, and the chain needs one writer. Appending through one
   command on one service keeps that, but it has to be tested.
-- **Licence:** myko is AGPL-3.0-or-later, and Rally is MIT OR Apache-2.0. **The operator should decide** what
-  Rally's licence should be before this merges. Levi is AGPL to match, and Muster declares MIT OR Apache-2.0.
+- **Licence:** decided: Rally is AGPL-3.0-or-later, as myko and Levi are.
 
 ## Levi
 
@@ -201,8 +202,9 @@ read has stable `--json`, and its optional hub is a myko server. It overlaps wit
 verification, evidence, team state and history. Rally reads Levi and doesn't write to it at first. "Closed at
 a commit that's an ancestor of HEAD" is the kind of observed fact Rally wants, and could help RAL-5.
 What's in a Levi task is written by agents, so it's untrusted text, and a Levi claim is declared, not proof.
-Whether claims live in Levi or Rally is **for the operator**, since two sources of truth for a claim would
-disagree. No Rally project has been checked for Levi use yet.
+**Claims live in Levi,** on the operator's word, so there's one source of truth for them. What that means for
+what's built is for RAL-40 to settle: Rally's `claim` and `release` changes, the holder checks on submitting, and
+the projects that don't use Levi yet. No Rally project has been checked for Levi use yet.
 
 ## Open questions
 
