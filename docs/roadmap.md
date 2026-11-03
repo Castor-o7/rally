@@ -148,7 +148,7 @@ The bones. Everything later reads from this.
 - [ ] **RAL-18: Check evidence with least privilege.** Done when: evidence checks use read-only GitHub
   access, a merge attempt with that access is refused, and a test shows that Rally reads evidence without
   checking out or running submitted code.
-- [ ] **RAL-6: Verify separately from the author.** Done when: a story can only be marked Verified or
+- [x] **RAL-6: Verify separately from the author.** Done when: a story can only be marked Verified or
   Sent back under a declared name other than its submitter's, with the verifier and note recorded, and
   the docs say that this only catches mistakes, because both may hold the same machine's credential.
 - [ ] **RAL-19: Let a team read and correct its own record.** Done when: a team can read everything
