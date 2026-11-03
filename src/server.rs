@@ -611,7 +611,16 @@ async fn write_record(
                 "the outcome is unknown; it may have been recorded, so check before retrying",
             )
         }
-        Err(error) => internal(&error),
+        // Every other error comes before the commit: a broken chain, a head file off the chain,
+        // a difference from Postgres, or another writer.
+        Err(error) => {
+            eprintln!("rally: {error}");
+            failure(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "nothing was recorded: the ledger needs attention on its host, so run `rally check` \
+                 there",
+            )
+        }
     }
 }
 

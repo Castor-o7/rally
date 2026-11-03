@@ -1503,8 +1503,14 @@ fn save_head(head_file: &Path, head: &Head) -> Result<(), String> {
     ));
     let temporary = PathBuf::from(temporary);
     let text = serde_json::to_string(head).map_err(|e| e.to_string())?;
-    write_private(&temporary, text.as_bytes()).map_err(|e| e.to_string())?;
-    std::fs::rename(&temporary, head_file).map_err(|e| e.to_string())?;
+    let written = write_private(&temporary, text.as_bytes())
+        .map_err(|e| e.to_string())
+        .and_then(|()| std::fs::rename(&temporary, head_file).map_err(|e| e.to_string()));
+    if let Err(error) = written {
+        // Otherwise each failed save would leave a file behind.
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
     // Make the rename survive a crash. Otherwise a new ledger could end up with records and no
     // head file, which refuses writes.
     let directory = head_file.parent().unwrap_or_else(|| Path::new("."));
@@ -2052,6 +2058,25 @@ mod tests {
             !names.iter().any(|name| name.ends_with(".new")),
             "{names:?}"
         );
+    }
+
+    #[test]
+    fn a_failed_head_save_leaves_no_temporary_file() {
+        // A directory where the head file should be makes the rename fail after the write.
+        let dir = tempfile::tempdir().unwrap();
+        let head_file = dir.path().join("ledger.head");
+        std::fs::create_dir(&head_file).unwrap();
+        std::fs::write(head_file.join("keep"), "x").unwrap();
+        let head = Head {
+            seq: 0,
+            hash: CHAIN_START.to_owned(),
+        };
+        assert!(save_head(&head_file, &head).is_err());
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["ledger.head"], "{names:?}");
     }
 
     #[test]

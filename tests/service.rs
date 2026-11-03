@@ -1280,3 +1280,20 @@ fn limits_below_one_are_refused_at_start() {
         );
     }
 }
+
+#[test]
+fn a_refused_write_says_nothing_was_recorded_rather_than_that_the_ledger_cant_be_read() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    assert_eq!(ready(&pairing).status, 200);
+    std::fs::remove_file(service.head_file()).unwrap();
+    let body = json!({"change": "team_state", "team": "rally", "status": "working"});
+    let reply = write(&pairing, "someone", "declared", body);
+    assert_eq!(reply.status, 500, "{}", reply.body);
+    assert!(
+        reply.body.contains("nothing was recorded"),
+        "{}",
+        reply.body
+    );
+    assert!(!reply.body.contains("can't be read"), "{}", reply.body);
+}
