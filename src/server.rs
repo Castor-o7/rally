@@ -201,6 +201,7 @@ fn router(store: Store, state_dir: StateDir, limit: RateLimit) -> Router {
         .route("/v1/teams/{name}", get(one_team))
         .route("/v1/check", get(check))
         .route("/v1/whoami", get(whoami))
+        .route("/v1/export", get(export))
         .fallback(|| async { failure(StatusCode::NOT_FOUND, "no such route") })
         .method_not_allowed_fallback(|| async {
             failure(StatusCode::METHOD_NOT_ALLOWED, "method not allowed")
@@ -721,6 +722,47 @@ async fn check(
         Ok(Err(error)) => internal(&error),
         Err(not_run) => not_run.into_response(),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportQuery {
+    after: Option<u64>,
+}
+
+/// Records as stored, with their hashes, a page at a time, for a backup to recheck and keep
+/// (RAL-15). It reads the kept copy without a replay, so it counts as an ordinary read.
+async fn export(State(service): State<Arc<Service>>, Query(query): Query<ExportQuery>) -> Response {
+    let after = query.after.unwrap_or(0);
+    let result = service
+        .run(Work::Read, move |store| store.export(after))
+        .await;
+    match result {
+        Ok(Ok((records, head))) => {
+            let mut value = json!({
+                "untrusted_text": views::UNTRUSTED_TEXT, "head": head, "records": records,
+            });
+            if records_more(&value, &head) {
+                value["next"] = value["records"]
+                    .as_array()
+                    .and_then(|records| records.last())
+                    .map(|last| last["seq"].clone())
+                    .unwrap_or_default();
+            }
+            Json(value).into_response()
+        }
+        Ok(Err(error)) => internal(&error),
+        Err(not_run) => not_run.into_response(),
+    }
+}
+
+/// Whether there are records after the last one in this page.
+fn records_more(page: &Value, head: &Head) -> bool {
+    page["records"]
+        .as_array()
+        .and_then(|records| records.last())
+        .and_then(|last| last["seq"].as_u64())
+        .is_some_and(|last| last < head.seq)
 }
 
 /// Which credential this is, so that the viewer can warn if it could write.
