@@ -65,8 +65,8 @@ work like this:
 
 Rally will read Levi from a checkout with `levi --json`, write nothing to it, and label each fact by how it's
 known: a task closed at a commit that's in the branch's history is observed, while a task's text and claims are
-declared, and treated as untrusted. **None of this is built yet.** It's RAL-40, and what happens to Rally's own
-claim commands and to projects not on Levi is still to settle. See "Levi" in [docs/design.md](docs/design.md).
+declared, and treated as untrusted. This is next, as RAL-40, and what happens to Rally's own claim commands
+and to projects not on Levi is still to settle. See "Levi" in [docs/design.md](docs/design.md).
 
 ## What this gives the operator
 
@@ -95,6 +95,7 @@ claim commands and to projects not on Levi is still to settle. See "Levi" in [do
 - [docs/handoff.md](docs/handoff.md): for the team taking this on.
 - [docs/design.md](docs/design.md): the working design and its open questions.
 - [docs/roadmap.md](docs/roadmap.md): the stories.
+- [docs/deploy-murph.md](docs/deploy-murph.md): deploying on Murph, in one sitting, once the operator says so.
 
 ## Development
 
