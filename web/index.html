@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rally</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Rally</h1>
+      <p class="muted">The ledger of the muster. Read-only.</p>
+    </div>
+    <p id="freshness" class="muted" role="status">Loading…</p>
+  </header>
+  <main>
+    <section aria-labelledby="ledger-title">
+      <h2 id="ledger-title">Rally status</h2>
+      <div id="ledger" class="panel"></div>
+    </section>
+    <section aria-labelledby="roadmaps-title">
+      <h2 id="roadmaps-title">Roadmaps</h2>
+      <p class="muted">Ticks mean different things in each project, so they're never added together. Verified comes only from the ledger, never from ticks.</p>
+      <div id="roadmaps"></div>
+    </section>
+    <section aria-labelledby="teams-title">
+      <h2 id="teams-title">Teams</h2>
+      <p class="muted">Teams and their work are what agents say about themselves, not proof.</p>
+      <div id="teams" class="panel"></div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

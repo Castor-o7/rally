@@ -7,3 +7,4 @@ pub mod record;
 pub mod server;
 pub mod store;
 pub mod views;
+pub mod web;

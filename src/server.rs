@@ -98,6 +98,7 @@ fn router(store: Store, db: PathBuf, state_dir: StateDir, limit: RateLimit) -> R
         .route("/v1/teams", get(list_teams))
         .route("/v1/teams/{name}", get(one_team))
         .route("/v1/check", get(check))
+        .route("/v1/whoami", get(whoami))
         .fallback(|| async { failure(StatusCode::NOT_FOUND, "no such route") })
         .method_not_allowed_fallback(|| async {
             failure(StatusCode::METHOD_NOT_ALLOWED, "method not allowed")
@@ -316,6 +317,12 @@ async fn check(State(service): State<Arc<Service>>, Query(expected): Query<Expec
         Ok(result) => Json(result).into_response(),
         Err(error) => internal(&error),
     }
+}
+
+/// Which credential this is, so that the viewer can warn if it could write.
+async fn whoami(Extension(identity): Extension<Identity>) -> Response {
+    Json(json!({"credential": identity.credential, "read_only": identity.read_only}))
+        .into_response()
 }
 
 async fn list_stories(State(service): State<Arc<Service>>, Query(as_of): Query<AsOf>) -> Response {

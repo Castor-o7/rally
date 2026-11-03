@@ -19,6 +19,7 @@ use rally::record::{Kind, Record, Source};
 use rally::server::{self, RateLimit};
 use rally::store::{Head, Store};
 use rally::views;
+use rally::web::{self, DEFAULT_PROJECTS, LedgerReader, Project};
 
 /// A ledger of progress for a muster of agents.
 #[derive(Parser)]
@@ -67,6 +68,14 @@ enum Command {
         /// Refuse writes while the ledger's disk has less free space than this.
         #[arg(long, default_value_t = RateLimit::default().min_free_bytes)]
         min_free_bytes: u64,
+    },
+    /// Run the read-only viewer on this machine's loopback address. See docs/web.md.
+    Web {
+        #[arg(long, default_value = "127.0.0.1:7300")]
+        bind: String,
+        /// The projects to show, instead of the defaults.
+        #[arg(long)]
+        projects: Option<PathBuf>,
     },
     /// On the service's host, add a machine and write its pair code to a private file.
     AddMachine {
@@ -321,6 +330,67 @@ fn config_path(config: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::E
     }
 }
 
+/// Reads the ledger's stories, teams and check, from a file or through the service.
+fn ledger_reader(db: Option<PathBuf>, config: PathBuf) -> LedgerReader {
+    let read = move || -> Result<Value, Box<dyn std::error::Error>> {
+        let backend = {
+            require_ledger(db.as_deref())?;
+            match &db {
+                Some(db) => Backend::File(Store::open_read_only(db)?),
+                None => Backend::choose(None, &config)?,
+            }
+        };
+        let stories: Value =
+            serde_json::from_str(
+                &backend.read("/v1/stories", None, |ledger| views::stories(ledger, None))?,
+            )?;
+        let teams: Value = serde_json::from_str(
+            &backend.read("/v1/teams", None, |ledger| views::teams(ledger, None))?,
+        )?;
+        let (check, read_only) = match &backend {
+            // Opened read-only above.
+            Backend::File(store) => (json!(store.verify(None)?), json!(true)),
+            Backend::Service(pairing) => {
+                let check = reply_value(&client::request(pairing, "GET", "/v1/check", None, &[])?)?;
+                let who = reply_value(&client::request(pairing, "GET", "/v1/whoami", None, &[])?)?;
+                (check, who["read_only"].clone())
+            }
+        };
+        Ok(json!({
+            "as_of": stories["as_of"],
+            "stories": stories["stories"],
+            "teams": teams["teams"],
+            "check": check,
+            "read_only": read_only,
+        }))
+    };
+    Box::new(move || read().map_err(|error| error.to_string()))
+}
+
+fn run_viewer(
+    bind: &str,
+    projects: Option<PathBuf>,
+    db: Option<PathBuf>,
+    config: PathBuf,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let text = match projects {
+        Some(path) => std::fs::read_to_string(path)?,
+        None => DEFAULT_PROJECTS.to_owned(),
+    };
+    let projects: Vec<Project> = serde_json::from_str(&text)?;
+    let address: std::net::SocketAddr = bind.parse()?;
+    if !address.ip().is_loopback() {
+        return Err(format!("the viewer only runs on a loopback address, not {address}").into());
+    }
+    let listener = TcpListener::bind(address)?;
+    let listening = listener.local_addr()?;
+    println!("{}", json!({"listening": listening.to_string()}));
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let reader = ledger_reader(db, config);
+    tokio::runtime::Runtime::new()?.block_on(web::serve(listener, projects, reader))?;
+    Ok(json!({"stopped": true}).to_string())
+}
+
 fn run_service(
     db: &Path,
     bind: &str,
@@ -403,6 +473,9 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             write_private(&path, serde_json::to_string(&pairing)?.as_bytes())?;
             return Ok(json!({"paired": pairing.address, "config": path}).to_string());
+        }
+        Command::Web { bind, projects } => {
+            return run_viewer(&bind, projects, cli.db, config_path(cli.config)?);
         }
         Command::AdoptHead => {
             require_ledger(cli.db.as_deref())?;

@@ -1,0 +1,37 @@
+[
+  {
+    "name": "Rally",
+    "prefix": "RAL",
+    "repo": "Castor-o7/rally",
+    "path": "docs/roadmap.md",
+    "tick_meaning": "Verified by the watchman"
+  },
+  {
+    "name": "Muster",
+    "prefix": "MUS",
+    "repo": "Castor-o7/muster",
+    "path": "docs/roadmap.md",
+    "tick_meaning": "Verified under the board process"
+  },
+  {
+    "name": "catapp",
+    "prefix": "CAT",
+    "repo": "Castor-o7/catapp",
+    "path": "ROADMAP.md",
+    "tick_meaning": "Merged"
+  },
+  {
+    "name": "CarChomp",
+    "prefix": "CHOMP",
+    "repo": "Castor-o7/CarChomp",
+    "path": "ROADMAP.md",
+    "tick_meaning": "Checked on simulators or in CI"
+  },
+  {
+    "name": "ParadoxDetector",
+    "prefix": "PDX",
+    "repo": "Castor-o7/ParadoxDetector",
+    "path": "ROADMAP.md",
+    "tick_meaning": "Not stated here yet"
+  }
+]
