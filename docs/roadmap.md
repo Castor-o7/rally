@@ -103,7 +103,7 @@ The bones. Everything later reads from this.
 - [x] **RAL-13: Control who can write and read.** Depends on RAL-4 and RAL-10. Done when: an
   unauthorized write or read is refused, shown by a test for each route into the service, and the docs
   say what an accepted write does and doesn't prove about who sent it.
-- [ ] **RAL-35: Limit load on the service.** From the second read of RAL-13, and now required before the trial,
+- [x] **RAL-35: Limit load on the service.** From the second read of RAL-13, and now required before the trial,
   because a source review predicts one read-only credential could stall everything and pin gigabytes on a host
   shared with Muster. Measure these first; they're predictions. Done when: response memory is bounded, replay
   isn't quadratic in a story's corrections, the read limit fits what the store can serve, and connections are
