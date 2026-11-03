@@ -198,7 +198,20 @@ with "rewrite" and writes nothing: that's the host's ledger being rewritten, as 
 show. The output's `expect` is the head to pass to `rally check --expect`. When the service can't be reached,
 it fails and says how long ago the last backup was, and that it's overdue past `--max-age-hours` (24).
 
-Run it by hand for now; scheduling it on a machine that sleeps, and restoring from it, come next.
+To restore, make a new, empty Postgres database and pick a new head file, then:
+
+```bash
+rally --db <new database> --head-file <new head file> restore --from ~/.local/state/rally-backup
+rally --db <new database> --head-file <new head file> check --expect <the backup's expect>
+```
+
+Restore rechecks the backup's chain and replays it before writing anything, refuses a database that already
+has records or a head file that already exists, writes every record in one transaction with the table's usual
+protections, saves the head file, and then reopens the ledger as the service would and checks it. Its output
+gives `expect`, and the backup's own `head.json`, which is the same unless the last backup stopped before
+saving it. A service started on the restored ledger carries on from its head.
+
+Run backups by hand for now; scheduling them on a machine that sleeps comes next.
 
 ## Known limits
 
@@ -225,8 +238,7 @@ Run it by hand for now; scheduling it on a machine that sleeps, and restoring fr
   checked (RAL-42). Keep it in a directory only this account can write.
 - Tests show a commit cut off before Postgres committed it (rolled back), and one that committed with its reply
   lost; a real reply lost in transit isn't reproduced.
-- Restoring from a backup (RAL-15) isn't built yet, and backups aren't scheduled. Until then, a backup means
-  the backup directory above, or the Postgres database and the head file together.
+- Backups (RAL-15) aren't scheduled yet, and a restore on the other machine hasn't been run for real.
 - Write limits are per machine, so all of a machine's sessions share them. Watch for 429s in real use.
 - One compromised credential could reach the 64 MiB stop in about 6 hours, and several credentials
   proportionally faster, which blocks everyone's writes

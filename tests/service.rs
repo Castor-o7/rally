@@ -1459,6 +1459,53 @@ fn a_backup_through_the_service_holds_a_head_that_check_expect_accepts() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // Restored into a new ledger, it checks against the backup's head and holds the same stories.
+    let target = scratch_pg::shared().database();
+    let restored_dir = tempfile::tempdir().unwrap();
+    let restored_head = restored_dir.path().join("ledger.head");
+    let on_restored = |args: &[&str]| {
+        rally()
+            .arg("--db")
+            .arg(&target.url)
+            .arg("--head-file")
+            .arg(&restored_head)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let output = on_restored(&["restore", "--from", backup.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let restored: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(restored["expect"], second["expect"]);
+    assert_eq!(restored["backup_head_file"], second["expect"]);
+    let output = on_restored(&["check", "--expect", expect]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let original = rally()
+        .arg("--config")
+        .arg(&config)
+        .arg("show")
+        .output()
+        .unwrap();
+    let copy = on_restored(&["show"]);
+    let stories = |output: &std::process::Output| -> Value {
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["stories"].clone()
+    };
+    assert_eq!(stories(&copy), stories(&original));
+    // A second restore into the same ledger is refused.
+    assert!(
+        !on_restored(&["restore", "--from", backup.to_str().unwrap()])
+            .status
+            .success()
+    );
+
     // With the service gone, it fails and says how old the backup is.
     drop(service);
     let output = run();

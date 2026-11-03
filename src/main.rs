@@ -202,6 +202,12 @@ enum Command {
         #[arg(long, default_value_t = 24.0)]
         max_age_hours: f64,
     },
+    /// With --db and --head-file naming a new, empty ledger: restore it from a backup directory,
+    /// then check it. Refuses a ledger that already exists. See docs/service.md.
+    Restore {
+        #[arg(long)]
+        from: PathBuf,
+    },
     /// On the service's host, with --db: accept the current head after a lost or damaged head file.
     /// Refuses a broken chain. This also accepts any removal `check` was reporting, so compare with a
     /// head saved elsewhere first.
@@ -725,6 +731,22 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     Err(format!("{error}{when}").into())
                 }
             };
+        }
+        Command::Restore { from } => {
+            let location =
+                location.ok_or("restore needs --db and --head-file for the new ledger")?;
+            let (records, head) = rally::backup::read(&from)?;
+            let saved = rally::backup::saved(&from)?;
+            let restored = Store::restore(&location, &records)?;
+            debug_assert_eq!(restored, head);
+            return Ok(json!({
+                "restored_to": restored.seq,
+                "expect": format!("{}:{}", restored.seq, restored.hash),
+                // Behind only if the last backup stopped before saving its head; the records are
+                // what was restored.
+                "backup_head_file": saved.map(|saved| format!("{}:{}", saved.seq, saved.hash)),
+            })
+            .to_string());
         }
         Command::AdoptHead => {
             let location = location.ok_or("adopt-head needs --db, on the service's host")?;

@@ -1045,6 +1045,67 @@ impl Store {
         parse_rows(&check_chain(rows, limit)?)
     }
 
+    /// Restores exported records into an empty ledger at `location` (RAL-15), refusing a ledger
+    /// that already has records or a head file. The records' chain is checked and they're replayed
+    /// before anything is written; they're then written in one transaction through the writer's
+    /// own setup, so the table has its usual protections, and the head file is saved. Finally the
+    /// ledger is opened again, replaying from Postgres as the service would, and must check.
+    pub fn restore(location: &Location, records: &[Exported]) -> Result<Head, StoreError> {
+        let rows: Vec<Row> = records
+            .iter()
+            .map(|record| Row {
+                seq: record.seq,
+                text: record.record.clone(),
+                hash: record.hash.clone(),
+            })
+            .collect();
+        let chain = check_chain(rows, u64::MAX)?;
+        replay(&parse_rows(&chain)?)?;
+        let head = head_of(&chain);
+        if location.head_file.exists() {
+            return Err(StoreError::HeadMismatch(format!(
+                "{} already exists; restore only into a new ledger",
+                location.head_file.display()
+            )));
+        }
+        {
+            let store = Self::open(location)?;
+            let writer = store.writer.as_ref().expect("opened for writing");
+            let mut sql = writer
+                .sql
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if durable_tail(&mut sql)?.0 != 0 {
+                return Err(StoreError::Diverged(
+                    "the database already holds records; restore only into a new ledger".to_owned(),
+                ));
+            }
+            let mut transaction = sql.transaction()?;
+            let host = writer.server.host_id.to_string();
+            for row in &chain {
+                let item = LedgerRecord {
+                    id: LedgerRecordId(Arc::from(row.seq.to_string())),
+                    record: row.text.clone(),
+                    hash: row.hash.clone(),
+                };
+                insert_record(&mut transaction, &item, &host)?;
+            }
+            transaction.commit()?;
+            save_head(&location.head_file, &head).map_err(StoreError::HeadMismatch)?;
+        }
+        let reopened = Self::open(location)?;
+        let check = reopened.verify(Some(&head))?;
+        if !check.ok {
+            return Err(StoreError::Inconsistent(LedgerError::InvalidChange(
+                format!(
+                    "the restored ledger doesn't check: {}",
+                    check.problems.join("; ")
+                ),
+            )));
+        }
+        Ok(head)
+    }
+
     /// Up to [`EXPORT_LIMIT`] records after `after`, as stored, with the head they belong to. A
     /// writer reads myko's copy, checked against its kept hashes, without replaying anything; a
     /// reader reads Postgres. The chain isn't rechecked here: the backup rechecks it.
@@ -1265,26 +1326,8 @@ impl Writer {
             record: text,
             hash: hash.clone(),
         };
-        let event = myko::event::MEvent::from_item(
-            &item,
-            myko::event::MEventType::SET,
-            &self.server.host_id.to_string(),
-        );
-        let event_json =
-            serde_json::to_string(&event).map_err(|e| StoreError::Database(e.to_string()))?;
         let mut transaction = sql.transaction()?;
-        transaction.execute(
-            "INSERT INTO rally_events (item_type, item_id, change_type, created_at, tx, source_id, event)
-             VALUES ($1, $2, 'SET', ($3::text)::timestamptz, $4, $5, ($6::text)::jsonb)",
-            &[
-                &ENTITY,
-                &seq.to_string(),
-                &&*event.created_at,
-                &&*event.tx,
-                &event.source_id.as_deref(),
-                &event_json,
-            ],
-        )?;
+        insert_record(&mut transaction, &item, &self.server.host_id.to_string())?;
         // If the connection fails during the commit, Postgres may or may not have the record. It
         // isn't acknowledged, and says so; if Postgres did commit it, the next append finds
         // Postgres ahead of myko's copy and refuses until a restart replays.
@@ -1380,6 +1423,30 @@ impl CommandHandler for AppendLedgerRecord {
             fail(message)
         })
     }
+}
+
+/// Inserts one record as the event myko would load it from: an append's own row, and a restore's.
+fn insert_record(
+    transaction: &mut postgres::Transaction<'_>,
+    item: &LedgerRecord,
+    host: &str,
+) -> Result<(), StoreError> {
+    let event = myko::event::MEvent::from_item(item, myko::event::MEventType::SET, host);
+    let event_json =
+        serde_json::to_string(&event).map_err(|e| StoreError::Database(e.to_string()))?;
+    transaction.execute(
+        "INSERT INTO rally_events (item_type, item_id, change_type, created_at, tx, source_id, event)
+         VALUES ($1, $2, 'SET', ($3::text)::timestamptz, $4, $5, ($6::text)::jsonb)",
+        &[
+            &ENTITY,
+            &item.id.0.as_ref(),
+            &&*event.created_at,
+            &&*event.tx,
+            &event.source_id.as_deref(),
+            &event_json,
+        ],
+    )?;
+    Ok(())
 }
 
 fn parse_seq(id: &str) -> Result<u64, StoreError> {
@@ -2247,6 +2314,63 @@ mod tests {
                 "after {after}"
             );
         }
+    }
+
+    /// A fresh, empty ledger in its own database, to restore into.
+    fn fresh() -> (Database<'static>, tempfile::TempDir, Location) {
+        let db = scratch_pg::shared().database();
+        let dir = tempfile::tempdir().unwrap();
+        let location = Location {
+            url: db.url.clone(),
+            head_file: dir.path().join("ledger.head"),
+            password_file: None,
+        };
+        (db, dir, location)
+    }
+
+    #[test]
+    fn a_restore_rebuilds_the_same_ledger_and_checks() {
+        let mut scratch = two_records();
+        scratch.store().append(&note()).unwrap();
+        let exported = scratch.store().export(0).unwrap();
+        let (_db, _dir, location) = fresh();
+        let head = Store::restore(&location, &exported.0).unwrap();
+        assert_eq!(head, exported.1);
+        let restored = Store::open(&location).unwrap();
+        assert!(restored.verify(Some(&head)).unwrap().ok);
+        assert_eq!(
+            restored.ledger(None).unwrap(),
+            scratch.store().ledger(None).unwrap()
+        );
+        // The table has its protections, and writes go on from the restored head.
+        assert_eq!(restored.append(&release()).unwrap(), 4);
+        drop(restored);
+        let reader = Store::open_read_only(&location).unwrap();
+        assert!(reader.verify(None).unwrap().ok);
+    }
+
+    #[test]
+    fn a_restore_refuses_a_ledger_in_use_and_a_broken_backup() {
+        let mut scratch = two_records();
+        let exported = scratch.store().export(0).unwrap().0;
+        // Into a ledger that already has a head file, or records.
+        assert!(Store::restore(&scratch.location, &exported).is_err());
+        let (_db, dir, location) = fresh();
+        let mut broken = exported.clone();
+        broken[1].record.push(' ');
+        assert!(matches!(
+            Store::restore(&location, &broken),
+            Err(StoreError::Tampered { seq: 2 })
+        ));
+        // Nothing was made for the broken one.
+        assert!(!location.head_file.exists(), "{:?}", dir.path());
+        let reader = Store::open_read_only(&location);
+        assert!(
+            matches!(reader, Err(StoreError::NoLedger(_))),
+            "{:?}",
+            reader.err()
+        );
+        assert!(scratch.store().verify(None).unwrap().ok);
     }
 
     #[test]

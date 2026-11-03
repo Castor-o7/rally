@@ -153,6 +153,26 @@ fn recheck(dir: &Path) -> Result<Head, BackupError> {
     Ok(head)
 }
 
+/// Every record in the backup at `dir`, rechecked, and the head they reach, for a restore.
+pub fn read(dir: &Path) -> Result<(Vec<Exported>, Head), BackupError> {
+    let head = recheck(dir)?;
+    let mut records = Vec::new();
+    match std::fs::File::open(records_path(dir)) {
+        Ok(file) => {
+            for line in std::io::BufReader::new(file).lines() {
+                let line = line.map_err(|e| BackupError::Damaged(e.to_string()))?;
+                records.push(
+                    serde_json::from_str(&line)
+                        .map_err(|_| BackupError::Damaged("a line can't be read".to_owned()))?,
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(BackupError::Io(error.to_string())),
+    }
+    Ok((records, head))
+}
+
 /// Pulls whatever is new into the backup at `dir`, asking `fetch` for the page after each record
 /// number. Writes nothing unless every page checks.
 pub fn pull(
