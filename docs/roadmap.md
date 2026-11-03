@@ -211,7 +211,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
 - [ ] **RAL-38: Show what each team is working on.** Requested by the operator on 2026-11-02. Depends on
   the rollout of MUS-44. Done when: the web app shows each team's declared state and Muster's roster with
   Muster's own labels and each fact's age, and the operator has seen it with live data.
-- [ ] **RAL-43: Give each project an info page.** Requested by the operator on 2026-11-03: "all of this
+- [x] **RAL-43: Give each project an info page.** Requested by the operator on 2026-11-03: "all of this
   information should be viewable under each muster team's project info page, which should be accessible by
   clicking on the project in the rally viewer app." Done when: in `rally web`, each project in the roadmap list
   links to a page of its own showing (1) the roadmap's progress and its stories by state, counted as the
@@ -224,6 +224,11 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   operator the same evening: "the summary for the total rally progress should be viewable at the bottom of the
   rally summary page please". So the main page ends with the totals across projects, and the watchman's
   writeup of the whole muster from `docs/muster/<date>.md` in Rally's own repository, under the same rules.
+- [ ] **RAL-44: Date each tick on a project's page.** The gap the watchman recorded when verifying RAL-43, whose
+  line asks for ticks and their dates. Done when: each ticked line on a project's page shows the date of the
+  commit that last changed it, from GitHub's GraphQL blame of the roadmap file, one call per project on the
+  roadmap's cadence; the page says that date is the tick's unless the line was edited after it; and a test
+  covers reading the blame and matching its ranges to ticked lines.
 - [ ] **RAL-28: Show past ledgers.** Depends on RAL-12. Done when: a viewer can pick a past moment and
   see the ledger as it stood then, with corrections made since shown as later, and a test shows that the
   view matches a replay to that moment.
