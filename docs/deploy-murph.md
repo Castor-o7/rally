@@ -16,15 +16,19 @@ operator approves the deployment itself, directly, not through a relayed message
 1. **Reserve Murph's address on the router:** a DHCP reservation of 192.168.1.241 for Murph's network
    interface, so that the address in every pair code stays right.
 2. **Give Rally a role and database on Murph's Postgres.** Postgres 18.6, from Manjaro's `extra` repository, is
-   already installed and running there for Muster's daemon (`vibrant-mink`, 2026-11-03), so nothing is installed.
-   Check that it listens on loopback only (`listen_addresses = 'localhost'` in `postgresql.conf`), then:
+   already running there for Muster's daemon, as the `marshal-postgres` user unit, with no TCP listener
+   (`listen_addresses` empty) and its socket in `/run/user/1000/marshal-pg` (`vibrant-mink`, 2026-11-03). So
+   nothing is installed and Postgres isn't restarted, which would drop Muster's connection. Rally connects over
+   that socket:
    ```sql
    CREATE ROLE rally LOGIN PASSWORD '<a new random password>';
    CREATE DATABASE rally OWNER rally;
    GRANT pg_read_all_settings TO rally;  -- for the disk floor, which reads data_directory
    ```
-   with a `pg_hba.conf` line `host rally rally 127.0.0.1/32 scram-sha-256`. Give the password to Rally's
-   account on Murph in a file only that account can read (step 2 below), never in chat.
+   with `local rally rally scram-sha-256` in `pg_hba.conf` ahead of the `local all all peer` line, then a
+   reload. Give the password to Rally's account on Murph in a file only that account can read (step 2 below),
+   never in chat. Tested on a1 against a Postgres with only a Unix socket: writes, myko's replay, `check` and
+   `serve` all work through `?host=<socket directory>`.
 3. **Check headroom on Murph:** at least 5 GiB free under Postgres's data directory, beyond what Muster's
    daemon needs (RAL-36 stops writes below that), and about 0.5 GiB of memory for Rally at its 64 MiB
    ledger limit (RAL-35).
@@ -40,13 +44,13 @@ operator approves the deployment itself, directly, not through a relayed message
    # The password from the operator's step 2, one line:
    install -m 600 /dev/stdin ~/.local/state/rally/db-password
    ```
-   with `RALLY_STATE_DIR=~/.local/state/rally`, `RALLY_DB=postgres://rally@127.0.0.1/rally`,
+   with `RALLY_STATE_DIR=~/.local/state/rally`, `RALLY_DB=postgres://rally@/rally?host=/run/user/1000/marshal-pg`,
    `RALLY_HEAD_FILE=~/.local/state/rally/ledger.head` and
    `RALLY_DB_PASSWORD_FILE=~/.local/state/rally/db-password`.
 3. **Run it** as a systemd user service, so it restarts after a crash or reboot:
    ```ini
    [Service]
-   Environment=RALLY_STATE_DIR=%h/.local/state/rally RALLY_DB=postgres://rally@127.0.0.1/rally
+   Environment=RALLY_STATE_DIR=%h/.local/state/rally RALLY_DB=postgres://rally@/rally?host=/run/user/1000/marshal-pg
    Environment=RALLY_HEAD_FILE=%h/.local/state/rally/ledger.head RALLY_DB_PASSWORD_FILE=%h/.local/state/rally/db-password
    ExecStart=%h/.local/bin/rally serve --bind 192.168.1.241:6300
    Restart=on-failure
