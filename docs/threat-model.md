@@ -48,8 +48,14 @@ Say these plainly wherever a reader might assume otherwise:
   and a record's author is a machine's credential, not a proven person or team. Show authors that way,
   for example "a1 credential, declaring gleaming-tench". Revisit this with MUS-39.
 - **"Merged" can record the commit, not who merged it,** because every session shares one GitHub account.
-- **Someone with full access to the host can rewrite the entire ledger** and its tamper check. Backups
-  on the other machine make this easier to notice, but don't prevent it.
+- **Someone with full access to the host, or the ledger's Postgres role, can rewrite the entire ledger** and
+  its tamper check, because they can lift the table's append-only protections. Only a head saved elsewhere
+  shows it. Backups on the other machine make this easier to notice, but don't prevent it.
+- **Writing past the checks from the host.** Rally runs myko without its listener, so no client, local or not,
+  can send myko a raw event or its generated delete command (RAL-39). But anything that can connect to the
+  ledger's Postgres database as its role can write rows directly. The chain, the head file and a saved head
+  detect that; they don't prevent it. Keep Postgres on loopback, with the role's password, if any, private to
+  Rally's account.
 - **A declared state may be false.** Rally records that it was said, and by which credential.
 - **Verification is one reader's judgment.** Rally records who judged and on what evidence.
 - **Secret detection is incomplete.** It only recognizes known formats.

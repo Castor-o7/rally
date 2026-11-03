@@ -3,15 +3,26 @@
 One service on one machine is the ledger's single writer (RAL-4, RAL-13). Machines reach it with the
 `rally` command.
 
+The ledger lives in Postgres on the same host, as myko entities (RAL-39, `docs/design.md`). The service runs myko
+inside its own process without myko's listener, so its TLS port is the only way in: no client talks to myko.
+
 ## Setting it up
 
-On the host:
+On the host, with a Postgres database for the ledger that only this account can reach:
 
 ```bash
 export RALLY_STATE_DIR=~/.local/state/rally
-rally --db ~/.local/state/rally/ledger.db serve --bind <LAN address>:6300
+export RALLY_DB=postgres://rally@127.0.0.1/rally
+export RALLY_HEAD_FILE=~/.local/state/rally/ledger.head
+rally serve --bind <LAN address>:6300
 rally add-machine a1 --address <LAN address>:6300 --out a1.pair
 ```
+
+`--db` (`RALLY_DB`) is the Postgres URL, and `--head-file` (`RALLY_HEAD_FILE`) is the ledger's head file, kept
+outside Postgres (see "Detecting tampering"). Keep any password out of the URL, in `~/.pgpass`, because the URL can
+show in process listings. Rally makes its table, `rally_events`, on first start. Its role needs to be able to create
+it, and to read `data_directory` for the disk floor, which a superuser or a member of `pg_read_all_settings` can.
+Postgres must be on the same host, with that directory visible to Rally.
 
 The file holds a pair code, which holds a secret, so treat it like a password. It's private to your
 account and is never printed, to keep it out of agents' transcripts. Move it to the machine being paired
@@ -36,9 +47,17 @@ stops a token working straight away. Don't expose the port to the open internet.
   a change. Only Rally itself may record observed facts.
 - **Read-only is enforced before any route.** A read-only credential can only use GET and HEAD.
 - **Limits.** 16 KiB per request, and for each credential a request rate and a much lower write rate. The
-  defaults allow about 17,000 writes a day, so up to about 280 MB. Writes stop when the ledger file reaches
-  64 MiB, or while the ledger's disk has under 5 GiB free, and reads carry on. Set the floor with
-  `--min-free-bytes`, and check it against the host's real free space before rollout.
+  defaults allow about 17,000 writes a day, so up to about 280 MB. Writes stop when the ledger's table in
+  Postgres, with its indexes, reaches 64 MiB, or while the disk under Postgres's data directory has under 5 GiB
+  free, and reads carry on. If either can't be checked, writes stop too. Set the floor with `--min-free-bytes`,
+  and check it against the host's real free space before rollout.
+- **A write is acknowledged only once Postgres has committed it.** With Postgres down, writes fail with a 503
+  saying nothing was recorded, and reads of what the service already holds carry on. When Postgres is back, the
+  service reconnects by itself.
+- **One writer.** The service holds a lock in Postgres for as long as it runs, so a second service or a `--db`
+  write is refused rather than forking the chain.
+- **Append-only in Postgres too.** The table refuses updates, deletes, `TRUNCATE`, deletion events and a second
+  version of a record. That catches mistakes: whoever owns the database can lift it.
 
 ## Recorded text is untrusted
 
@@ -65,22 +84,25 @@ reach it are refused, and `rally check` says where. A read as of an earlier reco
 history is intact.
 
 Removing the newest records leaves a shorter chain that still holds, so ordinary reads don't notice: only
-`rally check` does. The head is kept in `<ledger>.head` for this, and `rally check` compares against it and
-prints the current head. Writes stop if that file is missing or isn't on the chain, because a write would
+`rally check` does. The head is kept in the head file for this, outside Postgres, and `rally check` compares
+against it and prints the current head. `rally check` reads Postgres directly, not the service's copy, so it also
+says if the two differ, or if a record has more than one version in Postgres, which only a change past the append
+path can leave. A service won't start over a record with two versions. Writes stop if that file is missing or isn't on the chain, because a write would
 otherwise replace the evidence. A head file behind the ledger is allowed, because a crash leaves it that
 way.
 
 To recover, run `rally check`, keeping the damaged files to look at. Then either restore the ledger and its
 head file together from a backup, or, if the chain is intact and a head saved elsewhere still matches, run
-`rally --db <ledger> adopt-head` on the host. It refuses a broken chain, but it does accept any removal
+`rally --db <url> --head-file <file> adopt-head` on the host. It refuses a broken chain, but it does accept any removal
 of the newest records that `check` was reporting, so don't use it to make a warning go away, and don't edit
 the head file by hand.
 
 Save that head somewhere other than the host from time to time, then check it with
 `rally check --expect SEQ:HASH`. That's the only protection against the case below.
 
-This detects and doesn't prevent. **Someone with write access to the host can rewrite the whole ledger,
-its hashes and the head file together, and `rally check` alone will pass.** Only a head saved elsewhere
+This detects and doesn't prevent. **Someone with write access to the host, or the ledger's Postgres role, can
+rewrite the whole ledger, its hashes, its history and the head file together, and `rally check` alone will
+pass.** Only a head saved elsewhere
 would show it, and it can't show anything changed after that head was saved, or show which version is
 true. So a head saved elsewhere is the real protection: a head file reset to record 0 with records present
 passes `check` and allows writes. Without a saved head, this also goes unseen if someone winds the head file back along with the
@@ -88,10 +110,17 @@ records, or removes every record and the head file, which looks like a new ledge
 
 ## Known limits
 
-- `--db` works on a ledger file directly, with no service and no checks on who is writing. It's for tests
-  and for the host's own administration.
+- `--db` works on the ledger's database directly, with no service and no checks on who is writing. It's for
+  tests and for the host's own administration. Its reads (`check`, `show`, `teams`, `web`) are read-only in
+  Postgres and work while the service runs. Its writes need the writer lock, so they wait up to 5 seconds and
+  are refused while the service runs.
 - The disk floor is checked before each write, so it can't see what other programs write in between, and
-  it only stops Rally. It doesn't count backups stored elsewhere, and it can't free space.
+  it only stops Rally, not Postgres: Postgres's own write-ahead log and other databases can still fill the disk.
+  It doesn't count backups stored elsewhere, and it can't free space. The size limit counts Rally's table and
+  indexes, not the write-ahead log.
+- Postgres must be durable for an acknowledged write to be: keep `fsync` and `synchronous_commit` on, as they are
+  by default.
+- Backups (RAL-15) aren't built. One now means the Postgres database and the head file together.
 - Write limits are per machine, so all of a machine's sessions share them. Watch for 429s in real use.
 - One compromised credential could reach the 64 MiB stop in about 6 hours, and several credentials
   proportionally faster, which blocks everyone's writes
@@ -101,16 +130,19 @@ records, or removes every record and the head file, which looks like a new ledge
 - A failed token attempt isn't rate limited, and connections aren't capped or timed out while they're
   still unauthenticated. Tokens are 256 random bits, so guessing isn't practical, but a flood or slow
   connections could still load the service (RAL-35). This is why it stays off the open internet.
-- Each request reads and replays the whole ledger in memory, holding the store's lock, and blocks one of
-  the service's workers. Measured with a release build on a1, on worst-case 15 KB records through the
-  local command rather than the service: about 150 MB and 0.4 s at 64 MiB, and 2.3 GB and 2.9 s at 1 GiB.
-  That's why the limit is 64 MiB: the host shares its memory with Muster's daemon, and a read-only
-  credential can trigger this too. Don't raise it before RAL-35. Typical records are far smaller, so 64
-  MiB holds many more than that test did.
+- The service holds every record in memory, in myko's store, for as long as it runs, and each request still
+  replays the whole ledger from that copy, holding the store's lock; a check reads all of Postgres as well.
+  Measured with a release build on a1 at the 64 MiB limit: with 64,001 typical 300-character records, 1.1 s to
+  replay at start, 0.2 s for a read and 0.3 s for a check through the service, and about 150 to 230 MiB held by
+  the service; with 4,751 worst-case records of about 12 KB, 0.6 s, 0.1 s and 0.3 s, and about 130 to 150 MiB.
+  At 256 MiB (256,501 typical records), 4.1 s, 0.9 s and 1.7 s, and about 520 to 730 MiB, so it grows linearly.
+  That's why the limit stays at 64 MiB: the host shares its memory with Muster's daemon, and a read-only
+  credential can trigger the reads too. Don't raise it before RAL-35.
 - A damaged `machines.json` logs a line for each request, before any rate limit, until it's fixed.
 - If `cert.pem` or `key.pem` goes missing, the service refuses to start rather than making a new
   certificate, which would break every machine's pin. Restore it, or remove both and pair every machine
   again.
 - File permissions keep secrets private on Unix only. Windows isn't a supported host.
-- Any process on the host's account can read or change the ledger, the key and the token hashes.
+- Any process on the host's account can read or change the ledger, the key and the token hashes, and so can
+  anyone who holds the ledger's Postgres role.
 - Replacing the certificate means pairing every machine again.

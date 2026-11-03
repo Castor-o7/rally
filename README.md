@@ -5,7 +5,9 @@ far along it is, and what evidence backs that up. It lets a watchman see that a 
 stalled, without polling the team or trusting a hand-kept table.
 
 **Status: early, not deployed.** The record format, story states, team states, replay and a service with
-access control exist. See [docs/service.md](docs/service.md) for what a record proves about who wrote it.
+access control exist. The ledger is kept as [myko](https://github.com/ignition-is-go/myko) entities in Postgres,
+behind Rally's own service, which is the only way in. See [docs/service.md](docs/service.md) for setting it up
+and for what a record proves about who wrote it.
 Work follows the [roadmap](docs/roadmap.md).
 
 ## Rally and Muster
@@ -42,6 +44,13 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+The tests need Postgres, and fail without it rather than skip. By default each test process starts a scratch
+cluster of its own with `initdb` and `pg_ctl` (found in `/opt/homebrew/bin`, `/usr/lib/postgresql/*/bin`, on
+`PATH`, or in `RALLY_TEST_PG_BIN`), in a new temporary directory, on 127.0.0.1 only, and removes it afterwards. To
+use a server instead, as CI does, set `RALLY_TEST_POSTGRES_URL` to an administration database on it, such as
+`postgres://postgres@127.0.0.1:54329/postgres`; each test makes and drops a database of its own there. Tests
+refuse port 5432, so they can't meet a Postgres someone is using.
 
 ## Licence
 

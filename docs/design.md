@@ -166,8 +166,9 @@ So Rally's first transport is the LAN, protected by its own TLS and tokens rathe
 
 ## Rally as a myko service
 
-**Proposal, for RAL-39.** What's built today uses SQLite and its own service, and it isn't deployed, so
-changing costs little now.
+**Built under RAL-39, waiting to be verified.** This was the proposal, and "What was built" below says what
+came of each point. Before it, Rally used SQLite and its own service. Nothing was deployed, so nothing needed
+migrating.
 
 - **Keep:** the record format, state rules, replay, hash chain, head checks, text limits and access rules.
   None depends on SQLite. The ledger's logic stays pure, so it stays deterministic.
@@ -177,11 +178,12 @@ changing costs little now.
   API stays the only way in, with myko behind it on loopback. There's no frame filter to get wrong, which
   is where Muster's bypasses came from. The cost: other myko clients can't subscribe to Rally directly yet. An
   allowlisted read-only subscription could come later, with its own review.
-- **The loopback port is the real hole.** myko-server 6.9.0 only binds TCP, so a Unix socket with file permissions
+- **The loopback port is the real hole** (avoided as built, since myko doesn't listen at all). myko-server 6.9.0 only binds TCP, so a Unix socket with file permissions
   isn't available without changing myko, and its port has no authentication. Any process on the host can reach
   it and write past the checks, as with MUS-7. The chain detects that but doesn't prevent it, and the docs
   must say so.
-- **Raw events are the main risk.** myko's WebSocket handler passes a client's events straight to the store,
+- **Raw events are the main risk** (they can't arrive as built, since nothing listens; the gate below would be
+  needed only if a myko listener were ever opened). myko's WebSocket handler passes a client's events straight to the store,
   and it has no authorization hook (Muster's `docs/session-binding.md`, MUS-41). So every guarantee Rally has
   would be bypassed unless something refuses them. Rally needs the equivalent of Muster's gate in front of it,
   with a test that a raw event is refused. MUS-41 has no direction yet and myko 6.9.0 has no hook, so Rally can't
@@ -231,6 +233,77 @@ So what's built has to do this:
 Not tested: `/myko/mcp`, direct SQL tampering, Postgres restarting under a running server, backups, and replay beyond
 5,000 records, which took about 160 to 270 ms and about 13 MiB in the server process.
 
+### What was built
+
+`src/store.rs` and `src/entity.rs`, from 2026-11-03. Each record is a `LedgerRecord` entity keyed by its sequence
+number, in myko's own events table (`rally_events`) in Postgres, and myko's replay rebuilds the store from it. Records
+are appended only through the `AppendLedgerRecord` command, which runs the same checks as before. `record.rs`,
+`ledger.rs`, `views.rs`, `access.rs` and the chain hash didn't change. Each of the spike's conditions, with what shows
+it:
+
+1. **No listener: chosen, because it held up.** Rally builds a `MykoServer` with Postgres and never calls `run()`, so
+   myko binds nothing. The service's test `nothing_listens_but_the_door` reads the running service's sockets with
+   `lsof`: one listening socket, the TLS door, and otherwise only connections out to Postgres. So there's no loopback
+   port to state beside MUS-7. What `run()` would have done, and what skipping it costs:
+   - *Replay from Postgres:* needed, and Rally runs it: `init_postgres_and_wait`, the same catch-up `run()` waits for.
+   - *Persister health check:* it only checks that the table and channel names are valid identifiers. Rally's names
+     are fixed, and its own schema statements fail first if they aren't.
+   - *Search index:* only myko's search queries use it, and Rally has none. Records set later are indexed anyway.
+   - *Relations, server ownership, sagas:* `LedgerRecord` declares no relations and isn't server-owned, and neither
+     Rally nor myko 6.9.0 registers a saga.
+   - *Periodic loggers and telemetry:* lost, and not needed.
+
+   It held up past the spike's brief run: `many_appends_and_repeated_restarts_hold_up` makes 1,000 appends through the
+   service with five restarts, alternating SIGKILL and SIGTERM, and checks against a saved head after each. Replay was
+   also measured at 64,001 and 256,501 records (below). This mode isn't documented by myko as supported, so a myko
+   upgrade has to rerun these tests, and the version stays pinned at `=6.9.0`.
+
+   **How `rally check` and the viewer reach records with no port:** from other machines, through the service, as
+   before; on the host, read-only straight from Postgres with `--db`, not through myko. That second way doesn't share
+   the store it's checking, needs no lock, so it works while the service runs, and its connection is read-only in
+   Postgres too.
+2. **An append isn't acknowledged until Postgres has it.** myko's own producer queues events and acknowledges first,
+   and `PersistHealth.queued` is one counter for the whole queue, so it can't say which event is durable. It isn't
+   reliable enough for this, so Rally doesn't use it: the command commits the record's row itself, in myko's own
+   format, before the record enters myko's store or the write is acknowledged. myko's persister for every entity is
+   a blackhole, so it never writes a second copy. Tests stop a scratch Postgres under a running writer and a running
+   service: writes fail promptly (the tests allow 30 s), with no success reply, myko's copy doesn't take the record, and after Postgres
+   comes back the writer reconnects, retakes its lock and carries on, with every acknowledged record present after a
+   restart. If the connection dies during a commit, Postgres may have the record without its being acknowledged; the
+   next append then finds Postgres ahead of myko's copy and refuses until a restart replays it.
+3. **One writer lock:** a Postgres advisory lock, held by the service or a `--db` writer for as long as it's open, so it
+   works across processes, and Rally's own lock inside one. Tests run eight writers each holding its own store, eight
+   threads sharing one, six `rally` processes, and eight machines writing through the service: every success has its
+   own number and the chain holds. Before each append the writer also checks that Postgres's newest record is the one
+   it replayed. The table has a unique index on a record's number, so Postgres itself refuses a second version.
+4. **No fixed host id.** Each run gets a new one; a test checks that replay returns every record across restarts.
+5. **Sorted by number.** Ids must be canonical decimals, and reads sort by their value; a test with 14 records checks
+   order across restarts. Numbers aren't reused: an append takes the next number after the replayed chain, and the
+   unique index refuses a repeat even if someone writes the row by hand.
+6. **The deciding test passes,** with real records and the real command: three appends with `rally`, the head saved
+   from `rally check`, a real restart with SIGTERM and then SIGKILL, replay, then `rally check --expect` through the
+   service and on the host. A rewrite and a truncation written as myko events would leave them (a second version of
+   a record, or a deletion) are caught by the saved head; while the old rows remain, `check` also reports the record
+   has more than one version, and a writer refuses to start over it. With those rows removed too, only the saved head
+   catches the rewrite, as RAL-14 said.
+7. **Generated `DeleteLedgerRecord` commands and raw events can't arrive,** because nothing listens and the door has no
+   route to myko: `myko_cant_be_reached_through_the_door`. Run inside the process anyway, as a test does, they change
+   only myko's copy, never Postgres, and `check` reports the difference.
+
+The table also refuses updates, deletes, `TRUNCATE` and deletion events. That catches mistakes, not someone who owns
+the database, who can lift it.
+
+**What this does to RAL-15 and RAL-35.** Neither is done. For RAL-15, a backup is now the Postgres database (for
+example `pg_dump` of `rally_events`) together with the head file, which lives outside Postgres, and a restore has to
+rebuild both and pass `rally check --expect`; none of that is built. For RAL-35, reads still replay the whole ledger,
+now from myko's in-memory copy rather than a file, and the service now holds every record in memory for as long as
+it runs. Measured on a1 with a release build, at the 64 MiB limit on the table's size: 64,001 typical 300-character
+records take 1.1 s to replay at start, a read through the service 0.2 s and a check 0.3 s, and the service holds
+about 150 to 230 MiB. 4,751 worst-case records of 4,000 random CJK characters (about 12 KB) take 0.6 s and about
+130 to 150 MiB in the service, and a direct `--db` write peaks at 244 MiB. At 256 MiB (256,501 typical records) it's
+4.1 s, 0.9 s, 1.7 s and about 520 to 730 MiB, so growth is linear. The service's memory now stays in use between
+requests rather than rising and falling.
+
 ## Levi
 
 [Levi](https://github.com/ignition-is-go/levi) is an agent-first issue tracker whose events travel with a
@@ -249,11 +322,10 @@ the projects that don't use Levi yet. No Rally project has been checked for Levi
 ## Open questions
 
 1. **Where does Rally run, and how do both machines reach it?** Answered by RAL-4 above.
-2. **How is Rally's state stored?** Being revisited under RAL-39, on the operator's word. Built so far: an
-   append-only log of events in SQLite on the host, written by Rally's Rust service, not myko. It gives the history the Version 0 table lacks, lets a wrong entry
-   be corrected without erasing it, and can rebuild the past ledgers the web app has to show. A single
-   writer and a plain file also keep replay and backups simple. Muster's decision to stay on myko doesn't
-   bind Rally.
+2. **How is Rally's state stored?** Revisited under RAL-39, on the operator's word: an append-only log of records
+   as myko entities in Postgres on the host, written only by Rally's service through one command. See "What was
+   built" above. It gives the history the Version 0 table lacks, lets a wrong entry be corrected without erasing
+   it, and can rebuild the past ledgers the web app has to show. It replaced a log in SQLite.
 3. **What does "someone other than the author" mean when identity can't be proved?** Any process on
    an account can act as that machine, so this rule catches mistakes rather than a determined
    forgery. Say so plainly, and revisit it when Muster has something stronger (MUS-39). Agreed for
