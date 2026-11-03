@@ -45,4 +45,5 @@ cargo test
 
 ## Licence
 
-MIT OR Apache-2.0.
+AGPL-3.0-or-later, matching [myko](https://github.com/ignition-is-go/myko), which Rally builds on. See
+[LICENSE](LICENSE).
