@@ -8,13 +8,14 @@ use rally::access::Pairing;
 use rally::client::{Reply, request};
 use serde_json::{Value, json};
 
-const ROUTES: [(&str, &str); 6] = [
+const ROUTES: [(&str, &str); 7] = [
     ("POST", "/v1/records"),
     ("GET", "/v1/stories"),
     ("GET", "/v1/stories/RAL-13"),
     ("GET", "/v1/teams"),
     ("GET", "/v1/teams/rally"),
     ("GET", "/v1/check"),
+    ("GET", "/v1/whoami"),
 ];
 
 struct Service {
@@ -230,6 +231,19 @@ fn a_read_only_credential_is_refused_on_any_method_but_get() {
             "{method} {path}"
         );
     }
+}
+
+#[test]
+fn a_credential_can_tell_whether_it_is_read_only() {
+    let service = start();
+    let viewer = service.add("viewer", true);
+    let a1 = service.add("a1", false);
+    let who = |pairing| -> Value {
+        serde_json::from_str(&call(pairing, "GET", "/v1/whoami", None).body).unwrap()
+    };
+    assert_eq!(who(&viewer)["read_only"], true);
+    assert_eq!(who(&a1)["read_only"], false);
+    assert_eq!(who(&a1)["credential"], "a1");
 }
 
 #[test]

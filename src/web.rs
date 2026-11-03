@@ -8,8 +8,9 @@
 //! which stops DNS rebinding, and any `Origin` must be this page's own. Nothing sends CORS headers,
 //! and the content security policy allows no inline script. See `docs/web.md`.
 
+use std::io::Read;
 use std::net::{SocketAddr, TcpListener};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -35,6 +36,7 @@ const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; conn
                    base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const LIVE_EVERY: Duration = Duration::from_secs(30);
 const ROADMAPS_EVERY: Duration = Duration::from_secs(300);
+const COMMAND_LIMIT: Duration = Duration::from_secs(20);
 
 /// A project's roadmap, and what its ticks mean there.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -157,15 +159,46 @@ fn now_ms() -> u64 {
         .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
-fn run_gh(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("gh")
-        .args(args)
-        .output()
-        .map_err(|e| format!("can't run gh: {e}"))?;
-    if !output.status.success() {
-        return Err("gh couldn't read it".to_owned());
+/// Runs a command, giving up after `limit`, so that a hung program can't freeze the page's data.
+/// Returns its standard output if it succeeded.
+fn run_with_timeout(mut command: Command, limit: Duration) -> Result<Vec<u8>, String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("can't run it: {e}"))?;
+    let mut stdout = child.stdout.take().ok_or("no output")?;
+    // Read on another thread, so that a full pipe can't block the child while we wait for it.
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let started = Instant::now();
+    loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) if status.success() => {
+                return reader
+                    .join()
+                    .map_err(|_| "reading its output failed".to_owned())?
+                    .map_err(|e| e.to_string());
+            }
+            Some(_) => return Err("it reported a failure".to_owned()),
+            None if started.elapsed() >= limit => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("it didn't finish within {}s", limit.as_secs()));
+            }
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
     }
-    String::from_utf8(output.stdout).map_err(|_| "gh returned something unreadable".to_owned())
+}
+
+fn run_gh(args: &[&str]) -> Result<String, String> {
+    let mut command = Command::new("gh");
+    command.args(args);
+    let output = run_with_timeout(command, COMMAND_LIMIT).map_err(|e| format!("gh: {e}"))?;
+    String::from_utf8(output).map_err(|_| "gh returned something unreadable".to_owned())
 }
 
 fn read_roadmap(project: &Project) -> Result<(String, String), String> {
@@ -210,17 +243,18 @@ fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
 /// Reads the roster, keeping only fields the page shows and Muster's own labels for them.
 fn read_roster() -> Value {
     let unavailable = |reason: &str| json!({"available": false, "reason": reason});
-    let output = match Command::new("muster-shim").arg("roster").output() {
+    let mut command = Command::new("muster-shim");
+    command.arg("roster");
+    let output = match run_with_timeout(command, COMMAND_LIMIT) {
         Ok(output) => output,
-        Err(_) => return unavailable("muster-shim isn't installed here."),
+        Err(error) => {
+            return unavailable(&format!(
+                "muster-shim couldn't read the roster ({error}). This machine may need the \
+                 rollout of Muster's MUS-44."
+            ));
+        }
     };
-    if !output.status.success() {
-        return unavailable(
-            "this machine's muster-shim can't read the roster, so it needs the rollout of \
-             Muster's MUS-44.",
-        );
-    }
-    match serde_json::from_slice::<Value>(&output.stdout) {
+    match serde_json::from_slice::<Value>(&output) {
         Ok(value) => shape_roster(&value, now_ms()),
         Err(_) => unavailable("muster-shim's roster couldn't be read."),
     }
@@ -243,6 +277,9 @@ pub fn shape_roster(value: &Value, read_at_ms: u64) -> Value {
                 "nickname": session["nickname"],
                 "machine": attested["machine"],
                 "wake": session["wake"],
+                // Only `waiting` comes from the daemon. The other wake values are declared.
+                "wake_observed": session["wake"] == "waiting",
+                "observed": session["observed"],
                 "current_task": declared["current_task"],
                 "activity": declared["activity"],
                 "last_activity_at": declared["last_activity_at"],
@@ -486,8 +523,43 @@ mod tests {
         assert!(!text.contains("example.com"), "{text}");
         assert_eq!(shaped["sessions"][0]["machine"], "a1");
         assert_eq!(shaped["sessions"][0]["nickname"], "x");
+        assert_eq!(shaped["sessions"][0]["wake_observed"], true);
+        assert_eq!(shaped["sessions"][0]["observed"]["waiting"], true);
+        let declared_wake = json!({"sessions": [{"wake": "channel", "declared": {}}]});
+        assert_eq!(
+            shape_roster(&declared_wake, 9)["sessions"][0]["wake_observed"],
+            false
+        );
         assert_eq!(shaped["sessions"][0]["current_task"], "RAL-1");
         assert_eq!(shape_roster(&json!("nope"), 9)["available"], false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_command_is_given_up_on() {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let started = Instant::now();
+        let error = run_with_timeout(command, Duration::from_millis(100)).unwrap_err();
+        assert!(error.contains("didn't finish"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_with_a_lot_of_output_finishes() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "head -c 1000000 /dev/zero"]);
+        let output = run_with_timeout(command, Duration::from_secs(10)).unwrap();
+        assert_eq!(output.len(), 1_000_000);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_command_is_an_error() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 3"]);
+        assert!(run_with_timeout(command, Duration::from_secs(5)).is_err());
     }
 
     #[test]

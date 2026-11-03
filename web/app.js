@@ -10,6 +10,7 @@ const STATES = [
   ["sent_back", "Sent back"],
 ];
 const STALE_MS = 15 * 60 * 1000;
+const LIVE_STALE_MS = 3 * 60 * 1000;
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -79,11 +80,21 @@ function renderLedger(ledger, now) {
     return;
   }
   const check = ledger.check;
+  const stale = now - ledger.read_at_ms > LIVE_STALE_MS;
+  if (ledger.read_only !== true) {
+    root.append(el("p", "warning", "⚠ This viewer is using a credential that can write. Pair it with a read-only one."));
+  }
+  if (stale) {
+    root.append(el("p", "warning", "⚠ Not read since " + age(ledger.read_at_ms, now)
+      + ", so everything here may be out of date"));
+  }
   if (check) {
-    root.append(el("p", check.ok ? "good" : "warning",
-      check.ok ? "Ledger check passed" : "✕ The ledger failed its check"));
-    for (const problem of check.problems) root.append(el("p", "warning", problem));
-    for (const note of check.notes) root.append(el("p", "muted", note));
+    // A green pass is only shown while the reading behind it is fresh.
+    root.append(el("p", check.ok ? (stale ? "muted" : "good") : "warning",
+      check.ok ? (stale ? "Ledger check last passed" : "Ledger check passed")
+        : "✕ The ledger failed its check"));
+    for (const problem of check.problems || []) root.append(el("p", "warning", problem));
+    for (const note of check.notes || []) root.append(el("p", "muted", note));
     root.append(el("p", "muted", "Record " + check.head.seq + ", read " + age(ledger.read_at_ms, now)
       + ". This check can't show a rewrite of the whole host without a saved head."));
   }
@@ -200,11 +211,14 @@ function renderTeams(status, now) {
         session.project || "",
         session.nickname || "",
         { text: session.machine || "", label: "attested" },
-        { text: session.wake || "", label: "observed" },
+        { text: session.wake || "", label: session.wake_observed ? "observed" : "declared" },
         { text: session.current_task || "", label: "declared", className: "text" },
         { text: session.activity || "", label: "declared" },
         { text: age(session.last_activity_at, now), label: "declared" },
       ])));
+    if (now - roster.read_at_ms > LIVE_STALE_MS) {
+      live.append(el("p", "warning figure", "⚠ This roster is out of date"));
+    }
     live.append(el("p", "muted figure", "Read " + age(roster.read_at_ms, now)
       + ". “Can be woken” is a best guess, and none of this proves a session is alive."));
   } else {
@@ -215,17 +229,23 @@ function renderTeams(status, now) {
 
 async function refresh() {
   const freshness = document.getElementById("freshness");
+  let status;
   try {
     const response = await fetch("/api/status", { cache: "no-store" });
     if (!response.ok) throw new Error("status " + response.status);
-    const status = await response.json();
+    status = await response.json();
+  } catch (error) {
+    freshness.textContent = "⚠ Can't reach the viewer, so this may be out of date";
+    return;
+  }
+  try {
     const now = Date.now();
     renderLedger(status.ledger, now);
     renderRoadmaps(status.projects, now);
     renderTeams(status, now);
     freshness.textContent = "Updated " + new Date(now).toLocaleTimeString();
   } catch (error) {
-    freshness.textContent = "⚠ Can't reach the viewer, so this may be out of date";
+    freshness.textContent = "⚠ This page couldn't display what it read, so it may be out of date";
   }
 }
 

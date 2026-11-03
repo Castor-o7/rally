@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -145,6 +145,18 @@ impl Store {
             store.save_head(&start).map_err(StoreError::HeadMismatch)?;
         }
         Ok(store)
+    }
+
+    /// Opens an existing ledger for reading only, creating nothing.
+    pub fn open_read_only(path: &Path) -> Result<Self, StoreError> {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        let mut head_file = path.as_os_str().to_owned();
+        head_file.push(".head");
+        Ok(Self {
+            connection,
+            head_file: head_file.into(),
+        })
     }
 
     /// Checks a record against the current state and appends it, returning its position.
@@ -802,6 +814,16 @@ mod tests {
             !names.iter().any(|name| name.ends_with(".new")),
             "{names:?}"
         );
+    }
+
+    #[test]
+    fn a_read_only_store_reads_but_cannot_write() {
+        let (_dir, path, _store) = two_records();
+        let mut reader = Store::open_read_only(&path).unwrap();
+        assert_eq!(reader.ledger(None).unwrap().last_seq(), 2);
+        assert!(reader.verify(None).unwrap().ok);
+        assert!(reader.append(&release()).is_err());
+        assert_eq!(reader.ledger(None).unwrap().last_seq(), 2);
     }
 
     #[test]

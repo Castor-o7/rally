@@ -335,7 +335,10 @@ fn ledger_reader(db: Option<PathBuf>, config: PathBuf) -> LedgerReader {
     let read = move || -> Result<Value, Box<dyn std::error::Error>> {
         let backend = {
             require_ledger(db.as_deref())?;
-            Backend::choose(db.as_deref(), &config)?
+            match &db {
+                Some(db) => Backend::File(Store::open_read_only(db)?),
+                None => Backend::choose(None, &config)?,
+            }
         };
         let stories: Value =
             serde_json::from_str(
@@ -344,10 +347,13 @@ fn ledger_reader(db: Option<PathBuf>, config: PathBuf) -> LedgerReader {
         let teams: Value = serde_json::from_str(
             &backend.read("/v1/teams", None, |ledger| views::teams(ledger, None))?,
         )?;
-        let check = match &backend {
-            Backend::File(store) => json!(store.verify(None)?),
+        let (check, read_only) = match &backend {
+            // Opened read-only above.
+            Backend::File(store) => (json!(store.verify(None)?), json!(true)),
             Backend::Service(pairing) => {
-                reply_value(&client::request(pairing, "GET", "/v1/check", None, &[])?)?
+                let check = reply_value(&client::request(pairing, "GET", "/v1/check", None, &[])?)?;
+                let who = reply_value(&client::request(pairing, "GET", "/v1/whoami", None, &[])?)?;
+                (check, who["read_only"].clone())
             }
         };
         Ok(json!({
@@ -355,6 +361,7 @@ fn ledger_reader(db: Option<PathBuf>, config: PathBuf) -> LedgerReader {
             "stories": stories["stories"],
             "teams": teams["teams"],
             "check": check,
+            "read_only": read_only,
         }))
     };
     Box::new(move || read().map_err(|error| error.to_string()))

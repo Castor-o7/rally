@@ -93,6 +93,8 @@ th { text-align: left; color: var(--text-2); font-weight: 500; }
 th, td { padding: 6px 12px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 tr:last-child td { border-bottom: 0; }
 td.text { min-width: 180px; overflow-wrap: anywhere; }
+/* Recorded text can hold direction characters, so keep them from reordering what's around them. */
+td, .section-name, .source { unicode-bidi: isolate; }
 .label { display: inline-block; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--text-2); font-size: 11px; }
 .group { margin-top: 16px; }
 .group:first-child { margin-top: 0; }

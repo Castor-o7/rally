@@ -22,7 +22,7 @@ minutes. The ledger and roster are read every 30 seconds.
 - **Verified** comes only from the ledger, and is never worked out from ticks. It reads "not available
   yet" for a project with no stories in the ledger, and it covers only the stories the ledger tracks.
 - **Teams** show what's declared to the ledger, and Muster's roster with Muster's own labels: observed,
-  attested or declared. "Can be woken" is a best guess, and nothing here proves a session is alive.
+  attested or declared. "Can be woken" is observed only when the daemon sees a wait, and it's a best guess, and nothing here proves a session is alive.
 - **Ledger check** repeats `rally check`. It can't show a rewrite of the whole host without a saved head.
 
 ## What protects it
@@ -32,7 +32,10 @@ minutes. The ledger and roster are read every 30 seconds.
   any `Origin` must be its own. There are no CORS headers.
 - **Recorded text can't run.** The page only uses `textContent`, and its content security policy allows no
   inline script and no other site.
-- **No write path.** It has no way to change anything, and should use a read-only credential.
+- **No write path.** It has no way to change anything. It opens a ledger file read-only, and should use a
+  read-only credential with the service. The page warns if it isn't.
+- **Stale data shows.** Reads give up after 20 seconds. A green check turns into a warning if the ledger
+  hasn't been read for 3 minutes, and roadmaps warn after 15.
 
 ## What it doesn't protect against
 
