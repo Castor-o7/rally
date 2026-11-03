@@ -1298,3 +1298,44 @@ fn a_refused_write_says_nothing_was_recorded_rather_than_that_the_ledger_cant_be
     );
     assert!(!reply.body.contains("can't be read"), "{}", reply.body);
 }
+
+#[test]
+fn writes_behind_one_stuck_on_a_hung_postgres_are_told_the_service_is_busy() {
+    let cluster = Cluster::start();
+    let service = start_on(&cluster, &GENEROUS);
+    let a1 = service.add("a1", false);
+    assert_eq!(ready(&a1).status, 200);
+    signal_cluster(&cluster, "-STOP");
+    let _resume = Resume(&cluster);
+    let first = {
+        let a1 = a1.clone();
+        std::thread::spawn(move || {
+            let body = json!({"change": "ready", "story": "RAL-2"});
+            let text = json!({"kind": "declared", "declared_name": "x", "body": body}).to_string();
+            // It may get no reply at all, once its connection's time runs out.
+            request(&a1, "POST", "/v1/records", Some(&text), &[]).map_err(|e| e.to_string())
+        })
+    };
+    std::thread::sleep(Duration::from_millis(500));
+    // Later writes don't each wait on Postgres, holding a thread; they're told to try again.
+    let later: Vec<_> = (0..4)
+        .map(|i| {
+            let a1 = a1.clone();
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                let body = json!({"change": "ready", "story": format!("RAL-{}", 10 + i)});
+                let reply = write(&a1, "x", "declared", body);
+                (reply, started.elapsed())
+            })
+        })
+        .collect();
+    for thread in later {
+        let (reply, waited) = thread.join().unwrap();
+        assert_eq!(reply.status, 503, "{}", reply.body);
+        assert!(reply.body.contains("busy"), "{}", reply.body);
+        assert!(waited < Duration::from_secs(20), "{waited:?}");
+    }
+    assert_eq!(call(&a1, "GET", "/v1/stories", None).status, 200);
+    signal_cluster(&cluster, "-CONT");
+    let _ = first.join();
+}

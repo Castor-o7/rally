@@ -94,6 +94,10 @@ struct Service {
     /// Each holds memory while it runs, so these bound the service's memory, not just its time.
     reads: Arc<tokio::sync::Semaphore>,
     heavy: Arc<tokio::sync::Semaphore>,
+    /// Appends running at once. They queue on the writer's lock anyway; this makes the queue
+    /// wait here, holding no thread, so that one write stuck on a hung Postgres leaves the rest
+    /// told the service is busy rather than each holding a blocking thread.
+    writes: Arc<tokio::sync::Semaphore>,
     /// Failed token attempts, by address.
     failures: Mutex<HashMap<IpAddr, (f64, Instant)>>,
 }
@@ -113,7 +117,7 @@ enum Work {
     Read,
     /// A check, or a read of a past state: each reads or replays the whole ledger.
     Heavy,
-    /// An append. These already queue one at a time on the writer's lock.
+    /// An append.
     Write,
 }
 
@@ -122,6 +126,9 @@ const READS_AT_ONCE: usize = 8;
 
 /// Checks and past-state replays running at once. Checks also run one at a time in the store.
 const HEAVY_AT_ONCE: usize = 1;
+
+/// Appends running at once: one, as the writer's lock allows.
+const WRITES_AT_ONCE: usize = 1;
 
 /// How long a request waits for its turn before it's told the service is busy.
 const QUEUE_SECONDS: u64 = 10;
@@ -183,6 +190,7 @@ fn router(store: Store, state_dir: StateDir, limit: RateLimit) -> Router {
         buckets: Mutex::new(HashMap::new()),
         reads: Arc::new(tokio::sync::Semaphore::new(READS_AT_ONCE)),
         heavy: Arc::new(tokio::sync::Semaphore::new(HEAVY_AT_ONCE)),
+        writes: Arc::new(tokio::sync::Semaphore::new(WRITES_AT_ONCE)),
         failures: Mutex::new(HashMap::new()),
     });
     Router::new()
@@ -331,27 +339,26 @@ impl Service {
         job: impl FnOnce(&Store) -> T + Send + 'static,
     ) -> Result<T, NotRun> {
         let turn = match work {
-            Work::Read => Some(&self.reads),
-            Work::Heavy => Some(&self.heavy),
-            Work::Write => None,
+            Work::Read => &self.reads,
+            Work::Heavy => &self.heavy,
+            Work::Write => &self.writes,
         };
-        let _permit = match turn {
-            None => None,
-            Some(turn) => {
-                let wait = Duration::from_secs(QUEUE_SECONDS);
-                match tokio::time::timeout(wait, turn.clone().acquire_owned()).await {
-                    Ok(Ok(permit)) => Some(permit),
-                    _ => return Err(NotRun::Busy),
-                }
-            }
+        let wait = Duration::from_secs(QUEUE_SECONDS);
+        // Held until the work ends, even if the request has gone by then.
+        let permit = match tokio::time::timeout(wait, turn.clone().acquire_owned()).await {
+            Ok(Ok(permit)) => permit,
+            _ => return Err(NotRun::Busy),
         };
         let service = self.clone();
-        tokio::task::spawn_blocking(move || job(&service.store))
-            .await
-            .map_err(|_| {
-                eprintln!("rally: a request's work on the store panicked");
-                NotRun::Failed
-            })
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            job(&service.store)
+        })
+        .await
+        .map_err(|_| {
+            eprintln!("rally: a request's work on the store panicked");
+            NotRun::Failed
+        })
     }
 }
 

@@ -98,6 +98,16 @@ stops a token working straight away. Don't expose the port to the open internet.
   without that lock, and then takes it only long enough to read the service's copy, so that a write in progress
   can't look like a difference between them. So a check waits for at most one write, and writes don't wait for
   a check.
+- **One write at a time, and the rest wait without a thread (RAL-42).** A write that Postgres doesn't answer,
+  such as one sent to a Postgres that's stopped while its host still answers TCP, waits until Postgres resumes:
+  Rally can't cancel it from outside. Only that write, and at most one check, wait that way. Later writes wait
+  up to 10 seconds for their turn and then get a 503 saying the service is busy, and reads of the current
+  state carry on. A Postgres that's gone entirely is found by the connection's keepalives and its 15-second
+  limit on unanswered sends.
+- **The database address carries only what myko is given.** myko connects with the host, port, user,
+  database and password alone, so an address that sets `options`, such as a `search_path` that would point
+  Rally and myko at different tables, is refused, as is `sslmode=require`, since Rally doesn't use TLS for
+  Postgres. Keep Postgres on the same host, and set anything else on its role.
 - **One writer.** The service holds a lock in Postgres for as long as it runs, so a second service or a `--db`
   write is refused rather than forking the chain.
 - **Append-only in Postgres too.** The table refuses updates, deletes, `TRUNCATE`, deletion events, a second
