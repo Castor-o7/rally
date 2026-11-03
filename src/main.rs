@@ -303,6 +303,14 @@ fn create_new_private(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Reading shouldn't create a ledger: a mistyped path would otherwise look like a healthy empty one.
+fn require_ledger(db: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+    match db {
+        Some(db) if !db.exists() => Err(format!("no ledger at {}", db.display()).into()),
+        _ => Ok(()),
+    }
+}
+
 fn config_path(config: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
     match config {
         Some(path) => Ok(path),
@@ -397,6 +405,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             return Ok(json!({"paired": pairing.address, "config": path}).to_string());
         }
         Command::AdoptHead => {
+            require_ledger(cli.db.as_deref())?;
             let db = cli
                 .db
                 .ok_or("adopt-head needs --db, on the service's host")?;
@@ -404,6 +413,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             return Ok(json!({"adopted": head}).to_string());
         }
         Command::Check { expect } => {
+            require_ledger(cli.db.as_deref())?;
             let backend = Backend::choose(cli.db.as_deref(), &config_path(cli.config)?)?;
             let result: Value = match &backend {
                 Backend::File(store) => json!(store.verify(expect.as_ref())?),
@@ -422,6 +432,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             return Err(format!("the ledger failed its check:\n{text}").into());
         }
         Command::Show { story, as_of } => {
+            require_ledger(cli.db.as_deref())?;
             let backend = Backend::choose(cli.db.as_deref(), &config_path(cli.config)?)?;
             let path = match &story {
                 Some(id) => format!("/v1/stories/{}", encode(id)),
@@ -432,6 +443,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             });
         }
         Command::Teams { team, as_of } => {
+            require_ledger(cli.db.as_deref())?;
             let backend = Backend::choose(cli.db.as_deref(), &config_path(cli.config)?)?;
             let path = match &team {
                 Some(name) => format!("/v1/teams/{}", encode(name)),
