@@ -2384,6 +2384,7 @@ dependencies = [
  "clap",
  "getrandom 0.4.3",
  "hex",
+ "hyper-util",
  "myko",
  "myko-macros",
  "myko-server",

@@ -4,11 +4,15 @@
 //! so a client can only declare a name. See `docs/service.md` for what that does and doesn't prove.
 
 use std::collections::HashMap;
-use std::net::TcpListener;
+use std::future::Future;
+use std::io;
+use std::net::{IpAddr, SocketAddr, TcpListener};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use axum::extract::{DefaultBodyLimit, Path as UrlPath, Query, Request, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path as UrlPath, Query, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -16,6 +20,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::access::{Identity, StateDir};
 use crate::ledger::Ledger;
@@ -37,6 +42,15 @@ pub struct RateLimit {
     pub max_ledger_bytes: u64,
     /// Rally shares its host with Muster's daemon, so it stops writing well before the disk fills.
     pub min_free_bytes: u64,
+    /// Connections open at once, from anyone, and from any one address.
+    pub max_connections: usize,
+    pub max_connections_per_address: usize,
+    /// How long a connection may last, from its first byte, whether or not it has authenticated.
+    pub connection_seconds: f64,
+    /// Requests with a missing or wrong token that one address can make at once, and regains per
+    /// second. Past that, its requests are refused before their token is looked at.
+    pub failed_token_burst: f64,
+    pub failed_token_per_second: f64,
 }
 
 impl Default for RateLimit {
@@ -51,6 +65,13 @@ impl Default for RateLimit {
             // `docs/service.md` for what this costs. Raise this only after RAL-35.
             max_ledger_bytes: 64 * 1024 * 1024,
             min_free_bytes: 5 * 1024 * 1024 * 1024,
+            max_connections: 64,
+            max_connections_per_address: 16,
+            // Longer than a write can wait on Postgres (its statement and lock timeouts), so that a
+            // slow write still gets its answer.
+            connection_seconds: 60.0,
+            failed_token_burst: 20.0,
+            failed_token_per_second: 0.2,
         }
     }
 }
@@ -62,7 +83,13 @@ struct Service {
     state_dir: StateDir,
     limit: RateLimit,
     buckets: Mutex<HashMap<(String, bool), (f64, Instant)>>,
+    /// Failed token attempts, by address.
+    failures: Mutex<HashMap<IpAddr, (f64, Instant)>>,
 }
+
+/// How long a request's headers may take to arrive. A connection's own deadline is shorter if
+/// it's set lower.
+const HEADER_SECONDS: f64 = 10.0;
 
 /// Runs the service on `listener` until the process ends.
 pub async fn serve(
@@ -84,8 +111,27 @@ pub async fn serve(
     });
     let app = router(store, state_dir, limit);
     listener.set_nonblocking(true)?;
-    axum_server::from_tcp_rustls(listener, tls)?
-        .serve(app.into_make_service())
+    let lifetime = Duration::from_secs_f64(limit.connection_seconds);
+    let acceptor = Limited {
+        inner: axum_server::tls_rustls::RustlsAcceptor::new(tls)
+            .handshake_timeout(lifetime.min(Duration::from_secs(10))),
+        slots: Arc::new(Slots {
+            max: limit.max_connections,
+            max_per_address: limit.max_connections_per_address,
+            open: Mutex::new((0, HashMap::new())),
+        }),
+        lifetime,
+    };
+    let mut server = axum_server::from_tcp(listener)?
+        .acceptor(acceptor)
+        .http1_only();
+    server
+        .http_builder()
+        .http1()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(lifetime.min(Duration::from_secs_f64(HEADER_SECONDS)));
+    server
+        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await?;
     Ok(())
 }
@@ -96,6 +142,7 @@ fn router(store: Store, state_dir: StateDir, limit: RateLimit) -> Router {
         state_dir,
         limit,
         buckets: Mutex::new(HashMap::new()),
+        failures: Mutex::new(HashMap::new()),
     });
     Router::new()
         .route("/v1/records", post(write_record))
@@ -124,12 +171,30 @@ async fn guard(State(service): State<Arc<Service>>, mut request: Request, next: 
     if request.headers().contains_key(header::ORIGIN) {
         return failure(StatusCode::FORBIDDEN, "web pages can't use this service");
     }
+    let address = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(address)| address.ip());
+    // Before the token is looked at, so that once an address has failed too often, a guess can't
+    // tell a right token from a wrong one.
+    if let Some(address) = address
+        && !service.may_try_token(address)
+    {
+        return failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many failed token attempts from this address",
+        );
+    }
     let Some(token) = bearer_token(request.headers()) else {
+        service.token_failed(address);
         return failure(StatusCode::UNAUTHORIZED, "a token is needed");
     };
     let identity = match service.state_dir.identify(&token) {
         Ok(Some(identity)) => identity,
-        Ok(None) => return failure(StatusCode::UNAUTHORIZED, "that token isn't valid"),
+        Ok(None) => {
+            service.token_failed(address);
+            return failure(StatusCode::UNAUTHORIZED, "that token isn't valid");
+        }
         Err(error) => {
             eprintln!("rally: can't check a token: {error}");
             return failure(StatusCode::INTERNAL_SERVER_ERROR, "can't check the token");
@@ -180,6 +245,42 @@ impl Service {
         }
     }
 
+    /// Whether an address may present a token: it hasn't used up its failed attempts.
+    fn may_try_token(&self, address: IpAddr) -> bool {
+        let mut failures = self.failures.lock().expect("no panics hold this lock");
+        match failures.get_mut(&address) {
+            None => true,
+            Some(bucket) => {
+                refill(
+                    bucket,
+                    self.limit.failed_token_burst,
+                    self.limit.failed_token_per_second,
+                );
+                bucket.0 >= 1.0
+            }
+        }
+    }
+
+    /// Spends one of an address's failed attempts.
+    fn token_failed(&self, address: Option<IpAddr>) {
+        let Some(address) = address else { return };
+        let (burst, per_second) = (
+            self.limit.failed_token_burst,
+            self.limit.failed_token_per_second,
+        );
+        let mut failures = self.failures.lock().expect("no panics hold this lock");
+        // Forget addresses that have recovered in full, so that many addresses can't grow this.
+        if failures.len() >= 4096 {
+            failures.retain(|_, bucket| {
+                refill(bucket, burst, per_second);
+                bucket.0 < burst
+            });
+        }
+        let bucket = failures.entry(address).or_insert((burst, Instant::now()));
+        refill(bucket, burst, per_second);
+        bucket.0 = (bucket.0 - 1.0).max(0.0);
+    }
+
     /// Runs `work` on the store. Postgres calls block, so they leave this worker free for others.
     fn with_store<T>(&self, work: impl FnOnce(&Store) -> T) -> T {
         tokio::task::block_in_place(|| work(&self.store))
@@ -193,6 +294,161 @@ impl Service {
         read: impl FnOnce(&Ledger) -> T,
     ) -> Result<T, StoreError> {
         self.with_store(|store| store.with_ledger(as_of, read))
+    }
+}
+
+/// Tops up a token bucket for the time since it was last used.
+fn refill(bucket: &mut (f64, Instant), burst: f64, per_second: f64) {
+    let now = Instant::now();
+    bucket.0 = (bucket.0 + now.duration_since(bucket.1).as_secs_f64() * per_second).min(burst);
+    bucket.1 = now;
+}
+
+/// Places for open connections, overall and by address.
+struct Slots {
+    max: usize,
+    max_per_address: usize,
+    open: Mutex<(usize, HashMap<IpAddr, usize>)>,
+}
+
+/// One open connection's place, given back when the connection closes.
+struct Slot {
+    slots: Arc<Slots>,
+    address: IpAddr,
+}
+
+impl Slots {
+    fn take(self: &Arc<Self>, address: IpAddr) -> Option<Slot> {
+        let mut open = self.open.lock().expect("no panics hold this lock");
+        let (total, by_address) = &mut *open;
+        let mine = by_address.entry(address).or_default();
+        if *total >= self.max || *mine >= self.max_per_address {
+            if *mine == 0 {
+                by_address.remove(&address);
+            }
+            return None;
+        }
+        *mine += 1;
+        *total += 1;
+        Some(Slot {
+            slots: self.clone(),
+            address,
+        })
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut open = self
+            .slots
+            .open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (total, by_address) = &mut *open;
+        *total -= 1;
+        if let Some(mine) = by_address.get_mut(&self.address) {
+            *mine -= 1;
+            if *mine == 0 {
+                by_address.remove(&self.address);
+            }
+        }
+    }
+}
+
+/// Takes a place for each connection before its TLS handshake, closing it at once if there's
+/// none, and gives it a deadline that covers the handshake, the headers, the body and the reply.
+#[derive(Clone)]
+struct Limited<A> {
+    inner: A,
+    slots: Arc<Slots>,
+    lifetime: Duration,
+}
+
+type Accepting<T> = Pin<Box<dyn Future<Output = io::Result<T>> + Send>>;
+
+impl<A, S> axum_server::accept::Accept<tokio::net::TcpStream, S> for Limited<A>
+where
+    A: axum_server::accept::Accept<Bounded, S>,
+    A::Future: Send + 'static,
+    A::Stream: Send + 'static,
+    A::Service: Send + 'static,
+{
+    type Stream = A::Stream;
+    type Service = A::Service;
+    type Future = Accepting<(A::Stream, A::Service)>;
+
+    fn accept(&self, stream: tokio::net::TcpStream, service: S) -> Self::Future {
+        let slot = stream
+            .peer_addr()
+            .ok()
+            .and_then(|peer| self.slots.take(peer.ip()));
+        let Some(slot) = slot else {
+            // Dropping the stream closes it.
+            return Box::pin(std::future::ready(Err(io::Error::other(
+                "too many connections",
+            ))));
+        };
+        let bounded = Bounded {
+            stream,
+            deadline: Box::pin(tokio::time::sleep(self.lifetime)),
+            _slot: slot,
+        };
+        Box::pin(self.inner.accept(bounded, service))
+    }
+}
+
+/// A connection that fails every read and write once its deadline passes, which ends it, and
+/// that holds its place until then.
+struct Bounded {
+    stream: tokio::net::TcpStream,
+    deadline: Pin<Box<tokio::time::Sleep>>,
+    _slot: Slot,
+}
+
+impl Bounded {
+    fn expired(&mut self, cx: &mut Context<'_>) -> bool {
+        self.deadline.as_mut().poll(cx).is_ready()
+    }
+}
+
+fn timed_out() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "the connection's time is up")
+}
+
+impl AsyncRead for Bounded {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if self.expired(cx) {
+            return Poll::Ready(Err(timed_out()));
+        }
+        Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Bounded {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        if self.expired(cx) {
+            return Poll::Ready(Err(timed_out()));
+        }
+        Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if self.expired(cx) {
+            return Poll::Ready(Err(timed_out()));
+        }
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
     }
 }
 

@@ -3,6 +3,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use rally::access::Pairing;
 use rally::client::{Reply, request};
@@ -1097,4 +1098,80 @@ fn reads_carry_on_while_a_write_waits_on_a_hung_postgres() {
     let all: Value = serde_json::from_str(&call(&a1, "GET", "/v1/stories", None).body).unwrap();
     let recorded = all["stories"].as_object().unwrap().contains_key("RAL-2");
     assert_eq!(written.status == 200, recorded, "{}", written.body);
+}
+
+/// Whether the service closes `connection` within `within`, given that the client sends nothing.
+fn closed_within(connection: &mut rally::client::Connection, within: Duration) -> bool {
+    use std::io::Read;
+    connection.sock.set_read_timeout(Some(within)).unwrap();
+    let mut byte = [0u8; 1];
+    match connection.read(&mut byte) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(error) => !matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+    }
+}
+
+#[test]
+fn a_connection_that_sends_nothing_is_closed_before_it_authenticates() {
+    let service = start_with(&["--connection-seconds", "2"]);
+    let pairing = service.add("a1", false);
+    let mut idle = rally::client::connect(&pairing).unwrap();
+    let started = Instant::now();
+    assert!(closed_within(&mut idle, Duration::from_secs(8)));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(call(&pairing, "GET", "/v1/whoami", None).status, 200);
+}
+
+#[test]
+fn connections_are_capped_and_a_closed_one_frees_its_place() {
+    let service = start_with(&[
+        "--max-connections",
+        "4",
+        "--max-connections-per-address",
+        "3",
+    ]);
+    let pairing = service.add("a1", false);
+    // All from 127.0.0.1, so the per-address cap is the one reached.
+    let mut held: Vec<_> = (0..3)
+        .map(|_| rally::client::connect(&pairing).unwrap())
+        .collect();
+    let refused = rally::client::connect(&pairing)
+        .map_err(|e| e.to_string())
+        .and_then(|_| request(&pairing, "GET", "/v1/whoami", None, &[]).map_err(|e| e.to_string()));
+    assert!(
+        refused.is_err(),
+        "a fourth connection from one address got in: {refused:?}"
+    );
+    held.pop();
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(call(&pairing, "GET", "/v1/whoami", None).status, 200);
+    drop(held);
+}
+
+#[test]
+fn failed_token_attempts_are_limited_per_address() {
+    let service = start_with(&[
+        "--failed-token-burst",
+        "5",
+        "--failed-token-per-second",
+        "0.01",
+    ]);
+    let pairing = service.add("a1", false);
+    let wrong = service.wrong_token();
+    for attempt in 0..5 {
+        let status = call(&wrong, "GET", "/v1/whoami", None).status;
+        assert_eq!(status, 401, "attempt {attempt}");
+    }
+    let reply = call(&wrong, "GET", "/v1/whoami", None);
+    assert_eq!(reply.status, 429, "{}", reply.body);
+    // Refused before the token is looked at, so a guess can't tell a right token from a wrong one.
+    assert_eq!(call(&pairing, "GET", "/v1/whoami", None).status, 429);
 }

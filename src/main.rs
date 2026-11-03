@@ -77,6 +77,21 @@ enum Command {
         /// Refuse writes while the disk under Postgres's data has less free space than this.
         #[arg(long, default_value_t = RateLimit::default().min_free_bytes)]
         min_free_bytes: u64,
+        /// Connections open at once, from anyone.
+        #[arg(long, default_value_t = RateLimit::default().max_connections)]
+        max_connections: usize,
+        /// Connections open at once from any one address.
+        #[arg(long, default_value_t = RateLimit::default().max_connections_per_address)]
+        max_connections_per_address: usize,
+        /// How long a connection may last, authenticated or not.
+        #[arg(long, default_value_t = RateLimit::default().connection_seconds)]
+        connection_seconds: f64,
+        /// Missing or wrong tokens one address can present at once.
+        #[arg(long, default_value_t = RateLimit::default().failed_token_burst)]
+        failed_token_burst: f64,
+        /// Failed token attempts an address regains per second.
+        #[arg(long, default_value_t = RateLimit::default().failed_token_per_second)]
+        failed_token_per_second: f64,
     },
     /// Run the read-only viewer on this machine's loopback address. See docs/web.md.
     Web {
@@ -477,8 +492,16 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             write_per_second,
             max_ledger_bytes,
             min_free_bytes,
+            max_connections,
+            max_connections_per_address,
+            connection_seconds,
+            failed_token_burst,
+            failed_token_per_second,
         } => {
             let location = location.ok_or("serve needs --db and --head-file")?;
+            if !(connection_seconds > 0.0 && connection_seconds.is_finite()) {
+                return Err("--connection-seconds must be a positive number".into());
+            }
             let limit = RateLimit {
                 burst,
                 per_second,
@@ -486,6 +509,11 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 write_per_second,
                 max_ledger_bytes,
                 min_free_bytes,
+                max_connections,
+                max_connections_per_address,
+                connection_seconds,
+                failed_token_burst,
+                failed_token_per_second,
             };
             return run_service(&location, &bind, &state_dir, limit);
         }
