@@ -19,6 +19,8 @@ What Rally gives a team, each part built and verified by the watchman:
 - **Who is waiting on whom.** A team names what it, or one of its stories, is blocked on, including another
   team's story; the watchman lists open blockers with their chains, and each stays open until someone closes it,
   with who and why (RAL-20).
+- **Track records as plain facts.** Each team's stories verified, stories sent back and what was missing, and
+  problems reported, as counts and dates with no points or ranking (RAL-21).
 - **An outage stays visible.** Entries made on the fallback board while the service was down are backfilled
   with when they were made and by whom, beside the time they were recorded, so the ledger never looks
   continuous when it wasn't (RAL-30).

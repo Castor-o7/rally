@@ -199,6 +199,8 @@ fn router(store: Store, state_dir: StateDir, limit: RateLimit) -> Router {
         .route("/v1/stories/{id}", get(one_story))
         .route("/v1/teams", get(list_teams))
         .route("/v1/blockers", get(open_blockers))
+        .route("/v1/track-records", get(list_track_records))
+        .route("/v1/track-records/{name}", get(one_track_record))
         .route("/v1/blockers/all", get(all_blockers))
         .route("/v1/teams/{name}", get(one_team))
         .route("/v1/check", get(check))
@@ -792,6 +794,29 @@ async fn one_story(
 ) -> Response {
     view(service, identity, query, move |ledger, page| {
         views::stories(ledger, Some(&id), page)
+    })
+    .await
+}
+
+async fn list_track_records(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    view(service, identity, query, |ledger, page| {
+        views::track_records(ledger, None, page)
+    })
+    .await
+}
+
+async fn one_track_record(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    UrlPath(name): UrlPath<String>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    view(service, identity, query, move |ledger, page| {
+        views::track_records(ledger, Some(&name), page)
     })
     .await
 }

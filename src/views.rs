@@ -10,7 +10,7 @@ use std::ops::Bound;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::ledger::{Blocker, Ledger};
+use crate::ledger::{Blocker, Change, Ledger, State};
 
 /// Goes with everything shown to a reader, who may be an agent (RAL-16).
 pub const UNTRUSTED_TEXT: &str = "Team names, declared names, notes and evidence were written by \
@@ -247,6 +247,179 @@ pub fn blockers(ledger: &Ledger, all: bool, page: &Page) -> Result<Value, String
     Ok(value)
 }
 
+/// Says what a track record's "problems reported" is (RAL-21), wherever one is shown.
+pub const PROBLEMS_ARE_BLOCKERS: &str = "Problems reported are the blockers the team raised, open and \
+closed: a stand-in until the ledger has a record for reporting a problem.";
+
+/// Says what a track record is and isn't (RAL-21).
+pub const PLAIN_FACTS: &str = "Counts and dates from the ledger, with no points, scores, weights or \
+ranking. A story counts for the team that held it when it was verified or sent back.";
+
+/// One team's facts, gathered from every story and blocker.
+#[derive(Default)]
+struct Track {
+    verified: Vec<Value>,
+    sent_back: Vec<Value>,
+    problems: Vec<Value>,
+    problems_open: usize,
+}
+
+fn team_key(team: &str) -> String {
+    team.trim().to_lowercase()
+}
+
+/// Every team's track record, keyed as [`Ledger::teams`] is: each team that held a story, raised a
+/// blocker or declared a state. A verification or send-back is
+/// credited to the team holding the story at that record, including one made by a verifier's
+/// correction; a record later corrected says so in `corrected_by`.
+fn tracks(ledger: &Ledger) -> BTreeMap<String, Track> {
+    let mut tracks: BTreeMap<String, Track> = BTreeMap::new();
+    for (id, story) in ledger.stories() {
+        let mut holder: Option<String> = None;
+        for entry in &story.history {
+            let outcome = match &entry.change {
+                Change::Claim { team, .. } => {
+                    // A team that ever held a story is listed, even with nothing to its name.
+                    tracks.entry(team_key(team)).or_default();
+                    holder = Some(team.clone());
+                    None
+                }
+                Change::Release { .. } => {
+                    holder = None;
+                    None
+                }
+                Change::Verify { commit, .. } => Some((State::Verified, commit.clone(), None)),
+                Change::SendBack { note, .. } => Some((State::SentBack, None, Some(note.clone()))),
+                Change::Correct {
+                    state: Some(state),
+                    commit,
+                    note,
+                    ..
+                } => match state {
+                    State::Ready => {
+                        holder = None;
+                        None
+                    }
+                    State::Verified => Some((State::Verified, commit.clone(), None)),
+                    State::SentBack => Some((State::SentBack, None, Some(note.clone()))),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let (Some((state, commit, missing)), Some(team)) = (outcome, &holder) else {
+                continue;
+            };
+            let mut fact = json!({
+                "story": id, "seq": entry.seq, "at_ms": entry.at_ms,
+                "by": entry.source.declared_name,
+            });
+            if let Some(commit) = commit {
+                fact["commit"] = json!(commit);
+            }
+            if let Some(missing) = missing {
+                fact["missing"] = json!(missing);
+            }
+            if !entry.corrected_by.is_empty() {
+                fact["corrected_by"] = json!(entry.corrected_by);
+            }
+            let track = tracks.entry(team_key(team)).or_default();
+            match state {
+                State::Verified => track.verified.push(fact),
+                _ => track.sent_back.push(fact),
+            }
+        }
+    }
+    for blocker in ledger.blockers().values() {
+        let mut fact = json!({
+            "blocker": blocker.seq, "at_ms": blocker.at_ms, "note": blocker.note,
+            "by": blocker.source.declared_name,
+        });
+        for (field, value) in [
+            ("story", &blocker.story),
+            ("on_story", &blocker.on_story),
+            ("on_team", &blocker.on_team),
+        ] {
+            if let Some(value) = value {
+                fact[field] = json!(value);
+            }
+        }
+        if let Some(closed) = &blocker.closed {
+            fact["closed_at_ms"] = json!(closed.at_ms);
+            fact["closed_by_record"] = json!(closed.seq);
+        }
+        let track = tracks.entry(team_key(&blocker.team)).or_default();
+        if blocker.closed.is_none() {
+            track.problems_open += 1;
+        }
+        track.problems.push(fact);
+    }
+    for key in ledger.teams().keys() {
+        tracks.entry(key.clone()).or_default();
+    }
+    tracks
+}
+
+/// The latest `at_ms` in a list of facts, which are in record order.
+fn latest(facts: &[Value]) -> Value {
+    facts
+        .iter()
+        .map(|fact| fact["at_ms"].clone())
+        .max_by_key(|at| at.as_i64())
+        .unwrap_or(Value::Null)
+}
+
+fn counts(track: &Track) -> Value {
+    json!({
+        "verified": track.verified.len(), "sent_back": track.sent_back.len(),
+        "problems_reported": track.problems.len(), "problems_open": track.problems_open,
+        "last_verified_at_ms": latest(&track.verified),
+        "last_sent_back_at_ms": latest(&track.sent_back),
+        "last_problem_at_ms": latest(&track.problems),
+    })
+}
+
+/// The newest [`HISTORY_LIMIT`] of a list, and how many there are.
+fn newest(facts: &[Value]) -> Value {
+    let start = facts.len().saturating_sub(HISTORY_LIMIT);
+    json!(facts[start..])
+}
+
+/// Each team's track record as plain facts (RAL-21): counts and dates for every team, a page at a
+/// time in name order, or one team's verified and sent-back stories and problems reported, each the
+/// newest [`HISTORY_LIMIT`] with its total in `counts`. It walks every story and blocker, so a read
+/// costs time in proportion to the ledger but memory only in proportion to its teams' facts.
+/// `Err` holds what wasn't found.
+pub fn track_records(ledger: &Ledger, team: Option<&str>, page: &Page) -> Result<Value, String> {
+    let as_of = ledger.last_seq();
+    let tracks = tracks(ledger);
+    let base = json!({
+        "untrusted_text": UNTRUSTED_TEXT, "plain_facts": PLAIN_FACTS,
+        "problems_reported_are": PROBLEMS_ARE_BLOCKERS, "as_of": as_of,
+    });
+    if let Some(name) = team {
+        let key = team_key(name);
+        let track = tracks
+            .get(&key)
+            .ok_or_else(|| format!("{name} has no record in the ledger"))?;
+        let mut value = base;
+        value["team"] = json!(key);
+        value["counts"] = counts(track);
+        value["verified"] = newest(&track.verified);
+        value["sent_back"] = newest(&track.sent_back);
+        value["problems_reported"] = newest(&track.problems);
+        return Ok(value);
+    }
+    let (rows, next) = list_page(&tracks, page.after.as_deref());
+    let shown: Map<String, Value> = rows
+        .into_iter()
+        .map(|(name, track)| (name.clone(), counts(track)))
+        .collect();
+    let mut value = base;
+    value["teams"] = Value::Object(shown);
+    continue_with(&mut value, "next", next.map(|key| json!(key)));
+    Ok(value)
+}
+
 /// Every team's declared state, a page at a time, or one team with a page of its history. `Err`
 /// holds what wasn't found.
 pub fn teams(ledger: &Ledger, team: Option<&str>, page: &Page) -> Result<Value, String> {
@@ -404,6 +577,118 @@ mod tests {
         let first = &value["blockers"][0];
         assert_eq!(first["chain"].as_array().unwrap().len(), CHAIN_LIMIT);
         assert_eq!(first["chain_truncated"], true);
+    }
+
+    fn as_kind(kind: Kind, name: &str, body: Value) -> Record {
+        let source = Source {
+            credential: "a1".into(),
+            declared_name: Some(name.into()),
+        };
+        Record::new(kind, source, 5, body).unwrap()
+    }
+
+    const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn a_track_record_is_plain_facts_credited_to_the_holder() {
+        let team = |body: Value| as_kind(Kind::Declared, "author", body);
+        let watch = |body: Value| as_kind(Kind::Verified, "watch", body);
+        let records = vec![
+            team(json!({"change": "ready", "story": "RAL-1"})),
+            team(json!({"change": "claim", "story": "RAL-1", "team": "Rally"})),
+            team(json!({"change": "submit", "story": "RAL-1", "team": "rally", "evidence": "x"})),
+            watch(json!({"change": "send_back", "story": "RAL-1", "note": "no test"})),
+            team(json!({"change": "claim", "story": "RAL-1", "team": "rally"})),
+            team(json!({"change": "submit", "story": "RAL-1", "team": "rally", "evidence": "y"})),
+            watch(json!({"change": "verify", "story": "RAL-1", "note": "ok", "commit": COMMIT})),
+            // Another team's story, released and claimed by rally, then verified.
+            team(json!({"change": "ready", "story": "CAT-2"})),
+            team(json!({"change": "claim", "story": "CAT-2", "team": "catapp"})),
+            team(json!({"change": "release", "story": "CAT-2", "team": "catapp"})),
+            team(json!({"change": "claim", "story": "CAT-2", "team": "rally"})),
+            team(json!({"change": "submit", "story": "CAT-2", "team": "rally", "evidence": "z"})),
+            watch(json!({"change": "verify", "story": "CAT-2", "note": "ok", "commit": COMMIT})),
+            // Problems: rally raises two and one is closed; muster only declares a state.
+            team(
+                json!({"change": "block", "team": "rally", "story": "RAL-7", "on_story": "MUS-44", "note": "roster"}),
+            ),
+            team(json!({"change": "block", "team": "rally", "note": "disk"})),
+            team(json!({"change": "unblock", "blocker": 15, "note": "freed"})),
+            team(json!({"change": "team_state", "team": "Muster", "status": "available"})),
+        ];
+        let ledger = Ledger::replay(&records).unwrap();
+        let all = track_records(&ledger, None, &Page::default()).unwrap();
+        assert!(all["plain_facts"].as_str().unwrap().contains("no points"));
+        assert!(
+            all["problems_reported_are"]
+                .as_str()
+                .unwrap()
+                .contains("blockers")
+        );
+        let rally = &all["teams"]["rally"];
+        assert_eq!(rally["verified"], 2);
+        assert_eq!(rally["sent_back"], 1);
+        assert_eq!(rally["problems_reported"], 2);
+        assert_eq!(rally["problems_open"], 1);
+        assert_eq!(rally["last_verified_at_ms"], 5);
+        // catapp held CAT-2 but released it, so it has nothing to its name; muster is listed
+        // because it declared a state.
+        assert_eq!(all["teams"]["catapp"]["verified"], 0);
+        assert_eq!(all["teams"]["muster"]["verified"], 0);
+        assert!(all["teams"]["muster"]["last_verified_at_ms"].is_null());
+        // No field ranks or scores.
+        for key in rally.as_object().unwrap().keys() {
+            assert!(
+                !["score", "rank", "points", "weight"]
+                    .iter()
+                    .any(|w| key.contains(w)),
+                "{key}"
+            );
+        }
+
+        let one = track_records(&ledger, Some(" RALLY "), &Page::default()).unwrap();
+        assert_eq!(one["team"], "rally");
+        let sent = &one["sent_back"][0];
+        assert_eq!(
+            (sent["story"].as_str(), sent["missing"].as_str()),
+            (Some("RAL-1"), Some("no test"))
+        );
+        assert_eq!(sent["by"], "watch");
+        let verified: Vec<&str> = one["verified"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["story"].as_str().unwrap())
+            .collect();
+        assert_eq!(verified, ["CAT-2", "RAL-1"]);
+        assert_eq!(one["verified"][0]["commit"], COMMIT);
+        let problems = one["problems_reported"].as_array().unwrap();
+        assert_eq!(problems[0]["on_story"], "MUS-44");
+        assert!(problems[0].get("closed_at_ms").is_none());
+        assert_eq!(problems[1]["closed_by_record"], 16);
+        assert!(track_records(&ledger, Some("nobody"), &Page::default()).is_err());
+    }
+
+    #[test]
+    fn a_verifiers_correction_counts_and_a_corrected_verification_says_so() {
+        let team = |body: Value| as_kind(Kind::Declared, "author", body);
+        let watch = |body: Value| as_kind(Kind::Verified, "watch", body);
+        let records = vec![
+            team(json!({"change": "ready", "story": "RAL-1"})),
+            team(json!({"change": "claim", "story": "RAL-1", "team": "rally"})),
+            team(json!({"change": "submit", "story": "RAL-1", "team": "rally", "evidence": "x"})),
+            watch(json!({"change": "verify", "story": "RAL-1", "note": "ok", "commit": COMMIT})),
+            watch(json!({
+                "change": "correct", "story": "RAL-1", "corrects": 4, "note": "read the wrong head",
+                "state": "sent_back"
+            })),
+        ];
+        let ledger = Ledger::replay(&records).unwrap();
+        let one = track_records(&ledger, Some("rally"), &Page::default()).unwrap();
+        assert_eq!(one["verified"][0]["corrected_by"], json!([5]));
+        assert_eq!(one["sent_back"][0]["missing"], "read the wrong head");
+        assert_eq!(one["counts"]["verified"], 1);
+        assert_eq!(one["counts"]["sent_back"], 1);
     }
 
     #[test]

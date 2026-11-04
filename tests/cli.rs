@@ -395,6 +395,39 @@ fn a_team_names_what_it_waits_on_and_the_watchman_lists_the_chain() {
 }
 
 #[test]
+fn a_track_record_reads_back_as_plain_facts() {
+    let db = Ledger::new();
+    ok(&db, "author", &["ready", "RAL-3"]);
+    ok(&db, "author", &["claim", "RAL-3", "--team", "rally"]);
+    ok(
+        &db,
+        "author",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
+    );
+    ok(&db, "watch", &["send-back", "RAL-3", "--note", "no test"]);
+    ok(
+        &db,
+        "author",
+        &["block", "--team", "rally", "--note", "waiting on a read"],
+    );
+    let all = ok(&db, "watch", &["track-record"]);
+    assert_eq!(all["teams"]["rally"]["sent_back"], 1);
+    assert_eq!(all["teams"]["rally"]["problems_reported"], 1);
+    assert!(
+        all["problems_reported_are"]
+            .as_str()
+            .unwrap()
+            .contains("stand-in")
+    );
+    let one = ok(&db, "watch", &["track-record", "rally"]);
+    assert_eq!(one["sent_back"][0]["missing"], "no test");
+    let then = ok(&db, "watch", &["track-record", "rally", "--as-of", "4"]);
+    assert_eq!(then["counts"]["problems_reported"], 0);
+    let error = refused(&db, "watch", &["track-record", "nobody"]);
+    assert!(error.contains("no record"), "{error}");
+}
+
+#[test]
 fn writing_needs_a_credential_and_a_name() {
     let db = Ledger::new();
     for (args, needed) in [

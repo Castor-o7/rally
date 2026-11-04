@@ -212,6 +212,17 @@ enum Command {
         #[arg(long)]
         note: String,
     },
+    /// Each team's track record as plain facts: stories verified, stories sent back and what was
+    /// missing, and problems reported, which for now are the blockers it raised.
+    TrackRecord {
+        team: Option<String>,
+        /// Show them as they stood after this record.
+        #[arg(long)]
+        as_of: Option<u64>,
+        /// For the list: the teams after this one, as the last page's `next` gave it.
+        #[arg(long)]
+        after: Option<String>,
+    },
     /// List open blockers, with what each waits on and its chain; with --all, closed ones too.
     Blockers {
         #[arg(long)]
@@ -901,6 +912,20 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             let page = Page { after, before };
             return backend.read(&path, as_of, &page, |ledger, page| {
                 views::teams(ledger, team.as_deref(), page)
+            });
+        }
+        Command::TrackRecord { team, as_of, after } => {
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
+            let path = match &team {
+                Some(name) => format!("/v1/track-records/{}", encode(name)),
+                None => "/v1/track-records".to_owned(),
+            };
+            let page = Page {
+                after,
+                before: None,
+            };
+            return backend.read(&path, as_of, &page, |ledger, page| {
+                views::track_records(ledger, team.as_deref(), page)
             });
         }
         Command::Blockers { all, as_of, after } => {

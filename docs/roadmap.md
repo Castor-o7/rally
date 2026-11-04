@@ -181,7 +181,7 @@ The bones. Everything later reads from this.
   have been flagged.
 - [ ] **RAL-8: Tell the watchman.** Done when: the watchman wakes with one batched digest when something
   changes, and hears nothing when nothing has. Agree the format with the Muster team under MUS-43.
-- [ ] **RAL-21: Keep each team's track record as plain facts.** Done when: the watchman can read each
+- [x] **RAL-21: Keep each team's track record as plain facts.** Done when: the watchman can read each
   team's stories verified, stories sent back and what was missing, and problems reported, with no points,
   scores, weights or ranking.
 - [ ] **RAL-23: Show progress across roadmaps.** For the watchman's planning. Done when: for each
