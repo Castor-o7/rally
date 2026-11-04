@@ -253,7 +253,8 @@ closed: a stand-in until the ledger has a record for reporting a problem.";
 
 /// Says what a track record is and isn't (RAL-21).
 pub const PLAIN_FACTS: &str = "Counts and dates from the ledger, with no points, scores, weights or \
-ranking. A story counts for the team that held it when it was verified or sent back.";
+ranking. Verifications and send-backs are events, not stories: a story verified twice counts \
+twice. Each counts for the team that held the story at that record.";
 
 /// One team's facts, gathered from every story and blocker.
 #[derive(Default)]
@@ -370,10 +371,10 @@ fn latest(facts: &[Value]) -> Value {
 
 fn counts(track: &Track) -> Value {
     json!({
-        "verified": track.verified.len(), "sent_back": track.sent_back.len(),
+        "verifications": track.verified.len(), "send_backs": track.sent_back.len(),
         "problems_reported": track.problems.len(), "problems_open": track.problems_open,
-        "last_verified_at_ms": latest(&track.verified),
-        "last_sent_back_at_ms": latest(&track.sent_back),
+        "last_verification_at_ms": latest(&track.verified),
+        "last_send_back_at_ms": latest(&track.sent_back),
         "last_problem_at_ms": latest(&track.problems),
     })
 }
@@ -404,8 +405,8 @@ pub fn track_records(ledger: &Ledger, team: Option<&str>, page: &Page) -> Result
         let mut value = base;
         value["team"] = json!(key);
         value["counts"] = counts(track);
-        value["verified"] = newest(&track.verified);
-        value["sent_back"] = newest(&track.sent_back);
+        value["verifications"] = newest(&track.verified);
+        value["send_backs"] = newest(&track.sent_back);
         value["problems_reported"] = newest(&track.problems);
         return Ok(value);
     }
@@ -626,16 +627,16 @@ mod tests {
                 .contains("blockers")
         );
         let rally = &all["teams"]["rally"];
-        assert_eq!(rally["verified"], 2);
-        assert_eq!(rally["sent_back"], 1);
+        assert_eq!(rally["verifications"], 2);
+        assert_eq!(rally["send_backs"], 1);
         assert_eq!(rally["problems_reported"], 2);
         assert_eq!(rally["problems_open"], 1);
-        assert_eq!(rally["last_verified_at_ms"], 5);
+        assert_eq!(rally["last_verification_at_ms"], 5);
         // catapp held CAT-2 but released it, so it has nothing to its name; muster is listed
         // because it declared a state.
-        assert_eq!(all["teams"]["catapp"]["verified"], 0);
-        assert_eq!(all["teams"]["muster"]["verified"], 0);
-        assert!(all["teams"]["muster"]["last_verified_at_ms"].is_null());
+        assert_eq!(all["teams"]["catapp"]["verifications"], 0);
+        assert_eq!(all["teams"]["muster"]["verifications"], 0);
+        assert!(all["teams"]["muster"]["last_verification_at_ms"].is_null());
         // No field ranks or scores.
         for key in rally.as_object().unwrap().keys() {
             assert!(
@@ -648,20 +649,20 @@ mod tests {
 
         let one = track_records(&ledger, Some(" RALLY "), &Page::default()).unwrap();
         assert_eq!(one["team"], "rally");
-        let sent = &one["sent_back"][0];
+        let sent = &one["send_backs"][0];
         assert_eq!(
             (sent["story"].as_str(), sent["missing"].as_str()),
             (Some("RAL-1"), Some("no test"))
         );
         assert_eq!(sent["by"], "watch");
-        let verified: Vec<&str> = one["verified"]
+        let verified: Vec<&str> = one["verifications"]
             .as_array()
             .unwrap()
             .iter()
             .map(|v| v["story"].as_str().unwrap())
             .collect();
         assert_eq!(verified, ["CAT-2", "RAL-1"]);
-        assert_eq!(one["verified"][0]["commit"], COMMIT);
+        assert_eq!(one["verifications"][0]["commit"], COMMIT);
         let problems = one["problems_reported"].as_array().unwrap();
         assert_eq!(problems[0]["on_story"], "MUS-44");
         assert!(problems[0].get("closed_at_ms").is_none());
@@ -685,10 +686,10 @@ mod tests {
         ];
         let ledger = Ledger::replay(&records).unwrap();
         let one = track_records(&ledger, Some("rally"), &Page::default()).unwrap();
-        assert_eq!(one["verified"][0]["corrected_by"], json!([5]));
-        assert_eq!(one["sent_back"][0]["missing"], "read the wrong head");
-        assert_eq!(one["counts"]["verified"], 1);
-        assert_eq!(one["counts"]["sent_back"], 1);
+        assert_eq!(one["verifications"][0]["corrected_by"], json!([5]));
+        assert_eq!(one["send_backs"][0]["missing"], "read the wrong head");
+        assert_eq!(one["counts"]["verifications"], 1);
+        assert_eq!(one["counts"]["send_backs"], 1);
     }
 
     #[test]

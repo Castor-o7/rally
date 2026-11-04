@@ -411,7 +411,7 @@ fn a_track_record_reads_back_as_plain_facts() {
         &["block", "--team", "rally", "--note", "waiting on a read"],
     );
     let all = ok(&db, "watch", &["track-record"]);
-    assert_eq!(all["teams"]["rally"]["sent_back"], 1);
+    assert_eq!(all["teams"]["rally"]["send_backs"], 1);
     assert_eq!(all["teams"]["rally"]["problems_reported"], 1);
     assert!(
         all["problems_reported_are"]
@@ -420,7 +420,7 @@ fn a_track_record_reads_back_as_plain_facts() {
             .contains("stand-in")
     );
     let one = ok(&db, "watch", &["track-record", "rally"]);
-    assert_eq!(one["sent_back"][0]["missing"], "no test");
+    assert_eq!(one["send_backs"][0]["missing"], "no test");
     let then = ok(&db, "watch", &["track-record", "rally", "--as-of", "4"]);
     assert_eq!(then["counts"]["problems_reported"], 0);
     let error = refused(&db, "watch", &["track-record", "nobody"]);

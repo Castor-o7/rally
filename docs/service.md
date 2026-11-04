@@ -266,8 +266,9 @@ the service these are `/v1/blockers` and `/v1/blockers/all`.
 ## Track records
 
 `rally track-record` lists every team that held a story, raised a blocker or declared a state, with counts and
-dates only: stories verified, stories sent back, problems reported and how many are open, and when each last
-happened (RAL-21). `rally track-record <team>` adds the facts behind the counts, the newest 100 of each: which
+dates only: verifications, send-backs, problems reported and how many are open, and when each last happened
+(RAL-21). Verifications and send-backs are events, not distinct stories: a story verified, corrected back to
+In review and verified again counts twice. `rally track-record <team>` adds the facts behind the counts, the newest 100 of each: which
 stories were verified, at which commit and by whom; which were sent back, by whom and what was missing; and the
 problems reported. Over the service these are `/v1/track-records` and `/v1/track-records/<team>`.
 
