@@ -3,10 +3,9 @@
 Rally is the ledger of progress for a muster of agents: what work exists, who has it, how
 far along it is, and what evidence backs that up.
 
-The primary purpose of Rally is a more dynamic multi-agent development environment. When it comes to agent parallelism, token waste and context creep are constant worries. The messaging daemon mcp tool, muster; and this pseudo-deterministic mcp state ledger, Rally: together they make up my most recent attempt at being economic with token usage while maximizing development potential.
+The primary purpose of Rally is a more dynamic multi-agent development environment. When it comes to agent parallelism, token waste and context creep are constant worries. The messaging daemon and MCP tool, Muster, and this pseudo-deterministic state ledger, Rally: together they make up my most recent attempt at being economic with token usage while maximizing development potential.
 
-With Rally, agents have a method of reporting their current working state, and what work they have completed in relationship to a provided design roadmap. Querying the mcp tool Rally has statistically shown to reduce token overhead on Claude Opus 5.5 and Fable 5.1 when used in tandem with the muster messaging mcp service.
-
+With Rally, agents have a method of reporting their current working state, and what work they have completed in relationship to a provided design roadmap. Querying the Rally service is designed to reduce token overhead on Claude Opus 5.5 and Fable 5.1 when used in tandem with Muster's messaging MCP service.
 
 What Rally gives a team, each part built and verified by the watchman:
 
