@@ -148,6 +148,8 @@ It doesn't prove who or which team sent it. Every session on a machine's account
 token, so a session can declare any name and any kind, including `verified`. So the check that authors don't
 verify their own work catches mistakes, not forgery. Revisit this with MUS-39. A `merge` record likewise says
 who recorded the merge, not who merged: every session shares one GitHub account, so Rally doesn't claim that.
+Blockers and team states are the same: any declared name can block, or declare a state, on behalf of any
+team, because nothing ties a team to a credential. A blocker says who recorded it, not that the team agrees.
 
 ## Detecting tampering
 
