@@ -173,7 +173,7 @@ The bones. Everything later reads from this.
   including another team's story, the watchman can list open blockers and chains of them, and a blocker
   stays open until someone closes it, with who and why recorded. A blocked story and a blocked team are
   recorded separately.
-- [ ] **RAL-30: Reconcile an outage.** Done when: entries made on the fallback board during an outage can
+- [x] **RAL-30: Reconcile an outage.** Done when: entries made on the fallback board during an outage can
   be backfilled with their real time and who entered them, the gap itself stays visible, and a test
   shows that backfilled records can't pass for live ones.
 - [ ] **RAL-7: Detect a stall.** Depends on MUS-4 and MUS-44. Done when: each row of the stall table in

@@ -16,6 +16,9 @@ What Rally gives a team, each part built and verified by the watchman:
   as a commit in any state without saying who merged (RAL-33), and when the two differ Rally says so, as an
   observation rather than anyone's claim. A requested read stays on the story until it's answered or
   withdrawn, and a merge made while one is open is marked on the request (RAL-32).
+- **An outage stays visible.** Entries made on the fallback board while the service was down are backfilled
+  with when they were made and by whom, beside the time they were recorded, so the ledger never looks
+  continuous when it wasn't (RAL-30).
 - **The same state every time.** Replay reads no clock or outside system, so the same records always rebuild
   the same state, as of any past record (RAL-12).
 - **An access-controlled service with the ledger in Postgres.** Pinned TLS and a token per machine; every route

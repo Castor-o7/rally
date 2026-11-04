@@ -271,6 +271,64 @@ fn a_requested_read_is_shown_until_answered_and_a_merge_meanwhile_is_marked() {
 }
 
 #[test]
+fn an_outage_entry_is_backfilled_with_its_time_and_who_entered_it() {
+    let db = Ledger::new();
+    ok(&db, "watch", &["ready", "RAL-3"]);
+    let output = rally(
+        &db,
+        "watch",
+        &["--entered-by", "bob", "claim", "RAL-3", "--team", "rally"],
+    );
+    assert!(
+        !output.status.success(),
+        "--entered-by needs --entered-at-ms"
+    );
+    ok(
+        &db,
+        "watch",
+        &[
+            "--entered-at-ms",
+            "1700000000000",
+            "--entered-by",
+            "bob",
+            "claim",
+            "RAL-3",
+            "--team",
+            "rally",
+        ],
+    );
+    let shown = ok(&db, "watch", &["show", "RAL-3"]);
+    let entry = &shown["detail"]["history"][1];
+    assert_eq!(entry["change"]["change"], "claim");
+    assert_eq!(entry["source"]["declared_name"], "watch");
+    assert!(
+        entry["at_ms"].as_i64().unwrap() > 1_700_000_000_000,
+        "the record's own time"
+    );
+    assert_eq!(
+        entry["backfilled"],
+        serde_json::json!({"entered_at_ms": 1_700_000_000_000i64, "entered_by": "bob"})
+    );
+    assert!(shown["detail"]["history"][0].get("backfilled").is_none());
+    // Entered later than now: refused, so a backfill can't claim a time it wasn't made at.
+    let error = refused(
+        &db,
+        "watch",
+        &[
+            "--entered-at-ms",
+            "4102444800000",
+            "--entered-by",
+            "bob",
+            "release",
+            "RAL-3",
+            "--team",
+            "rally",
+        ],
+    );
+    assert!(error.contains("before the record's own"), "{error}");
+}
+
+#[test]
 fn writing_needs_a_credential_and_a_name() {
     let db = Ledger::new();
     for (args, needed) in [

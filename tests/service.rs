@@ -530,6 +530,38 @@ fn cli(config: &Path, name: &str, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn a_backfilled_entry_gets_the_services_time_not_the_entrys() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let entered = cli(
+        &config,
+        "watch",
+        &[
+            "--entered-at-ms",
+            "1",
+            "--entered-by",
+            "bob",
+            "ready",
+            "RAL-30",
+        ],
+    );
+    assert!(
+        entered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&entered.stderr)
+    );
+    let shown = cli(&config, "x", &["show", "RAL-30"]);
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let entry = &shown["detail"]["history"][0];
+    assert!(entry["at_ms"].as_i64().unwrap() > 1_000_000_000_000);
+    assert_eq!(entry["backfilled"]["entered_at_ms"], 1);
+    assert_eq!(entry["backfilled"]["entered_by"], "bob");
+    assert_eq!(entry["source"]["declared_name"], "watch");
+}
+
+#[test]
 fn the_command_works_end_to_end_through_the_service() {
     let service = start();
     let pairing = service.add("a1", false);
