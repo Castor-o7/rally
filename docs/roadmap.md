@@ -223,7 +223,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   read-only, no-markup rules, with a test for each part and for hostile text in the summary. Also, from the
   operator the same evening: "the summary for the total rally progress should be viewable at the bottom of the
   rally summary page please". So the main page ends with the totals across projects, and the watchman's
-  writeup of the whole muster from `docs/muster/<date>.md` in Rally's own repository, under the same rules.
+  writeup of the whole muster from `docs/muster/watchman/<date>.md` in Rally's own repository, under the same rules.
 - [ ] **RAL-44: Date each tick on a project's page.** The gap the watchman recorded when verifying RAL-43, whose
   line asks for ticks and their dates. Done when: each ticked line on a project's page shows the date of the
   commit that last changed it, from GitHub's GraphQL blame of the roadmap file, one call per project on the
