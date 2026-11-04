@@ -811,10 +811,88 @@ pub fn shape_roster(value: &Value, read_at_ms: u64) -> Value {
 
 struct App {
     projects: Vec<Project>,
+    /// Local folders of day summaries to read instead of GitHub's (RAL-45).
+    local: LocalSummaries,
     snapshot: Mutex<Snapshot>,
     allowed_hosts: Vec<String>,
     /// The backup directory on this machine to report on, if any (RAL-15).
     backup: Option<BackupWatch>,
+}
+
+/// Folders on this machine holding day summaries, which the operator's rule keeps out of git, so
+/// GitHub never has them (RAL-45). Each is read for its newest `YYYY-MM-DD.md`, read-only.
+#[derive(Clone, Debug, Default)]
+pub struct LocalSummaries {
+    /// A team's summaries, by its project's prefix.
+    pub by_prefix: std::collections::BTreeMap<String, std::path::PathBuf>,
+    /// The watchman's writeups for the whole muster.
+    pub watchman: Option<std::path::PathBuf>,
+}
+
+/// The newest day summary in a local folder, as a summary panel shows it, saying it was read from a
+/// local file and naming it. A missing or unreadable folder, or a file over the same cap as a
+/// GitHub read, gives an `error` instead.
+pub fn read_local_summary(folder: &std::path::Path) -> Value {
+    let mut value =
+        json!({"local": true, "folder": folder.display().to_string(), "read_at_ms": now_ms()});
+    let entries = match std::fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            value["error"] = json!(format!("the folder {} doesn't exist", folder.display()));
+            return value;
+        }
+        Err(error) => {
+            value["error"] = json!(format!(
+                "the folder {} can't be read: {error}",
+                folder.display()
+            ));
+            return value;
+        }
+    };
+    let names: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    let Some(name) = latest_summary(&names) else {
+        value["missing"] = json!(true);
+        return value;
+    };
+    let path = folder.join(&name);
+    value["file"] = json!(path.display().to_string());
+    let read = std::fs::File::open(&path).and_then(|file| {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        file.take(MAX_COMMAND_OUTPUT + 1).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    });
+    match read.map_err(|error| error.to_string()).and_then(|bytes| {
+        let bytes = too_much(bytes)
+            .map_err(|_| format!("it's over {} MiB", MAX_COMMAND_OUTPUT / 1024 / 1024))?;
+        String::from_utf8(bytes).map_err(|_| "it isn't UTF-8 text".to_owned())
+    }) {
+        Ok(text) => value["text"] = json!(text),
+        Err(reason) => value["error"] = json!(format!("{name} can't be read: {reason}")),
+    }
+    value
+}
+
+/// Replaces the summaries read from GitHub with local ones where a folder is set (RAL-45), so a
+/// failed GitHub read doesn't hide a local summary either.
+fn apply_local_summaries(projects: &[Project], roadmaps: &mut [Value], local: &LocalSummaries) {
+    for (project, row) in projects.iter().zip(roadmaps.iter_mut()) {
+        if !row.is_object() {
+            *row = json!({});
+        }
+        if let Some(folder) = local.by_prefix.get(&project.prefix) {
+            row["summary"] = read_local_summary(folder);
+        }
+        if project.repo == RALLY_REPO
+            && let Some(folder) = &local.watchman
+        {
+            row["watchman_summary"] = read_local_summary(folder);
+        }
+    }
 }
 
 /// A backup directory the viewer reports on: the head it reached, how old it is, and whether that's
@@ -859,10 +937,12 @@ pub async fn serve(
     projects: Vec<Project>,
     ledger: LedgerReader,
     backup: Option<BackupWatch>,
+    local: LocalSummaries,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let address = listener.local_addr()?;
     let app = Arc::new(App {
         projects,
+        local,
         snapshot: Mutex::new(Snapshot::default()),
         allowed_hosts: allowed_hosts(address)?,
         backup,
@@ -908,7 +988,8 @@ fn refresh_forever(app: &App, ledger: &LedgerReader) {
     loop {
         if Instant::now() >= roadmaps_due {
             let previous = app.snapshot.lock().expect("no panics").roadmaps.clone();
-            let roadmaps = refresh_roadmaps(&app.projects, &previous);
+            let mut roadmaps = refresh_roadmaps(&app.projects, &previous);
+            apply_local_summaries(&app.projects, &mut roadmaps, &app.local);
             let summary = muster_summary(&app.projects, &roadmaps);
             let mut snapshot = app.snapshot.lock().expect("no panics");
             snapshot.roadmaps = roadmaps;
@@ -1308,6 +1389,80 @@ mod tests {
             &json!({"available": true, "check": {"ok": false}}),
         );
         assert_eq!(failed["ledger"]["available"], false);
+    }
+
+    #[test]
+    fn a_local_summary_is_the_newest_day_file_and_says_where_it_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, text) in [
+            ("2026-11-03.md", "older"),
+            ("2026-11-04.md", "newest"),
+            ("notes.md", "not a day"),
+            ("2026-11-05.txt", "wrong kind"),
+        ] {
+            std::fs::write(dir.path().join(name), text).unwrap();
+        }
+        // A folder named like a day file isn't read as one.
+        std::fs::create_dir(dir.path().join("2026-12-31.md")).unwrap();
+        let value = read_local_summary(dir.path());
+        assert_eq!(value["local"], true);
+        assert_eq!(value["text"], "newest");
+        assert!(value["file"].as_str().unwrap().ends_with("2026-11-04.md"));
+        assert!(value.get("error").is_none());
+
+        let empty = tempfile::tempdir().unwrap();
+        let none = read_local_summary(empty.path());
+        assert_eq!(none["missing"], true);
+        assert!(none.get("text").is_none());
+
+        let gone = read_local_summary(&empty.path().join("not-there"));
+        assert!(gone["error"].as_str().unwrap().contains("doesn't exist"));
+        assert!(gone.get("text").is_none() && gone.get("missing").is_none());
+
+        std::fs::write(empty.path().join("2026-11-04.md"), [0xff, 0xfe]).unwrap();
+        let binary = read_local_summary(empty.path());
+        assert!(binary["error"].as_str().unwrap().contains("UTF-8"));
+    }
+
+    #[test]
+    fn a_local_summary_over_the_cap_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::File::create(dir.path().join("2026-11-04.md")).unwrap();
+        file.set_len(MAX_COMMAND_OUTPUT + 1).unwrap();
+        let value = read_local_summary(dir.path());
+        assert!(value["error"].as_str().unwrap().contains("MiB"), "{value}");
+        assert!(value.get("text").is_none());
+    }
+
+    #[test]
+    fn local_folders_replace_only_the_summaries_they_name() {
+        let projects: Vec<Project> = serde_json::from_str(DEFAULT_PROJECTS).unwrap();
+        let team = tempfile::tempdir().unwrap();
+        std::fs::write(team.path().join("2026-11-04.md"), "rally's day").unwrap();
+        let watch = tempfile::tempdir().unwrap();
+        std::fs::write(watch.path().join("2026-11-04.md"), "the muster's day").unwrap();
+        let github = json!({"summary": {"missing": true}});
+        let mut roadmaps = vec![github.clone(); projects.len()];
+        // Without folders nothing changes.
+        apply_local_summaries(&projects, &mut roadmaps, &LocalSummaries::default());
+        assert!(roadmaps.iter().all(|row| *row == github));
+        let local = LocalSummaries {
+            by_prefix: [("RAL".to_owned(), team.path().to_owned())].into(),
+            watchman: Some(watch.path().to_owned()),
+        };
+        apply_local_summaries(&projects, &mut roadmaps, &local);
+        for (project, row) in projects.iter().zip(&roadmaps) {
+            if project.prefix == "RAL" {
+                assert_eq!(row["summary"]["text"], "rally's day");
+                assert_eq!(row["watchman_summary"]["text"], "the muster's day");
+            } else {
+                assert_eq!(*row, github, "{} is untouched", project.prefix);
+            }
+        }
+        assert_eq!(
+            muster_summary(&projects, &roadmaps)["text"],
+            "the muster's day"
+        );
     }
 
     #[test]

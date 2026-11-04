@@ -42,6 +42,23 @@ kept apart from Rally's own day summaries. Summaries and PR titles are written b
 agents, so they're shown as text with the untrusted-text notice, like everything else recorded. All of
 it is read through `gh` with the roadmaps, on their five-minute cadence and with their time and size limits.
 
+## Day summaries from local folders (RAL-45)
+
+Day summaries live in each repository's `docs/muster/`, which git ignores by the operator's rule, so GitHub never
+has them. To show them, start the viewer with the folders on this machine:
+
+```bash
+rally web --summaries 'RAL=~/Documents/Gamoire/rally/docs/muster' \
+  --summaries 'CAT=~/Documents/catapp/docs/muster' \
+  --watchman-summaries '~/Documents/Gamoire/rally/docs/muster/watchman'
+```
+
+Each folder is read, never written, every time the roadmaps are, for its newest file named `YYYY-MM-DD.md`; other
+names, and folders, are skipped. A file over 8 MiB, the same cap as a GitHub read, or one that isn't UTF-8 text, is
+refused with a reason, as is a folder that doesn't exist. The panel says it was read from a local file and gives its
+path. A prefix the viewer doesn't list is refused at start. Without these options, summaries are read from GitHub as
+before. Only this machine's folders can be read: Murph's aren't reachable from a1.
+
 ## Progress (RAL-23)
 
 Each project page has a Progress panel for the watchman's planning, also in `/api/status` as each project's

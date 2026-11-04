@@ -19,7 +19,7 @@ use rally::record::{Kind, Record, Source};
 use rally::server::{self, RateLimit};
 use rally::store::{Head, Location, Store};
 use rally::views::{self, Page};
-use rally::web::{self, BackupWatch, DEFAULT_PROJECTS, LedgerReader, Project};
+use rally::web::{self, BackupWatch, DEFAULT_PROJECTS, LedgerReader, LocalSummaries, Project};
 
 /// A ledger of progress for a muster of agents.
 #[derive(Parser)]
@@ -122,6 +122,13 @@ enum Command {
         /// With --backup-dir: a backup older than this many hours is shown as overdue.
         #[arg(long, default_value_t = 1.0)]
         backup_max_age_hours: f64,
+        /// Read a team's day summaries from a local folder instead of GitHub, as PREFIX=FOLDER, for
+        /// example RAL=~/Documents/Gamoire/rally/docs/muster. Repeatable. The folder is only read.
+        #[arg(long = "summaries", value_name = "PREFIX=FOLDER")]
+        summaries: Vec<String>,
+        /// Read the watchman's writeups from this local folder instead of GitHub.
+        #[arg(long, value_name = "FOLDER")]
+        watchman_summaries: Option<PathBuf>,
     },
     /// On the service's host, add a machine and write its pair code to a private file.
     AddMachine {
@@ -644,12 +651,21 @@ fn run_viewer(
     location: Option<Location>,
     config: PathBuf,
     backup: Option<BackupWatch>,
+    local: LocalSummaries,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let text = match projects {
         Some(path) => std::fs::read_to_string(path)?,
         None => DEFAULT_PROJECTS.to_owned(),
     };
     let projects: Vec<Project> = serde_json::from_str(&text)?;
+    // A prefix the viewer doesn't list would be silently ignored, so refuse it.
+    if let Some(prefix) = local
+        .by_prefix
+        .keys()
+        .find(|prefix| !projects.iter().any(|project| &project.prefix == *prefix))
+    {
+        return Err(format!("--summaries names {prefix}, which isn't a listed project").into());
+    }
     let address: std::net::SocketAddr = bind.parse()?;
     if !address.ip().is_loopback() {
         return Err(format!("the viewer only runs on a loopback address, not {address}").into());
@@ -659,7 +675,8 @@ fn run_viewer(
     println!("{}", json!({"listening": listening.to_string()}));
     std::io::Write::flush(&mut std::io::stdout())?;
     let reader = ledger_reader(location, config);
-    tokio::runtime::Runtime::new()?.block_on(web::serve(listener, projects, reader, backup))?;
+    tokio::runtime::Runtime::new()?
+        .block_on(web::serve(listener, projects, reader, backup, local))?;
     Ok(json!({"stopped": true}).to_string())
 }
 
@@ -798,12 +815,33 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             projects,
             backup_dir,
             backup_max_age_hours,
+            summaries,
+            watchman_summaries,
         } => {
             let backup = backup_dir.map(|dir| BackupWatch {
                 dir,
                 max_age_hours: backup_max_age_hours,
             });
-            return run_viewer(&bind, projects, location, config_path(cli.config)?, backup);
+            let mut local = LocalSummaries {
+                watchman: watchman_summaries.map(|path| expand_home(&path)),
+                ..LocalSummaries::default()
+            };
+            for pair in summaries {
+                let (prefix, folder) = pair
+                    .split_once('=')
+                    .ok_or_else(|| format!("--summaries takes PREFIX=FOLDER, not {pair:?}"))?;
+                local
+                    .by_prefix
+                    .insert(prefix.to_owned(), expand_home(std::path::Path::new(folder)));
+            }
+            return run_viewer(
+                &bind,
+                projects,
+                location,
+                config_path(cli.config)?,
+                backup,
+                local,
+            );
         }
         Command::Backup { to, max_age_hours } => {
             if location.is_some() {
@@ -1109,6 +1147,14 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             let reply = client::request(&pairing, "POST", "/v1/records", Some(&request), &[])?;
             Ok(reply_value(&reply)?.to_string())
         }
+    }
+}
+
+/// A leading `~/` as the home folder, since a shell doesn't expand it after `=`.
+fn expand_home(path: &std::path::Path) -> PathBuf {
+    match (path.strip_prefix("~"), std::env::var_os("HOME")) {
+        (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => path.to_owned(),
     }
 }
 
