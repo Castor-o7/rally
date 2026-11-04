@@ -169,7 +169,7 @@ The bones. Everything later reads from this.
   Muster, not the ledger. Each field shows whether it's observed, declared or verified. Machine access
   appears only as that it exists and where its details live. List from the watchman, 2026-11-02. Live
   daemon commit and backups are for RAL-1 to place.
-- [ ] **RAL-20: Record who is waiting on whom.** Done when: a team can name what it's blocked on,
+- [x] **RAL-20: Record who is waiting on whom.** Done when: a team can name what it's blocked on,
   including another team's story, the watchman can list open blockers and chains of them, and a blocker
   stays open until someone closes it, with who and why recorded. A blocked story and a blocked team are
   recorded separately.

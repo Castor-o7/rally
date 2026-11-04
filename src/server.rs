@@ -198,6 +198,8 @@ fn router(store: Store, state_dir: StateDir, limit: RateLimit) -> Router {
         .route("/v1/stories", get(list_stories))
         .route("/v1/stories/{id}", get(one_story))
         .route("/v1/teams", get(list_teams))
+        .route("/v1/blockers", get(open_blockers))
+        .route("/v1/blockers/all", get(all_blockers))
         .route("/v1/teams/{name}", get(one_team))
         .route("/v1/check", get(check))
         .route("/v1/whoami", get(whoami))
@@ -790,6 +792,28 @@ async fn one_story(
 ) -> Response {
     view(service, identity, query, move |ledger, page| {
         views::stories(ledger, Some(&id), page)
+    })
+    .await
+}
+
+async fn open_blockers(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    view(service, identity, query, |ledger, page| {
+        views::blockers(ledger, false, page)
+    })
+    .await
+}
+
+async fn all_blockers(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    view(service, identity, query, |ledger, page| {
+        views::blockers(ledger, true, page)
     })
     .await
 }

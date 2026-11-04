@@ -329,6 +329,72 @@ fn an_outage_entry_is_backfilled_with_its_time_and_who_entered_it() {
 }
 
 #[test]
+fn a_team_names_what_it_waits_on_and_the_watchman_lists_the_chain() {
+    let db = Ledger::new();
+    let story = ok(
+        &db,
+        "frosty-bear",
+        &[
+            "block",
+            "--team",
+            "rally",
+            "--story",
+            "RAL-7",
+            "--on-story",
+            "MUS-44",
+            "--note",
+            "needs the roster",
+        ],
+    );
+    assert_eq!(story["recorded"], 1);
+    ok(
+        &db,
+        "gentle-pulsar",
+        &[
+            "block",
+            "--team",
+            "muster",
+            "--story",
+            "MUS-44",
+            "--on-team",
+            "operator",
+            "--note",
+            "needs a word",
+        ],
+    );
+    ok(
+        &db,
+        "x",
+        &["block", "--team", "catapp", "--note", "resting"],
+    );
+    let open = ok(&db, "watch", &["blockers"]);
+    assert_eq!(open["open"], 3);
+    let rows = open["blockers"].as_array().unwrap();
+    assert_eq!(rows[0]["chain"], serde_json::json!([2]));
+    assert_eq!(rows[0]["blocks"], "story");
+    assert_eq!(rows[2]["blocks"], "team");
+    assert!(open["untrusted_text"].is_string());
+
+    let error = refused(&db, "watch", &["unblock", "9", "--note", "x"]);
+    assert!(error.contains("isn't an open blocker"), "{error}");
+    ok(
+        &db,
+        "watch",
+        &["unblock", "2", "--note", "the operator said yes"],
+    );
+    let open = ok(&db, "watch", &["blockers"]);
+    assert_eq!(open["open"], 2);
+    assert_eq!(open["blockers"][0]["chain"], serde_json::json!([]));
+    let all = ok(&db, "watch", &["blockers", "--all"]);
+    let closed = &all["blockers"][1]["closed"];
+    assert_eq!(closed["source"]["declared_name"], "watch");
+    assert_eq!(closed["note"], "the operator said yes");
+    // As it stood before the close.
+    let then = ok(&db, "watch", &["blockers", "--as-of", "3"]);
+    assert_eq!(then["open"], 3);
+}
+
+#[test]
 fn writing_needs_a_credential_and_a_name() {
     let db = Ledger::new();
     for (args, needed) in [

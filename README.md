@@ -16,6 +16,9 @@ What Rally gives a team, each part built and verified by the watchman:
   as a commit in any state without saying who merged (RAL-33), and when the two differ Rally says so, as an
   observation rather than anyone's claim. A requested read stays on the story until it's answered or
   withdrawn, and a merge made while one is open is marked on the request (RAL-32).
+- **Who is waiting on whom.** A team names what it, or one of its stories, is blocked on, including another
+  team's story; the watchman lists open blockers with their chains, and each stays open until someone closes it,
+  with who and why (RAL-20).
 - **An outage stays visible.** Entries made on the fallback board while the service was down are backfilled
   with when they were made and by whom, beside the time they were recorded, so the ledger never looks
   continuous when it wasn't (RAL-30).
