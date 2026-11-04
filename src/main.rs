@@ -172,6 +172,27 @@ enum Command {
         #[arg(long)]
         commit: Option<String>,
     },
+    /// Ask for a read of a story at a commit before it's merged. Open until a verify or send-back
+    /// answers it, or it's withdrawn.
+    RequestRead {
+        story: String,
+        /// The full hash of the commit to read.
+        #[arg(long)]
+        commit: String,
+        #[arg(long)]
+        note: String,
+    },
+    /// Withdraw a read you requested, or with --as-verifier, any requested read.
+    WithdrawRead {
+        story: String,
+        /// The record that requested it, as `show` lists it.
+        #[arg(long)]
+        request: u64,
+        #[arg(long)]
+        note: String,
+        #[arg(long)]
+        as_verifier: bool,
+    },
     /// Record that a story's work was merged at a commit. Allowed in any state and changes none;
     /// it doesn't say who merged, since every session shares one GitHub account.
     Merge {
@@ -871,6 +892,30 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 body["commit"] = json!(commit);
             }
             (Kind::Verified, body)
+        }
+        Command::RequestRead {
+            story,
+            commit,
+            note,
+        } => (
+            Kind::Declared,
+            json!({"change": "request_read", "story": story, "commit": commit, "note": note}),
+        ),
+        Command::WithdrawRead {
+            story,
+            request,
+            note,
+            as_verifier,
+        } => {
+            let kind = if as_verifier {
+                Kind::Verified
+            } else {
+                Kind::Declared
+            };
+            (
+                kind,
+                json!({"change": "withdraw_read", "story": story, "request": request, "note": note}),
+            )
         }
         Command::Merge { story, commit } => (
             Kind::Declared,

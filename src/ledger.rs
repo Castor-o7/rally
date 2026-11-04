@@ -84,6 +84,20 @@ pub enum Change {
     /// allowed in any state and changes none. It names no merger, since every session shares one
     /// GitHub account, so the record's source says only who recorded it.
     Merge { story: String, commit: String },
+    /// Someone asks for a read of the story at a commit before it's merged (RAL-32). Allowed in any
+    /// state, since the ask can come before the submission. It stays open until a verify or
+    /// send-back answers it, or it's withdrawn.
+    RequestRead {
+        story: String,
+        commit: String,
+        note: String,
+    },
+    /// The requester, by the same declared name, or a verifier withdraws a requested read.
+    WithdrawRead {
+        story: String,
+        request: u64,
+        note: String,
+    },
     /// Annotates an earlier record of the same story, which stays in the history. Can also set the
     /// state: a team can only do that for a story it holds, naming itself in `team`, and moving a
     /// story into or out of a verifier's state takes a verifier. Without a state, it's only an
@@ -124,6 +138,8 @@ impl Change {
             | Self::Verify { story, .. }
             | Self::SendBack { story, .. }
             | Self::Merge { story, .. }
+            | Self::RequestRead { story, .. }
+            | Self::WithdrawRead { story, .. }
             | Self::Correct { story, .. } => story,
         }
     }
@@ -156,6 +172,10 @@ pub struct Story {
     /// The commit last recorded as merged (RAL-33), whatever the story's state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub merged_commit: Option<String>,
+    /// Reads asked for and not yet answered or withdrawn (RAL-32), oldest first. Visible to
+    /// whoever merges, until a verify or send-back answers them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub requested_reads: Vec<RequestedRead>,
     pub history: Vec<HistoryEntry>,
     /// The declared names of everyone who ever claimed or submitted it, compared as
     /// [`same_name`] does, so that checking a verifier doesn't search the whole history.
@@ -165,6 +185,20 @@ pub struct Story {
     /// service keeps between requests is this same in-memory `Ledger`, built by replay and apply.
     #[serde(skip)]
     authors: BTreeSet<String>,
+}
+
+/// A read someone asked for before a merge (RAL-32).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RequestedRead {
+    pub seq: u64,
+    pub at_ms: i64,
+    pub requested_by: String,
+    pub commit: String,
+    pub note: String,
+    /// The commit recorded as merged while this request was still open, if any: the story was
+    /// merged before its read, as catapp#78 was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_before_read: Option<String>,
 }
 
 impl Story {
@@ -256,6 +290,16 @@ pub enum LedgerError {
     InvalidCommit,
     /// A verification, or a correction into Verified, names no commit (RAL-31).
     MissingCommit,
+    /// A withdrawal names a record that isn't an open requested read of this story (RAL-32).
+    InvalidRequestTarget {
+        story: String,
+        request: u64,
+    },
+    /// Someone other than the requester, and not a verifier, tried to withdraw a read.
+    NotTheRequester {
+        story: String,
+        name: String,
+    },
 }
 
 impl fmt::Display for LedgerError {
@@ -290,6 +334,16 @@ impl fmt::Display for LedgerError {
             }
             Self::InvalidCommit => write!(f, "commit must be a full hash: 40 or 64 hex digits"),
             Self::MissingCommit => write!(f, "a verification names the commit it read"),
+            Self::InvalidRequestTarget { story, request } => {
+                write!(
+                    f,
+                    "record {request} isn't an open requested read of {story}"
+                )
+            }
+            Self::NotTheRequester { story, name } => write!(
+                f,
+                "{name} didn't request this read of {story}; only the requester or a verifier can withdraw it"
+            ),
         }
     }
 }
@@ -457,6 +511,7 @@ impl Ledger {
                     submitted_by: None,
                     verified_commit: None,
                     merged_commit: None,
+                    requested_reads: Vec::new(),
                     history: Vec::new(),
                     authors: BTreeSet::new(),
                 },
@@ -541,6 +596,8 @@ fn transition(
             require_verifier(story, id, record)?;
             story.state = State::Verified;
             story.verified_commit = commit.clone();
+            // A read answers every open request for one.
+            story.requested_reads.clear();
         }
         Change::SendBack { .. } => {
             if story.state != State::InReview {
@@ -548,12 +605,57 @@ fn transition(
             }
             require_verifier(story, id, record)?;
             story.state = State::SentBack;
+            story.requested_reads.clear();
         }
         Change::Merge { commit, .. } => {
             // Any state, and the state stays: a merge is a fact about the repository, not a
             // judgement of the work.
             require_kind(record, Kind::Declared)?;
             story.merged_commit = Some(commit.clone());
+            // The request stays open, and now shows the merge got there first.
+            for read in &mut story.requested_reads {
+                read.merged_before_read = Some(commit.clone());
+            }
+        }
+        Change::RequestRead { commit, note, .. } => {
+            require_kind(record, Kind::Declared)?;
+            story.requested_reads.push(RequestedRead {
+                seq,
+                at_ms: record.at_ms(),
+                requested_by: record.source().declared_name.clone().unwrap_or_default(),
+                commit: commit.clone(),
+                note: note.clone(),
+                merged_before_read: None,
+            });
+        }
+        Change::WithdrawRead { request, .. } => {
+            let index = story
+                .requested_reads
+                .iter()
+                .position(|read| read.seq == *request)
+                .ok_or_else(|| LedgerError::InvalidRequestTarget {
+                    story: id.to_owned(),
+                    request: *request,
+                })?;
+            match record.kind() {
+                Kind::Verified => {}
+                Kind::Declared => {
+                    let name = record.source().declared_name.as_deref().unwrap_or_default();
+                    if !same_name(&story.requested_reads[index].requested_by, name) {
+                        return Err(LedgerError::NotTheRequester {
+                            story: id.to_owned(),
+                            name: name.to_owned(),
+                        });
+                    }
+                }
+                Kind::Observed => {
+                    return Err(LedgerError::WrongKind {
+                        expected: Kind::Declared,
+                        found: Kind::Observed,
+                    });
+                }
+            }
+            story.requested_reads.remove(index);
         }
         Change::Correct {
             corrects,
@@ -599,6 +701,9 @@ fn transition(
                     return Err(refuse(story.state));
                 }
                 story.state = *new_state;
+                if new_state.is_verifiers() {
+                    story.requested_reads.clear();
+                }
                 // The verified commit is the one read for the current Verified state, so leaving
                 // that state drops it, and entering it takes the correction's.
                 story.verified_commit = if *new_state == State::Verified {
@@ -706,7 +811,7 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::Verify { commit, .. }
         | Change::SendBack { commit, .. }
         | Change::Correct { commit, .. } => commit.as_deref(),
-        Change::Merge { commit, .. } => Some(commit.as_str()),
+        Change::Merge { commit, .. } | Change::RequestRead { commit, .. } => Some(commit.as_str()),
         _ => None,
     };
     if commit.is_some_and(|commit| !is_commit(commit)) {
@@ -720,6 +825,8 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::Submit { team, evidence, .. } => &[("team", team), ("evidence", evidence)],
         Change::Verify { note, .. }
         | Change::SendBack { note, .. }
+        | Change::RequestRead { note, .. }
+        | Change::WithdrawRead { note, .. }
         | Change::Correct { note, .. } => &[("note", note)],
     };
     for (name, value) in fields {
@@ -1031,6 +1138,115 @@ mod tests {
         let story = ledger.story(STORY).unwrap();
         assert_eq!(story.state, State::Verified);
         assert_eq!(story.verified_commit.as_deref(), Some(OTHER_COMMIT));
+    }
+
+    fn request_read() -> Record {
+        team(json!({
+            "change": "request_read", "story": STORY, "commit": COMMIT, "note": "read before merge"
+        }))
+    }
+
+    fn withdraw_as(name: &str, kind: Kind, request: u64) -> Record {
+        record(
+            kind,
+            name,
+            json!({"change": "withdraw_read", "story": STORY, "request": request, "note": "no need"}),
+        )
+    }
+
+    #[test]
+    fn a_requested_read_is_open_until_a_read_answers_it() {
+        // Asked for while still Claimed, before the submission.
+        let mut ledger = ledger_with(&[ready(), claim(), request_read()]);
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.state, State::Claimed);
+        let read = &story.requested_reads[0];
+        assert_eq!(
+            (read.seq, read.commit.as_str(), read.requested_by.as_str()),
+            (3, COMMIT, "alice")
+        );
+        assert_eq!(read.merged_before_read, None);
+        apply_next(&mut ledger, &submit()).unwrap();
+        assert_eq!(ledger.story(STORY).unwrap().requested_reads.len(), 1);
+        apply_next(&mut ledger, &verify()).unwrap();
+        assert!(ledger.story(STORY).unwrap().requested_reads.is_empty());
+        // A send-back is a read too.
+        let ledger = ledger_with(&[ready(), claim(), submit(), request_read(), send_back()]);
+        assert!(ledger.story(STORY).unwrap().requested_reads.is_empty());
+        // So is a verifier's correction into a verifier's state.
+        let mut ledger = ledger_with(&[ready(), claim(), submit(), verify(), request_read()]);
+        let correction = verifier(json!({
+            "change": "correct", "story": STORY, "corrects": 4, "note": "x", "state": "sent_back"
+        }));
+        apply_next(&mut ledger, &correction).unwrap();
+        assert!(ledger.story(STORY).unwrap().requested_reads.is_empty());
+    }
+
+    #[test]
+    fn a_requested_read_is_withdrawn_by_its_requester_or_a_verifier() {
+        let mut ledger = ledger_with(&[ready(), claim(), request_read()]);
+        assert!(matches!(
+            apply_next(&mut ledger, &withdraw_as("bob", Kind::Declared, 3)),
+            Err(LedgerError::NotTheRequester { .. })
+        ));
+        assert!(matches!(
+            apply_next(&mut ledger, &withdraw_as("alice", Kind::Declared, 2)),
+            Err(LedgerError::InvalidRequestTarget { request: 2, .. })
+        ));
+        assert_eq!(ledger.story(STORY).unwrap().requested_reads.len(), 1);
+        apply_next(&mut ledger, &withdraw_as(" Alice ", Kind::Declared, 3)).unwrap();
+        assert!(ledger.story(STORY).unwrap().requested_reads.is_empty());
+        // Withdrawn once; a second withdrawal has nothing to name.
+        assert!(matches!(
+            apply_next(&mut ledger, &withdraw_as("alice", Kind::Declared, 3)),
+            Err(LedgerError::InvalidRequestTarget { request: 3, .. })
+        ));
+        let mut ledger = ledger_with(&[ready(), claim(), request_read()]);
+        apply_next(&mut ledger, &withdraw_as("watch", Kind::Verified, 3)).unwrap();
+        assert!(ledger.story(STORY).unwrap().requested_reads.is_empty());
+    }
+
+    #[test]
+    fn a_merge_while_a_read_is_open_is_marked_on_the_request() {
+        let merge = team(json!({"change": "merge", "story": STORY, "commit": OTHER_COMMIT}));
+        let mut ledger = ledger_with(&[ready(), claim(), submit(), request_read(), merge]);
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.state, State::InReview);
+        assert_eq!(
+            story.requested_reads[0].merged_before_read.as_deref(),
+            Some(OTHER_COMMIT)
+        );
+        apply_next(&mut ledger, &verify()).unwrap();
+        let story = ledger.story(STORY).unwrap();
+        assert!(story.requested_reads.is_empty());
+        assert_eq!(story.commit_mismatch(), Some((COMMIT, OTHER_COMMIT)));
+    }
+
+    #[test]
+    fn a_request_needs_a_declared_record_a_full_commit_and_a_note() {
+        let mut ledger = ledger_with(&[ready()]);
+        let short = team(json!({
+            "change": "request_read", "story": STORY, "commit": "abc123", "note": "x"
+        }));
+        assert_eq!(
+            apply_next(&mut ledger, &short),
+            Err(LedgerError::InvalidCommit)
+        );
+        let silent = team(json!({
+            "change": "request_read", "story": STORY, "commit": COMMIT, "note": " "
+        }));
+        assert_eq!(
+            apply_next(&mut ledger, &silent),
+            Err(LedgerError::EmptyField("note"))
+        );
+        let verified = verifier(json!({
+            "change": "request_read", "story": STORY, "commit": COMMIT, "note": "x"
+        }));
+        assert!(matches!(
+            apply_next(&mut ledger, &verified),
+            Err(LedgerError::WrongKind { .. })
+        ));
+        assert!(ledger.story(STORY).unwrap().requested_reads.is_empty());
     }
 
     #[test]
