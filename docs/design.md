@@ -82,7 +82,25 @@ it happened. The record names no merger, because every session shares one GitHub
 says only who recorded it, and until RAL-5 that's a declaration. When a story has both a verified and a
 merged commit and they differ, Rally shows `commit_differs` with both, labelled observed, because it's
 worked out from the ledger alone rather than claimed by anyone. A later merge of the verified commit
-clears it. A requested second read (RAL-32) should name its commit the same way.
+clears it.
+
+### Requested reads
+
+catapp#78 merged before a requested read arrived. So anyone can ask for a read of a story at a commit
+(`request_read`, RAL-32), in any state, since the ask can come before the submission. The request stays
+on the story, visible to whoever merges, until a verify or send-back answers it, a verifier's correction
+into Verified or Sent back answers it, or the requester or a verifier withdraws it. A merge recorded while
+a request is open doesn't close it: the request then shows the commit that was merged before its read,
+so the story carries what happened.
+
+An open request blocks a merge, and the read must cover the head being merged: the muster's rule in
+Muster's `docs/board.md`, which the operator told Rally to record on 2026-11-04. Rally can't stop a
+merge on GitHub, so a merge recorded while a request was open isn't refused, which would hide that it
+happened; it's recorded with `merged_before_read` on the request, as the rule broken.
+
+A read at a different commit than the one requested still answers the request, since the head has
+moved on and the request's commit is no longer what would merge; the history keeps both commits.
+Whether the read covered what was merged is then `commit_differs`, once the merge is recorded.
 
 ## Stalls
 

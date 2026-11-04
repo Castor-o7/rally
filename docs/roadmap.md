@@ -140,7 +140,7 @@ The bones. Everything later reads from this.
 - [x] **RAL-31: Tie verification to a commit.** Heads can move while work waits: muster#34 changed three
   times in review on 2026-11-02. Done when: each Verified and each requested second read names a commit,
   and Rally records as observed when the merged commit differs from the verified one, with a test.
-- [ ] **RAL-32: Show a requested second read.** catapp#78 merged before a requested read arrived. Done
+- [x] **RAL-32: Show a requested second read.** catapp#78 merged before a requested read arrived. Done
   when: a requested read is visible to whoever merges until it's answered or withdrawn, and names the commit
   to read (RAL-31). Whether it
   blocks a merge is the operator's call, and this story records it either way.

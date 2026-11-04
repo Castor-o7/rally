@@ -214,6 +214,63 @@ fn a_merge_is_a_commit_in_any_state_and_is_compared_with_the_verified_one() {
 }
 
 #[test]
+fn a_requested_read_is_shown_until_answered_and_a_merge_meanwhile_is_marked() {
+    let db = Ledger::new();
+    ok(&db, "author", &["ready", "RAL-3"]);
+    ok(&db, "author", &["claim", "RAL-3", "--team", "rally"]);
+    ok(
+        &db,
+        "watch",
+        &[
+            "request-read",
+            "RAL-3",
+            "--commit",
+            COMMIT,
+            "--note",
+            "read before merge",
+        ],
+    );
+    let all = ok(&db, "author", &["show"]);
+    assert_eq!(all["stories"]["RAL-3"]["requested_reads"], 1);
+    let shown = ok(&db, "author", &["show", "RAL-3"]);
+    let read = &shown["detail"]["requested_reads"][0];
+    assert_eq!(read["seq"], 3);
+    assert_eq!(read["commit"], COMMIT);
+    assert_eq!(read["requested_by"], "watch");
+    assert!(read.get("merged_before_read").is_none());
+
+    let error = refused(
+        &db,
+        "author",
+        &["withdraw-read", "RAL-3", "--request", "3", "--note", "done"],
+    );
+    assert!(error.contains("didn't request"), "{error}");
+
+    // Merged before the read, as catapp#78 was: the request stays, and says so.
+    ok(&db, "author", &["merge", "RAL-3", "--commit", COMMIT]);
+    let shown = ok(&db, "author", &["show", "RAL-3"]);
+    assert_eq!(
+        shown["detail"]["requested_reads"][0]["merged_before_read"],
+        COMMIT
+    );
+
+    ok(
+        &db,
+        "author",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
+    );
+    ok(
+        &db,
+        "watch",
+        &["verify", "RAL-3", "--note", "fine", "--commit", COMMIT],
+    );
+    let shown = ok(&db, "author", &["show", "RAL-3"]);
+    assert!(shown["detail"].get("requested_reads").is_none());
+    let all = ok(&db, "author", &["show"]);
+    assert!(all["stories"]["RAL-3"].get("requested_reads").is_none());
+}
+
+#[test]
 fn writing_needs_a_credential_and_a_name() {
     let db = Ledger::new();
     for (args, needed) in [

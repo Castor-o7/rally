@@ -107,6 +107,9 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
         if let Some((verified, merged)) = detail.commit_mismatch() {
             shown["commit_differs"] = commit_differs(verified, merged);
         }
+        if !detail.requested_reads.is_empty() {
+            shown["requested_reads"] = json!(detail.requested_reads);
+        }
         let mut value = json!({
             "untrusted_text": UNTRUSTED_TEXT, "as_of": as_of, "story": id, "detail": shown,
             "history_total": detail.history.len(),
@@ -122,6 +125,9 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
             let mut row = json!({"state": story.state, "team": story.team, "last": last});
             if let Some((verified, merged)) = story.commit_mismatch() {
                 row["commit_differs"] = commit_differs(verified, merged);
+            }
+            if !story.requested_reads.is_empty() {
+                row["requested_reads"] = json!(story.requested_reads.len());
             }
             (id.clone(), row)
         })
