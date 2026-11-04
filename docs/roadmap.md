@@ -230,6 +230,13 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   commit that last changed it, from GitHub's GraphQL blame of the roadmap file, one call per project on the
   roadmap's cadence; the page says that date is the tick's unless the line was edited after it; and a test
   covers reading the blame and matching its ranges to ticked lines.
+- [x] **RAL-45: Read day summaries from local folders.** The operator's rule keeps `docs/muster/` out of git, so
+  the viewer's GitHub reads always found no day summary; the watchman noted it on 2026-11-03 and filed it on
+  2026-11-04. Done when: `rally web` takes `--summaries <PREFIX>=<folder>`, repeatable, and `--watchman-summaries
+  <folder>`, which read the newest `YYYY-MM-DD.md` from a local folder, read-only, with the same size cap as today;
+  with them set, the overview shows the watchman's writeup and each project page its team's newest local summary,
+  each saying it was read from a local file and naming it; without them, nothing changes; and a test covers the
+  local read and a missing folder, with nothing in `docs/muster/` committed.
 - [ ] **RAL-28: Show past ledgers.** Depends on RAL-12. Done when: a viewer can pick a past moment and
   see the ledger as it stood then, with corrections made since shown as later, and a test shows that the
   view matches a replay to that moment.

@@ -263,12 +263,14 @@ function summaryBlock(summary, notice, now) {
     return wrap;
   }
   if (summary.missing) {
-    wrap.append(el("p", "muted", "No day summary in docs/muster/ yet."));
+    wrap.append(el("p", "muted", "No day summary in " + (summary.local ? summary.folder : "docs/muster/")
+      + " yet."));
   } else if (typeof summary.text === "string") {
     wrap.append(el("p", "muted", notice));
     wrap.append(el("pre", "summary", summary.text));
-    wrap.append(el("p", "source muted", summary.file + " at " + String(summary.commit).slice(0, 7)
-      + ", read " + age(summary.read_at_ms, now)));
+    wrap.append(el("p", "source muted", summary.local
+      ? "Read from the local file " + summary.file + ", " + age(summary.read_at_ms, now)
+      : summary.file + " at " + String(summary.commit).slice(0, 7) + ", read " + age(summary.read_at_ms, now)));
   }
   if (summary.error) wrap.append(el("p", "warning", "⚠ Last read failed: " + summary.error));
   return wrap;
