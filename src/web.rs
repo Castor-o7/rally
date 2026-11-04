@@ -85,14 +85,15 @@ fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
     Some((kind, length, after))
 }
 
-/// Every checkbox line outside code fences: the `##` heading it's under, whether it's ticked, and
-/// the text after the box. The counts and the story list both read lines through this.
-fn roadmap_items(text: &str) -> Vec<(String, bool, String)> {
+/// Every checkbox line outside code fences: the `##` heading it's under, whether it's ticked, the
+/// text after the box, and its line number from 1. The counts and the story list both read lines
+/// through this.
+fn roadmap_items(text: &str) -> Vec<(String, bool, String, usize)> {
     let mut items = Vec::new();
     let mut current = "Before the first heading".to_owned();
     // The open fence's character and length, as CommonMark has them.
     let mut fence: Option<(char, usize)> = None;
-    for line in text.lines() {
+    for (index, line) in text.lines().enumerate() {
         let trimmed = line.trim_start();
         let marker = fence_marker(line);
         match (fence, marker) {
@@ -122,7 +123,7 @@ fn roadmap_items(text: &str) -> Vec<(String, bool, String)> {
             _ => continue,
         };
         let after = item.and_then(|rest| rest.get(2..)).unwrap_or("").trim();
-        items.push((current.clone(), ticked, after.to_owned()));
+        items.push((current.clone(), ticked, after.to_owned(), index + 1));
     }
     items
 }
@@ -130,7 +131,7 @@ fn roadmap_items(text: &str) -> Vec<(String, bool, String)> {
 /// Counts a roadmap's checkboxes overall and by `##` heading, ignoring examples in code fences.
 pub fn parse_roadmap(text: &str) -> (Boxes, Vec<Section>) {
     let mut sections: Vec<Section> = Vec::new();
-    for (name, ticked, _) in roadmap_items(text) {
+    for (name, ticked, _, _) in roadmap_items(text) {
         if sections.last().is_none_or(|section| section.name != name) {
             sections.push(Section {
                 name,
@@ -163,6 +164,13 @@ pub struct Story {
     pub title: String,
     pub ticked: bool,
     pub section: String,
+    /// The roadmap line, from 1, for matching to blame. Not shown.
+    #[serde(skip)]
+    pub line: usize,
+    /// For a ticked story, the date (`YYYY-MM-DD`) of the commit that last changed its line: the
+    /// tick's date, unless the line was edited after it (RAL-44).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_changed: Option<String>,
 }
 
 const MAX_TITLE_CHARS: usize = 200;
@@ -172,7 +180,7 @@ const MAX_TITLE_CHARS: usize = 200;
 pub fn parse_stories(text: &str, prefix: &str) -> Vec<Story> {
     roadmap_items(text)
         .into_iter()
-        .map(|(section, ticked, after)| {
+        .map(|(section, ticked, after, line)| {
             let lead = after
                 .strip_prefix("**")
                 .and_then(|rest| rest.split_once("**"))
@@ -196,9 +204,48 @@ pub fn parse_stories(text: &str, prefix: &str) -> Vec<Story> {
                 title: title.chars().take(MAX_TITLE_CHARS).collect(),
                 ticked,
                 section,
+                line,
+                last_changed: None,
             }
         })
         .collect()
+}
+
+/// GitHub's blame of a roadmap, as `(first line, last line, date)` for each range, from the
+/// `ranges` of a GraphQL `blame`. Keeps only the lines and the date of the commit, as `YYYY-MM-DD`;
+/// a range whose numbers or date don't parse is dropped, and so is everything else, including the
+/// commit message, which an agent wrote.
+pub fn shape_blame(value: &Value) -> Vec<(u64, u64, String)> {
+    let Some(ranges) = value.as_array() else {
+        return Vec::new();
+    };
+    ranges
+        .iter()
+        .filter_map(|range| {
+            let first = range["startingLine"].as_u64()?;
+            let last = range["endingLine"].as_u64()?;
+            let date = range["commit"]["committedDate"].as_str()?.get(..10)?;
+            let bytes = date.as_bytes();
+            let is_date = bytes.len() == 10
+                && bytes[4] == b'-'
+                && bytes[7] == b'-'
+                && [0, 1, 2, 3, 5, 6, 8, 9]
+                    .iter()
+                    .all(|&i| bytes[i].is_ascii_digit());
+            (first >= 1 && first <= last && is_date).then(|| (first, last, date.to_owned()))
+        })
+        .collect()
+}
+
+/// Gives each ticked story the date of the blame range holding its line.
+pub fn date_stories(stories: &mut [Story], ranges: &[(u64, u64, String)]) {
+    for story in stories.iter_mut().filter(|story| story.ticked) {
+        let line = story.line as u64;
+        story.last_changed = ranges
+            .iter()
+            .find(|(first, last, _)| (*first..=*last).contains(&line))
+            .map(|(_, _, date)| date.clone());
+    }
 }
 
 /// Whether a `docs/muster` file name is a day summary: exactly `YYYY-MM-DD.md`.
@@ -432,6 +479,59 @@ fn read_summary(repo: &str, commit: &str) -> Result<Value, String> {
     Ok(json!({"file": file, "commit": commit, "text": text, "read_at_ms": now_ms()}))
 }
 
+/// Blame of a file at `commit`, the commit the roadmap was read at, so its lines match.
+const BLAME: &str = "query($owner:String!,$name:String!,$expr:String!,$path:String!){repository(owner:$owner,name:$name)\
+{object(expression:$expr){... on Commit{blame(path:$path){ranges{startingLine endingLine commit{committedDate}}}}}}}";
+
+/// A roadmap's blame at `commit`, shaped by `shape_blame`: one call per project (RAL-44).
+fn read_blame(repo: &str, commit: &str, path: &str) -> Result<Value, String> {
+    let (owner, name) = repo
+        .split_once('/')
+        .ok_or("the repository isn't owner/name")?;
+    let output = run_gh(&[
+        "api",
+        "graphql",
+        "-F",
+        &format!("owner={owner}"),
+        "-F",
+        &format!("name={name}"),
+        "-F",
+        &format!("expr={commit}"),
+        "-F",
+        &format!("path={path}"),
+        "-f",
+        &format!("query={BLAME}"),
+        "--jq",
+        ".data.repository.object.blame.ranges",
+    ])?;
+    let value: Value =
+        serde_json::from_str(&output).map_err(|_| "gh returned something unreadable".to_owned())?;
+    let ranges: Vec<Value> = shape_blame(&value)
+        .into_iter()
+        .map(|(first, last, date)| json!([first, last, date]))
+        .collect();
+    Ok(json!({"commit": commit, "ranges": ranges, "read_at_ms": now_ms()}))
+}
+
+/// A blame value's ranges, back in `shape_blame`'s form.
+fn blame_ranges(blame: &Value) -> Vec<(u64, u64, String)> {
+    blame["ranges"]
+        .as_array()
+        .map(|ranges| {
+            ranges
+                .iter()
+                .filter_map(|range| {
+                    Some((
+                        range[0].as_u64()?,
+                        range[1].as_u64()?,
+                        range[2].as_str()?.to_owned(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// A project's last 20 merged PRs, shaped by `shape_merged`.
 fn read_merged(repo: &str) -> Result<Value, String> {
     let output = run_gh(&[
@@ -486,10 +586,18 @@ fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
                     .unwrap_or_else(|error| kept("summary", error));
                 let merged =
                     read_merged(&project.repo).unwrap_or_else(|error| kept("merged", error));
+                let blame = read_blame(&project.repo, &commit, &project.path)
+                    .unwrap_or_else(|error| kept("blame", error));
+                let mut stories = parse_stories(&text, &project.prefix);
+                // A kept blame from another commit would date the wrong lines.
+                if blame["commit"].as_str() == Some(commit.as_str()) {
+                    date_stories(&mut stories, &blame_ranges(&blame));
+                }
                 json!({
                     "boxes": boxes,
                     "sections": sections,
-                    "stories": parse_stories(&text, &project.prefix),
+                    "stories": stories,
+                    "blame": blame,
                     "summary": summary,
                     "merged": merged,
                     "commit": commit,
@@ -814,6 +922,37 @@ mod tests {
         .to_vec();
         assert_eq!(latest_summary(&names).as_deref(), Some("2026-11-03.md"));
         assert_eq!(latest_summary(&["README.md".to_owned()]), None);
+    }
+
+    #[test]
+    fn blame_keeps_each_range_s_lines_and_date_only() {
+        let value = json!([
+            {"startingLine": 1, "endingLine": 3, "commit": {"committedDate": "2026-10-29T08:00:00Z", "message": "secret"}},
+            {"startingLine": 4, "endingLine": 4, "commit": {"committedDate": "<script>"}},
+            {"startingLine": "5", "endingLine": 5, "commit": {"committedDate": "2026-10-30T08:00:00Z"}},
+            {"startingLine": 7, "endingLine": 6, "commit": {"committedDate": "2026-10-30T08:00:00Z"}},
+        ]);
+        assert_eq!(shape_blame(&value), vec![(1, 3, "2026-10-29".to_owned())]);
+        assert!(shape_blame(&json!({"not": "a list"})).is_empty());
+    }
+
+    #[test]
+    fn ticked_lines_take_the_date_of_the_range_holding_them() {
+        let text = "## Open\n- [ ] **RAL-1: Open.**\n- [x] **RAL-2: Ticked.**\n\n```\n- [x] **RAL-9: An example.**\n```\n- [x] **RAL-3: Also ticked.**\n";
+        let mut stories = parse_stories(text, "RAL");
+        assert_eq!(stories.len(), 3, "the fenced example isn't a story");
+        let ranges = vec![
+            (1, 3, "2026-10-29".to_owned()),
+            (4, 7, "2026-10-30".to_owned()),
+            (8, 8, "2026-11-01".to_owned()),
+        ];
+        date_stories(&mut stories, &ranges);
+        let dates: Vec<_> = stories.iter().map(|s| s.last_changed.as_deref()).collect();
+        assert_eq!(dates, [None, Some("2026-10-29"), Some("2026-11-01")]);
+        // A line no range covers stays undated.
+        let mut stories = parse_stories(text, "RAL");
+        date_stories(&mut stories, &[(1, 2, "2026-10-29".to_owned())]);
+        assert!(stories.iter().all(|s| s.last_changed.is_none()));
     }
 
     #[test]

@@ -263,6 +263,7 @@ function storyList(stories) {
   for (const story of stories) {
     const item = el("li");
     item.append(el("span", "story-id", story.id || "·"), " ", story.title);
+    if (story.last_changed) item.append(" ", el("span", "muted", "last changed " + story.last_changed));
     list.append(item);
   }
   return list;
@@ -298,6 +299,13 @@ function renderProject(status, prefix, now) {
     details.append(el("summary", "", name + " (" + group.length + ")"));
     details.append(storyList(group));
     roadmap.append(details);
+  }
+  if (done.some((s) => s.last_changed)) {
+    roadmap.append(el("p", "muted", "A ticked story's date is when its line last changed: the tick's date, "
+      + "unless the line was edited after it was ticked."));
+  }
+  if (project.blame && project.blame.error) {
+    roadmap.append(el("p", "warning", "⚠ Couldn't read the dates: " + project.blame.error));
   }
   roadmap.append(el("p", "source muted", project.repo + " " + project.path
     + (project.commit ? " at " + project.commit.slice(0, 7) : "") + ", read " + age(project.read_at_ms, now)));
