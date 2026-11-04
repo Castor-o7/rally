@@ -261,7 +261,9 @@ const FAKE_GH: &str = r#"#!/bin/sh
 case "$*" in
   *commits/HEAD*) echo 0123456789abcdef0123456789abcdef01234567 ;;
   *graphql*blame*) printf '[{"startingLine":1,"endingLine":2,"commit":{"committedDate":"2026-10-29T08:00:00Z","message":"<script>alert(6)</script>"}},{"startingLine":3,"endingLine":3,"commit":{"committedDate":"2026-10-30T12:00:00Z"}},{"startingLine":4,"endingLine":4,"commit":{"committedDate":"<img src=x onerror=alert(7)>"}}]' ;;
+  *graphql*docs/muster/watchman*) printf '2026-11-03.md\n' ;;
   *graphql*docs/muster*) printf '2026-11-02.md\n2026-11-03.md\nnotes.md\n' ;;
+  *contents/docs/muster/watchman/2026-11-03.md*) printf '<script>alert(8)</script> the whole muster' ;;
   *contents/docs/muster/2026-11-03.md*) printf '<script>alert(3)</script> the day went well' ;;
   *contents/docs/roadmap.md*) printf '## Open\n- [ ] **RAL-1: <img src=x onerror=alert(4)>**\n- [x] **RAL-2: Done.**\n- [x] **RAL-3: Dated by a hostile blame.**\n' ;;
   "pr list"*) printf '[{"number":7,"title":"<script>alert(5)</script>","mergedAt":"2026-11-03T00:00:00Z"}]' ;;
@@ -313,9 +315,14 @@ fn a_project_page_s_summary_stories_and_pr_titles_arrive_only_as_json_data() {
         !value.to_string().contains("alert(6)"),
         "commit messages aren't kept"
     );
+    // The overview's writeup is the watchman's, from its own folder, never Rally's day summary.
     assert_eq!(
-        value["muster_summary"], project["summary"],
-        "Rally's own summary is the muster's"
+        value["muster_summary"]["file"],
+        "docs/muster/watchman/2026-11-03.md"
+    );
+    assert_eq!(
+        value["muster_summary"]["text"],
+        "<script>alert(8)</script> the whole muster"
     );
     for path in ["/", "/app.js"] {
         let page = get(&viewer, path).1;

@@ -37,7 +37,8 @@ Each project's name in the roadmap list opens its own page (`#/project/<prefix>`
 - the last 20 merged pull requests, number, title and date only. Dated ticks aren't shown yet.
 
 The overview ends with the roadmap boxes across projects (ticks still mean different things in each)
-and the watchman's writeup: the day summary on Rally's own entry. Summaries and PR titles are written by
+and the watchman's writeup: the newest `docs/muster/watchman/YYYY-MM-DD.md` in Rally's own repository,
+kept apart from Rally's own day summaries. Summaries and PR titles are written by
 agents, so they're shown as text with the untrusted-text notice, like everything else recorded. All of
 it is read through `gh` with the roadmaps, on their five-minute cadence and with their time and size limits.
 

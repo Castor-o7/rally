@@ -441,17 +441,24 @@ fn read_roadmap(project: &Project) -> Result<(String, String), String> {
     Ok((commit, text))
 }
 
-/// Rally's own repository, whose day summary is the watchman's writeup of the whole muster.
+/// Rally's own repository, which also holds the watchman's writeup of the whole muster, in
+/// [`WATCHMAN_FOLDER`], apart from Rally's own day summaries.
 pub const RALLY_REPO: &str = "Castor-o7/rally";
+
+/// Where each team keeps its day summaries, as `YYYY-MM-DD.md`.
+const SUMMARY_FOLDER: &str = "docs/muster";
+
+/// Where the watchman keeps its writeups of the whole muster, in Rally's repository.
+const WATCHMAN_FOLDER: &str = "docs/muster/watchman";
 
 /// Lists a folder at `commit` through GraphQL, which answers a missing folder with nothing rather than
 /// an error, so "no summaries yet" isn't mistaken for a failed read.
 const LIST_FOLDER: &str = "query($owner:String!,$name:String!,$expr:String!){repository(owner:$owner,name:$name)\
 {object(expression:$expr){... on Tree{entries{name}}}}}";
 
-/// The newest `docs/muster/YYYY-MM-DD.md` in a repository at `commit`, as text with its file and
+/// The newest `<folder>/YYYY-MM-DD.md` in a repository at `commit`, as text with its file and
 /// commit, or `{"missing": true}` when there's none. Read with the same caps as a roadmap.
-fn read_summary(repo: &str, commit: &str) -> Result<Value, String> {
+fn read_summary(repo: &str, commit: &str, folder: &str) -> Result<Value, String> {
     let (owner, name) = repo
         .split_once('/')
         .ok_or("the repository isn't owner/name")?;
@@ -463,7 +470,7 @@ fn read_summary(repo: &str, commit: &str) -> Result<Value, String> {
         "-F",
         &format!("name={name}"),
         "-F",
-        &format!("expr={commit}:docs/muster"),
+        &format!("expr={commit}:{folder}"),
         "-f",
         &format!("query={LIST_FOLDER}"),
         "--jq",
@@ -473,7 +480,7 @@ fn read_summary(repo: &str, commit: &str) -> Result<Value, String> {
     let Some(name) = latest_summary(&names) else {
         return Ok(json!({"missing": true, "read_at_ms": now_ms()}));
     };
-    let file = format!("docs/muster/{name}");
+    let file = format!("{folder}/{name}");
     let contents = format!("repos/{repo}/contents/{file}?ref={commit}");
     let text = run_gh(&["api", &contents, "-H", "Accept: application/vnd.github.raw"])?;
     Ok(json!({"file": file, "commit": commit, "text": text, "read_at_ms": now_ms()}))
@@ -551,16 +558,20 @@ fn read_merged(repo: &str) -> Result<Value, String> {
     Ok(json!({"prs": shape_merged(&value), "read_at_ms": now_ms()}))
 }
 
-/// The watchman's writeup: the day summary on Rally's own entry in the project list. Not read
-/// separately, so the viewer makes no GitHub call that isn't for a listed project.
+/// The watchman's writeup, read with Rally's own entry in the project list, so the viewer makes no
+/// GitHub call that isn't for a listed project. It's never Rally's own day summary.
 fn muster_summary(projects: &[Project], roadmaps: &[Value]) -> Value {
-    projects
+    let Some(index) = projects
         .iter()
         .position(|project| project.repo == RALLY_REPO)
-        .and_then(|index| roadmaps.get(index))
-        .and_then(|row| row.get("summary"))
+    else {
+        return json!({"reason": format!("{RALLY_REPO} isn't in the project list.")});
+    };
+    roadmaps
+        .get(index)
+        .and_then(|row| row.get("watchman_summary"))
         .cloned()
-        .unwrap_or_else(|| json!({"reason": format!("{RALLY_REPO} isn't in the project list.")}))
+        .unwrap_or_else(|| json!({"reason": "The watchman's writeup hasn't been read yet."}))
 }
 
 /// Reads every project's roadmap, day summary and merged PRs one after another, each `gh` call with its
@@ -582,8 +593,12 @@ fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
                     value["error"] = json!(error);
                     value
                 };
-                let summary = read_summary(&project.repo, &commit)
+                let summary = read_summary(&project.repo, &commit, SUMMARY_FOLDER)
                     .unwrap_or_else(|error| kept("summary", error));
+                let watchman_summary = (project.repo == RALLY_REPO).then(|| {
+                    read_summary(&project.repo, &commit, WATCHMAN_FOLDER)
+                        .unwrap_or_else(|error| kept("watchman_summary", error))
+                });
                 let merged =
                     read_merged(&project.repo).unwrap_or_else(|error| kept("merged", error));
                 let blame = read_blame(&project.repo, &commit, &project.path)
@@ -593,7 +608,7 @@ fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
                 if blame["commit"].as_str() == Some(commit.as_str()) {
                     date_stories(&mut stories, &blame_ranges(&blame));
                 }
-                json!({
+                let mut row = json!({
                     "boxes": boxes,
                     "sections": sections,
                     "stories": stories,
@@ -602,7 +617,11 @@ fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
                     "merged": merged,
                     "commit": commit,
                     "read_at_ms": now_ms(),
-                })
+                });
+                if let Some(watchman_summary) = watchman_summary {
+                    row["watchman_summary"] = watchman_summary;
+                }
+                row
             }
             Err(error) => {
                 let mut kept = previous.get(index).cloned().unwrap_or_else(|| json!({}));
@@ -1093,6 +1112,25 @@ mod tests {
         assert_eq!(hosts, ["127.0.0.1:7300", "localhost:7300"]);
         let hosts = allowed_hosts("[::1]:7300".parse().unwrap()).unwrap();
         assert_eq!(hosts, ["[::1]:7300", "localhost:7300"]);
+    }
+
+    #[test]
+    fn the_overview_shows_the_watchmans_writeup_never_rallys_own_summary() {
+        let projects: Vec<Project> = serde_json::from_value(json!([
+            {"name": "Muster", "repo": "Castor-o7/muster", "path": "docs/roadmap.md",
+             "prefix": "MUS", "tick_meaning": "x"},
+            {"name": "Rally", "repo": RALLY_REPO, "path": "docs/roadmap.md",
+             "prefix": "RAL", "tick_meaning": "x"},
+        ]))
+        .unwrap();
+        let rows = [
+            json!({"summary": {"text": "muster's day"}}),
+            json!({"summary": {"text": "rally's day"}, "watchman_summary": {"text": "the muster"}}),
+        ];
+        assert_eq!(muster_summary(&projects, &rows)["text"], "the muster");
+        // With no writeup read yet, Rally's own summary isn't put in its place.
+        let rows = [rows[0].clone(), json!({"summary": {"text": "rally's day"}})];
+        assert!(muster_summary(&projects, &rows).get("text").is_none());
     }
 
     #[test]
