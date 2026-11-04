@@ -1,2 +1,5 @@
 /target
 .claude/
+
+# The muster's day summaries and the watchman's writeups are the team's own notes, kept locally, never committed.
+docs/muster/
