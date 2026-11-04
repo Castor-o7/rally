@@ -68,7 +68,9 @@ operator approves the deployment itself, directly, not through a relayed message
 
 ## The first check
 
-1. On Murph: `rally check`, which reads Postgres directly. It should be `ok`, at record 0.
+1. On Murph, once the service has started: `rally check`, which reads Postgres directly. It should be `ok`, at
+   record 0. Run it after the service starts, not before: the service makes the ledger on its first start, and
+   `check` creates nothing, so before then it says "no ledger".
 2. On a1, through the service: `rally check`, the same answer, with the fingerprint matching the one recorded.
 3. One real record, from a1: Rally's own team state, `RALLY_NAME=<session> rally team-state rally working
    --story <the story in hand>`.
