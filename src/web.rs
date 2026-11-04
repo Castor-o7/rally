@@ -288,6 +288,134 @@ pub fn shape_merged(value: &Value) -> Value {
     json!(rows)
 }
 
+/// The most blockers [`progress`] lists as holding up a roadmap's stories.
+pub const TOP_BLOCKERS: usize = 10;
+
+/// One roadmap's progress for the watchman's planning (RAL-23), from its roadmap reading and the
+/// ledger reading. It never compares roadmaps or teams. When the roadmap or the ledger hasn't been
+/// read, that part says so and why, rather than showing zeros.
+pub fn progress(prefix: &str, roadmap: &Value, ledger: &Value) -> Value {
+    let wanted = format!("{prefix}-");
+    let mut value = json!({});
+    let roadmap_stories = roadmap["stories"].as_array();
+    value["roadmap"] = match roadmap_stories {
+        None => json!({
+            "available": false,
+            "reason": roadmap["error"].as_str().unwrap_or("still reading it."),
+        }),
+        Some(_) => {
+            let mut part = json!({"available": true, "read_at_ms": roadmap["read_at_ms"]});
+            if let Some(error) = roadmap["error"].as_str() {
+                // An older reading is kept after a failed one, so its age shows.
+                part["last_read_failed"] = json!(error);
+            }
+            part
+        }
+    };
+    if ledger["available"] != json!(true) || ledger["stories"].as_object().is_none() {
+        value["ledger"] = json!({
+            "available": false,
+            "reason": ledger["reason"].as_str().unwrap_or("the ledger isn't readable, or failed its check."),
+        });
+        return value;
+    }
+    value["ledger"] = json!({"available": true, "as_of": ledger["as_of"]});
+    let tracked: Vec<(&String, &Value)> = ledger["stories"]
+        .as_object()
+        .map(|stories| {
+            stories
+                .iter()
+                .filter(|(id, _)| id.starts_with(&wanted))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut states = serde_json::Map::new();
+    for state in ["ready", "claimed", "in_review", "verified", "sent_back"] {
+        states.insert(state.into(), json!(0));
+    }
+    for (_, story) in &tracked {
+        if let Some(state) = story["state"].as_str() {
+            let count = states.get(state).and_then(Value::as_u64).unwrap_or(0);
+            states.insert(state.into(), json!(count + 1));
+        }
+    }
+    value["states"] = Value::Object(states);
+    value["tracked"] = json!(tracked.len());
+
+    // Open blockers, with the chains the ledger's view worked out.
+    let blockers: Vec<&Value> = ledger["blockers"]
+        .as_array()
+        .map(|b| b.iter().collect())
+        .unwrap_or_default();
+    let blocked: std::collections::BTreeSet<&str> = blockers
+        .iter()
+        .filter_map(|blocker| blocker["story"].as_str())
+        .collect();
+    let ready_unblocked: Vec<&String> = tracked
+        .iter()
+        .filter(|(id, story)| story["state"] == "ready" && !blocked.contains(id.as_str()))
+        .map(|(id, _)| *id)
+        .collect();
+    value["ready_unblocked"] = json!(ready_unblocked);
+
+    // A blocker holds up a story when the story is the one it blocks, or the one blocked by any
+    // blocker whose chain reaches it.
+    let mut holds: std::collections::BTreeMap<u64, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for blocker in &blockers {
+        let Some(story) = blocker["story"].as_str().filter(|s| s.starts_with(&wanted)) else {
+            continue;
+        };
+        let chain = blocker["chain"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_u64);
+        for seq in blocker["seq"].as_u64().into_iter().chain(chain) {
+            holds.entry(seq).or_default().insert(story.to_owned());
+        }
+    }
+    let mut held: Vec<(u64, std::collections::BTreeSet<String>)> = holds.into_iter().collect();
+    // Most stories first; ties in record order.
+    held.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(&b.0)));
+    let top: Vec<Value> = held
+        .into_iter()
+        .take(TOP_BLOCKERS)
+        .map(|(seq, stories)| {
+            let blocker = blockers.iter().find(|b| b["seq"].as_u64() == Some(seq));
+            json!({
+                "blocker": seq, "holds_up": stories,
+                "team": blocker.map(|b| b["team"].clone()), "note": blocker.map(|b| b["note"].clone()),
+            })
+        })
+        .collect();
+    value["top_blockers"] = json!(top);
+    if ledger["blockers_truncated"] == json!(true) {
+        value["blockers_truncated"] = json!(true);
+    }
+
+    // Ticks the ledger hasn't verified: absent from the ledger, or there but not Verified.
+    if let Some(stories) = roadmap_stories {
+        let unverified: Vec<Value> = stories
+            .iter()
+            .filter(|story| story["ticked"] == json!(true))
+            .filter_map(|story| {
+                let id = story["id"].as_str()?;
+                let state = ledger["stories"][id]["state"].as_str();
+                (state != Some("verified")).then(|| {
+                    json!({
+                        "id": id, "title": story["title"], "last_changed": story["last_changed"],
+                        "ledger_state": state,
+                    })
+                })
+            })
+            .collect();
+        value["ticks_without_verified"] = json!(unverified);
+    }
+    value
+}
+
 /// The verified figure for a project's stories. It comes only from the ledger, never from ticks.
 pub fn verified_for(prefix: &str, ledger: &Value) -> Value {
     let wanted = format!("{prefix}-");
@@ -841,6 +969,7 @@ async fn status(State(app): State<Arc<App>>) -> Response {
             row["path"] = json!(project.path);
             row["tick_meaning"] = json!(project.tick_meaning);
             row["verified"] = verified_for(&project.prefix, &ledger);
+            row["progress"] = progress(&project.prefix, &row, &ledger);
             row
         })
         .collect();
@@ -1089,6 +1218,96 @@ mod tests {
         let damaged = backup_status(Err("torn".into()), 0, 1.0);
         assert_eq!(damaged["overdue"], true);
         assert!(damaged["reason"].as_str().unwrap().contains("torn"));
+    }
+
+    #[test]
+    fn progress_counts_states_finds_unblocked_ready_stories_and_unverified_ticks() {
+        let roadmap = json!({
+            "read_at_ms": 7,
+            "stories": [
+                {"id": "RAL-1", "title": "one", "ticked": true, "last_changed": "2026-11-03"},
+                {"id": "RAL-2", "title": "two", "ticked": true},
+                {"id": "RAL-3", "title": "three", "ticked": true},
+                {"id": "RAL-4", "title": "four", "ticked": false},
+                {"id": null, "title": "a note", "ticked": true},
+            ],
+        });
+        let ledger = json!({
+            "available": true, "as_of": 30,
+            "stories": {
+                "RAL-1": {"state": "verified"}, "RAL-2": {"state": "in_review"},
+                "RAL-4": {"state": "ready"}, "RAL-5": {"state": "ready"}, "RAL-6": {"state": "ready"},
+                "MUS-1": {"state": "ready"},
+            },
+            "blockers": [
+                {"seq": 10, "team": "rally", "story": "RAL-5", "note": "a", "chain": [12]},
+                {"seq": 11, "team": "rally", "story": "RAL-6", "note": "b", "chain": [12]},
+                {"seq": 12, "team": "muster", "story": "MUS-44", "note": "c", "chain": []},
+                {"seq": 13, "team": "rally", "note": "team-wide", "chain": []},
+            ],
+        });
+        let value = progress("RAL", &roadmap, &ledger);
+        assert_eq!(value["roadmap"]["available"], true);
+        assert_eq!(value["tracked"], 5);
+        assert_eq!(value["states"]["ready"], 3);
+        assert_eq!(value["states"]["verified"], 1);
+        assert_eq!(value["states"]["claimed"], 0);
+        assert_eq!(value["ready_unblocked"], json!(["RAL-4"]));
+        // 12 holds up both RAL-5 and RAL-6 through their chains, so it comes first.
+        assert_eq!(value["top_blockers"][0]["blocker"], 12);
+        assert_eq!(
+            value["top_blockers"][0]["holds_up"],
+            json!(["RAL-5", "RAL-6"])
+        );
+        assert_eq!(value["top_blockers"].as_array().unwrap().len(), 3);
+        let ticks = value["ticks_without_verified"].as_array().unwrap();
+        let ids: Vec<&str> = ticks.iter().map(|t| t["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["RAL-2", "RAL-3"]);
+        assert_eq!(ticks[0]["ledger_state"], "in_review");
+        assert!(
+            ticks[1]["ledger_state"].is_null(),
+            "not in the ledger at all"
+        );
+        // Nothing compares this roadmap with another.
+        for key in value.as_object().unwrap().keys() {
+            assert!(
+                !["rank", "score", "compare", "share"]
+                    .iter()
+                    .any(|w| key.contains(w)),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn progress_says_what_couldnt_be_read_rather_than_showing_zeros() {
+        let ledger = json!({"available": true, "as_of": 1, "stories": {}});
+        let unread = progress("RAL", &json!({"error": "gh failed"}), &ledger);
+        assert_eq!(unread["roadmap"]["available"], false);
+        assert_eq!(unread["roadmap"]["reason"], "gh failed");
+        assert!(unread.get("ticks_without_verified").is_none());
+        let stale = progress(
+            "RAL",
+            &json!({"stories": [], "error": "timed out", "read_at_ms": 3}),
+            &ledger,
+        );
+        assert_eq!(stale["roadmap"]["last_read_failed"], "timed out");
+        let no_ledger = progress(
+            "RAL",
+            &json!({"stories": []}),
+            &json!({"available": false, "reason": "down"}),
+        );
+        assert_eq!(no_ledger["ledger"]["available"], false);
+        assert_eq!(no_ledger["ledger"]["reason"], "down");
+        assert!(no_ledger.get("states").is_none());
+        assert!(no_ledger.get("ticks_without_verified").is_none());
+        // A ledger that failed its check carries no stories, so it's not read as empty.
+        let failed = progress(
+            "RAL",
+            &json!({"stories": []}),
+            &json!({"available": true, "check": {"ok": false}}),
+        );
+        assert_eq!(failed["ledger"]["available"], false);
     }
 
     #[test]

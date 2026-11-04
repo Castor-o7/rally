@@ -285,6 +285,53 @@ function storyList(stories) {
   return list;
 }
 
+// One roadmap's progress for planning (RAL-23). Shows what couldn't be read rather than zeros, and
+// never compares this roadmap with another.
+function progressPanel(progress, untrusted, now) {
+  const panel = el("section", "panel");
+  panel.append(el("h3", "", "Progress"));
+  if (!progress) {
+    panel.append(el("p", "muted", "Not read yet."));
+    return panel;
+  }
+  if (!progress.roadmap.available) {
+    panel.append(el("p", "warning", "⚠ The roadmap couldn't be read: " + progress.roadmap.reason));
+  } else if (progress.roadmap.last_read_failed) {
+    panel.append(el("p", "warning", "⚠ The last roadmap read failed (" + progress.roadmap.last_read_failed
+      + "), so this uses the one from " + age(progress.roadmap.read_at_ms, now)));
+  }
+  if (!progress.ledger.available) {
+    panel.append(el("p", "warning", "⚠ The ledger couldn't be read: " + progress.ledger.reason));
+    return panel;
+  }
+  const states = progress.states;
+  panel.append(table(["Ready", "Claimed", "In review", "Verified", "Sent back"],
+    [[states.ready, states.claimed, states.in_review, states.verified, states.sent_back]]));
+  panel.append(el("p", "muted", progress.tracked + " of this roadmap's stories are in the ledger."));
+  panel.append(el("p", "", "Ready with nothing blocking them: "
+    + (progress.ready_unblocked.length ? progress.ready_unblocked.join(", ") : "none")));
+  if (progress.top_blockers.length) {
+    panel.append(el("p", "muted", "Blockers holding up the most of this roadmap's stories. " + untrusted));
+    panel.append(table(["Blocker", "Team", "Holds up", "Note"], progress.top_blockers.map((b) => [
+      "#" + b.blocker, { text: b.team || "", className: "text" }, b.holds_up.join(", "),
+      { text: b.note || "", className: "text" }])));
+  }
+  if (progress.blockers_truncated) {
+    panel.append(el("p", "warning", "⚠ More open blockers than one page; only the first 200 are counted."));
+  }
+  const ticks = progress.ticks_without_verified;
+  if (ticks) {
+    panel.append(el("p", "", ticks.length
+      ? "Ticked on the roadmap without a Verified record in the ledger:"
+      : "Every ticked story has a Verified record in the ledger."));
+    if (ticks.length) {
+      panel.append(table(["Story", "Title", "Ledger"], ticks.map((t) => [
+        t.id, { text: t.title, className: "text" }, t.ledger_state || "not recorded"])));
+    }
+  }
+  return panel;
+}
+
 // One project's page (RAL-43). Built only from /api/status, and only for a project the viewer lists.
 function renderProject(status, prefix, now) {
   const root = document.getElementById("project-page");
@@ -327,6 +374,9 @@ function renderProject(status, prefix, now) {
     + (project.commit ? " at " + project.commit.slice(0, 7) : "") + ", read " + age(project.read_at_ms, now)));
   if (project.error) roadmap.append(el("p", "warning", "⚠ Last read failed: " + project.error));
 
+  root.append(roadmap);
+  root.append(progressPanel(project.progress, status.untrusted_text, now));
+
   const ledger = el("section", "panel");
   ledger.append(el("h3", "", "Ledger records"));
   const records = status.ledger.available && status.ledger.stories
@@ -358,7 +408,7 @@ function renderProject(status, prefix, now) {
   }
   if (merged.error) facts.append(el("p", "warning", "⚠ Last read failed: " + merged.error));
 
-  root.append(roadmap, ledger, day, facts);
+  root.append(ledger, day, facts);
 }
 
 // The end of the overview: totals across projects, then the watchman's writeup of the whole muster.

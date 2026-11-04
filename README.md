@@ -21,6 +21,8 @@ What Rally gives a team, each part built and verified by the watchman:
   with who and why (RAL-20).
 - **Track records as plain facts.** Each team's stories verified, stories sent back and what was missing, and
   problems reported, as counts and dates with no points or ranking (RAL-21).
+- **Progress for planning.** Per roadmap: stories in each state, ready ones with nothing blocking them, the
+  blockers holding up the most stories, and ticks with no Verified behind them, never comparing teams (RAL-23).
 - **An outage stays visible.** Entries made on the fallback board while the service was down are backfilled
   with when they were made and by whom, beside the time they were recorded, so the ledger never looks
   continuous when it wasn't (RAL-30).
