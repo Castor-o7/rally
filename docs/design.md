@@ -93,9 +93,14 @@ into Verified or Sent back answers it, or the requester or a verifier withdraws 
 a request is open doesn't close it: the request then shows the commit that was merged before its read,
 so the story carries what happened.
 
-Whether an open request blocks a merge is the operator's call, not yet made as of 2026-11-04. Rally
-can't stop a merge on GitHub either way; it records one. When the operator rules, this paragraph
-records it.
+An open request blocks a merge, and the read must cover the head being merged: the muster's rule in
+Muster's `docs/board.md`, which the operator told Rally to record on 2026-11-04. Rally can't stop a
+merge on GitHub, so a merge recorded while a request was open isn't refused, which would hide that it
+happened; it's recorded with `merged_before_read` on the request, as the rule broken.
+
+A read at a different commit than the one requested still answers the request, since the head has
+moved on and the request's commit is no longer what would merge; the history keeps both commits.
+Whether the read covered what was merged is then `commit_differs`, once the merge is recorded.
 
 ## Stalls
 
