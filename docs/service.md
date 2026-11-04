@@ -214,6 +214,22 @@ saving it. A service started on the restored ledger carries on from its head.
 
 Run backups by hand for now; scheduling them on a machine that sleeps comes next.
 
+## Backfilling an outage
+
+While the service is down, teams use the fallback board in Muster's `docs/board.md`. Afterwards, each
+entry made there is recorded with when it was made and by whom (RAL-30):
+
+```
+rally --as <you> --entered-at-ms <when, ms since the epoch> --entered-by <who entered it> <the command as it was>
+```
+
+for example `rally --as watch --entered-at-ms 1793800000000 --entered-by rally-team claim RAL-30 --team rally`.
+The record's own time and source stay the service's time and whoever backfilled it, and the history
+shows both as `at_ms` and `backfilled`, so the gap stays visible and a backfilled record can't pass for a
+live one: an entry time at or after the record's own is refused. The entry is checked as the name that
+entered it, so a backfilled verification is still refused for its own submitter and still names its
+commit. Backfill entries in the order they were made.
+
 ## Known limits
 
 - `--db` works on the ledger's database directly, with no service and no checks on who is writing. It's for

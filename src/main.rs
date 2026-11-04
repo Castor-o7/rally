@@ -46,6 +46,15 @@ struct Cli {
     /// Who you declare yourself to be.
     #[arg(long = "as", env = "RALLY_NAME")]
     name: Option<String>,
+    /// With --entered-by: record this write as an entry made on the fallback board during an
+    /// outage, at this time in milliseconds since the Unix epoch. The record keeps its own time
+    /// too, so the gap shows.
+    #[arg(long, requires = "entered_by")]
+    entered_at_ms: Option<i64>,
+    /// With --entered-at-ms: who made the entry on the fallback board. The entry is checked as
+    /// that name, so a backfilled verification is still refused for its own submitter.
+    #[arg(long, requires = "entered_at_ms")]
+    entered_by: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -952,6 +961,13 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
     };
 
     let name = cli.name.ok_or("--as or RALLY_NAME is needed to write")?;
+    let body = match (cli.entered_at_ms, cli.entered_by) {
+        (Some(entered_at_ms), Some(entered_by)) => json!({
+            "change": "backfill", "entered_at_ms": entered_at_ms, "entered_by": entered_by,
+            "entry": body
+        }),
+        _ => body,
+    };
     let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, true)?;
     match backend {
         Backend::File(store) => {

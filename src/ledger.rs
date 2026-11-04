@@ -84,6 +84,15 @@ pub enum Change {
     /// allowed in any state and changes none. It names no merger, since every session shares one
     /// GitHub account, so the record's source says only who recorded it.
     Merge { story: String, commit: String },
+    /// An entry made on the fallback board during an outage, backfilled afterwards (RAL-30):
+    /// `entry` is the change as it was made, by `entered_by` at `entered_at_ms`. The record's own
+    /// source and time stay those of whoever backfilled it and when, so the gap stays visible and a
+    /// backfilled record can't pass for a live one. The entry's author checks use `entered_by`.
+    Backfill {
+        entered_at_ms: i64,
+        entered_by: String,
+        entry: Box<Change>,
+    },
     /// Someone asks for a read of the story at a commit before it's merged (RAL-32). Allowed in any
     /// state, since the ask can come before the submission. It stays open until a verify or
     /// send-back answers it, or it's withdrawn.
@@ -131,6 +140,7 @@ impl Change {
     fn story(&self) -> &str {
         match self {
             Self::TeamState { story, .. } => story.as_deref().unwrap_or_default(),
+            Self::Backfill { entry, .. } => entry.story(),
             Self::Ready { story }
             | Self::Claim { story, .. }
             | Self::Release { story, .. }
@@ -145,6 +155,15 @@ impl Change {
     }
 }
 
+/// That an entry was made on the fallback board during an outage and backfilled afterwards
+/// (RAL-30), as the backfiller declares. The entry's own `at_ms` and `source` are the backfill's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Backfill {
+    pub entered_at_ms: i64,
+    pub entered_by: String,
+}
+
 /// One step in a story's history.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct HistoryEntry {
@@ -152,7 +171,10 @@ pub struct HistoryEntry {
     pub kind: Kind,
     pub source: Source,
     pub at_ms: i64,
+    /// The change made: for a backfilled entry, the entry itself, with `backfilled` saying so.
     pub change: Change,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backfilled: Option<Backfill>,
     /// Later records that correct this one. The entry itself is never changed otherwise.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub corrected_by: Vec<u64>,
@@ -221,6 +243,8 @@ pub struct TeamEntry {
     pub kind: Kind,
     pub source: Source,
     pub at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backfilled: Option<Backfill>,
     pub status: TeamStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub story: Option<String>,
@@ -300,6 +324,11 @@ pub enum LedgerError {
         story: String,
         name: String,
     },
+    /// A backfilled entry's time isn't before the record's own (RAL-30).
+    BackfillNotEarlier {
+        entered_at_ms: i64,
+        at_ms: i64,
+    },
 }
 
 impl fmt::Display for LedgerError {
@@ -340,6 +369,13 @@ impl fmt::Display for LedgerError {
                     "record {request} isn't an open requested read of {story}"
                 )
             }
+            Self::BackfillNotEarlier {
+                entered_at_ms,
+                at_ms,
+            } => write!(
+                f,
+                "a backfilled entry's time, {entered_at_ms}, must be after the epoch and before the record's own, {at_ms}"
+            ),
             Self::NotTheRequester { story, name } => write!(
                 f,
                 "{name} didn't request this read of {story}; only the requester or a verifier can withdraw it"
@@ -417,8 +453,15 @@ impl Ledger {
         // with it, and the ledger can't forget one it took (RAL-17).
         check_secrets(record)?;
         // A body that isn't a change is refused by `apply`, with its own reason.
-        let Ok(change) = serde_json::from_value::<Change>(record.body().clone()) else {
+        let Ok(parsed) = serde_json::from_value::<Change>(record.body().clone()) else {
             return Ok(());
+        };
+        // A backfilled entry is checked as the entry, by whoever entered it.
+        let (change, actor) = match &parsed {
+            Change::Backfill {
+                entry, entered_by, ..
+            } => (entry.as_ref(), Some(entered_by.as_str())),
+            change => (change, record.source().declared_name.as_deref()),
         };
         // So that `RAL-1` and `RAL-01` can't be two stories.
         let id = change.story();
@@ -441,11 +484,11 @@ impl Ledger {
         }
         // A verified note, even one that changes no state, reads as a check by someone else, so
         // its author mustn't be one of the story's.
-        if let Change::Correct { state: None, .. } = &change
+        if let Change::Correct { state: None, .. } = change
             && record.kind() == Kind::Verified
             && let Some(story) = self.stories.get(id)
         {
-            require_verifier(story, id, record)?;
+            require_verifier(story, id, record.kind(), actor)?;
         }
         Ok(())
     }
@@ -462,6 +505,32 @@ impl Ledger {
         let change: Change = serde_json::from_value(record.body().clone())
             .map_err(|e| LedgerError::InvalidChange(e.to_string()))?;
         check_fields(&change)?;
+        // A backfilled entry is applied as the entry, acting as whoever entered it, and keeps the
+        // record's own source and time, which are the backfill's (RAL-30).
+        let (change, backfill) = match change {
+            Change::Backfill {
+                entered_at_ms,
+                entered_by,
+                entry,
+            } => {
+                if entered_at_ms <= 0 || entered_at_ms >= record.at_ms() {
+                    return Err(LedgerError::BackfillNotEarlier {
+                        entered_at_ms,
+                        at_ms: record.at_ms(),
+                    });
+                }
+                let backfill = Backfill {
+                    entered_at_ms,
+                    entered_by,
+                };
+                (*entry, Some(backfill))
+            }
+            change => (change, None),
+        };
+        let actor = backfill
+            .as_ref()
+            .map(|backfill| backfill.entered_by.as_str())
+            .or(record.source().declared_name.as_deref());
         if let Change::TeamState {
             team,
             status,
@@ -475,6 +544,7 @@ impl Ledger {
                 kind: record.kind(),
                 source: record.source().clone(),
                 at_ms: record.at_ms(),
+                backfilled: backfill,
                 status,
                 story,
                 note,
@@ -521,12 +591,12 @@ impl Ledger {
                 .stories
                 .get_mut(&id)
                 .ok_or_else(|| LedgerError::UnknownStory(id.clone()))?;
-            transition(story, &id, &change, record, seq)?;
+            transition(story, &id, &change, record, actor, seq)?;
         }
 
         let story = self.stories.get_mut(&id).expect("the story exists by now");
         if matches!(change, Change::Claim { .. } | Change::Submit { .. })
-            && let Some(name) = &record.source().declared_name
+            && let Some(name) = actor
         {
             story.authors.insert(name_key(name));
         }
@@ -536,6 +606,7 @@ impl Ledger {
             source: record.source().clone(),
             at_ms: record.at_ms(),
             change,
+            backfilled: backfill,
             corrected_by: Vec::new(),
         });
         self.last_seq = seq;
@@ -544,11 +615,14 @@ impl Ledger {
 }
 
 /// Validates and applies a change to an existing story. Nothing is modified on refusal.
+/// `actor` is the declared name the change is checked as: the record's, or for a backfilled
+/// entry, whoever entered it.
 fn transition(
     story: &mut Story,
     id: &str,
     change: &Change,
     record: &Record,
+    actor: Option<&str>,
     seq: u64,
 ) -> Result<(), LedgerError> {
     let refuse = |from| LedgerError::InvalidTransition {
@@ -556,7 +630,9 @@ fn transition(
         from,
     };
     match change {
-        Change::Ready { .. } | Change::TeamState { .. } => unreachable!("handled by the caller"),
+        Change::Ready { .. } | Change::TeamState { .. } | Change::Backfill { .. } => {
+            unreachable!("handled by the caller")
+        }
         Change::Claim { team, .. } => {
             require_kind(record, Kind::Declared)?;
             match story.state {
@@ -587,13 +663,13 @@ fn transition(
             }
             require_holder(story, id, team)?;
             story.state = State::InReview;
-            story.submitted_by = record.source().declared_name.clone();
+            story.submitted_by = actor.map(str::to_owned);
         }
         Change::Verify { commit, .. } => {
             if story.state != State::InReview {
                 return Err(refuse(story.state));
             }
-            require_verifier(story, id, record)?;
+            require_verifier(story, id, record.kind(), actor)?;
             story.state = State::Verified;
             story.verified_commit = commit.clone();
             // A read answers every open request for one.
@@ -603,7 +679,7 @@ fn transition(
             if story.state != State::InReview {
                 return Err(refuse(story.state));
             }
-            require_verifier(story, id, record)?;
+            require_verifier(story, id, record.kind(), actor)?;
             story.state = State::SentBack;
             story.requested_reads.clear();
         }
@@ -622,7 +698,7 @@ fn transition(
             story.requested_reads.push(RequestedRead {
                 seq,
                 at_ms: record.at_ms(),
-                requested_by: record.source().declared_name.clone().unwrap_or_default(),
+                requested_by: actor.unwrap_or_default().to_owned(),
                 commit: commit.clone(),
                 note: note.clone(),
                 merged_before_read: None,
@@ -640,7 +716,7 @@ fn transition(
             match record.kind() {
                 Kind::Verified => {}
                 Kind::Declared => {
-                    let name = record.source().declared_name.as_deref().unwrap_or_default();
+                    let name = actor.unwrap_or_default();
                     if !same_name(&story.requested_reads[index].requested_by, name) {
                         return Err(LedgerError::NotTheRequester {
                             story: id.to_owned(),
@@ -686,7 +762,7 @@ fn transition(
                     || new_state.is_verifiers()
                     || record.kind() == Kind::Verified
                 {
-                    require_verifier(story, id, record)?;
+                    require_verifier(story, id, record.kind(), actor)?;
                 } else {
                     let team = team.as_deref().ok_or(LedgerError::EmptyField("team"))?;
                     require_holder(story, id, team)?;
@@ -747,9 +823,19 @@ fn require_holder(story: &Story, id: &str, team: &str) -> Result<(), LedgerError
     }
 }
 
-fn require_verifier(story: &Story, id: &str, record: &Record) -> Result<(), LedgerError> {
-    require_kind(record, Kind::Verified)?;
-    let Some(name) = record.source().declared_name.as_deref() else {
+fn require_verifier(
+    story: &Story,
+    id: &str,
+    kind: Kind,
+    actor: Option<&str>,
+) -> Result<(), LedgerError> {
+    if kind != Kind::Verified {
+        return Err(LedgerError::WrongKind {
+            expected: Kind::Verified,
+            found: kind,
+        });
+    }
+    let Some(name) = actor else {
         return Ok(());
     };
     // Anyone who ever claimed or submitted this story counts as an author, as does the team
@@ -778,6 +864,23 @@ fn name_key(name: &str) -> String {
 }
 
 fn check_fields(change: &Change) -> Result<(), LedgerError> {
+    if let Change::Backfill {
+        entered_by, entry, ..
+    } = change
+    {
+        if entered_by.trim().is_empty() {
+            return Err(LedgerError::EmptyField("entered_by"));
+        }
+        if !crate::record::is_good_name(entered_by) {
+            return Err(LedgerError::ControlCharacter("entered_by"));
+        }
+        if matches!(**entry, Change::Backfill { .. }) {
+            return Err(LedgerError::InvalidChange(
+                "a backfilled entry can't itself be a backfill".into(),
+            ));
+        }
+        return check_fields(entry);
+    }
     let id = change.story();
     let story_is_optional = matches!(change, Change::TeamState { story: None, .. });
     if !story_is_optional && !is_story_id(id) {
@@ -818,7 +921,7 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         return Err(LedgerError::InvalidCommit);
     }
     let fields: &[(&'static str, &str)] = match change {
-        Change::Ready { .. } | Change::Merge { .. } => &[],
+        Change::Ready { .. } | Change::Merge { .. } | Change::Backfill { .. } => &[],
         Change::Claim { team, .. }
         | Change::Release { team, .. }
         | Change::TeamState { team, .. } => &[("team", team)],
@@ -1247,6 +1350,153 @@ mod tests {
             Err(LedgerError::WrongKind { .. })
         ));
         assert!(ledger.story(STORY).unwrap().requested_reads.is_empty());
+    }
+
+    fn backfilled(
+        kind: Kind,
+        backfiller: &str,
+        entered_by: &str,
+        entered_at_ms: i64,
+        entry: serde_json::Value,
+    ) -> Record {
+        record(
+            kind,
+            backfiller,
+            json!({
+                "change": "backfill", "entered_at_ms": entered_at_ms, "entered_by": entered_by,
+                "entry": entry
+            }),
+        )
+    }
+
+    #[test]
+    fn a_backfilled_entry_keeps_the_records_own_time_beside_when_it_was_entered() {
+        // Records are made at 1_000; the fallback board entry was at 400, by bob, and the
+        // watchman backfills it.
+        let claim = json!({"change": "claim", "story": STORY, "team": "rally"});
+        let entry = backfilled(Kind::Declared, "watch", "bob", 400, claim.clone());
+        let ledger = ledger_with(&[ready(), entry]);
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.state, State::Claimed);
+        let live = &story.history[0];
+        let back = &story.history[1];
+        assert_eq!(live.backfilled, None);
+        assert_eq!(back.at_ms, 1_000, "the record's own time, not the entry's");
+        assert_eq!(back.source.declared_name.as_deref(), Some("watch"));
+        assert_eq!(
+            back.backfilled,
+            Some(Backfill {
+                entered_at_ms: 400,
+                entered_by: "bob".into()
+            })
+        );
+        assert_eq!(
+            back.change,
+            serde_json::from_value::<Change>(claim).unwrap()
+        );
+        // A team's state the same way.
+        let state = json!({"change": "team_state", "team": "rally", "status": "working"});
+        let ledger = ledger_with(&[backfilled(Kind::Declared, "watch", "bob", 400, state)]);
+        let team = &ledger.teams()["rally"].current;
+        assert_eq!(team.at_ms, 1_000);
+        assert_eq!(team.backfilled.as_ref().unwrap().entered_by, "bob");
+    }
+
+    #[test]
+    fn a_backfilled_entry_cannot_pass_for_a_live_one() {
+        let claim = json!({"change": "claim", "story": STORY, "team": "rally"});
+        for (entered_at_ms, reason) in [
+            (1_000, "not before"),
+            (1_001, "after"),
+            (0, "epoch"),
+            (-5, "before epoch"),
+        ] {
+            let mut ledger = ledger_with(&[ready()]);
+            let entry = backfilled(Kind::Declared, "watch", "bob", entered_at_ms, claim.clone());
+            assert_eq!(
+                apply_next(&mut ledger, &entry),
+                Err(LedgerError::BackfillNotEarlier {
+                    entered_at_ms,
+                    at_ms: 1_000
+                }),
+                "{reason}"
+            );
+            assert_eq!(state(&ledger), State::Ready);
+        }
+        let mut ledger = ledger_with(&[ready()]);
+        let nobody = backfilled(Kind::Declared, "watch", " ", 400, claim.clone());
+        assert_eq!(
+            apply_next(&mut ledger, &nobody),
+            Err(LedgerError::EmptyField("entered_by"))
+        );
+        let control = backfilled(Kind::Declared, "watch", "bob\u{7}", 400, claim.clone());
+        assert_eq!(
+            apply_next(&mut ledger, &control),
+            Err(LedgerError::ControlCharacter("entered_by"))
+        );
+        let inner = json!({
+            "change": "backfill", "entered_at_ms": 300, "entered_by": "bob", "entry": claim
+        });
+        let nested = backfilled(Kind::Declared, "watch", "bob", 400, inner);
+        assert!(matches!(
+            apply_next(&mut ledger, &nested),
+            Err(LedgerError::InvalidChange(_))
+        ));
+        // The entry itself is still checked: a bad change inside is refused the same way.
+        let short = json!({"change": "merge", "story": STORY, "commit": "abc"});
+        let bad = backfilled(Kind::Declared, "watch", "bob", 400, short);
+        assert_eq!(
+            apply_next(&mut ledger, &bad),
+            Err(LedgerError::InvalidCommit)
+        );
+        assert_eq!(ledger.story(STORY).unwrap().history.len(), 1);
+    }
+
+    #[test]
+    fn a_backfilled_entry_is_checked_as_whoever_entered_it() {
+        let verify = json!({"change": "verify", "story": STORY, "note": "fine", "commit": COMMIT});
+        // The watchman backfills a verification the submitter wrote on the board: refused, as it
+        // would have been live.
+        let mut ledger = ledger_with(&[ready(), claim(), submit()]);
+        let own = backfilled(Kind::Verified, "watch", "alice", 400, verify.clone());
+        assert!(matches!(
+            apply_next(&mut ledger, &own),
+            Err(LedgerError::SelfVerification { .. })
+        ));
+        // The submitter backfills the watchman's verification: allowed, and the verifier is the
+        // watchman. The record's kind is still what the entry needs.
+        let theirs = backfilled(Kind::Verified, "alice", "watch", 400, verify.clone());
+        apply_next(&mut ledger, &theirs).unwrap();
+        assert_eq!(state(&ledger), State::Verified);
+        let declared = backfilled(Kind::Declared, "alice", "watch", 400, verify.clone());
+        let mut ledger = ledger_with(&[ready(), claim(), submit()]);
+        assert!(matches!(
+            apply_next(&mut ledger, &declared),
+            Err(LedgerError::WrongKind { .. })
+        ));
+        // A backfilled submission makes whoever entered it an author, and the new rules apply to
+        // the entry: a backfilled verification names its commit.
+        let submit = json!({"change": "submit", "story": STORY, "team": "rally", "evidence": "x"});
+        let mut ledger = ledger_with(&[ready(), claim()]);
+        apply_next(
+            &mut ledger,
+            &backfilled(Kind::Declared, "watch", "bob", 400, submit),
+        )
+        .unwrap();
+        assert_eq!(
+            ledger.story(STORY).unwrap().submitted_by.as_deref(),
+            Some("bob")
+        );
+        assert!(matches!(
+            apply_next(&mut ledger, &verify_as("bob")),
+            Err(LedgerError::SelfVerification { .. })
+        ));
+        let no_commit = json!({"change": "verify", "story": STORY, "note": "fine"});
+        let old = backfilled(Kind::Verified, "watch", "watch", 400, no_commit);
+        assert_eq!(
+            ledger.check(ledger.last_seq() + 1, &old),
+            Err(LedgerError::MissingCommit)
+        );
     }
 
     #[test]
