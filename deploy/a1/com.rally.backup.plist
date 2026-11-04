@@ -6,15 +6,26 @@
        Murph into this machine's backup directory, with the read-only backup pairing. launchd runs a
        missed interval when the machine wakes, which is the catch-up after the lid opens. The command
        exits non-zero when the service can't be reached, saying how long ago the last backup was and
-       whether that's overdue; the viewer shows the same from head.json. Install as docs/service.md says. -->
+       whether that's overdue; the viewer shows the same from head.json.
+
+       rally runs directly, not through a shell, so that macOS's Local Network permission is asked
+       for, and granted, for rally itself. launchd doesn't expand ~ or $HOME, so __HOME__ is filled in
+       when it's installed, as docs/service.md says. -->
   <key>Label</key>
   <string>com.rally.backup</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/sh</string>
-    <string>-c</string>
-    <string>exec "$HOME/.local/bin/rally" --config "$HOME/.config/rally/backup.json" backup --to "$HOME/.local/state/rally-backup" >> "$HOME/.local/state/rally-backup.log" 2>&amp;1</string>
+    <string>__HOME__/.local/bin/rally</string>
+    <string>--config</string>
+    <string>__HOME__/.config/rally/backup.json</string>
+    <string>backup</string>
+    <string>--to</string>
+    <string>__HOME__/.local/state/rally-backup</string>
   </array>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.local/state/rally-backup.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.local/state/rally-backup.log</string>
   <key>StartInterval</key>
   <integer>900</integer>
   <key>RunAtLoad</key>
