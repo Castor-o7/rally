@@ -322,6 +322,7 @@ struct Snapshot {
     muster_summary: Option<Value>,
     ledger: Option<Value>,
     roster: Option<Value>,
+    backup: Option<Value>,
 }
 
 fn now_ms() -> u64 {
@@ -684,6 +685,44 @@ struct App {
     projects: Vec<Project>,
     snapshot: Mutex<Snapshot>,
     allowed_hosts: Vec<String>,
+    /// The backup directory on this machine to report on, if any (RAL-15).
+    backup: Option<BackupWatch>,
+}
+
+/// A backup directory the viewer reports on: the head it reached, how old it is, and whether that's
+/// overdue (RAL-15).
+#[derive(Clone, Debug)]
+pub struct BackupWatch {
+    pub dir: std::path::PathBuf,
+    pub max_age_hours: f64,
+}
+
+/// What the viewer says about this machine's backup. `watched` is false when there's none to report
+/// on; otherwise `overdue` is true when the last backup is older than allowed, or there is none, or
+/// its head can't be read.
+pub fn backup_status(
+    saved: Result<Option<crate::backup::Saved>, String>,
+    now_ms: i64,
+    max_age_hours: f64,
+) -> Value {
+    match saved {
+        Err(reason) => json!({
+            "watched": true, "available": false, "overdue": true,
+            "reason": format!("the backup's head can't be read: {reason}"),
+        }),
+        Ok(None) => json!({
+            "watched": true, "available": false, "overdue": true,
+            "reason": "no backup has been made yet",
+        }),
+        Ok(Some(saved)) => {
+            let age_hours = (now_ms - saved.at_ms).max(0) as f64 / 3_600_000.0;
+            json!({
+                "watched": true, "available": true, "seq": saved.seq, "saved_at_ms": saved.at_ms,
+                "age_hours": age_hours, "max_age_hours": max_age_hours,
+                "overdue": age_hours > max_age_hours,
+            })
+        }
+    }
 }
 
 /// Runs the viewer until the process ends. Refuses anything but a loopback address.
@@ -691,12 +730,14 @@ pub async fn serve(
     listener: TcpListener,
     projects: Vec<Project>,
     ledger: LedgerReader,
+    backup: Option<BackupWatch>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let address = listener.local_addr()?;
     let app = Arc::new(App {
         projects,
         snapshot: Mutex::new(Snapshot::default()),
         allowed_hosts: allowed_hosts(address)?,
+        backup,
     });
     let refresher = app.clone();
     std::thread::spawn(move || refresh_forever(&refresher, &ledger));
@@ -756,10 +797,15 @@ fn refresh_forever(app: &App, ledger: &LedgerReader) {
             Err(reason) => json!({"available": false, "reason": reason}),
         };
         let roster = read_roster();
+        let backup = app.backup.as_ref().map(|watch| {
+            let saved = crate::backup::saved(&watch.dir).map_err(|e| e.to_string());
+            backup_status(saved, now_ms() as i64, watch.max_age_hours)
+        });
         {
             let mut snapshot = app.snapshot.lock().expect("no panics");
             snapshot.ledger = Some(ledger_value);
             snapshot.roster = Some(roster);
+            snapshot.backup = backup;
         }
         std::thread::sleep(LIVE_EVERY);
     }
@@ -802,10 +848,15 @@ async fn status(State(app): State<Arc<App>>) -> Response {
         .muster_summary
         .clone()
         .unwrap_or_else(|| json!({"reason": "still reading it."}));
+    let backup = snapshot
+        .backup
+        .clone()
+        .unwrap_or_else(|| json!({"watched": false}));
     Json(json!({
         "untrusted_text": UNTRUSTED_TEXT,
         "ledger": ledger,
         "roster": roster,
+        "backup": backup,
         "projects": projects,
         "muster_summary": muster_summary,
     }))
@@ -1007,6 +1058,37 @@ mod tests {
         assert_eq!(figure["verified"], 1);
         assert_eq!(figure["tracked"], 2);
         assert_eq!(verified_for("CAT", &ledger)["available"], false);
+    }
+
+    #[test]
+    fn the_backup_status_says_how_old_the_backup_is_and_when_that_is_overdue() {
+        use crate::backup::Saved;
+        let saved = |at_ms| {
+            Ok(Some(Saved {
+                seq: 7,
+                hash: "x".into(),
+                at_ms,
+            }))
+        };
+        let hour = 3_600_000;
+        let fresh = backup_status(saved(10 * hour), 10 * hour + hour / 2, 1.0);
+        assert_eq!(fresh["watched"], true);
+        assert_eq!(fresh["available"], true);
+        assert_eq!(fresh["seq"], 7);
+        assert_eq!(fresh["overdue"], false);
+        assert_eq!(fresh["age_hours"], 0.5);
+        let overdue = backup_status(saved(10 * hour), 12 * hour, 1.0);
+        assert_eq!(overdue["overdue"], true);
+        assert_eq!(overdue["age_hours"], 2.0);
+        // A head from the future counts as now, not as negative age.
+        let ahead = backup_status(saved(12 * hour), 10 * hour, 1.0);
+        assert_eq!(ahead["age_hours"], 0.0);
+        let none = backup_status(Ok(None), 0, 1.0);
+        assert_eq!(none["available"], false);
+        assert_eq!(none["overdue"], true);
+        let damaged = backup_status(Err("torn".into()), 0, 1.0);
+        assert_eq!(damaged["overdue"], true);
+        assert!(damaged["reason"].as_str().unwrap().contains("torn"));
     }
 
     #[test]

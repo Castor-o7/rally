@@ -71,9 +71,25 @@ function table(headers, rows) {
   return wrap;
 }
 
-function renderLedger(ledger, now) {
+function renderBackup(root, backup, now) {
+  if (!backup || backup.watched !== true) return;
+  if (!backup.available) {
+    root.append(el("p", "warning", "⚠ Backup overdue: " + (backup.reason || "none has been made")));
+    return;
+  }
+  const where = "record " + backup.seq + ", saved " + age(backup.saved_at_ms, now);
+  if (backup.overdue) {
+    root.append(el("p", "warning", "⚠ Backup overdue: the last reached " + where
+      + ", and more than " + backup.max_age_hours + " hours is overdue"));
+  } else {
+    root.append(el("p", "muted", "Backed up on this machine to " + where));
+  }
+}
+
+function renderLedger(ledger, backup, now) {
   const root = document.getElementById("ledger");
   root.replaceChildren();
+  renderBackup(root, backup, now);
   if (!ledger.available) {
     root.append(el("p", "", "The ledger isn't available yet."));
     root.append(el("p", "muted", ledger.reason || ""));
@@ -380,7 +396,7 @@ function show(status, now) {
     try { prefix = decodeURIComponent(match[1]); } catch (error) { prefix = ""; }
     renderProject(status, prefix, now);
   } else {
-    renderLedger(status.ledger, now);
+    renderLedger(status.ledger, status.backup, now);
     renderRoadmaps(status.projects, now);
     renderTeams(status, now);
     renderMuster(status, now);

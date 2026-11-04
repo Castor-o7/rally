@@ -100,9 +100,11 @@ carried over by the operator's hand. Each step's output was read as it ran.
    refused. The service's own `check --expect` against the head saved on a1 was ok.
 5. Catch-up and the overdue alert: a second backup added nothing and kept the head. With the service unreachable,
    `backup` wrote nothing and said how long ago the last backup was, and with a zero allowance said it was overdue.
-6. Step 5 of the first check, the read-only viewer, wasn't run: a1 has no viewer pairing yet.
+6. Step 5 of the first check, run later the same day with the read-only backup pairing standing in for a viewer
+   pairing: `rally web --backup-dir ~/.local/state/rally-backup` showed the ledger as read-only and checked at
+   `1:ed76b6b0…`, Rally's team state, and the backup as reaching record 1 and not overdue.
 
-Backups still run by hand; scheduling them on a1 is next.
+Backups run by hand until the operator installs the launchd agent in `docs/service.md`, "Scheduling on a1".
 
 ## Undoing it
 
