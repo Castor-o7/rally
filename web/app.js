@@ -310,6 +310,10 @@ function progressPanel(progress, untrusted, now) {
   panel.append(el("p", "muted", progress.tracked + " of this roadmap's stories are in the ledger."));
   panel.append(el("p", "", "Ready with nothing blocking them: "
     + (progress.ready_unblocked.length ? progress.ready_unblocked.join(", ") : "none")));
+  if (progress.blockers_truncated) {
+    panel.append(el("p", "warning", "⚠ Only the first 200 open blockers were read, so a story above may be "
+      + "blocked by one that wasn't."));
+  }
   if (progress.top_blockers.length) {
     panel.append(el("p", "muted", "Blockers holding up the most of this roadmap's stories. " + untrusted));
     panel.append(table(["Blocker", "Team", "Holds up", "Note"], progress.top_blockers.map((b) => [
