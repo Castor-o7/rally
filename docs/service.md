@@ -212,7 +212,27 @@ protections, saves the head file, and then reopens the ledger as the service wou
 gives `expect`, and the backup's own `head.json`, which is the same unless the last backup stopped before
 saving it. A service started on the restored ledger carries on from its head.
 
-Run backups by hand for now; scheduling them on a machine that sleeps comes next.
+### Scheduling on a1
+
+a1 sleeps with its lid closed, so its backups are a launchd agent, `deploy/a1/com.rally.backup.plist`: every 15
+minutes it runs `rally backup` with the read-only backup pairing into `~/.local/state/rally-backup`, logging to
+`~/.local/state/rally-backup.log`. launchd runs a missed interval when the machine wakes, so the first run after
+the lid opens is the catch-up. The command exits non-zero when the service can't be reached, saying how long ago
+the last backup was and whether that's overdue, and the viewer shows the same from `head.json` when started with
+`rally web --backup-dir ~/.local/state/rally-backup` (overdue past `--backup-max-age-hours`, 1 by default, which
+is four missed runs). A Muster message to the watchman when it's overdue is a later step, limited to one a day.
+
+Installing it changes the operator's machine, so it's the operator's to do, on their word:
+
+```bash
+install -m 755 target/release/rally ~/.local/bin/rally
+install -m 644 deploy/a1/com.rally.backup.plist ~/Library/LaunchAgents/com.rally.backup.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rally.backup.plist
+launchctl kickstart -k gui/$(id -u)/com.rally.backup    # first run now; then tail the log
+```
+
+To stop it: `launchctl bootout gui/$(id -u)/com.rally.backup`. The agent holds no secret; the pairing stays in
+`~/.config/rally/backup.json`, readable only by the account.
 
 ## Backfilling an outage
 
@@ -255,8 +275,8 @@ commit. Backfill entries in the order they were made.
   checked (RAL-42). Keep it in a directory only this account can write.
 - Tests show a commit cut off before Postgres committed it (rolled back), and one that committed with its reply
   lost; a real reply lost in transit isn't reproduced.
-- Backups (RAL-15) aren't scheduled yet. A restore on a1 was run for real on 2026-11-04; the run is recorded
-  in [deploy-murph.md](deploy-murph.md).
+- Backups (RAL-15) are scheduled only once the operator installs the launchd agent on a1 (above). A restore on
+  a1 was run for real on 2026-11-04; the run is recorded in [deploy-murph.md](deploy-murph.md).
 - Write limits are per machine, so all of a machine's sessions share them. Watch for 429s in real use.
 - One compromised credential could reach the 64 MiB stop in about 6 hours, and several credentials
   proportionally faster, which blocks everyone's writes

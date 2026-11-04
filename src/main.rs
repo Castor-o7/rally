@@ -19,7 +19,7 @@ use rally::record::{Kind, Record, Source};
 use rally::server::{self, RateLimit};
 use rally::store::{Head, Location, Store};
 use rally::views::{self, Page};
-use rally::web::{self, DEFAULT_PROJECTS, LedgerReader, Project};
+use rally::web::{self, BackupWatch, DEFAULT_PROJECTS, LedgerReader, Project};
 
 /// A ledger of progress for a muster of agents.
 #[derive(Parser)]
@@ -115,6 +115,13 @@ enum Command {
         /// The projects to show, instead of the defaults.
         #[arg(long)]
         projects: Option<PathBuf>,
+        /// This machine's backup directory, to show how old the last backup is and whether that's
+        /// overdue (RAL-15).
+        #[arg(long)]
+        backup_dir: Option<PathBuf>,
+        /// With --backup-dir: a backup older than this many hours is shown as overdue.
+        #[arg(long, default_value_t = 1.0)]
+        backup_max_age_hours: f64,
     },
     /// On the service's host, add a machine and write its pair code to a private file.
     AddMachine {
@@ -583,6 +590,7 @@ fn run_viewer(
     projects: Option<PathBuf>,
     location: Option<Location>,
     config: PathBuf,
+    backup: Option<BackupWatch>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let text = match projects {
         Some(path) => std::fs::read_to_string(path)?,
@@ -598,7 +606,7 @@ fn run_viewer(
     println!("{}", json!({"listening": listening.to_string()}));
     std::io::Write::flush(&mut std::io::stdout())?;
     let reader = ledger_reader(location, config);
-    tokio::runtime::Runtime::new()?.block_on(web::serve(listener, projects, reader))?;
+    tokio::runtime::Runtime::new()?.block_on(web::serve(listener, projects, reader, backup))?;
     Ok(json!({"stopped": true}).to_string())
 }
 
@@ -732,8 +740,17 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             write_private(&path, serde_json::to_string(&pairing)?.as_bytes())?;
             return Ok(json!({"paired": pairing.address, "config": path}).to_string());
         }
-        Command::Web { bind, projects } => {
-            return run_viewer(&bind, projects, location, config_path(cli.config)?);
+        Command::Web {
+            bind,
+            projects,
+            backup_dir,
+            backup_max_age_hours,
+        } => {
+            let backup = backup_dir.map(|dir| BackupWatch {
+                dir,
+                max_age_hours: backup_max_age_hours,
+            });
+            return run_viewer(&bind, projects, location, config_path(cli.config)?, backup);
         }
         Command::Backup { to, max_age_hours } => {
             if location.is_some() {

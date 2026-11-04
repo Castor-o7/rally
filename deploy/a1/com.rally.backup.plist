@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Rally's backup agent for a1 (RAL-15): every 15 minutes, pull what's new from the service on
+       Murph into this machine's backup directory, with the read-only backup pairing. launchd runs a
+       missed interval when the machine wakes, which is the catch-up after the lid opens. The command
+       exits non-zero when the service can't be reached, saying how long ago the last backup was and
+       whether that's overdue; the viewer shows the same from head.json. Install as docs/service.md says. -->
+  <key>Label</key>
+  <string>com.rally.backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>exec "$HOME/.local/bin/rally" --config "$HOME/.config/rally/backup.json" backup --to "$HOME/.local/state/rally-backup" >> "$HOME/.local/state/rally-backup.log" 2>&amp;1</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>
