@@ -260,9 +260,10 @@ fn it_refuses_to_listen_beyond_loopback() {
 const FAKE_GH: &str = r#"#!/bin/sh
 case "$*" in
   *commits/HEAD*) echo 0123456789abcdef0123456789abcdef01234567 ;;
+  *graphql*blame*) printf '[{"startingLine":1,"endingLine":2,"commit":{"committedDate":"2026-10-29T08:00:00Z","message":"<script>alert(6)</script>"}},{"startingLine":3,"endingLine":3,"commit":{"committedDate":"2026-10-30T12:00:00Z"}},{"startingLine":4,"endingLine":4,"commit":{"committedDate":"<img src=x onerror=alert(7)>"}}]' ;;
   *graphql*docs/muster*) printf '2026-11-02.md\n2026-11-03.md\nnotes.md\n' ;;
   *contents/docs/muster/2026-11-03.md*) printf '<script>alert(3)</script> the day went well' ;;
-  *contents/docs/roadmap.md*) printf '## Open\n- [ ] **RAL-1: <img src=x onerror=alert(4)>**\n' ;;
+  *contents/docs/roadmap.md*) printf '## Open\n- [ ] **RAL-1: <img src=x onerror=alert(4)>**\n- [x] **RAL-2: Done.**\n- [x] **RAL-3: Dated by a hostile blame.**\n' ;;
   "pr list"*) printf '[{"number":7,"title":"<script>alert(5)</script>","mergedAt":"2026-11-03T00:00:00Z"}]' ;;
   *) echo "unexpected: $*" >&2; exit 1 ;;
 esac
@@ -298,13 +299,27 @@ fn a_project_page_s_summary_stories_and_pr_titles_arrive_only_as_json_data() {
         project["merged"]["prs"][0]["title"],
         "<script>alert(5)</script>"
     );
+    // RAL-44: a ticked line gets the date of the commit that last changed it, as data only.
+    assert_eq!(project["stories"][1]["last_changed"], "2026-10-30");
+    assert!(
+        project["stories"][2].get("last_changed").is_none(),
+        "a date that isn't one is dropped"
+    );
+    assert!(
+        project["stories"][0].get("last_changed").is_none(),
+        "only ticked lines are dated"
+    );
+    assert!(
+        !value.to_string().contains("alert(6)"),
+        "commit messages aren't kept"
+    );
     assert_eq!(
         value["muster_summary"], project["summary"],
         "Rally's own summary is the muster's"
     );
     for path in ["/", "/app.js"] {
         let page = get(&viewer, path).1;
-        for attack in ["alert(3)", "alert(4)", "alert(5)"] {
+        for attack in ["alert(3)", "alert(4)", "alert(5)", "alert(6)", "alert(7)"] {
             assert!(!page.contains(attack), "{path} carries {attack}");
         }
     }
