@@ -238,6 +238,21 @@ at four runs an hour it grows by under 4 MB a year even if a1 never slept, and c
 To stop it: `launchctl bootout gui/$(id -u)/com.rally.backup`. The agent holds no secret; the pairing stays in
 `~/.config/rally/backup.json`, readable only by the account.
 
+## Blockers
+
+A team says what it's waiting on with `rally block --team <team> [--story <its story>] [--on-story <story>]
+[--on-team <team>] --note <what>` (RAL-20). With `--story`, that story is blocked; without, the whole team is,
+and the two are listed apart as `blocks: story` or `blocks: team`. `--on-story` may name another team's story,
+even one the ledger doesn't track. The blocker is the record's number, and it stays open until someone runs
+`rally unblock <number> --note <why>`, which records who closed it and why. A blocker is apart from a story's
+state and a team's declared state: blocking changes neither.
+
+`rally blockers` lists the open ones, each with `waits_on`, the open blockers it waits on directly, and `chain`,
+everything it waits on through those, nearest first. Waiting on a story means its open blockers; waiting on a team
+means every open blocker that team holds. A chain that comes back round says `cycle`, and one over 100 long says
+`chain_truncated`. `--all` adds closed blockers with their closure, and `--as-of` shows them as they stood. Over
+the service these are `/v1/blockers` and `/v1/blockers/all`.
+
 ## Backfilling an outage
 
 While the service is down, teams use the fallback board in Muster's `docs/board.md`. Afterwards, each

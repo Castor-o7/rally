@@ -188,6 +188,41 @@ enum Command {
         #[arg(long)]
         commit: Option<String>,
     },
+    /// Say what your team, or one of its stories, is waiting on. Prints the blocker's record number.
+    Block {
+        #[arg(long)]
+        team: String,
+        /// The story that's waiting. Without it, the whole team is.
+        #[arg(long)]
+        story: Option<String>,
+        /// Another story it waits on, which can be another team's.
+        #[arg(long)]
+        on_story: Option<String>,
+        /// Another team it waits on.
+        #[arg(long)]
+        on_team: Option<String>,
+        /// What it's waiting on, in words.
+        #[arg(long)]
+        note: String,
+    },
+    /// Close an open blocker, saying why.
+    Unblock {
+        /// The blocker's record number, as `block` or `blockers` gave it.
+        blocker: u64,
+        #[arg(long)]
+        note: String,
+    },
+    /// List open blockers, with what each waits on and its chain; with --all, closed ones too.
+    Blockers {
+        #[arg(long)]
+        all: bool,
+        /// Show them as they stood after this record.
+        #[arg(long)]
+        as_of: Option<u64>,
+        /// The blockers after this record number, as the last page's `next` gave it.
+        #[arg(long)]
+        after: Option<String>,
+    },
     /// Ask for a read of a story at a commit before it's merged. Open until a verify or send-back
     /// answers it, or it's withdrawn.
     RequestRead {
@@ -868,6 +903,44 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 views::teams(ledger, team.as_deref(), page)
             });
         }
+        Command::Blockers { all, as_of, after } => {
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
+            let path = if all {
+                "/v1/blockers/all"
+            } else {
+                "/v1/blockers"
+            };
+            let page = Page {
+                after,
+                before: None,
+            };
+            return backend.read(path, as_of, &page, |ledger, page| {
+                views::blockers(ledger, all, page)
+            });
+        }
+        Command::Block {
+            team,
+            story,
+            on_story,
+            on_team,
+            note,
+        } => {
+            let mut body = json!({"change": "block", "team": team, "note": note});
+            for (field, value) in [
+                ("story", story),
+                ("on_story", on_story),
+                ("on_team", on_team),
+            ] {
+                if let Some(value) = value {
+                    body[field] = json!(value);
+                }
+            }
+            (Kind::Declared, body)
+        }
+        Command::Unblock { blocker, note } => (
+            Kind::Declared,
+            json!({"change": "unblock", "blocker": blocker, "note": note}),
+        ),
         Command::TeamState {
             team,
             status,

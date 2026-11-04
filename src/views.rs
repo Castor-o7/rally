@@ -10,7 +10,7 @@ use std::ops::Bound;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::ledger::Ledger;
+use crate::ledger::{Blocker, Ledger};
 
 /// Goes with everything shown to a reader, who may be an agent (RAL-16).
 pub const UNTRUSTED_TEXT: &str = "Team names, declared names, notes and evidence were written by \
@@ -137,6 +137,116 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
     Ok(value)
 }
 
+/// The most blockers one chain follows.
+pub const CHAIN_LIMIT: usize = 100;
+
+/// The open blockers that `blocker` waits on directly: those holding up the story it names in
+/// `on_story`, and every one held by the team it names in `on_team`.
+fn waits_on<'a>(blocker: &Blocker, open: &[&'a Blocker]) -> Vec<&'a Blocker> {
+    let team_key = |team: &str| team.trim().to_lowercase();
+    open.iter()
+        .copied()
+        .filter(|other| other.seq != blocker.seq)
+        .filter(|other| {
+            let by_story = blocker.on_story.is_some() && other.story == blocker.on_story;
+            let by_team = blocker
+                .on_team
+                .as_deref()
+                .is_some_and(|team| team_key(team) == team_key(&other.team));
+            by_story || by_team
+        })
+        .collect()
+}
+
+/// Everything `blocker` waits on, directly or through others, nearest first, up to
+/// [`CHAIN_LIMIT`]; whether it was cut off there; and whether the chain comes back round to it.
+fn chain(blocker: &Blocker, open: &[&Blocker]) -> (Vec<u64>, bool, bool) {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut order = Vec::new();
+    let mut queue = std::collections::VecDeque::from([blocker]);
+    let mut cycle = false;
+    while let Some(next) = queue.pop_front() {
+        for waited in waits_on(next, open) {
+            if waited.seq == blocker.seq {
+                cycle = true;
+                continue;
+            }
+            if seen.insert(waited.seq) {
+                if order.len() == CHAIN_LIMIT {
+                    return (order, true, cycle);
+                }
+                order.push(waited.seq);
+                queue.push_back(waited);
+            }
+        }
+    }
+    (order, false, cycle)
+}
+
+/// Blockers a page at a time, by record number (RAL-20): only the open ones, or with `all`, closed
+/// ones too. Each open one says what it blocks, which open blockers it waits on directly, and its
+/// whole chain. `Err` holds a bad page.
+pub fn blockers(ledger: &Ledger, all: bool, page: &Page) -> Result<Value, String> {
+    let as_of = ledger.last_seq();
+    let after = match page.after.as_deref() {
+        Some(after) => Some(
+            after
+                .parse::<u64>()
+                .map_err(|_| format!("after must be a record number, not {after:?}"))?,
+        ),
+        None => None,
+    };
+    let open: Vec<&Blocker> = ledger
+        .blockers()
+        .values()
+        .filter(|blocker| blocker.closed.is_none())
+        .collect();
+    let start = after.map_or(Bound::Unbounded, Bound::Excluded);
+    let mut rows: Vec<&Blocker> = ledger
+        .blockers()
+        .range((start, Bound::Unbounded))
+        .map(|(_, blocker)| blocker)
+        .filter(|blocker| all || blocker.closed.is_none())
+        .take(LIST_LIMIT + 1)
+        .collect();
+    let next = if rows.len() > LIST_LIMIT {
+        rows.truncate(LIST_LIMIT);
+        rows.last().map(|blocker| blocker.seq)
+    } else {
+        None
+    };
+    let shown: Vec<Value> = rows
+        .into_iter()
+        .map(|blocker| {
+            let mut row = json!(blocker);
+            row["blocks"] = json!(if blocker.story.is_some() {
+                "story"
+            } else {
+                "team"
+            });
+            if blocker.closed.is_none() {
+                let direct: Vec<u64> = waits_on(blocker, &open).iter().map(|b| b.seq).collect();
+                let (chain, truncated, cycle) = chain(blocker, &open);
+                row["waits_on"] = json!(direct);
+                row["chain"] = json!(chain);
+                if truncated {
+                    row["chain_truncated"] = json!(true);
+                }
+                if cycle {
+                    row["cycle"] = json!(true);
+                }
+            }
+            row
+        })
+        .collect();
+    let mut value = json!({
+        "untrusted_text": UNTRUSTED_TEXT, "as_of": as_of, "blockers": shown,
+        "open": open.len(),
+    });
+    continue_with(&mut value, "next", next.map(|seq| json!(seq.to_string())));
+    Ok(value)
+}
+
 /// Every team's declared state, a page at a time, or one team with a page of its history. `Err`
 /// holds what wasn't found.
 pub fn teams(ledger: &Ledger, team: Option<&str>, page: &Page) -> Result<Value, String> {
@@ -194,6 +304,106 @@ mod tests {
             ));
         }
         Ledger::replay(&records).unwrap()
+    }
+
+    fn block(body: Value) -> Record {
+        let mut full = json!({"change": "block", "team": "rally", "note": "waiting"});
+        full.as_object_mut()
+            .unwrap()
+            .extend(body.as_object().unwrap().clone());
+        record(full)
+    }
+
+    #[test]
+    fn open_blockers_show_what_they_wait_on_and_their_chains() {
+        // 1: rally's RAL-7 waits on MUS-44. 2: muster's MUS-44 waits on the muster team's own
+        // blocker 3, a team-wide wait on the operator. 4: catapp waits on the rally team.
+        // 5: a closed one, and 6 and 7 wait on each other.
+        let records = vec![
+            block(json!({"story": "RAL-7", "on_story": "MUS-44"})),
+            block(json!({"team": "Muster", "story": "MUS-44", "on_team": "operator"})),
+            block(json!({"team": "operator"})),
+            block(json!({"team": "catapp", "on_team": "Rally"})),
+            block(json!({"team": "gone"})),
+            record(json!({"change": "unblock", "blocker": 5, "note": "fixed"})),
+            block(json!({"team": "a", "story": "A-1", "on_story": "B-1"})),
+            block(json!({"team": "b", "story": "B-1", "on_story": "A-1"})),
+        ];
+        let ledger = Ledger::replay(&records).unwrap();
+        let value = blockers(&ledger, false, &Page::default()).unwrap();
+        assert_eq!(value["open"], 6);
+        let rows = value["blockers"].as_array().unwrap();
+        let row = |seq: u64| rows.iter().find(|r| r["seq"] == seq).unwrap();
+        assert!(
+            rows.iter().all(|r| r["seq"] != 5),
+            "closed ones aren't listed"
+        );
+        assert_eq!(row(1)["blocks"], "story");
+        assert_eq!(row(1)["waits_on"], json!([2]));
+        assert_eq!(row(1)["chain"], json!([2, 3]));
+        assert_eq!(row(3)["blocks"], "team");
+        assert_eq!(row(3)["chain"], json!([]));
+        // Waiting on a team waits on every open blocker that team holds, whatever its case.
+        assert_eq!(row(4)["chain"], json!([1, 2, 3]));
+        assert_eq!(row(7)["chain"], json!([8]));
+        assert_eq!(row(7)["cycle"], true);
+        assert!(row(1).get("cycle").is_none());
+
+        let everything = blockers(&ledger, true, &Page::default()).unwrap();
+        let closed = everything["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["seq"] == 5)
+            .unwrap();
+        assert_eq!(closed["closed"]["note"], "fixed");
+        assert!(closed.get("chain").is_none());
+    }
+
+    #[test]
+    fn blockers_page_by_record_number() {
+        let records: Vec<Record> = (0..LIST_LIMIT + 3).map(|_| block(json!({}))).collect();
+        let ledger = Ledger::replay(&records).unwrap();
+        let first = blockers(&ledger, false, &Page::default()).unwrap();
+        assert_eq!(first["blockers"].as_array().unwrap().len(), LIST_LIMIT);
+        let next = first["next"].as_str().unwrap().to_owned();
+        let second = blockers(
+            &ledger,
+            false,
+            &Page {
+                after: Some(next),
+                before: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(second["blockers"].as_array().unwrap().len(), 3);
+        assert!(second.get("next").is_none());
+        assert!(
+            blockers(
+                &ledger,
+                false,
+                &Page {
+                    after: Some("x".into()),
+                    before: None
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_long_chain_is_cut_off_and_says_so() {
+        let mut records = Vec::new();
+        for i in 0..CHAIN_LIMIT + 5 {
+            records.push(block(json!({
+                "team": format!("t{i}"), "story": format!("T-{i}"), "on_story": format!("T-{}", i + 1)
+            })));
+        }
+        let ledger = Ledger::replay(&records).unwrap();
+        let value = blockers(&ledger, false, &Page::default()).unwrap();
+        let first = &value["blockers"][0];
+        assert_eq!(first["chain"].as_array().unwrap().len(), CHAIN_LIMIT);
+        assert_eq!(first["chain_truncated"], true);
     }
 
     #[test]

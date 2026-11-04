@@ -93,6 +93,22 @@ pub enum Change {
         entered_by: String,
         entry: Box<Change>,
     },
+    /// A team says what it's waiting on (RAL-20): with `story`, one of its stories is blocked, and
+    /// without, the whole team is. It names what it waits on in `note`, and may name another story
+    /// or team in `on_story` and `on_team`, which can be outside the ledger. The blocker is the
+    /// record's number, and stays open until an unblock closes it.
+    Block {
+        team: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        story: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_story: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_team: Option<String>,
+        note: String,
+    },
+    /// Anyone closes an open blocker, saying why. Who closed it is the record's source.
+    Unblock { blocker: u64, note: String },
     /// Someone asks for a read of the story at a commit before it's merged (RAL-32). Allowed in any
     /// state, since the ask can come before the submission. It stays open until a verify or
     /// send-back answers it, or it's withdrawn.
@@ -139,7 +155,10 @@ impl Change {
     /// The story this change is about. A team's state may only mention one.
     fn story(&self) -> &str {
         match self {
-            Self::TeamState { story, .. } => story.as_deref().unwrap_or_default(),
+            Self::TeamState { story, .. } | Self::Block { story, .. } => {
+                story.as_deref().unwrap_or_default()
+            }
+            Self::Unblock { .. } => "",
             Self::Backfill { entry, .. } => entry.story(),
             Self::Ready { story }
             | Self::Claim { story, .. }
@@ -236,6 +255,41 @@ impl Story {
     }
 }
 
+/// Something a team or story is waiting on (RAL-20), and, once closed, who closed it and why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Blocker {
+    pub seq: u64,
+    pub kind: Kind,
+    pub source: Source,
+    pub at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backfilled: Option<Backfill>,
+    /// The team that's waiting.
+    pub team: String,
+    /// The story that's waiting, when it's a story that's blocked rather than the whole team.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub story: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_story: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_team: Option<String>,
+    pub note: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closed: Option<Closure>,
+}
+
+/// Who closed a blocker, when, and why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Closure {
+    pub seq: u64,
+    pub kind: Kind,
+    pub source: Source,
+    pub at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backfilled: Option<Backfill>,
+    pub note: String,
+}
+
 /// One declared state of a team.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TeamEntry {
@@ -324,6 +378,10 @@ pub enum LedgerError {
         story: String,
         name: String,
     },
+    /// An unblock names a record that isn't an open blocker (RAL-20).
+    InvalidBlockerTarget(u64),
+    /// A story is named as waiting on itself.
+    BlockedOnItself(String),
     /// A backfilled entry's time isn't before the record's own (RAL-30).
     BackfillNotEarlier {
         entered_at_ms: i64,
@@ -369,6 +427,8 @@ impl fmt::Display for LedgerError {
                     "record {request} isn't an open requested read of {story}"
                 )
             }
+            Self::InvalidBlockerTarget(seq) => write!(f, "record {seq} isn't an open blocker"),
+            Self::BlockedOnItself(story) => write!(f, "{story} can't wait on itself"),
             Self::BackfillNotEarlier {
                 entered_at_ms,
                 at_ms,
@@ -392,6 +452,8 @@ pub struct Ledger {
     last_seq: u64,
     stories: BTreeMap<String, Story>,
     teams: BTreeMap<String, Team>,
+    /// Every blocker by its record number, open and closed (RAL-20).
+    blockers: BTreeMap<u64, Blocker>,
 }
 
 impl Ledger {
@@ -422,6 +484,11 @@ impl Ledger {
         &self.teams
     }
 
+    /// Every blocker by its record number, open and closed (RAL-20).
+    pub fn blockers(&self) -> &BTreeMap<u64, Blocker> {
+        &self.blockers
+    }
+
     /// Says whether a new record may be appended next, without changing anything: whether
     /// [`apply`](Self::apply) would accept it, and whether it meets the rules added since records
     /// were first written. Those apply to new records only, so a ledger written before them still
@@ -435,13 +502,23 @@ impl Ledger {
         };
         // A team's state never depends on what came before, and a change that doesn't parse is
         // refused the same way with or without its story.
-        if let Ok(change) = serde_json::from_value::<Change>(record.body().clone())
-            && !matches!(change, Change::TeamState { .. })
-            && let Some(story) = self.stories.get(change.story())
-        {
-            trial
-                .stories
-                .insert(change.story().to_owned(), story.clone());
+        if let Ok(change) = serde_json::from_value::<Change>(record.body().clone()) {
+            let change = match change {
+                Change::Backfill { entry, .. } => *entry,
+                change => change,
+            };
+            if let Change::Unblock { blocker, .. } = change {
+                // Closing a blocker depends only on that blocker.
+                if let Some(open) = self.blockers.get(&blocker) {
+                    trial.blockers.insert(blocker, open.clone());
+                }
+            } else if !matches!(change, Change::TeamState { .. } | Change::Block { .. })
+                && let Some(story) = self.stories.get(change.story())
+            {
+                trial
+                    .stories
+                    .insert(change.story().to_owned(), story.clone());
+            }
         }
         trial.apply(seq, record)
     }
@@ -465,9 +542,15 @@ impl Ledger {
         };
         // So that `RAL-1` and `RAL-01` can't be two stories.
         let id = change.story();
-        let names_a_story = !matches!(change, Change::TeamState { story: None, .. });
-        if names_a_story && has_leading_zero(id) {
+        if !id.is_empty() && has_leading_zero(id) {
             return Err(LedgerError::InvalidStoryId(id.to_owned()));
+        }
+        if let Change::Block {
+            on_story: Some(on), ..
+        } = change
+            && has_leading_zero(on)
+        {
+            return Err(LedgerError::InvalidStoryId(on.clone()));
         }
         // A verification names the commit it read (RAL-31). Heads move while work waits, so
         // Verified without a commit says nothing about what was read.
@@ -531,6 +614,59 @@ impl Ledger {
             .as_ref()
             .map(|backfill| backfill.entered_by.as_str())
             .or(record.source().declared_name.as_deref());
+        match change {
+            Change::Block {
+                team,
+                story,
+                on_story,
+                on_team,
+                note,
+            } => {
+                require_kind(record, Kind::Declared)?;
+                self.blockers.insert(
+                    seq,
+                    Blocker {
+                        seq,
+                        kind: record.kind(),
+                        source: record.source().clone(),
+                        at_ms: record.at_ms(),
+                        backfilled: backfill,
+                        team,
+                        story,
+                        on_story,
+                        on_team,
+                        note,
+                        closed: None,
+                    },
+                );
+                self.last_seq = seq;
+                return Ok(());
+            }
+            Change::Unblock { blocker, note } => {
+                if record.kind() == Kind::Observed {
+                    return Err(LedgerError::WrongKind {
+                        expected: Kind::Declared,
+                        found: Kind::Observed,
+                    });
+                }
+                let open = self
+                    .blockers
+                    .get_mut(&blocker)
+                    .filter(|open| open.closed.is_none())
+                    .ok_or(LedgerError::InvalidBlockerTarget(blocker))?;
+                open.closed = Some(Closure {
+                    seq,
+                    kind: record.kind(),
+                    source: record.source().clone(),
+                    at_ms: record.at_ms(),
+                    backfilled: backfill,
+                    note,
+                });
+                self.last_seq = seq;
+                return Ok(());
+            }
+            _ => {}
+        }
         if let Change::TeamState {
             team,
             status,
@@ -630,9 +766,11 @@ fn transition(
         from,
     };
     match change {
-        Change::Ready { .. } | Change::TeamState { .. } | Change::Backfill { .. } => {
-            unreachable!("handled by the caller")
-        }
+        Change::Ready { .. }
+        | Change::TeamState { .. }
+        | Change::Backfill { .. }
+        | Change::Block { .. }
+        | Change::Unblock { .. } => unreachable!("handled by the caller"),
         Change::Claim { team, .. } => {
             require_kind(record, Kind::Declared)?;
             match story.state {
@@ -882,9 +1020,36 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         return check_fields(entry);
     }
     let id = change.story();
-    let story_is_optional = matches!(change, Change::TeamState { story: None, .. });
+    let story_is_optional = matches!(
+        change,
+        Change::TeamState { story: None, .. }
+            | Change::Block { story: None, .. }
+            | Change::Unblock { .. }
+    );
     if !story_is_optional && !is_story_id(id) {
         return Err(LedgerError::InvalidStoryId(id.to_owned()));
+    }
+    if let Change::Block {
+        story,
+        on_story,
+        on_team,
+        ..
+    } = change
+    {
+        if let Some(on) = on_story {
+            if !is_story_id(on) {
+                return Err(LedgerError::InvalidStoryId(on.clone()));
+            }
+            if story.as_deref() == Some(on.as_str()) {
+                return Err(LedgerError::BlockedOnItself(on.clone()));
+            }
+        }
+        if let Some(on) = on_team {
+            if on.trim().is_empty() {
+                return Err(LedgerError::EmptyField("on_team"));
+            }
+            check_limit("team", on)?;
+        }
     }
     if let Change::TeamState { status, note, .. } = change {
         let has_note = note.as_deref().is_some_and(|n| !n.trim().is_empty());
@@ -925,6 +1090,8 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::Claim { team, .. }
         | Change::Release { team, .. }
         | Change::TeamState { team, .. } => &[("team", team)],
+        Change::Block { team, note, .. } => &[("team", team), ("note", note)],
+        Change::Unblock { note, .. } => &[("note", note)],
         Change::Submit { team, evidence, .. } => &[("team", team), ("evidence", evidence)],
         Change::Verify { note, .. }
         | Change::SendBack { note, .. }
@@ -1497,6 +1664,133 @@ mod tests {
             ledger.check(ledger.last_seq() + 1, &old),
             Err(LedgerError::MissingCommit)
         );
+    }
+
+    fn block(body: serde_json::Value) -> Record {
+        let mut full = json!({"change": "block", "team": "rally", "note": "waiting"});
+        full.as_object_mut()
+            .unwrap()
+            .extend(body.as_object().unwrap().clone());
+        team(full)
+    }
+
+    fn unblock(blocker: u64) -> Record {
+        record(
+            Kind::Declared,
+            "bob",
+            json!({"change": "unblock", "blocker": blocker, "note": "MUS-44 merged"}),
+        )
+    }
+
+    #[test]
+    fn a_blocker_stays_open_until_someone_closes_it_with_who_and_why() {
+        let mut ledger = ledger_with(&[
+            ready(),
+            block(json!({"story": STORY, "on_story": "MUS-44", "on_team": "muster"})),
+        ]);
+        let open = &ledger.blockers()[&2];
+        assert_eq!(open.team, "rally");
+        assert_eq!(open.story.as_deref(), Some(STORY));
+        assert_eq!(
+            open.on_story.as_deref(),
+            Some("MUS-44"),
+            "another team's story"
+        );
+        assert_eq!(open.source.declared_name.as_deref(), Some("alice"));
+        assert_eq!(open.closed, None);
+        // A blocker is apart from the story: its state doesn't move.
+        assert_eq!(state(&ledger), State::Ready);
+        apply_next(&mut ledger, &unblock(2)).unwrap();
+        let closed = ledger.blockers()[&2].closed.as_ref().unwrap();
+        assert_eq!(closed.seq, 3);
+        assert_eq!(closed.source.declared_name.as_deref(), Some("bob"));
+        assert_eq!(closed.note, "MUS-44 merged");
+        // Closed once: it's no longer open to close, and nothing else is either.
+        assert_eq!(
+            apply_next(&mut ledger, &unblock(2)),
+            Err(LedgerError::InvalidBlockerTarget(2))
+        );
+        assert_eq!(
+            apply_next(&mut ledger, &unblock(1)),
+            Err(LedgerError::InvalidBlockerTarget(1))
+        );
+    }
+
+    #[test]
+    fn a_blocked_story_and_a_blocked_team_are_recorded_separately() {
+        let ledger = ledger_with(&[block(json!({})), block(json!({"story": "RAL-9"}))]);
+        assert_eq!(ledger.blockers()[&1].story, None, "the whole team");
+        assert_eq!(ledger.blockers()[&2].story.as_deref(), Some("RAL-9"));
+        // Neither touches the team's declared state.
+        assert!(ledger.teams().is_empty());
+    }
+
+    #[test]
+    fn a_blocker_is_checked_like_other_text() {
+        let mut ledger = Ledger::default();
+        for (body, expected) in [
+            (json!({"note": " "}), LedgerError::EmptyField("note")),
+            (json!({"team": ""}), LedgerError::EmptyField("team")),
+            (
+                json!({"story": "ral-1"}),
+                LedgerError::InvalidStoryId("ral-1".into()),
+            ),
+            (
+                json!({"on_story": "MUS"}),
+                LedgerError::InvalidStoryId("MUS".into()),
+            ),
+            (json!({"on_team": " "}), LedgerError::EmptyField("on_team")),
+            (
+                json!({"story": "RAL-2", "on_story": "RAL-2"}),
+                LedgerError::BlockedOnItself("RAL-2".into()),
+            ),
+        ] {
+            assert_eq!(
+                apply_next(&mut ledger, &block(body.clone())),
+                Err(expected),
+                "{body}"
+            );
+        }
+        let zero = block(json!({"on_story": "MUS-044"}));
+        assert_eq!(
+            ledger.check(1, &zero),
+            Err(LedgerError::InvalidStoryId("MUS-044".into()))
+        );
+        let verified = record(
+            Kind::Verified,
+            "watch",
+            json!({"change": "block", "team": "rally", "note": "x"}),
+        );
+        assert!(matches!(
+            apply_next(&mut ledger, &verified),
+            Err(LedgerError::WrongKind { .. })
+        ));
+        assert!(ledger.blockers().is_empty());
+    }
+
+    #[test]
+    fn checking_an_unblock_needs_only_its_blocker() {
+        let ledger = ledger_with(&[block(json!({}))]);
+        assert!(ledger.check(2, &unblock(1)).is_ok());
+        assert_eq!(
+            ledger.check(2, &unblock(7)),
+            Err(LedgerError::InvalidBlockerTarget(7))
+        );
+        // A verifier can close one too, and a backfilled close keeps both times.
+        let mut ledger = ledger_with(&[block(json!({}))]);
+        let backfilled = record(
+            Kind::Declared,
+            "watch",
+            json!({
+                "change": "backfill", "entered_at_ms": 400, "entered_by": "bob",
+                "entry": {"change": "unblock", "blocker": 1, "note": "done"}
+            }),
+        );
+        assert!(ledger.check(2, &backfilled).is_ok());
+        apply_next(&mut ledger, &backfilled).unwrap();
+        let closed = ledger.blockers()[&1].closed.as_ref().unwrap();
+        assert_eq!(closed.backfilled.as_ref().unwrap().entered_by, "bob");
+        assert_eq!(closed.at_ms, 1_000);
     }
 
     #[test]
