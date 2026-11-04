@@ -619,10 +619,17 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
             backend.read_all("/v1/teams", "teams", VIEWER_PAGES, |ledger, page| {
                 views::teams(ledger, None, page)
             })?;
+        // Open blockers for RAL-23, one page; more than that is flagged rather than read.
+        let blockers =
+            backend.read_value("/v1/blockers", None, &Page::default(), |ledger, page| {
+                views::blockers(ledger, false, page)
+            })?;
         Ok(json!({
             "as_of": stories["as_of"],
             "stories": stories["stories"],
             "teams": teams["teams"],
+            "blockers": blockers["blockers"],
+            "blockers_truncated": blockers.get("next").is_some(),
             "truncated": more_stories || more_teams,
             "check": check,
             "read_only": read_only,

@@ -42,6 +42,21 @@ kept apart from Rally's own day summaries. Summaries and PR titles are written b
 agents, so they're shown as text with the untrusted-text notice, like everything else recorded. All of
 it is read through `gh` with the roadmaps, on their five-minute cadence and with their time and size limits.
 
+## Progress (RAL-23)
+
+Each project page has a Progress panel for the watchman's planning, also in `/api/status` as each project's
+`progress`. From the ledger: how many of the roadmap's stories are in each state; the Ready ones with no open
+blocker on them; and the open blockers holding up the most of the roadmap's stories, at most 10, where a blocker
+holds up a story when it blocks the story directly or sits anywhere in the chain of one that does (RAL-20). From
+the roadmap and the ledger together: each ticked story with no Verified record behind it, whether because the
+ledger has it in another state or doesn't have it at all.
+
+It never compares one roadmap or team with another. When the roadmap or the ledger couldn't be read, the panel
+says so and why, instead of showing zeros; after a failed roadmap read it says the figures use the last good one,
+and how old that is. Until a project's stories are recorded in the ledger, every tick shows as having no Verified
+record, which is true: on 2026-11-04 the live ledger held no stories, so all 26 of Rally's ticks were listed.
+Open blockers are read one page at a time, 200, and the panel says when there are more.
+
 ## What protects it
 
 - **Loopback only.** It refuses any other address. Viewing from a phone is RAL-34, with its own review.
