@@ -226,10 +226,18 @@ Installing it changes the operator's machine, so it's the operator's to do, on t
 
 ```bash
 install -m 755 target/release/rally ~/.local/bin/rally
-install -m 644 deploy/a1/com.rally.backup.plist ~/Library/LaunchAgents/com.rally.backup.plist
+sed "s|__HOME__|$HOME|g" deploy/a1/com.rally.backup.plist > ~/Library/LaunchAgents/com.rally.backup.plist
+launchctl bootout gui/$(id -u)/com.rally.backup 2>/dev/null    # only if an older one is loaded
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rally.backup.plist
 launchctl kickstart -k gui/$(id -u)/com.rally.backup    # first run now; then tail the log
 ```
+
+launchd doesn't expand `~` or `$HOME`, so the `sed` fills in the account's home. The agent runs `rally`
+directly, not through a shell, because macOS asks for Local Network access per program: the first run needs it
+for `rally` itself. If a run logs "No route to host (os error 65)" while the same backup from a terminal works,
+that access is missing. Allow `rally` under System Settings, Privacy & Security, Local Network, or answer the
+prompt on the first run, then kickstart it again. Seen on a1, macOS 15.7, on 2026-11-04, when the agent
+still ran through `/bin/sh`.
 
 The log isn't rotated. Each run adds one line of about 107 bytes (measured on a1, 2026-11-04), so
 at four runs an hour it grows by under 4 MB a year even if a1 never slept, and can be left; to clear it,
