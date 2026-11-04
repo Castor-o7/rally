@@ -231,6 +231,10 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rally.backup.plist
 launchctl kickstart -k gui/$(id -u)/com.rally.backup    # first run now; then tail the log
 ```
 
+The log isn't rotated. Each run adds one line of about 107 bytes (measured on a1, 2026-11-04), so
+at four runs an hour it grows by under 4 MB a year even if a1 never slept, and can be left; to clear it,
+`: > ~/.local/state/rally-backup.log` is safe at any time.
+
 To stop it: `launchctl bootout gui/$(id -u)/com.rally.backup`. The agent holds no secret; the pairing stays in
 `~/.config/rally/backup.json`, readable only by the account.
 
