@@ -263,6 +263,24 @@ means every open blocker that team holds. A chain that comes back round says `cy
 `chain_truncated`. `--all` adds closed blockers with their closure, and `--as-of` shows them as they stood. Over
 the service these are `/v1/blockers` and `/v1/blockers/all`.
 
+## Track records
+
+`rally track-record` lists every team that held a story, raised a blocker or declared a state, with counts and
+dates only: verifications, send-backs, problems reported and how many are open, and when each last happened
+(RAL-21). Verifications and send-backs are events, not distinct stories: a story verified, corrected back to
+In review and verified again counts twice. `rally track-record <team>` adds the facts behind the counts, the newest 100 of each: which
+stories were verified, at which commit and by whom; which were sent back, by whom and what was missing; and the
+problems reported. Over the service these are `/v1/track-records` and `/v1/track-records/<team>`.
+
+There are no points, scores, weights or ranking, and none should be added. A verification or send-back counts for
+the team that held the story at that record, including one made by a verifier's correction; one later corrected
+shows `corrected_by`, and still counts, since it happened.
+
+**Problems reported are the blockers a team raised** (RAL-20), open and closed, with their notes. That's a
+stand-in until the ledger has its own record for reporting a problem, and every response says so. A read walks
+every story and blocker, so it costs time in proportion to the ledger, though memory only in proportion to the
+teams' facts.
+
 ## Backfilling an outage
 
 While the service is down, teams use the fallback board in Muster's `docs/board.md`. Afterwards, each
