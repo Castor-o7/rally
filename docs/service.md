@@ -227,7 +227,7 @@ is four missed runs). A Muster message to the watchman when it's overdue is a la
 Installing it changes the operator's machine, so it's the operator's to do, on their word:
 
 ```bash
-cargo build --release && codesign -s - -f target/release/rally   # binds the embedded Info.plist
+cargo build --release --locked && codesign -s - -f target/release/rally   # binds the embedded Info.plist
 install -m 755 target/release/rally ~/.local/bin/rally
 sed "s|__HOME__|$HOME|g" deploy/a1/com.rally.backup.plist > ~/Library/LaunchAgents/com.rally.backup.plist
 launchctl bootout gui/$(id -u)/com.rally.backup 2>/dev/null    # only if an older one is loaded
