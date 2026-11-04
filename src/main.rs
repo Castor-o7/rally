@@ -154,17 +154,31 @@ enum Command {
         #[arg(long)]
         evidence: String,
     },
-    /// Confirm someone else's submitted story.
+    /// Confirm someone else's submitted story, naming the commit you read.
     Verify {
         story: String,
         #[arg(long)]
         note: String,
+        /// The full hash of the commit you read.
+        #[arg(long)]
+        commit: String,
     },
     /// Return someone else's submitted story, saying what's missing.
     SendBack {
         story: String,
         #[arg(long)]
         note: String,
+        /// The full hash of the commit you read, if you read one.
+        #[arg(long)]
+        commit: Option<String>,
+    },
+    /// Record that a story's work was merged at a commit. Allowed in any state and changes none;
+    /// it doesn't say who merged, since every session shares one GitHub account.
+    Merge {
+        story: String,
+        /// The full hash of the merged commit.
+        #[arg(long)]
+        commit: String,
     },
     /// Annotate an earlier record, which stays in the history, and optionally set the state.
     Correct {
@@ -183,6 +197,9 @@ enum Command {
         /// or Sent back.
         #[arg(long)]
         as_verifier: bool,
+        /// The full hash of the commit you read, needed with --state verified.
+        #[arg(long)]
+        commit: Option<String>,
     },
     /// Check the ledger for tampering. Fails if there's a problem. Save the head it prints somewhere
     /// else, and pass it back later with --expect.
@@ -836,13 +853,28 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             Kind::Declared,
             json!({"change": "submit", "story": story, "team": team, "evidence": evidence}),
         ),
-        Command::Verify { story, note } => (
+        Command::Verify {
+            story,
+            note,
+            commit,
+        } => (
             Kind::Verified,
-            json!({"change": "verify", "story": story, "note": note}),
+            json!({"change": "verify", "story": story, "note": note, "commit": commit}),
         ),
-        Command::SendBack { story, note } => (
-            Kind::Verified,
-            json!({"change": "send_back", "story": story, "note": note}),
+        Command::SendBack {
+            story,
+            note,
+            commit,
+        } => {
+            let mut body = json!({"change": "send_back", "story": story, "note": note});
+            if let Some(commit) = commit {
+                body["commit"] = json!(commit);
+            }
+            (Kind::Verified, body)
+        }
+        Command::Merge { story, commit } => (
+            Kind::Declared,
+            json!({"change": "merge", "story": story, "commit": commit}),
         ),
         Command::Correct {
             story,
@@ -851,6 +883,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             state,
             team,
             as_verifier,
+            commit,
         } => {
             let mut body = json!({
                 "change": "correct", "story": story, "corrects": corrects, "note": note
@@ -860,6 +893,9 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             if let Some(team) = team {
                 body["team"] = json!(team);
+            }
+            if let Some(commit) = commit {
+                body["commit"] = json!(commit);
             }
             let kind = if as_verifier {
                 Kind::Verified

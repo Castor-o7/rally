@@ -64,15 +64,32 @@ pub enum Change {
         team: String,
         evidence: String,
     },
-    /// Someone other than the submitter confirms the story.
-    Verify { story: String, note: String },
-    /// Someone other than the submitter returns the story, saying what's missing.
-    SendBack { story: String, note: String },
+    /// Someone other than the submitter confirms the story, naming the commit they read (RAL-31).
+    /// A new record must name it; records written before RAL-31 replay without one.
+    Verify {
+        story: String,
+        note: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
+    },
+    /// Someone other than the submitter returns the story, saying what's missing, and may name the
+    /// commit they read.
+    SendBack {
+        story: String,
+        note: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
+    },
+    /// The story's work was merged at a commit (RAL-33). Merged is independent of Verified: it's
+    /// allowed in any state and changes none. It names no merger, since every session shares one
+    /// GitHub account, so the record's source says only who recorded it.
+    Merge { story: String, commit: String },
     /// Annotates an earlier record of the same story, which stays in the history. Can also set the
     /// state: a team can only do that for a story it holds, naming itself in `team`, and moving a
     /// story into or out of a verifier's state takes a verifier. Without a state, it's only an
     /// annotation, which anyone can add, and `team` is ignored. Teams can record a disagreement
-    /// this way, and it changes nothing else.
+    /// this way, and it changes nothing else. Setting the state to Verified names the commit read,
+    /// as a verification does (RAL-31); `commit` is refused with any other state.
     Correct {
         story: String,
         corrects: u64,
@@ -81,6 +98,8 @@ pub enum Change {
         state: Option<State>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         team: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
     },
     /// A team declares its own state. Being blocked needs a note saying on what.
     TeamState {
@@ -104,6 +123,7 @@ impl Change {
             | Self::Submit { story, .. }
             | Self::Verify { story, .. }
             | Self::SendBack { story, .. }
+            | Self::Merge { story, .. }
             | Self::Correct { story, .. } => story,
         }
     }
@@ -130,6 +150,12 @@ pub struct Story {
     pub team: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub submitted_by: Option<String>,
+    /// The commit the verifier read, while the story is Verified and its record named one (RAL-31).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_commit: Option<String>,
+    /// The commit last recorded as merged (RAL-33), whatever the story's state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_commit: Option<String>,
     pub history: Vec<HistoryEntry>,
     /// The declared names of everyone who ever claimed or submitted it, compared as
     /// [`same_name`] does, so that checking a verifier doesn't search the whole history.
@@ -139,6 +165,19 @@ pub struct Story {
     /// service keeps between requests is this same in-memory `Ledger`, built by replay and apply.
     #[serde(skip)]
     authors: BTreeSet<String>,
+}
+
+impl Story {
+    /// The verified and merged commits when the story has both and they differ (RAL-31). This is
+    /// worked out from the ledger alone, so it's observed, not anyone's claim.
+    pub fn commit_mismatch(&self) -> Option<(&str, &str)> {
+        match (&self.verified_commit, &self.merged_commit) {
+            (Some(verified), Some(merged)) if !verified.eq_ignore_ascii_case(merged) => {
+                Some((verified, merged))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// One declared state of a team.
@@ -203,16 +242,20 @@ pub enum LedgerError {
         story: String,
         name: String,
     },
-    /// A correction names a record that isn't an earlier record of this story.
     /// Text looks like a secret (RAL-17). Holds the field and the format, never the text.
     SecretLike {
         field: String,
         format: &'static str,
     },
+    /// A correction names a record that isn't an earlier record of this story.
     InvalidCorrectionTarget {
         story: String,
         corrects: u64,
     },
+    /// A commit isn't a full hash (RAL-31). Doesn't hold the text, which a reader would see.
+    InvalidCommit,
+    /// A verification, or a correction into Verified, names no commit (RAL-31).
+    MissingCommit,
 }
 
 impl fmt::Display for LedgerError {
@@ -245,6 +288,8 @@ impl fmt::Display for LedgerError {
             Self::InvalidCorrectionTarget { story, corrects } => {
                 write!(f, "record {corrects} isn't an earlier record of {story}")
             }
+            Self::InvalidCommit => write!(f, "commit must be a full hash: 40 or 64 hex digits"),
+            Self::MissingCommit => write!(f, "a verification names the commit it read"),
         }
     }
 }
@@ -327,6 +372,19 @@ impl Ledger {
         if names_a_story && has_leading_zero(id) {
             return Err(LedgerError::InvalidStoryId(id.to_owned()));
         }
+        // A verification names the commit it read (RAL-31). Heads move while work waits, so
+        // Verified without a commit says nothing about what was read.
+        if matches!(
+            change,
+            Change::Verify { commit: None, .. }
+                | Change::Correct {
+                    state: Some(State::Verified),
+                    commit: None,
+                    ..
+                }
+        ) {
+            return Err(LedgerError::MissingCommit);
+        }
         // A verified note, even one that changes no state, reads as a check by someone else, so
         // its author mustn't be one of the story's.
         if let Change::Correct { state: None, .. } = &change
@@ -397,6 +455,8 @@ impl Ledger {
                     state: State::Ready,
                     team: None,
                     submitted_by: None,
+                    verified_commit: None,
+                    merged_commit: None,
                     history: Vec::new(),
                     authors: BTreeSet::new(),
                 },
@@ -474,21 +534,32 @@ fn transition(
             story.state = State::InReview;
             story.submitted_by = record.source().declared_name.clone();
         }
-        Change::Verify { .. } | Change::SendBack { .. } => {
+        Change::Verify { commit, .. } => {
             if story.state != State::InReview {
                 return Err(refuse(story.state));
             }
             require_verifier(story, id, record)?;
-            story.state = if matches!(change, Change::Verify { .. }) {
-                State::Verified
-            } else {
-                State::SentBack
-            };
+            story.state = State::Verified;
+            story.verified_commit = commit.clone();
+        }
+        Change::SendBack { .. } => {
+            if story.state != State::InReview {
+                return Err(refuse(story.state));
+            }
+            require_verifier(story, id, record)?;
+            story.state = State::SentBack;
+        }
+        Change::Merge { commit, .. } => {
+            // Any state, and the state stays: a merge is a fact about the repository, not a
+            // judgement of the work.
+            require_kind(record, Kind::Declared)?;
+            story.merged_commit = Some(commit.clone());
         }
         Change::Correct {
             corrects,
             state,
             team,
+            commit,
             ..
         } => {
             // History is in record order, so the target can be found without a scan.
@@ -528,6 +599,13 @@ fn transition(
                     return Err(refuse(story.state));
                 }
                 story.state = *new_state;
+                // The verified commit is the one read for the current Verified state, so leaving
+                // that state drops it, and entering it takes the correction's.
+                story.verified_commit = if *new_state == State::Verified {
+                    commit.clone()
+                } else {
+                    None
+                };
                 // Going back to Ready or Claimed means the work may change, so it needs a new
                 // submission rather than reviving the old evidence.
                 if matches!(new_state, State::Ready | State::Claimed) {
@@ -613,8 +691,29 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
     {
         return Err(LedgerError::EmptyField("team"));
     }
+    if let Change::Correct {
+        commit: Some(_),
+        state,
+        ..
+    } = change
+        && *state != Some(State::Verified)
+    {
+        return Err(LedgerError::InvalidChange(
+            "a correction names a commit only when it sets the state to verified".into(),
+        ));
+    }
+    let commit = match change {
+        Change::Verify { commit, .. }
+        | Change::SendBack { commit, .. }
+        | Change::Correct { commit, .. } => commit.as_deref(),
+        Change::Merge { commit, .. } => Some(commit.as_str()),
+        _ => None,
+    };
+    if commit.is_some_and(|commit| !is_commit(commit)) {
+        return Err(LedgerError::InvalidCommit);
+    }
     let fields: &[(&'static str, &str)] = match change {
-        Change::Ready { .. } => &[],
+        Change::Ready { .. } | Change::Merge { .. } => &[],
         Change::Claim { team, .. }
         | Change::Release { team, .. }
         | Change::TeamState { team, .. } => &[("team", team)],
@@ -687,6 +786,12 @@ fn has_leading_zero(id: &str) -> bool {
         .is_some_and(|(_, number)| number.len() > 1 && number.starts_with('0'))
 }
 
+/// A full commit hash: 40 hex digits, or 64 for a SHA-256 repository. Short hashes are refused,
+/// since one can come to name two commits.
+fn is_commit(commit: &str) -> bool {
+    matches!(commit.len(), 40 | 64) && commit.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn is_story_id(id: &str) -> bool {
     id.len() <= MAX_STORY_ID_BYTES
         && id.split_once('-').is_some_and(|(prefix, number)| {
@@ -703,6 +808,8 @@ mod tests {
     use serde_json::json;
 
     const STORY: &str = "RAL-3";
+    const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+    const OTHER_COMMIT: &str = "fedcba9876543210fedcba9876543210fedcba98";
 
     fn record(kind: Kind, name: &str, body: serde_json::Value) -> Record {
         let source = Source {
@@ -737,7 +844,9 @@ mod tests {
     }
 
     fn verify() -> Record {
-        verifier(json!({"change": "verify", "story": STORY, "note": "read the diff"}))
+        verifier(json!({
+            "change": "verify", "story": STORY, "note": "read the diff", "commit": COMMIT
+        }))
     }
 
     fn send_back() -> Record {
@@ -763,6 +872,165 @@ mod tests {
         assert_eq!(story.state, State::Verified);
         assert_eq!(story.team.as_deref(), Some("rally"));
         assert_eq!(story.history.len(), 4);
+    }
+
+    #[test]
+    fn a_verification_records_the_commit_it_read() {
+        let ledger = ledger_with(&[ready(), claim(), submit(), verify()]);
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.verified_commit.as_deref(), Some(COMMIT));
+        assert_eq!(story.merged_commit, None);
+        assert_eq!(story.commit_mismatch(), None);
+    }
+
+    #[test]
+    fn a_new_verification_without_a_commit_is_refused_but_an_old_one_replays() {
+        let old = verifier(json!({"change": "verify", "story": STORY, "note": "read the diff"}));
+        let ledger = ledger_with(&[ready(), claim(), submit()]);
+        assert_eq!(
+            ledger.check(ledger.last_seq() + 1, &old),
+            Err(LedgerError::MissingCommit)
+        );
+        // Written before RAL-31, so it's in the ledger and still replays.
+        let replayed = ledger_with(&[ready(), claim(), submit(), old]);
+        let story = replayed.story(STORY).unwrap();
+        assert_eq!(story.state, State::Verified);
+        assert_eq!(story.verified_commit, None);
+    }
+
+    #[test]
+    fn a_commit_must_be_a_full_hash() {
+        for bad in [
+            "abc123",
+            "",
+            " ",
+            &COMMIT[..39],
+            &format!("{COMMIT}0"),
+            &format!("g{}", &COMMIT[1..]),
+        ] {
+            let mut ledger = ledger_with(&[ready(), claim(), submit()]);
+            let short = verifier(json!({
+                "change": "verify", "story": STORY, "note": "fine", "commit": bad
+            }));
+            assert_eq!(
+                apply_next(&mut ledger, &short),
+                Err(LedgerError::InvalidCommit),
+                "{bad:?}"
+            );
+            let merge = team(json!({"change": "merge", "story": STORY, "commit": bad}));
+            assert_eq!(
+                apply_next(&mut ledger, &merge),
+                Err(LedgerError::InvalidCommit),
+                "{bad:?}"
+            );
+            assert_eq!(state(&ledger), State::InReview);
+        }
+        // Upper case and a SHA-256 hash are hashes too.
+        for good in [COMMIT.to_uppercase(), "ab".repeat(32)] {
+            let mut ledger = ledger_with(&[ready()]);
+            let merge = team(json!({"change": "merge", "story": STORY, "commit": good}));
+            assert!(apply_next(&mut ledger, &merge).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_merge_is_recorded_in_any_state_and_changes_none() {
+        let paths: [&[Record]; 5] = [
+            &[ready()],
+            &[ready(), claim()],
+            &[ready(), claim(), submit()],
+            &[ready(), claim(), submit(), verify()],
+            &[ready(), claim(), submit(), send_back()],
+        ];
+        for path in paths {
+            let mut ledger = ledger_with(path);
+            let before = ledger.story(STORY).unwrap().clone();
+            let merge = team(json!({"change": "merge", "story": STORY, "commit": OTHER_COMMIT}));
+            apply_next(&mut ledger, &merge).unwrap();
+            let after = ledger.story(STORY).unwrap();
+            assert_eq!(after.state, before.state);
+            assert_eq!(after.team, before.team);
+            assert_eq!(after.submitted_by, before.submitted_by);
+            assert_eq!(after.verified_commit, before.verified_commit);
+            assert_eq!(after.merged_commit.as_deref(), Some(OTHER_COMMIT));
+            assert_eq!(after.history.len(), before.history.len() + 1);
+            // The record says who recorded the merge, never who merged.
+            let entry = after.history.last().unwrap();
+            assert_eq!(entry.kind, Kind::Declared);
+            assert_eq!(
+                entry.change,
+                Change::Merge {
+                    story: STORY.into(),
+                    commit: OTHER_COMMIT.into()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_merge_needs_a_declared_record() {
+        let mut ledger = ledger_with(&[ready()]);
+        let merge = verifier(json!({"change": "merge", "story": STORY, "commit": COMMIT}));
+        assert!(matches!(
+            apply_next(&mut ledger, &merge),
+            Err(LedgerError::WrongKind { .. })
+        ));
+    }
+
+    #[test]
+    fn a_merged_commit_that_differs_from_the_verified_one_is_observed() {
+        let merge =
+            |commit: &str| team(json!({"change": "merge", "story": STORY, "commit": commit}));
+        // Merged before verification, as catapp#78 was: nothing to compare yet.
+        let mut ledger = ledger_with(&[ready(), claim(), submit(), merge(OTHER_COMMIT)]);
+        assert_eq!(ledger.story(STORY).unwrap().commit_mismatch(), None);
+        apply_next(&mut ledger, &verify()).unwrap();
+        assert_eq!(
+            ledger.story(STORY).unwrap().commit_mismatch(),
+            Some((COMMIT, OTHER_COMMIT))
+        );
+        // A later merge of the verified commit, in either case, clears it.
+        apply_next(&mut ledger, &merge(&COMMIT.to_uppercase())).unwrap();
+        assert_eq!(ledger.story(STORY).unwrap().commit_mismatch(), None);
+        // Sending the story back and verifying another commit compares that one.
+        let ledger = ledger_with(&[
+            ready(),
+            claim(),
+            submit(),
+            send_back(),
+            merge(COMMIT),
+            claim(),
+            submit(),
+        ]);
+        assert_eq!(ledger.story(STORY).unwrap().commit_mismatch(), None);
+    }
+
+    #[test]
+    fn a_correction_into_verified_names_its_commit_and_leaving_drops_it() {
+        let correction = |state: &str, commit: Option<&str>| {
+            let mut body = json!({
+                "change": "correct", "story": STORY, "corrects": 4, "note": "x", "state": state
+            });
+            if let Some(commit) = commit {
+                body["commit"] = json!(commit);
+            }
+            verifier(body)
+        };
+        let mut ledger = ledger_with(&[ready(), claim(), submit(), verify()]);
+        apply_next(&mut ledger, &correction("in_review", None)).unwrap();
+        assert_eq!(ledger.story(STORY).unwrap().verified_commit, None);
+        assert_eq!(
+            ledger.check(ledger.last_seq() + 1, &correction("verified", None)),
+            Err(LedgerError::MissingCommit)
+        );
+        assert!(matches!(
+            apply_next(&mut ledger, &correction("in_review", Some(OTHER_COMMIT))),
+            Err(LedgerError::InvalidChange(_))
+        ));
+        apply_next(&mut ledger, &correction("verified", Some(OTHER_COMMIT))).unwrap();
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.state, State::Verified);
+        assert_eq!(story.verified_commit.as_deref(), Some(OTHER_COMMIT));
     }
 
     #[test]
@@ -863,7 +1131,9 @@ mod tests {
             let own = record(
                 Kind::Verified,
                 "alice",
-                json!({"change": change, "story": STORY, "note": "looks good to me"}),
+                json!({
+                    "change": change, "story": STORY, "note": "looks good to me", "commit": COMMIT
+                }),
             );
             assert!(matches!(
                 apply_next(&mut ledger, &own),
@@ -878,7 +1148,7 @@ mod tests {
         let declared = record(
             Kind::Declared,
             "watch",
-            json!({"change": "verify", "story": STORY, "note": "fine"}),
+            json!({"change": "verify", "story": STORY, "note": "fine", "commit": COMMIT}),
         );
         assert!(matches!(
             apply_next(&mut ledger, &declared),
@@ -1056,7 +1326,7 @@ mod tests {
         let own = record(
             Kind::Verified,
             "alice",
-            json!({"change": "verify", "story": STORY, "note": "fine"}),
+            json!({"change": "verify", "story": STORY, "note": "fine", "commit": COMMIT}),
         );
         assert!(apply_next(&mut ledger, &own).is_err());
         assert_eq!(state(&ledger), State::Claimed);
@@ -1150,7 +1420,7 @@ mod tests {
         record(
             Kind::Verified,
             name,
-            json!({"change": "verify", "story": STORY, "note": "fine"}),
+            json!({"change": "verify", "story": STORY, "note": "fine", "commit": COMMIT}),
         )
     }
 

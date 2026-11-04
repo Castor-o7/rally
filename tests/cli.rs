@@ -6,6 +6,9 @@ use std::process::{Command, Output};
 use rally::scratch_pg::{self, Database};
 use serde_json::Value;
 
+const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+const OTHER_COMMIT: &str = "fedcba9876543210fedcba9876543210fedcba98";
+
 /// A scratch database of its own, and a directory for the head file.
 struct Ledger {
     db: Database<'static>,
@@ -124,16 +127,90 @@ fn the_submitter_cannot_verify_but_someone_else_can() {
         &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
     );
 
-    let error = refused(&db, "author", &["verify", "RAL-3", "--note", "fine"]);
+    let error = refused(
+        &db,
+        "author",
+        &["verify", "RAL-3", "--note", "fine", "--commit", COMMIT],
+    );
     assert!(error.contains("can't verify"), "{error}");
 
     ok(
         &db,
         "reader",
-        &["verify", "RAL-3", "--note", "read the diff"],
+        &[
+            "verify",
+            "RAL-3",
+            "--note",
+            "read the diff",
+            "--commit",
+            COMMIT,
+        ],
     );
     let all = ok(&db, "reader", &["show"]);
     assert_eq!(all["stories"]["RAL-3"]["state"], "verified");
+}
+
+#[test]
+fn a_merge_is_a_commit_in_any_state_and_is_compared_with_the_verified_one() {
+    let db = Ledger::new();
+    ok(&db, "author", &["ready", "RAL-3"]);
+    // Merged while still Ready, as catapp#78 was merged before its read: the state doesn't move.
+    ok(&db, "author", &["merge", "RAL-3", "--commit", OTHER_COMMIT]);
+    let shown = ok(&db, "author", &["show", "RAL-3"]);
+    assert_eq!(shown["detail"]["state"], "ready");
+    assert_eq!(shown["detail"]["merged_commit"], OTHER_COMMIT);
+    assert!(shown["detail"].get("commit_differs").is_none());
+    let merge = &shown["detail"]["history"][1];
+    assert_eq!(merge["kind"], "declared");
+    assert_eq!(merge["source"]["declared_name"], "author");
+    let keys: Vec<&String> = merge["change"].as_object().unwrap().keys().collect();
+    assert_eq!(
+        keys,
+        ["change", "commit", "story"],
+        "no field says who merged"
+    );
+
+    ok(&db, "author", &["claim", "RAL-3", "--team", "rally"]);
+    ok(
+        &db,
+        "author",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
+    );
+    let error = refused(&db, "reader", &["verify", "RAL-3", "--note", "fine"]);
+    assert!(error.contains("--commit"), "{error}");
+    let error = refused(
+        &db,
+        "reader",
+        &["verify", "RAL-3", "--note", "fine", "--commit", "abc123"],
+    );
+    assert!(error.contains("full hash"), "{error}");
+    ok(
+        &db,
+        "reader",
+        &["verify", "RAL-3", "--note", "fine", "--commit", COMMIT],
+    );
+
+    // Verified at one commit, merged at another: Rally observes the difference.
+    let shown = ok(&db, "author", &["show", "RAL-3"]);
+    assert_eq!(shown["detail"]["verified_commit"], COMMIT);
+    assert_eq!(
+        shown["detail"]["commit_differs"],
+        serde_json::json!({"kind": "observed", "verified": COMMIT, "merged": OTHER_COMMIT})
+    );
+    let all = ok(&db, "author", &["show"]);
+    assert_eq!(
+        all["stories"]["RAL-3"]["commit_differs"]["kind"],
+        "observed"
+    );
+
+    // The verified commit merged after all.
+    ok(&db, "author", &["merge", "RAL-3", "--commit", COMMIT]);
+    let shown = ok(&db, "author", &["show", "RAL-3"]);
+    assert_eq!(shown["detail"]["state"], "verified");
+    assert_eq!(shown["detail"]["merged_commit"], COMMIT);
+    assert!(shown["detail"].get("commit_differs").is_none());
+    let all = ok(&db, "author", &["show"]);
+    assert!(all["stories"]["RAL-3"].get("commit_differs").is_none());
 }
 
 #[test]

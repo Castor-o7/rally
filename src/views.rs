@@ -76,6 +76,12 @@ fn continue_with(value: &mut Value, name: &str, next: Option<Value>) {
     }
 }
 
+/// Rally's own observation that the merged commit isn't the verified one (RAL-31). It carries its
+/// kind like a record does, because it's a fact worked out from the ledger, not a claim.
+fn commit_differs(verified: &str, merged: &str) -> Value {
+    json!({"kind": "observed", "verified": verified, "merged": merged})
+}
+
 /// Every story's state, a page at a time, or one story with a page of its history. `Err` holds
 /// what wasn't found.
 pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Value, String> {
@@ -92,6 +98,15 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
         if let Some(submitted_by) = &detail.submitted_by {
             shown["submitted_by"] = json!(submitted_by);
         }
+        if let Some(commit) = &detail.verified_commit {
+            shown["verified_commit"] = json!(commit);
+        }
+        if let Some(commit) = &detail.merged_commit {
+            shown["merged_commit"] = json!(commit);
+        }
+        if let Some((verified, merged)) = detail.commit_mismatch() {
+            shown["commit_differs"] = commit_differs(verified, merged);
+        }
         let mut value = json!({
             "untrusted_text": UNTRUSTED_TEXT, "as_of": as_of, "story": id, "detail": shown,
             "history_total": detail.history.len(),
@@ -104,7 +119,10 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
         .into_iter()
         .map(|(id, story)| {
             let last = story.history.last().map(|entry| entry.seq);
-            let row = json!({"state": story.state, "team": story.team, "last": last});
+            let mut row = json!({"state": story.state, "team": story.team, "last": last});
+            if let Some((verified, merged)) = story.commit_mismatch() {
+                row["commit_differs"] = commit_differs(verified, merged);
+            }
             (id.clone(), row)
         })
         .collect();
