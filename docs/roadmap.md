@@ -120,7 +120,7 @@ The bones. Everything later reads from this.
   reordered record, including the newest records being removed, which doesn't show as a gap in the
   sequence; a test covers each; and the docs say what this can't catch, such as someone with full access
   rewriting the whole ledger.
-- [ ] **RAL-15: Back up and restore the ledger.** Done when: a backup restored on the other machine
+- [x] **RAL-15: Back up and restore the ledger.** Done when: a backup restored on the other machine
   passes the RAL-14 check and rebuilds the same state, shown by a real restore; backups get the same
   protection as the ledger; and because a1 is only available with its lid open, backups catch up
   afterwards and alert when overdue. Each backup keeps the ledger and its head file together, also saves the ledger's head on a1, and the watchman can

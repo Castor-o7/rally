@@ -82,6 +82,28 @@ operator approves the deployment itself, directly, not through a relayed message
 Then the trial starts as the roadmap describes: the watchman's table and Rally side by side for Rally's own
 stories, with Muster's `docs/board.md` still in force.
 
+## The first run, 2026-11-04
+
+Done by `frosty-bear` on a1, against the service on Murph built at 230eeb2, with the a1 and backup pair codes
+carried over by the operator's hand. Each step's output was read as it ran.
+
+1. The pairing's fingerprint, `dacf1441…5b605617`, matched the one the service printed on Murph, read there by
+   `hallowed-moth` and again by Lamplighter after the restart, and the one a TLS handshake from a1 showed before
+   pairing. So a1 talks to the real service.
+2. `rally check` through the service: ok at record 0. The first real record from a1: Rally's team state, working
+   on RAL-15, record 1. `rally check` again: ok at `1:ed76b6b0…914e23b2`, saved on a1 under `~/.local/state/rally-head`.
+3. `rally backup` with the read-only pairing: one record added, expect `1:ed76b6b0…914e23b2`, into a private
+   directory holding `records.jsonl` and `head.json`. The same pairing's write was refused with a 403.
+4. The real restore: `rally restore` into a new database on a1 (a scratch Postgres on loopback, not port 5432)
+   restored to record 1; `rally check --expect 1:ed76b6b0…` on it was ok; the restored team state was record 1,
+   working on RAL-15, from credential `a1` declaring `frosty-bear`. A second restore into the same database was
+   refused. The service's own `check --expect` against the head saved on a1 was ok.
+5. Catch-up and the overdue alert: a second backup added nothing and kept the head. With the service unreachable,
+   `backup` wrote nothing and said how long ago the last backup was, and with a zero allowance said it was overdue.
+6. Step 5 of the first check, the read-only viewer, wasn't run: a1 has no viewer pairing yet.
+
+Backups still run by hand; scheduling them on a1 is next.
+
 ## Undoing it
 
 Stop and disable the user service. The ledger stays in Postgres and the head file stays in the state directory,

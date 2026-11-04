@@ -255,7 +255,8 @@ commit. Backfill entries in the order they were made.
   checked (RAL-42). Keep it in a directory only this account can write.
 - Tests show a commit cut off before Postgres committed it (rolled back), and one that committed with its reply
   lost; a real reply lost in transit isn't reproduced.
-- Backups (RAL-15) aren't scheduled yet, and a restore on the other machine hasn't been run for real.
+- Backups (RAL-15) aren't scheduled yet. A restore on a1 was run for real on 2026-11-04; the run is recorded
+  in [deploy-murph.md](deploy-murph.md).
 - Write limits are per machine, so all of a machine's sessions share them. Watch for 429s in real use.
 - One compromised credential could reach the 64 MiB stop in about 6 hours, and several credentials
   proportionally faster, which blocks everyone's writes
