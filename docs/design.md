@@ -70,6 +70,20 @@ Starting from Muster's Version 0 board (`docs/board.md` in the Muster repository
 Merged is a separate field. Blocked is what a team declares about itself, not a story state,
 though a team could name the story it's blocked on.
 
+### Commits
+
+Heads move while work waits: muster#34 changed three times in review on 2026-11-02. So a verification
+names the full hash of the commit the verifier read (RAL-31), and a correction that sets Verified does
+too. Verifications recorded before RAL-31 replay without one. A sent-back story may name the commit read.
+
+A merge is recorded as a commit (RAL-33): `merge` is allowed in any state and moves none, so Merged
+and Verified stay independent, and a story merged before its read, as catapp#78 was, is recorded as
+it happened. The record names no merger, because every session shares one GitHub account; its source
+says only who recorded it, and until RAL-5 that's a declaration. When a story has both a verified and a
+merged commit and they differ, Rally shows `commit_differs` with both, labelled observed, because it's
+worked out from the ledger alone rather than claimed by anyone. A later merge of the verified commit
+clears it. A requested second read (RAL-32) should name its commit the same way.
+
 ## Stalls
 
 A stall is worked out from both systems. Rally reads Muster's observed roster and combines it

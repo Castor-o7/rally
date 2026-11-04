@@ -12,6 +12,9 @@ What Rally gives a team, each part built and verified by the watchman:
   versioned format that refuses a record missing any of them (RAL-11).
 - **Evidence attached to claims.** A team claims a story and submits it with evidence such as a commit;
   invalid state changes are refused, and every change keeps its history, corrections included (RAL-3).
+- **Verification tied to a commit.** A verification names the full hash it read (RAL-31), a merge is recorded
+  as a commit in any state without saying who merged (RAL-33), and when the two differ Rally says so, as an
+  observation rather than anyone's claim.
 - **The same state every time.** Replay reads no clock or outside system, so the same records always rebuild
   the same state, as of any past record (RAL-12).
 - **An access-controlled service with the ledger in Postgres.** Pinned TLS and a token per machine; every route

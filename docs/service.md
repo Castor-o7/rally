@@ -146,7 +146,8 @@ It proves that a process holding that machine's token sent it, and that the chan
 
 It doesn't prove who or which team sent it. Every session on a machine's account can read that machine's
 token, so a session can declare any name and any kind, including `verified`. So the check that authors don't
-verify their own work catches mistakes, not forgery. Revisit this with MUS-39.
+verify their own work catches mistakes, not forgery. Revisit this with MUS-39. A `merge` record likewise says
+who recorded the merge, not who merged: every session shares one GitHub account, so Rally doesn't claim that.
 
 ## Detecting tampering
 

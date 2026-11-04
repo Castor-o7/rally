@@ -137,13 +137,14 @@ The bones. Everything later reads from this.
 - [ ] **RAL-5: Check submitted evidence.** Done when: on submission, Rally records as observed whether
   the commit exists, names the story and passed CI, and a test covers each failure. What a team didn't
   test is its own field, not free text.
-- [ ] **RAL-31: Tie verification to a commit.** Heads can move while work waits: muster#34 changed three
+- [x] **RAL-31: Tie verification to a commit.** Heads can move while work waits: muster#34 changed three
   times in review on 2026-11-02. Done when: each Verified and each requested second read names a commit,
   and Rally records as observed when the merged commit differs from the verified one, with a test.
 - [ ] **RAL-32: Show a requested second read.** catapp#78 merged before a requested read arrived. Done
-  when: a requested read is visible to whoever merges until it's answered or withdrawn. Whether it
+  when: a requested read is visible to whoever merges until it's answered or withdrawn, and names the commit
+  to read (RAL-31). Whether it
   blocks a merge is the operator's call, and this story records it either way.
-- [ ] **RAL-33: Record merges as commits.** Done when: Merged records the commit, is independent of
+- [x] **RAL-33: Record merges as commits.** Done when: Merged records the commit, is independent of
   Verified, and doesn't claim who merged, since every session shares one GitHub account.
 - [ ] **RAL-18: Check evidence with least privilege.** Done when: evidence checks use read-only GitHub
   access, a merge attempt with that access is refused, and a test shows that Rally reads evidence without
