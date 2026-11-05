@@ -10,8 +10,21 @@ rally web --bind 127.0.0.1:7300
 rally --db postgres://rally@127.0.0.1/rally --head-file ledger.head web --bind 127.0.0.1:7300
 ```
 
-Then open <http://127.0.0.1:7300>. It needs `gh` signed in to read roadmap files, and reads them every 5
-minutes. The ledger and roster are read every 30 seconds.
+Then sign in (RAL-29). `rally web` keeps a long-lived viewer key in a private file, `web-key` beside the pairing
+(`~/.config/rally/web-key`), or the one `--key-file` names. The key never goes in a URL or a command's
+arguments. Instead, ask the running viewer for a one-time code:
+
+```bash
+rally web --bind 127.0.0.1:7300 --login
+# {"open": "http://127.0.0.1:7300/?code=…", "expires_in_seconds": 60, …}
+```
+
+Open that address in the browser you'll view from. The code works once, within a minute, and becomes a session
+cookie. `rally web --new-key` replaces the key, which signs every browser out at once; restarting the viewer
+does too, since sessions are only held in memory.
+
+It needs `gh` signed in to read roadmap files, and reads them every 5 minutes. The ledger and roster are read
+every 30 seconds.
 
 ## How to read the figures
 
@@ -77,8 +90,18 @@ Open blockers are read one page at a time, 200, and the panel says when there ar
 ## What protects it
 
 - **Loopback only.** It refuses any other address. Viewing from a phone is RAL-34, with its own review.
+- **Only a signed-in browser.** Every request needs a session cookie, HttpOnly and SameSite=Strict, so a script
+  can't read it and another site's request doesn't carry it. Without one, the answer is 401 and nothing else.
+- **The key never travels in a URL.** It's 32 random bytes in a file only your account can read (a key file
+  others can read is refused). `rally web --login` sends it over loopback in a header, never in its arguments,
+  for a one-time code: single use, a minute long, held only in memory. A session is a random value, not the
+  key, and holds only while the key it was made under is still in the file. No response or printed line
+  carries the key, and keys, codes and sessions are compared in constant time.
+- **A page can't ask for a code.** Codes are given only to a request without `Origin` or `Sec-Fetch-Site`,
+  which a browser always sends, and with the key.
 - **Other sites can't read it.** Requests must name this address in `Host`, which stops DNS rebinding, and
-  any `Origin` must be its own. There are no CORS headers.
+  any `Origin` must be its own. A request the browser marks as from another site (`Sec-Fetch-Site` other than
+  `same-origin` or `none`) is refused, even with the cookie. There are no CORS headers.
 - **Recorded text can't run.** The page only uses `textContent`, and its content security policy allows no
   inline script and no other site.
 - **No write path.** It has no way to change anything. With `--db` its Postgres connection is read-only, and it should use a
@@ -90,8 +113,11 @@ Open blockers are read one page at a time, 200, and the panel says when there ar
 
 ## What it doesn't protect against
 
-- Any program on your machine and account can read the page, because it has no login. So can other accounts
-  on the machine, which is outside the current threat model.
+- Any program running as your account can read the key file, and so sign in. Other accounts on the machine
+  can't. A one-time code does appear in the address you open, so in that browser's history and briefly in the
+  arguments the browser starts with, but it's spent once used and dead after a minute.
+- Before it's reachable beyond this machine, it needs an adversarial review by someone other than its author,
+  as RAL-29 says. RAL-34, viewing from a phone, depends on that.
 - Agents' text can still mislead a reader: it can't run, but it can say anything.
 - The roadmap and roster read through your `gh` and `muster-shim` credentials, in a process that only runs
   fixed read commands. Project names in `--projects` come from you and are trusted.

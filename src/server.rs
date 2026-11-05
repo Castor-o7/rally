@@ -979,10 +979,32 @@ async fn handover(
 }
 
 /// Submissions waiting for a reader, oldest first (RAL-51).
-async fn waiting(State(service): State<Arc<Service>>) -> Response {
+async fn waiting(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    // The suggestions are for now, so a past state isn't offered rather than quietly ignored.
+    if query.as_of.is_some() {
+        return failure(StatusCode::BAD_REQUEST, "waiting doesn't take as_of");
+    }
+    // The service's own store is the writer, which keeps the chain's hashes, so checking
+    // designations costs no replay. A store without them replays from Postgres, which is as
+    // costly as a check, so it's limited like one.
+    let work = if service.store.keeps_chain() {
+        Work::Read
+    } else {
+        if !service.allow(&identity.credential, Bucket::Heavy) {
+            return failure(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many checks and past-state reads",
+            );
+        }
+        Work::Heavy
+    };
     let key = service.operator_key.clone();
     let result = service
-        .run(Work::Read, move |store| store.waiting_report(key.as_ref()))
+        .run(work, move |store| store.waiting_report(key.as_ref()))
         .await;
     match result {
         Ok(Ok(report)) => Json(report).into_response(),
