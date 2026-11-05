@@ -83,7 +83,8 @@ pub fn targets(root: &Path, files: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
         let existing: Vec<PathBuf> = ["CLAUDE.md", "AGENTS.md"]
             .iter()
             .map(PathBuf::from)
-            .filter(|name| root.join(name).exists())
+            // A link counts as there even when it dangles, so it's checked, not skipped.
+            .filter(|name| root.join(name).symlink_metadata().is_ok())
             .collect();
         if existing.is_empty() {
             vec![PathBuf::from("AGENTS.md")]
@@ -115,6 +116,14 @@ fn inside(root: &Path, file: &Path) -> Result<PathBuf, String> {
     let resolved = match path.canonicalize() {
         Ok(resolved) => resolved,
         Err(_) => {
+            // A dangling symbolic link can't be resolved, but writing through it would create
+            // its target, wherever that is.
+            if path
+                .symlink_metadata()
+                .is_ok_and(|m| m.file_type().is_symlink())
+            {
+                return Err(refuse());
+            }
             let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
                 return Err(refuse());
             };
@@ -348,6 +357,22 @@ mod tests {
             let error = run(&root, &[]).unwrap_err();
             assert!(error.contains("isn't inside the repository"), "{error}");
             assert_eq!(read(&outer.path().join("elsewhere.md")), "keep\n");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_out_of_the_repository_is_refused() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("repo");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let missing = outer.path().join("not-yet.md");
+        std::os::unix::fs::symlink(&missing, root.join("CLAUDE.md")).unwrap();
+        std::os::unix::fs::symlink(&missing, root.join("named.md")).unwrap();
+        for files in [vec![], vec![PathBuf::from("named.md")]] {
+            let error = run(&root, &files).unwrap_err();
+            assert!(error.contains("isn't inside the repository"), "{error}");
+            assert!(!missing.exists(), "nothing was created outside");
         }
     }
 
