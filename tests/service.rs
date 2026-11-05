@@ -2047,3 +2047,66 @@ fn waiting_suggests_a_reader_from_another_team() {
         "{waiting}"
     );
 }
+
+/// `rally next` reads every page of blockers at the first page's instant (RAL-56), and the
+/// service judges a page at the `at_ms` it's given.
+#[test]
+fn next_reads_every_page_of_blockers_at_one_instant() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    // Over one page of blockers, with the question to the operator on the second.
+    for n in 0..201 {
+        let reply = write(
+            &pairing,
+            "r",
+            "declared",
+            json!({"change": "block", "team": "muster", "note": format!("waiting {n}")}),
+        );
+        assert_eq!(reply.status, 200, "{}", reply.body);
+    }
+    let asked = write(
+        &pairing,
+        "r",
+        "declared",
+        json!({"change": "block", "team": "rally", "story": "RAL-2", "on_team": "operator",
+               "note": "may we?"}),
+    );
+    assert_eq!(asked.status, 200, "{}", asked.body);
+    let page: Value = serde_json::from_str(
+        &call(&pairing, "GET", "/v1/blockers/all?at_ms=5&after=200", None).body,
+    )
+    .unwrap();
+    assert_eq!(page["now_ms"], 5);
+    let question = page["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|blocker| blocker["seq"] == 202)
+        .unwrap();
+    assert_eq!(question["question"]["window_from_ms"], question["at_ms"]);
+
+    let roadmap = service.dir.path().join("roadmap.md");
+    std::fs::write(&roadmap, "- [ ] **RAL-2: Needs the operator.**\n").unwrap();
+    let out = cli(
+        &config,
+        "r",
+        &[
+            "next",
+            "--team",
+            "rally",
+            "--roadmap",
+            roadmap.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let next: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(next.get("incomplete").is_none(), "{next}");
+    assert_eq!(next["next"]["story"], "RAL-2");
+    assert_eq!(next["waiting_on_operator"][0]["blocker"], 202);
+}
