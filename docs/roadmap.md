@@ -352,18 +352,18 @@ watchman adds judgement and isn't needed to keep work moving. Each story below c
 ones Rally builds first, and how they fit the board process, follows the watchman's order and the operator's
 word.
 
-- [ ] **RAL-54: Wake an idle team with its next story.** From the operator's question of 2026-11-05, and from RAL-7
+- [x] **RAL-54: Wake an idle team with its next story.** Merged in #109 (9d44b26). From the operator's question of 2026-11-05, and from RAL-7
   and RAL-8. Done when: if a team is idle, or its claim has gone quiet past an agreed time, while a ready story
   exists for it, Rally sends that team one digest through Muster naming its next ready story (RAL-56), at most
   once per agreed interval; a team that has said it's resting, or has no ready story, gets nothing; a team that
   can't be woken is shown as such to whoever reads the state; and a test covers each of those cases, plus the
   2026-11-05 case of a team asleep with wake `none`. One moment to wake a team is when the operator's answer
   closes a question its story was shelved on (RAL-56), since that story then comes back first.
-- [ ] **RAL-55: Hand out story IDs from the ledger.** From the operator's question of 2026-11-05. Done when:
+- [x] **RAL-55: Hand out story IDs from the ledger.** Merged in #110 (da5b72d). From the operator's question of 2026-11-05. Done when:
   `rally new-story <PREFIX> --title "..."` records the next free number for that prefix, and returns it in one
   atomic write; two concurrent requests for one prefix get different numbers, with a test; a number that's already
   in the ledger, or already in the prefix's roadmap, is never handed out; and IDs written by hand still work.
-- [ ] **RAL-56: A rule for picking the next story that a team can follow alone.** From the operator's question of
+- [x] **RAL-56: A rule for picking the next story that a team can follow alone.** Merged in #106 (6aa5622). From the operator's question of
   2026-11-05. The operator added: "if the operator doesn't respond within a certain reasonable window of time then
   shelve the item. don't just inherently skip operator interaction items please". Done when: `rally next --team
   <team>` shows the team's next story, which is the first ready, unclaimed, unblocked story in roadmap order; it
@@ -384,7 +384,7 @@ word.
   test shows away isn't entered on the second unanswered shelf and is on the third, nothing is offered during the
   hour, it's revisited after it, an answer ends it early and a backdated one doesn't, and after the hour two
   shelves don't enter it again and a third does.
-- [ ] **RAL-57: Spread peer reads across teams.** From the operator's question of 2026-11-05. Done when: while no
+- [x] **RAL-57: Spread peer reads across teams.** Merged in #107 (f2cac4c). From the operator's question of 2026-11-05. Done when: while no
   watchman is designated, `rally waiting` suggests a reader for each submission: a team other than the author's,
   the one whose last suggested or recorded read is oldest first; it never suggests the author's own team;
   following the suggestion is optional, and the read still counts only by the rules of RAL-51; and a test shows
