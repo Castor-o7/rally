@@ -6,8 +6,7 @@ shared Levi remote (`murph:git/levi.git`), stacked on upstream main `56aceb2` (v
 comparison and proposal behind it are in [levi-proposal.md](levi-proposal.md). The watchman, grand-photon, agreed
 the proposal, and each half was read by the other builder.
 
-**Draft.** The watchman sent back one rule in the review gate (a verification older than the close must not pass),
-and chartreuse-meerkat is building it. This write-up is finished once that lands and the stack is read whole.
+**Draft.** It's finished once the watchman has read the whole stack.
 
 ---
 
@@ -32,10 +31,14 @@ see its test `unknown_item_type_is_ignored`). No existing event, field or comman
   A closer who never claimed the task can only be matched on (dev, machine), so they're warned instead, and the
   review carries `self_review_warning`. Levi's identity is self-declared, so this catches mistakes, not impostors.
 - **A review gate for CI.** `levi check-claims --require-review` also fails unless each task the branch ever claimed
-  has, as its newest review applying at the tested commit, a verification, and has no open read request.
+  has, as its newest review applying at the tested commit, a verification of the commit it closed at or a later
+  one, and has no open read request. A verification strictly older than the close, or on a parallel branch, fails
+  (`stale_review`), since the commits in between were never read. Where git can't say how the two commits are
+  ordered, it fails as `partial`, so the gate never passes on a guess.
 - **Requested reads.** `levi request-read ID [--commit SHA]` asks for a read before a merge, and
   `levi withdraw-read ID` takes your own back. One request per requester per task: asking again replaces it. A
-  later review by anyone answers it. `show` lists requests, and marks one `closed_before_read` when a close that
+  later review by anyone answers it, provided it read the requested commit or a later one. If git can't place the two
+  commits, the request stays open. `show` lists requests, and marks one `closed_before_read` when a close that
   applies here was made while it was open.
 - **Blockers that aren't tasks.** `levi block ID -m reason` prints a `bk-` id, and `levi unblock BK -m why` closes
   it. Anyone can unblock, and the log keeps who opened and who closed each blocker. A task with an open blocker
@@ -50,9 +53,9 @@ All changes are additive, on the existing schema versions:
   `ls` tasks also gain `blockers` (the open ones).
 - `levi.show/1` gains the same review fields, plus `reviews[]`, `read_requests[]` and `blockers[]`. Each entry has
   `source: "declared"`.
-- `levi.check-claims/1` tasks gain `review`, `review_source`, `review_resolution`, `review_differs` and
-  `open_reads`, on every run, not only with `--require-review`. The proposal named one added field; this adds five,
-  so that a CI log shows why a task would fail the gate before anyone turns it on.
+- `levi.check-claims/1` tasks gain `review`, `review_source`, `review_resolution`, `review_differs`, `open_reads`,
+  `stale_review` and `self_review_warning`, on every run, not only with `--require-review`. The proposal named one
+  added field; this adds seven, so that a CI log shows why a task would fail the gate before anyone turns it on.
 
 ## What it doesn't do
 
@@ -71,9 +74,11 @@ All changes are additive, on the existing schema versions:
 - `cargo test --workspace`: Levi's 125 tests, plus the new ones. There are unit tests in `levi-core` for replay,
   resolution, ranking, the self-review rule and the gate. There are CLI integration tests against scripted repos
   in `levi/tests/cli_reviews.rs` (7), `cli_reads.rs` (4) and `cli_blockers.rs` (3), using a second git worktree as
-  the second reader. 167 pass at `8fff9ea`.
+  the second reader. 173 pass at `7ea8b5f`, on a1 and on Murph. The `self_review_warning` path is covered by a core
+  test only: every test worktree shares one email and hostname, so an end-to-end case can't separate a closer who
+  never claimed the task from one who did.
 - `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` pass. The `levi-dash` wasm
-  check and clippy are run on Murph.
+  check and clippy pass on Murph.
 
 ## Commits
 
