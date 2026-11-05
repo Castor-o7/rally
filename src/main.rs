@@ -466,6 +466,19 @@ enum Command {
         #[arg(long, default_value = "docs/roadmap.md")]
         roadmap: PathBuf,
     },
+    /// Prompts for the watchman from Muster's roster and Rally's records (RAL-7): each row of the
+    /// design's stall table that holds for a team, and whether every team is waiting at once, as
+    /// on 2026-10-30. Read-only. Prompts, never conclusions. See docs/stalls.md.
+    Stalls {
+        /// The projects, with each one's `team` and `sessions`, instead of the defaults.
+        #[arg(long)]
+        projects: Option<PathBuf>,
+        /// How long a claim, or the whole ledger, can go without a record before it counts as
+        /// quiet. No length has been agreed with the operator, so it has no default; it's the
+        /// same setting as `rally wake --quiet-after`.
+        #[arg(long, env = "RALLY_WAKE_QUIET_AFTER", value_parser = parse_window)]
+        quiet_after: Option<u64>,
+    },
     /// Wake idle teams with their next story (RAL-54): for each team in the projects list with
     /// sessions mapped to it, idle (or its claim quiet) with a ready story, send one digest through
     /// Muster, at most once per interval. Without `muster-shim`, or with --report-only, it only
@@ -1225,6 +1238,128 @@ fn new_story(
 }
 
 /// One pass of `rally wake` (RAL-54).
+/// One `rally stalls` report (RAL-7). Gathers what `rally wake` does, plus each team's open
+/// blockers, and leaves the judgement to `rally::stall`.
+fn stalls_pass(
+    projects: Option<&Path>,
+    location: Option<&Location>,
+    config: &Path,
+    quiet_after: Option<u64>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let text = match projects {
+        Some(path) => std::fs::read_to_string(path)?,
+        None => DEFAULT_PROJECTS.to_owned(),
+    };
+    let projects: Vec<Project> = serde_json::from_str(&text)?;
+    let backend = Backend::choose(location, config, false)?;
+    let read = PickRead::read(&backend)?;
+    let now_ms = read.now_ms;
+    let teams = backend.read_value("/v1/teams", None, &Page::default(), |ledger, page| {
+        views::teams(ledger, None, page)
+    })?;
+    let roster = rally::wake::muster_available()
+        .then(|| {
+            std::process::Command::new("muster-shim")
+                .arg("roster")
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+                .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
+        })
+        .flatten();
+    let empty = serde_json::Map::new();
+    let stories = read.stories["stories"].as_object().unwrap_or(&empty);
+    let open: Vec<&Value> = read
+        .blockers
+        .iter()
+        .filter(|blocker| blocker["closed"].is_null())
+        .collect();
+    // The newest record Rally has seen: on a story, a blocker or a team's state.
+    let last_record_ms = stories
+        .values()
+        .filter_map(|story| story["last_at_ms"].as_i64())
+        .chain(read.blockers.iter().filter_map(|b| b["at_ms"].as_i64()))
+        .chain(
+            teams["teams"]
+                .as_object()
+                .unwrap_or(&empty)
+                .values()
+                .filter_map(|team| team["at_ms"].as_i64()),
+        )
+        .max()
+        .unwrap_or(0);
+    let mut facts = Vec::new();
+    let mut errors = Vec::new();
+    for project in &projects {
+        let Some(team) = project.team.as_deref() else {
+            continue;
+        };
+        let key = team.trim().to_lowercase();
+        let same = |name: Option<&str>| name.is_some_and(|name| name.trim().to_lowercase() == key);
+        let ready = match web::read_roadmap(project) {
+            Ok((_, text)) => {
+                read.pick(team, &rally::next::items(&text, &project.prefix))["next"]["story"]
+                    .as_str()
+                    .map(str::to_owned)
+            }
+            Err(error) => {
+                errors.push(json!({"team": team, "error":
+                    format!("the roadmap couldn't be read: {error}")}));
+                continue;
+            }
+        };
+        let claims: Vec<(String, i64)> = stories
+            .iter()
+            .filter(|(_, story)| {
+                matches!(story["state"].as_str(), Some("claimed" | "sent_back"))
+                    && same(story["team"].as_str())
+            })
+            .map(|(id, story)| (id.clone(), story["last_at_ms"].as_i64().unwrap_or(0)))
+            .collect();
+        let blockers = open
+            .iter()
+            .filter(|blocker| same(blocker["team"].as_str()))
+            .map(|blocker| rally::stall::Waiting {
+                seq: blocker["seq"].as_u64().unwrap_or(0),
+                story: blocker["story"].as_str().map(str::to_owned),
+                on: blocker["on_team"]
+                    .as_str()
+                    .or(blocker["on_story"].as_str())
+                    .map(str::to_owned),
+                note: blocker["note"].as_str().unwrap_or_default().to_owned(),
+            })
+            .collect();
+        facts.push(rally::stall::Facts {
+            name: team.to_owned(),
+            sessions: roster
+                .as_ref()
+                .map(|roster| rally::wake::sessions_of(roster, &project.sessions))
+                .unwrap_or_default(),
+            status: teams["teams"][&key]["status"].as_str().map(str::to_owned),
+            claims,
+            ready,
+            blockers,
+        });
+    }
+    let mut report = rally::stall::report(&facts, last_record_ms, quiet_after, now_ms);
+    if roster.is_none() {
+        // Without the roster, only what Rally alone says holds: the declared blockers.
+        if let Some(prompts) = report["prompts"].as_array_mut() {
+            prompts.retain(|row| row["row"] == "declared_blocked");
+        }
+        report["every_team_waiting"] = Value::Null;
+        report["roster"] = json!({"available": false, "note": "muster-shim's roster couldn't be \
+            read, so only declared blockers are shown"});
+    } else {
+        report["roster"] = json!({"available": true});
+    }
+    report["last_record_ms"] = json!(last_record_ms);
+    if !errors.is_empty() {
+        report["errors"] = json!(errors);
+    }
+    Ok(serde_json::to_string_pretty(&report)?)
+}
+
 fn wake_pass(
     projects: Option<&Path>,
     location: Option<&Location>,
@@ -2367,6 +2502,13 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             };
             let reply = client::request(&pairing, "GET", path, None, &[])?;
             return Ok(reply_value(&reply)?.to_string());
+        }
+        Command::Stalls {
+            projects,
+            quiet_after,
+        } => {
+            let config = config_path(cli.config)?;
+            return stalls_pass(projects.as_deref(), location.as_ref(), &config, quiet_after);
         }
         Command::Wake {
             projects,
