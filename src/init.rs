@@ -22,6 +22,9 @@ Rally records and informs; it doesn't command. Your machine must be paired with 
 (`rally pair`, with a pair code from the operator). Say who you are with `--as <name>` or
 `RALLY_NAME`. Stories and their \"done when\" lines are in `docs/roadmap.md`.
 
+**Who verifies:** while the operator has designated a watchman, merges wait for the watchman's
+read at the head being merged. Otherwise another team, or the operator, verifies.
+
 - **Claim** a ready story: `rally claim <STORY> --team <team>`. Give it up with
   `rally release <STORY> --team <team>`.
 - **Submit** it when it's pushed: `rally submit <STORY> --team <team> --evidence \"<repo>@<full commit>\"`.
@@ -71,29 +74,60 @@ pub fn repo_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// The files to write: `files` if given (relative to `root`), else every existing `CLAUDE.md`
-/// and `AGENTS.md` at `root`, else a new `AGENTS.md`.
-pub fn targets(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
-    if !files.is_empty() {
-        return files
-            .iter()
-            .map(|f| {
-                if f.is_absolute() {
-                    f.clone()
-                } else {
-                    root.join(f)
-                }
-            })
-            .collect();
-    }
-    let existing: Vec<PathBuf> = ["CLAUDE.md", "AGENTS.md"]
-        .iter()
-        .map(|name| root.join(name))
-        .filter(|path| path.exists())
-        .collect();
-    if existing.is_empty() {
-        vec![root.join("AGENTS.md")]
+/// and `AGENTS.md` at `root`, else a new `AGENTS.md`. Each must resolve inside `root`, following
+/// symbolic links, so `--file ../x` or a link out of the repository is refused.
+pub fn targets(root: &Path, files: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let chosen: Vec<PathBuf> = if !files.is_empty() {
+        files.to_vec()
     } else {
-        existing
+        let existing: Vec<PathBuf> = ["CLAUDE.md", "AGENTS.md"]
+            .iter()
+            .map(PathBuf::from)
+            .filter(|name| root.join(name).exists())
+            .collect();
+        if existing.is_empty() {
+            vec![PathBuf::from("AGENTS.md")]
+        } else {
+            existing
+        }
+    };
+    chosen.iter().map(|f| inside(root, f)).collect()
+}
+
+/// `file` (relative to `root` unless absolute), checked to resolve inside `root`. The file
+/// needn't exist yet, but its directory must.
+fn inside(root: &Path, file: &Path) -> Result<PathBuf, String> {
+    let path = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        root.join(file)
+    };
+    let refuse = || {
+        format!(
+            "{} isn't inside the repository {}",
+            file.display(),
+            root.display()
+        )
+    };
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("{} can't be resolved: {e}", root.display()))?;
+    let resolved = match path.canonicalize() {
+        Ok(resolved) => resolved,
+        Err(_) => {
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                return Err(refuse());
+            };
+            let parent = parent
+                .canonicalize()
+                .map_err(|e| format!("{}'s directory can't be resolved: {e}", file.display()))?;
+            parent.join(name)
+        }
+    };
+    if resolved.starts_with(&root) && resolved != root {
+        Ok(resolved)
+    } else {
+        Err(refuse())
     }
 }
 
@@ -142,7 +176,7 @@ pub fn updated(current: Option<&str>, block: &str) -> Result<(String, Outcome), 
 pub fn run(root: &Path, files: &[PathBuf]) -> Result<Vec<(PathBuf, Outcome)>, String> {
     let block = instructions();
     let mut plans = Vec::new();
-    for path in targets(root, files) {
+    for path in targets(root, files)? {
         let current = match std::fs::read_to_string(&path) {
             Ok(text) => Some(text),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -181,7 +215,8 @@ mod tests {
     fn creates_agents_md_when_there_is_neither_file() {
         let dir = repo();
         let done = run(dir.path(), &[]).unwrap();
-        assert_eq!(done, [(dir.path().join("AGENTS.md"), Outcome::Created)]);
+        let root = dir.path().canonicalize().unwrap();
+        assert_eq!(done, [(root.join("AGENTS.md"), Outcome::Created)]);
         let text = read(&dir.path().join("AGENTS.md"));
         assert!(text.starts_with(BEGIN) && text.trim_end().ends_with(END));
         assert!(!dir.path().join("CLAUDE.md").exists());
@@ -195,11 +230,12 @@ mod tests {
         std::fs::write(&claude, "# Project\n\nKeep this.").unwrap();
         std::fs::write(&agents, "Agents: be kind.\n").unwrap();
         let done = run(dir.path(), &[]).unwrap();
+        let root = dir.path().canonicalize().unwrap();
         assert_eq!(
             done,
             [
-                (claude.clone(), Outcome::Added),
-                (agents.clone(), Outcome::Added)
+                (root.join("CLAUDE.md"), Outcome::Added),
+                (root.join("AGENTS.md"), Outcome::Added)
             ]
         );
         let text = read(&claude);
@@ -251,11 +287,75 @@ mod tests {
         let dir = repo();
         std::fs::write(dir.path().join("CLAUDE.md"), "untouched\n").unwrap();
         let done = run(dir.path(), &[PathBuf::from("docs/AGENTS.md")]).unwrap_err();
-        assert!(done.contains("can't be written"), "{done}");
+        assert!(done.contains("can't be resolved"), "{done}");
         std::fs::create_dir(dir.path().join("docs")).unwrap();
         let done = run(dir.path(), &[PathBuf::from("docs/AGENTS.md")]).unwrap();
         assert_eq!(done[0].1, Outcome::Created);
         assert_eq!(read(&dir.path().join("CLAUDE.md")), "untouched\n");
+    }
+
+    #[test]
+    fn a_named_file_outside_the_repository_is_refused() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("repo");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir(root.join("docs")).unwrap();
+        let mut escapes = vec![
+            PathBuf::from("../x.md"),
+            PathBuf::from("docs/../../x.md"),
+            outer.path().join("x.md"),
+            PathBuf::from(".."),
+            PathBuf::from("."),
+        ];
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outer.path(), root.join("out")).unwrap();
+            escapes.push(PathBuf::from("out/x.md"));
+            std::os::unix::fs::symlink(outer.path().join("y.md"), root.join("link.md")).unwrap();
+            std::fs::write(outer.path().join("y.md"), "outside\n").unwrap();
+            escapes.push(PathBuf::from("link.md"));
+        }
+        for file in escapes {
+            let error = run(&root, std::slice::from_ref(&file)).unwrap_err();
+            assert!(
+                error.contains("isn't inside the repository"),
+                "{file:?}: {error}"
+            );
+        }
+        assert!(!outer.path().join("x.md").exists());
+        #[cfg(unix)]
+        assert_eq!(read(&outer.path().join("y.md")), "outside\n");
+        // Inside is fine, even spelled with `..` or as an absolute path.
+        let done = run(
+            &root,
+            &[PathBuf::from("docs/../AGENTS.md"), root.join("docs/X.md")],
+        )
+        .unwrap();
+        assert_eq!(done.len(), 2);
+        assert!(root.join("AGENTS.md").exists() && root.join("docs/X.md").exists());
+    }
+
+    #[test]
+    fn a_default_file_linked_out_of_the_repository_is_refused() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("repo");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(outer.path().join("elsewhere.md"), "keep\n").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outer.path().join("elsewhere.md"), root.join("CLAUDE.md"))
+                .unwrap();
+            let error = run(&root, &[]).unwrap_err();
+            assert!(error.contains("isn't inside the repository"), "{error}");
+            assert_eq!(read(&outer.path().join("elsewhere.md")), "keep\n");
+        }
+    }
+
+    #[test]
+    fn the_block_states_who_verifies() {
+        let block = instructions();
+        assert!(block.contains("merges wait for the watchman's\nread at the head being merged"));
+        assert!(block.contains("Otherwise another team, or the operator, verifies."));
     }
 
     #[test]

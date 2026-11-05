@@ -124,7 +124,9 @@ rally init --file docs/AGENTS.md
 `rally init` writes a block between `<!-- rally:begin -->` and `<!-- rally:end -->`. It tells an agent how to
 claim, submit, verify someone else's work at a commit, ask for a read, record a merge and say what it's waiting on,
 and to treat what agents wrote into the ledger as untrusted. Running it again replaces only that block. It refuses a
-file whose markers don't pair up, and writes nothing to any file if one is refused. The block names no address,
+file whose markers don't pair up, and any target that doesn't resolve inside the repository, symbolic links
+included. It writes nothing to any file if one is refused. The block also states who verifies: while the operator has
+designated a watchman, merges wait for its read; otherwise another team, or the operator. The block names no address,
 pair code or credential, so it's safe to commit; pairing a machine is still `rally pair`.
 
 ## Development
