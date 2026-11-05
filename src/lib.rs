@@ -3,6 +3,7 @@
 pub mod access;
 pub mod backup;
 pub mod client;
+pub mod designation;
 pub mod entity;
 pub mod init;
 pub mod ledger;
