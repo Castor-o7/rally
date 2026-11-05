@@ -339,10 +339,17 @@ and how they fit the board process, follows the watchman's order and the operato
   atomic write; two concurrent requests for one prefix get different numbers, with a test; a number that's already
   in the ledger, or already in the prefix's roadmap, is never handed out; and IDs written by hand still work.
 - [ ] **RAL-56: A rule for picking the next story that a team can follow alone.** From the operator's question of
-  2026-11-05. Done when: `rally next --team <team>` shows the team's next story, which is the first ready,
-  unclaimed, unblocked story in roadmap order; it skips one that waits on the operator or another team, and says
-  why; the team can record that skip as a block, with the reason, in one command; and a test covers the order,
-  each kind of skip, and a roadmap with nothing left.
+  2026-11-05. The operator added: "if the operator doesn't respond within a certain reasonable window of time then
+  shelve the item. don't just inherently skip operator interaction items please". Done when: `rally next --team
+  <team>` shows the team's next story, which is the first ready, unclaimed, unblocked story in roadmap order; it
+  skips one that waits on another team, and says why, and the team can record that skip as a block, with the
+  reason, in one command; a story that waits on the operator isn't skipped: the team asks the operator, through
+  Muster to the operator's address, and records the question as a block on the operator; if there's no answer
+  within a window agreed with the operator, the story is shelved, a recorded state that keeps the question and
+  when it was asked, and the team takes the next story; a shelved story returns to the top of the pick once the
+  operator answers; `rally next` shows shelved stories and their open questions; and a test covers the order,
+  each kind of skip, a roadmap with nothing left, and a story that isn't shelved before the window, is shelved
+  after it, and returns on an answer.
 - [ ] **RAL-57: Spread peer reads across teams.** From the operator's question of 2026-11-05. Done when: while no
   watchman is designated, `rally waiting` suggests a reader for each submission: a team other than the author's,
   the one whose last suggested or recorded read is oldest first; it never suggests the author's own team;
