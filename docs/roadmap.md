@@ -370,3 +370,7 @@ word.
   The operator decides when. Done when: for one rally session, teams pick their own stories by RAL-56's rule and
   the watchman only verifies; afterwards, a write-up compares that session's idle time, ID collisions and
   send-backs with 2026-11-05's, from the ledger and Muster's roster, and says what still needed the watchman.
+- [ ] **RAL-60: Rally's CI checks dependencies with cargo-deny.** From the watchman's read of RAL-5, which adds
+  `ureq`. Done when: a `deny.toml` lists the licences Rally accepts (including `webpki-roots`'s
+  CDLA-Permissive-2.0) and the sources it allows; CI runs `cargo deny check` on every PR; and today's advisory,
+  RUSTSEC-2026-0387 in `crypto-bigint` through `ssh-key`, is fixed or recorded with a reason.

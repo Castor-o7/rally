@@ -1,0 +1,54 @@
+# cargo-deny's checks for Rally (RAL-60). CI runs `cargo deny check` on every PR.
+
+[graph]
+all-features = false
+
+[advisories]
+# Every advisory fails the check unless it's listed here with a reason, and each listing is
+# reviewed by the date in its reason.
+ignore = [
+    # crypto-bigint 0.5.5, through ssh-key 0.6.7 -> p256/ecdsa -> elliptic-curve. The fix is in
+    # crypto-bigint 0.7.6, which only ssh-key 0.7 uses, and 0.7 is still a release candidate.
+    # Rally isn't affected: it uses ssh-key only to verify the operator's designation signatures
+    # (designation.rs), which works on public data alone (the public key, the signature and the
+    # statement). No secret integer is ever in Rally's process for timing to leak, and Rally
+    # never signs: the operator's key stays in Secretive, on a1.
+    { id = "RUSTSEC-2026-0387", reason = "verify-only, no secret integers in Rally; move to ssh-key 0.7 when it's stable; review by 2027-02-05" },
+]
+
+[licenses]
+# The licences Rally's dependencies actually use. Anything else fails the check.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSD-1-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "MIT-0",
+    "CC0-1.0",
+    "Unlicense",
+    "BSL-1.0",
+    "Unicode-3.0",
+    # nucleo-matcher, through myko. File-level copyleft, used unmodified.
+    "MPL-2.0",
+    # Rally's own licence, and myko's, myko-macros', myko-server's and autosocket's.
+    "AGPL-3.0-or-later",
+    # webpki-roots and webpki-root-certs: Mozilla's root certificates as data. CDLA-Permissive-2.0
+    # is a permissive licence for data, asking only that the licence text go with it.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
