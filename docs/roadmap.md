@@ -198,9 +198,11 @@ The bones. Everything later reads from this.
 - [ ] **RAL-67: Check a story merged by several pull requests, per pull request.** From fiery-snapper's read of
   RAL-8's follow-up (#137) on 2026-11-05. RAL-22 landed in #123 and #127, and its one verify names #127's squash
   commit, not the heads read (7fc4bef and 62d67e2). A second verify on a Verified story is refused, so the digest
-  flags it falsely. Done when: one verify can cover a story's several pull requests, by naming more than one commit
-  read; each merge's landed head is checked against any commit the story's verify names; RAL-22's case no longer
-  flags, and a push after the read still does, each with a test.
+  flags it falsely. Done when: a verifier can add commits read to their own verify of an already Verified story with
+  an annotation (`rally annotate <verify seq> --also-read <sha>`), accepted only from the verify's own credential;
+  each merge's landed head is checked against every commit the verify names or has had added, and a verify at a
+  pull request's squash commit counts as covering that pull request's head; RAL-22 is fixed by annotating 7fc4bef
+  onto its verify, record 179, and a push after the read still flags, each with a test.
 - [x] **RAL-21: Keep each team's track record as plain facts.** Done when: the watchman can read each
   team's stories verified, stories sent back and what was missing, and problems reported, with no points,
   scores, weights or ranking.
