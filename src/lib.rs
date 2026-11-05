@@ -4,6 +4,7 @@ pub mod access;
 pub mod backup;
 pub mod client;
 pub mod entity;
+pub mod init;
 pub mod ledger;
 pub mod record;
 #[doc(hidden)]
