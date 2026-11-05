@@ -879,7 +879,22 @@ mod tests {
     #[test]
     fn a_name_that_could_change_the_statement_is_refused() {
         let hash = "a".repeat(64);
-        for name in ["a\nafter: 9:x", "none", "", "x y", &"x".repeat(65)] {
+        let long = "x".repeat(65);
+        // Look-alikes of a real name too (RAL-41): a zero-width space, a right-to-left override, a
+        // word joiner, and a Cyrillic а. The name is ASCII only, so the signed statement shows the
+        // operator exactly the name a verification is matched against.
+        let names = [
+            "a\nafter: 9:x",
+            "none",
+            "",
+            "x y",
+            &long,
+            "grand\u{200b}photon",
+            "\u{202e}grand-photon",
+            "grand-photon\u{2060}",
+            "gr\u{430}nd-photon",
+        ];
+        for name in names {
             let body = json!({
                 "change": "designate", "watchman": name, "after_seq": 0, "after_hash": hash,
                 "key_fingerprint": "SHA256:abc",

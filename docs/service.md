@@ -125,7 +125,11 @@ and shown exactly as written. Whatever displays it has to escape it too.
 A new record's notes are limited to 4,000 characters and its evidence to 1,000. Its names (team names, the
 declared name, the machine's name and a backfill's `entered_by`) are limited to 64 characters, with no control
 characters and no invisible or direction-changing ones, such as a zero-width space or a right-to-left override,
-so that `alice` and a look-alike can't pass as two people (RAL-41). Letters from any script are allowed.
+so that `alice` and a look-alike can't pass as two people (RAL-41). Letters from any script are allowed, so
+a name that mixes scripts, such as a Cyrillic `а` in place of a Latin `a`, isn't caught: two such names look
+alike and are different. A designated watchman's name is the exception. It's ASCII letters, digits, `-`, `_`,
+`.` and `@` only, because a verification is labelled `watchman` by matching it, and the operator signs the
+name as it appears.
 
 These limits apply to new records only. Replay doesn't apply them, so an old ledger stays readable if a limit
 tightens. Only what every record has always needed is checked on replay: the record's format, and a credential
