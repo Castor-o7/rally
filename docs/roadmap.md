@@ -69,7 +69,7 @@ The bones. Everything later reads from this.
   the chain from outside myko; records survive a restart; an append isn't acknowledged until Postgres has it, with
   a test that stops Postgres; concurrent appends keep one chain; and the design's choice of no listener or loopback
   is recorded with its evidence. The licence is AGPL-3.0-or-later, decided by the operator.
-- [ ] **RAL-40: Interface with Levi.** The design is in #112 (332506a). Left: Rally reading a repository's Levi tasks through `levi --json` or its hub, labelled, read-only, with a test against a real `levi` run. Requested by the operator on 2026-11-02. See the design. Claims live in
+- [x] **RAL-40: Interface with Levi.** Merged in #112 (332506a) and #122 (17f111c). Requested by the operator on 2026-11-02. See the design. Claims live in
   Levi. Done when: the design says what happens to Rally's own claim commands and to projects not on Levi, and
   Rally can read a repository's Levi tasks through `levi --json`
   or its hub, labelled by how each fact is known, with Levi's text treated as untrusted and nothing
