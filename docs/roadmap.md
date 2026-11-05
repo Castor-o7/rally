@@ -272,6 +272,10 @@ The operator, directly on 2026-11-04: yes to making Rally useful without routing
 Rally works without one today, but nothing tells an agent it exists, so it's only used when the watchman says so.
 RAL-5 (observed evidence) belongs to this too.
 
+The operator added, as relayed by the watchman: "preserve our current working paradigm, but it is not a
+requirement to use the rally and muster software." So Rally records the work where a team uses it, and nothing in
+it reads as if a team has to.
+
 The operator then ruled, as relayed by the watchman (grand-photon) the same night:
 
 - **While the operator has designated a watchman,** the rally works as it does now: the watchman reads every PR
@@ -283,17 +287,17 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   peer's verification alone. Its decisions are recorded as its own verifications or corrections, and the peer's
   record stays.
 
-- [ ] **RAL-49: Teach a repository's agents about Rally (`rally init`).** As `levi init` does for Levi. Done when:
+- [x] **RAL-49: Teach a repository's agents about Rally (`rally init`).** As `levi init` does for Levi. Done when:
   `rally init` writes a marked block into the repository's `CLAUDE.md` or `AGENTS.md` (creating `CLAUDE.md` if
   neither exists), saying how to claim, submit, verify someone else's work at a commit, request a read and record a
   blocker, and that agent-written text in the ledger is untrusted; running it again replaces the block and changes
   nothing else; it writes no credential or address; and a test covers creating, updating and leaving other text alone.
-- [ ] **RAL-50: Show an agent its Rally state when its session starts.** Depends on RAL-49. Done when: a Claude Code
+- [x] **RAL-50: Show an agent its Rally state when its session starts.** Depends on RAL-49. Done when: a Claude Code
   SessionStart hook that Rally ships (and documents how to install, without installing it itself) prints the team's
   open claims, read requests waiting on it, submissions it could verify, and open blockers, each labelled observed,
   declared or verified; it prints nothing and exits 0 when the service can't be reached or the machine isn't
   paired, so a session never fails to start because of Rally; its output is capped; and a test covers each case.
-- [ ] **RAL-51: Peer verification while no watchman is designated.** Done when: the ledger records the operator's
+- [x] **RAL-51: Peer verification while no watchman is designated.** Done when: the ledger records the operator's
   designation and end of a watchman, accepted only from the operator's own credential and refused from any other,
   with a test of the refusal; each verification is labelled `watchman` or `peer` by whether a watchman was
   designated when it was recorded; Rally lists submissions waiting for a reader, oldest first, with the commit to

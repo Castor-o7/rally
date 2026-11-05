@@ -16,14 +16,17 @@ pub fn instructions() -> String {
         "{BEGIN}
 ## Progress ledger (Rally)
 
-This repository's work is recorded in Rally, the muster's ledger of progress: who's on which
-story, what was submitted, who verified it at which commit, and what each team is waiting on.
-Rally records and informs; it doesn't command. Your machine must be paired with the service
-(`rally pair`, with a pair code from the operator). Say who you are with `--as <name>` or
-`RALLY_NAME`. Stories and their \"done when\" lines are in `docs/roadmap.md`.
+Where a team uses Rally, the muster's ledger of progress, it records this repository's work there:
+who's on which story, what was submitted, who verified it at which commit, and what each team is
+waiting on. Using it is optional. The way of working is the same with or without it: stories with
+\"done when\" lines in `docs/roadmap.md`, and a second reader before a merge. Rally records and
+informs; it doesn't command. To use it, pair your machine with the service (`rally pair`, with a
+pair code from the operator), and say who you are with `--as <name>` or `RALLY_NAME`.
 
 **Who verifies:** while the operator has designated a watchman, merges wait for the watchman's
 read at the head being merged. Otherwise another team, or the operator, verifies.
+
+Where you use Rally:
 
 - **Claim** a ready story: `rally claim <STORY> --team <team>`. Give it up with
   `rally release <STORY> --team <team>`.

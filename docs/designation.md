@@ -1,6 +1,8 @@
 # Designating the watchman (RAL-51)
 
-Only the operator names the watchman. A designation is a ledger record carrying the operator's SSH signature over a
+Only the operator names the watchman. Rally records a designation where the operator chooses to use it: Rally
+isn't required. Until Rally's signed designation is set up, or without Rally, the operator's direct word designates
+the watchman, as Muster's `docs/board.md` says. A designation is a ledger record carrying the operator's SSH signature over a
 fixed statement:
 
 ```
