@@ -228,15 +228,16 @@ enum Command {
         harness: Option<String>,
     },
     /// For the operator: show the service's GitHub token can't merge (RAL-18). Reads pull request
-    /// --pull, then tries to merge it naming a head no commit has, so nothing can merge even if the
-    /// token could write. Succeeds only when GitHub refuses for want of access. See docs/evidence.md.
+    /// --pull, which must be already merged or closed, then tries to merge it naming a head no
+    /// commit has, so nothing can merge even if the token could write. Succeeds only when GitHub
+    /// refuses for want of access. See docs/evidence.md.
     CheckGithubToken {
         #[arg(long, env = "RALLY_GITHUB_TOKEN_FILE")]
         github_token_file: PathBuf,
         /// The repository, as owner/repo.
         #[arg(long)]
         repo: String,
-        /// An open pull request in it.
+        /// An already-merged pull request in it. An open one is refused, and nothing is tried.
         #[arg(long)]
         pull: u64,
     },

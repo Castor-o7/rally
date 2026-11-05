@@ -51,17 +51,20 @@ GitHub token". An anonymous allowance isn't enough: Murph's is shared and was us
 
 ### Showing the token can't merge
 
-`rally check-github-token` is for the operator, run by hand; the service never runs it. It reads an open pull
-request with the token, then tries to merge it naming head `0000000000000000000000000000000000000000`, which no
-commit has, so nothing can merge even if the token could write:
+`rally check-github-token` is for the operator, run by hand; the service never runs it. Point it at an
+**already-merged** pull request. It reads the pull request with the token and refuses to go on unless it's closed
+or merged; then it tries to merge it, naming head `0000000000000000000000000000000000000000`, which no commit has.
+GitHub can't merge a merged pull request, so nothing can merge even if the token could write:
 
 ```sh
-rally check-github-token --github-token-file /etc/rally/github-token --repo Castor-o7/rally --pull <an open PR>
+rally check-github-token --github-token-file /etc/rally/github-token --repo Castor-o7/rally --pull 124
 ```
 
 It succeeds only when GitHub refuses the merge for want of access (403, or 404 on a pull request it just read).
-If GitHub gets past the access check (405, 409 or 422) it fails and says the token can write; any other answer
-fails as unclear. Its tests show each case and that the merge names the impossible head.
+If GitHub gets past the access check (on a merged pull request a writable token gets 405 "not mergeable"; 409 and
+422 count the same) it fails and says the token can write; any other answer fails as unclear. Its tests show
+each case, that an open pull request is refused with only a GET sent, and that the merge names the impossible
+head.
 
 ### The operator's step
 

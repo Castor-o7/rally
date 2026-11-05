@@ -288,12 +288,19 @@ pub enum MergeProbe {
 pub const NO_HEAD: &str = "0000000000000000000000000000000000000000";
 
 impl GitHub {
-    /// Try to merge pull request `pull` of `repo` with this token, naming a head that can't
-    /// match, so the attempt can't merge even if the token could write. The pull request must be
-    /// readable first, so a refusal isn't mistaken for a missing pull request. Only the operator
+    /// Try to merge pull request `pull` of `repo` with this token. The pull request must be read
+    /// first, so a refusal isn't mistaken for a missing one, and must be closed or merged, so the
+    /// attempt can't merge even if the token could write; the head named can't match either. Only the operator
     /// runs this (`rally check-github-token`); the service never does.
     pub fn probe_merge(&self, repo: &str, pull: u64) -> Result<MergeProbe, String> {
-        self.ok(&format!("/repos/{repo}/pulls/{pull}"))?;
+        let read = self.ok(&format!("/repos/{repo}/pulls/{pull}"))?;
+        // Only a closed or merged pull request: GitHub can't merge one of those whatever it does
+        // with the head named, so the attempt can never merge even if the token can write.
+        if read["state"].as_str() != Some("closed") {
+            return Err(format!(
+                "pull request {pull} isn't closed, so no merge is tried: point it at a merged one"
+            ));
+        }
         let mut response = self
             .agent
             .put(&format!("{}/repos/{repo}/pulls/{pull}/merge", self.base))
@@ -914,7 +921,7 @@ mod tests {
     #[test]
     fn a_merge_attempt_refused_for_access_is_reported_as_refused() {
         let (base, server) = recording_github(2, |method, _| match method {
-            "GET" => (200, r#"{"number":7,"state":"open"}"#),
+            "GET" => (200, r#"{"number":7,"state":"closed","merged":true}"#),
             _ => (
                 403,
                 r#"{"message":"Resource not accessible by personal access token"}"#,
@@ -937,19 +944,27 @@ mod tests {
     #[test]
     fn a_merge_attempt_that_gets_past_the_access_check_is_reported_as_able_to_write() {
         let (base, server) = recording_github(2, |method, _| match method {
-            "GET" => (200, r#"{"number":7,"state":"open"}"#),
-            _ => (
-                409,
-                r#"{"message":"Head branch was modified. Review and try the merge again."}"#,
-            ),
+            "GET" => (200, r#"{"number":7,"state":"closed","merged":true}"#),
+            _ => (405, r#"{"message":"Pull Request is not mergeable"}"#),
         });
         let github = GitHub::at("too-much-token".into(), base);
         let probe = github.probe_merge("Castor-o7/rally", 7).unwrap();
         server.join().unwrap();
         assert!(
-            matches!(probe, MergeProbe::CanWrite { status: 409, .. }),
+            matches!(probe, MergeProbe::CanWrite { status: 405, .. }),
             "{probe:?}"
         );
+    }
+
+    #[test]
+    fn no_merge_is_attempted_on_an_open_pull_request() {
+        let (base, server) = recording_github(1, |_, _| (200, r#"{"number":7,"state":"open"}"#));
+        let github = GitHub::at("maybe-writable-token".into(), base);
+        let err = github.probe_merge("Castor-o7/rally", 7).unwrap_err();
+        let seen = server.join().unwrap();
+        assert!(err.contains("isn't closed"), "{err}");
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].0, "GET");
     }
 
     #[test]
