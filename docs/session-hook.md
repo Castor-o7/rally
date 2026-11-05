@@ -53,3 +53,11 @@ through printing. `rally` must be on the hook's `PATH`, or give its full path. `
 `RALLY_TEAM`.
 
 To check it by hand: `rally session-start --team rally --verbose`.
+
+## Prime Agent
+
+A Prime Agent session can say so with `--harness prime-agent`, or `RALLY_HARNESS=prime-agent` (RAL-59). Its
+briefing then starts with a notice that Prime Agent's built-in messaging is a fine substitute for Muster when
+it uses Rally, and that Muster is only needed to reach other harnesses' sessions or other machines.
+`rally init --harness prime-agent` puts the same notice in the repository's block. Rally never guesses the
+harness: Prime Agent documents no variable or header that identifies it, so it's said explicitly or not at all.
