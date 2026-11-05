@@ -129,6 +129,16 @@ enum Command {
         /// offered, and then each is asked again. The operator agreed 1 hour.
         #[arg(long, env = "RALLY_OPERATOR_AWAY", default_value = "1h", value_parser = parse_window)]
         operator_away: u64,
+        /// A read-only GitHub token, for checking submitted evidence (RAL-5, RAL-18). Without it,
+        /// each check is recorded as not checked. With --secure, it must be root-owned too.
+        #[arg(long, env = "RALLY_GITHUB_TOKEN_FILE")]
+        github_token_file: Option<PathBuf>,
+        /// The longest a submission's CI is waited for before its check is recorded as pending.
+        #[arg(long, default_value = "30m", value_parser = parse_window)]
+        evidence_ci_wait: u64,
+        /// How often a submission whose CI is still running is checked again.
+        #[arg(long, default_value = "1m", value_parser = parse_window)]
+        evidence_poll: u64,
     },
     /// Run the read-only viewer on this machine's loopback address. See docs/web.md.
     Web {
@@ -268,9 +278,12 @@ enum Command {
         story: String,
         #[arg(long)]
         team: String,
-        /// For example, a repository and full commit hash.
+        /// A repository and full commit, as owner/repo@<full commit>, which Rally checks (RAL-5).
         #[arg(long)]
         evidence: String,
+        /// What you didn't test, in its own field.
+        #[arg(long)]
+        untested: Option<String>,
     },
     /// Confirm someone else's submitted story, naming the commit you read.
     Verify {
@@ -1448,15 +1461,18 @@ fn run_service(
     limit: RateLimit,
     operator_key: Option<rally::designation::OperatorKey>,
     operator_times: rally::store::OperatorTimes,
+    evidence: rally::evidence::Settings,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let state = StateDir::open(state_dir)?;
+    let evidence_checked = evidence.token.is_some();
     let (_, _, fingerprint) = state.certificate()?;
     let listener = TcpListener::bind(bind)?;
     let listening = json!({"listening": listener.local_addr()?.to_string(), "fingerprint": fingerprint,
             "operator_key": operator_key.as_ref().map(rally::designation::OperatorKey::fingerprint),
             "operator_window_ms": operator_times.window_ms,
             "operator_away_after": operator_times.away_after,
-            "operator_away_ms": operator_times.away_ms});
+            "operator_away_ms": operator_times.away_ms,
+            "evidence_checked_with_token": evidence_checked});
     println!("{listening}");
     std::io::Write::flush(&mut std::io::stdout())?;
     tokio::runtime::Runtime::new()?.block_on(server::serve(
@@ -1466,6 +1482,7 @@ fn run_service(
         limit,
         operator_key,
         Some(operator_times),
+        Some(evidence),
     ))?;
     Ok(json!({"stopped": true}).to_string())
 }
@@ -1530,8 +1547,36 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             operator_window,
             operator_away_after,
             operator_away,
+            github_token_file,
+            evidence_ci_wait,
+            evidence_poll,
         } => {
             let location = location.ok_or("serve needs --db and --head-file")?;
+            let token = match &github_token_file {
+                Some(path) => {
+                    if secure {
+                        rally::designation::check_owned(path, 0, None)
+                            .map_err(|why| format!("--secure refused the GitHub token: {why}"))?;
+                    }
+                    let token = std::fs::read_to_string(path)
+                        .map_err(|e| format!("can't read {}: {e}", path.display()))?;
+                    let token = token.trim().to_owned();
+                    if token.is_empty()
+                        || token.chars().any(|c| c.is_whitespace() || c.is_control())
+                    {
+                        return Err(format!("{} doesn't hold one token", path.display()).into());
+                    }
+                    Some(token)
+                }
+                None => None,
+            };
+            let evidence = rally::evidence::Settings {
+                token,
+                timing: rally::evidence::Timing {
+                    ceiling_ms: evidence_ci_wait,
+                    poll_ms: evidence_poll,
+                },
+            };
             let operator_key = if secure {
                 let key_path = operator_key.ok_or("--secure needs --operator-key")?;
                 let exe = std::env::current_exe()?;
@@ -1599,6 +1644,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     away_after: usize::try_from(operator_away_after).unwrap_or(usize::MAX),
                     away_ms: operator_away,
                 },
+                evidence,
             );
         }
         Command::AddMachine {
@@ -1936,10 +1982,15 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             story,
             team,
             evidence,
-        } => (
-            Kind::Declared,
-            json!({"change": "submit", "story": story, "team": team, "evidence": evidence}),
-        ),
+            untested,
+        } => {
+            let mut body =
+                json!({"change": "submit", "story": story, "team": team, "evidence": evidence});
+            if let Some(untested) = untested {
+                body["untested"] = json!(untested);
+            }
+            (Kind::Declared, body)
+        }
         Command::Verify {
             story,
             note,

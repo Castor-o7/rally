@@ -839,10 +839,20 @@ fn the_deciding_test_three_real_records_a_saved_head_a_real_restart_and_check() 
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let checked = cli(&config, "x", &["check"]);
-    assert!(checked.status.success());
-    let checked: Value = serde_json::from_slice(&checked.stdout).unwrap();
-    let head = format!("3:{}", checked["head"]["hash"].as_str().unwrap());
+    // The submission's evidence check is Rally's own record 4 (RAL-5): wait for it, so the saved
+    // head is the last one.
+    let mut checked = Value::Null;
+    for _ in 0..50 {
+        let output = cli(&config, "x", &["check"]);
+        assert!(output.status.success());
+        checked = serde_json::from_slice(&output.stdout).unwrap();
+        if checked["head"]["seq"] == 4 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(checked["head"]["seq"], 4, "{checked}");
+    let head = format!("4:{}", checked["head"]["hash"].as_str().unwrap());
 
     for signal in ["-TERM", "-KILL"] {
         service.restart(signal);
@@ -868,26 +878,29 @@ fn the_deciding_test_three_real_records_a_saved_head_a_real_restart_and_check() 
         );
     }
 
-    // Rewriting record 2 and re-signing 3, as events through myko's store would.
+    // Rewriting record 2 and re-signing 3 and 4, as events through myko's store would.
     stopped(&mut service);
     let (text2, _) = stored(&service, 2);
     let (text3, _) = stored(&service, 3);
+    let (text4, _) = stored(&service, 4);
     assert!(text2.contains("silken-tanager"));
     let (_, hash1) = stored(&service, 1);
     let forged2 = text2.replace("silken-tanager", "mallory");
     let hash2 = chain_hash(&hash1, 2, &forged2);
     let hash3 = chain_hash(&hash2, 3, &text3);
+    let hash4 = chain_hash(&hash3, 4, &text4);
     as_myko_would(
         &service,
         &[
             (2, "SET", Some((&forged2, &hash2))),
             (3, "SET", Some((&text3, &hash3))),
+            (4, "SET", Some((&text4, &hash4))),
         ],
     );
-    let forged_head = format!("3:{hash3}");
+    let forged_head = format!("4:{hash4}");
     std::fs::write(
         service.head_file(),
-        json!({"seq": 3, "hash": hash3}).to_string(),
+        json!({"seq": 4, "hash": hash4}).to_string(),
     )
     .unwrap();
     // A writer won't start over a record with two versions, so this ledger can't grow.
@@ -904,7 +917,7 @@ fn the_deciding_test_three_real_records_a_saved_head_a_real_restart_and_check() 
     let mut sql = service.db.connect();
     sql.batch_execute(
         "ALTER TABLE rally_events DISABLE TRIGGER rally_no_delete;
-         DELETE FROM rally_events WHERE tx <> 'forged' AND item_id IN ('2', '3');",
+         DELETE FROM rally_events WHERE tx <> 'forged' AND item_id IN ('2', '3', '4');",
     )
     .unwrap();
     service.restart_after_stop();
@@ -2208,4 +2221,65 @@ fn a_bound_designation_must_name_a_paired_credential_that_can_write() {
     let keyless = designate("a1-watchman");
     assert_eq!(keyless.status, 409, "{}", keyless.body);
     assert!(keyless.body.contains("--secure"), "{}", keyless.body);
+}
+
+/// RAL-5: a submission's evidence is checked by Rally itself, recorded as observed beside the
+/// evidence. Without a token, it says it wasn't checked, and evidence Rally can't read says why.
+#[test]
+fn submitted_evidence_is_checked_and_recorded_as_observed() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    for (story, evidence) in [
+        ("RAL-60", format!("Castor-o7/rally@{commit}")),
+        ("RAL-61", "muster#34".to_owned()),
+    ] {
+        for body in [
+            json!({"change": "ready", "story": story}),
+            json!({"change": "claim", "story": story, "team": "rally"}),
+            json!({"change": "submit", "story": story, "team": "rally", "evidence": evidence,
+                   "untested": "the Windows build"}),
+        ] {
+            let reply = write(&pairing, "r", "declared", body);
+            assert_eq!(reply.status, 200, "{}", reply.body);
+        }
+    }
+    let mut waiting = Value::Null;
+    for _ in 0..50 {
+        waiting = serde_json::from_str(&call(&pairing, "GET", "/v1/waiting", None).body).unwrap();
+        let rows = waiting["waiting"].as_array().unwrap();
+        if rows.iter().all(|row| !row["evidence_check"].is_null()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let rows = waiting["waiting"].as_array().unwrap();
+    let checked = &rows[0]["evidence_check"];
+    assert_eq!(checked["kind"], "observed", "{waiting}");
+    assert_eq!(checked["outcome"]["checkable"], true);
+    assert_eq!(checked["outcome"]["commit"], commit);
+    assert!(
+        checked["outcome"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no GitHub token")
+    );
+    assert_eq!(rows[0]["untested"], "the Windows build");
+    let unreadable = &rows[1]["evidence_check"]["outcome"];
+    assert_eq!(unreadable["checkable"], false, "{waiting}");
+    assert!(
+        unreadable["reason"]
+            .as_str()
+            .unwrap()
+            .contains("owner/repo")
+    );
+    // Only Rally writes it.
+    let forged = write(
+        &pairing,
+        "r",
+        "observed",
+        json!({"change": "evidence_check", "story": "RAL-60", "submit": 3,
+               "outcome": {"checkable": true, "exists": true}}),
+    );
+    assert_eq!(forged.status, 403);
 }

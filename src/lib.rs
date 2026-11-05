@@ -5,6 +5,7 @@ pub mod backup;
 pub mod client;
 pub mod designation;
 pub mod entity;
+pub mod evidence;
 pub mod init;
 pub mod ledger;
 pub mod next;

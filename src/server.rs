@@ -91,6 +91,8 @@ struct Service {
     operator_key: Option<crate::designation::OperatorKey>,
     /// The times agreed with the operator for shelving and away hours (RAL-56).
     operator_times: Option<crate::store::OperatorTimes>,
+    /// Checks submitted evidence in the background, once started (RAL-5).
+    evidence: std::sync::OnceLock<crate::evidence::Checker>,
     state_dir: StateDir,
     limit: RateLimit,
     buckets: Mutex<HashMap<(String, Bucket), (f64, Instant)>>,
@@ -141,6 +143,51 @@ const QUEUE_SECONDS: u64 = 10;
 /// it's set lower.
 const HEADER_SECONDS: f64 = 10.0;
 
+/// Starts the evidence checker, which appends each outcome as Rally's own observed record, and
+/// queues every submission still in review that has no check yet, such as ones a restart cut
+/// short (RAL-5).
+fn start_evidence_checks(service: &Arc<Service>, settings: crate::evidence::Settings) {
+    let forge: Option<Arc<dyn crate::evidence::Forge + Send + Sync>> = settings
+        .token
+        .map(|token| Arc::new(crate::evidence::GitHub::new(token)) as _);
+    let weak = Arc::downgrade(service);
+    let record = Arc::new(
+        move |job: &crate::evidence::Job, outcome: &crate::evidence::Outcome| {
+            let Some(service) = weak.upgrade() else {
+                return;
+            };
+            let at_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as i64);
+            let source = Source {
+                credential: crate::store::RALLY_ITSELF.to_owned(),
+                declared_name: None,
+            };
+            let body = json!({"change": "evidence_check", "story": job.story,
+                              "submit": job.submit, "outcome": outcome});
+            let appended = Record::new(Kind::Observed, source, at_ms, body)
+                .map_err(|e| e.to_string())
+                .and_then(|record| service.store.append(&record).map_err(|e| e.to_string()));
+            if let Err(error) = appended {
+                eprintln!(
+                    "rally: couldn't record the evidence check of record {}: {error}",
+                    job.submit
+                );
+            }
+        },
+    );
+    let checker =
+        crate::evidence::Checker::start(forge, crate::evidence::WORKERS, settings.timing, record);
+    let unchecked = service
+        .store
+        .with_ledger(None, crate::evidence::unchecked)
+        .unwrap_or_default();
+    for job in unchecked {
+        checker.submit(job);
+    }
+    let _ = service.evidence.set(checker);
+}
+
 /// Runs the service on `listener` until the process ends.
 pub async fn serve(
     listener: TcpListener,
@@ -149,6 +196,7 @@ pub async fn serve(
     limit: RateLimit,
     operator_key: Option<crate::designation::OperatorKey>,
     operator_times: Option<crate::store::OperatorTimes>,
+    evidence: Option<crate::evidence::Settings>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Both ring and any other provider could be linked; the choice has to be explicit.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -167,7 +215,14 @@ pub async fn serve(
     if let Some(times) = operator_times {
         store.accept_shelves(times.window_ms);
     }
-    let app = router(store, state_dir, limit, operator_key, operator_times);
+    let app = router(
+        store,
+        state_dir,
+        limit,
+        operator_key,
+        operator_times,
+        evidence,
+    );
     listener.set_nonblocking(true)?;
     let lifetime = Duration::from_secs_f64(limit.connection_seconds);
     let acceptor = Limited {
@@ -200,11 +255,13 @@ fn router(
     limit: RateLimit,
     operator_key: Option<crate::designation::OperatorKey>,
     operator_times: Option<crate::store::OperatorTimes>,
+    evidence: Option<crate::evidence::Settings>,
 ) -> Router {
     let service = Arc::new(Service {
         store,
         operator_key,
         operator_times,
+        evidence: std::sync::OnceLock::new(),
         state_dir,
         limit,
         buckets: Mutex::new(HashMap::new()),
@@ -213,6 +270,9 @@ fn router(
         writes: Arc::new(tokio::sync::Semaphore::new(WRITES_AT_ONCE)),
         failures: Mutex::new(HashMap::new()),
     });
+    if let Some(settings) = evidence {
+        start_evidence_checks(&service, settings);
+    }
     Router::new()
         .route("/v1/records", post(write_record))
         .route("/v1/stories", get(list_stories))
@@ -631,6 +691,14 @@ async fn write_record(
             Err(error) => return failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         }
     }
+    let submitted = (body["change"] == "submit")
+        .then(|| {
+            Some((
+                body["story"].as_str()?.to_owned(),
+                body["evidence"].as_str()?.to_owned(),
+            ))
+        })
+        .flatten();
     let source = Source {
         credential: identity.credential,
         declared_name: Some(request.declared_name),
@@ -662,7 +730,22 @@ async fn write_record(
         Err(not_run) => return not_run.into_response(),
     };
     match appended {
-        Ok(seq) => Json(json!({"recorded": seq})).into_response(),
+        Ok(seq) => {
+            // A submission's evidence is checked in the background, by Rally itself (RAL-5).
+            if let (Some(checker), Some((story, evidence))) = (service.evidence.get(), submitted)
+                && !checker.submit(crate::evidence::Job {
+                    story,
+                    submit: seq,
+                    evidence,
+                    submitted_at_ms: at_ms,
+                })
+            {
+                eprintln!(
+                    "rally: the evidence queue is full; record {seq} is checked after a restart"
+                );
+            }
+            Json(json!({"recorded": seq})).into_response()
+        }
         Err(StoreError::Refused(error)) => failure(StatusCode::CONFLICT, error.to_string()),
         Err(error @ StoreError::Database(_)) => {
             eprintln!("rally: {error}");

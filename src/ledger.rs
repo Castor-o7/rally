@@ -72,6 +72,19 @@ pub enum Change {
         story: String,
         team: String,
         evidence: String,
+        /// What the team didn't test, in its own field rather than mixed into the evidence
+        /// (RAL-5). Declared.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        untested: Option<String>,
+    },
+    /// Rally's own check of a submission's evidence against GitHub (RAL-5), observed. It's
+    /// evidence, not a verdict: `ci: passed` is GitHub's word on that commit, and RAL-31 still
+    /// compares the merged commit with the one read. One per submission, and it changes no state.
+    EvidenceCheck {
+        story: String,
+        /// The submit record it checks.
+        submit: u64,
+        outcome: crate::evidence::Outcome,
     },
     /// Someone other than the submitter confirms the story, naming the commit they read (RAL-31).
     /// A new record must name it; records written before RAL-31 replay without one.
@@ -235,6 +248,7 @@ impl Change {
             | Self::Claim { story, .. }
             | Self::Release { story, .. }
             | Self::Submit { story, .. }
+            | Self::EvidenceCheck { story, .. }
             | Self::Verify { story, .. }
             | Self::SendBack { story, .. }
             | Self::Merge { story, .. }
@@ -558,6 +572,8 @@ pub enum LedgerError {
     /// A new record uses `operator` as its own team's name, which is kept for waiting on the
     /// operator, so no team can look like the operator (RAL-56).
     ReservedTeam,
+    /// An evidence check that doesn't fit the story's submissions (RAL-5).
+    InvalidEvidenceCheck(u64, &'static str),
     /// A new story's number isn't above every one its prefix has in the ledger (RAL-55).
     NumberTaken {
         story: String,
@@ -646,6 +662,9 @@ impl fmt::Display for LedgerError {
                 "\"{OPERATOR}\" is kept for waiting on the operator, so no team can use it as its name"
             ),
             Self::AnswerSource(why) => write!(f, "{why}"),
+            Self::InvalidEvidenceCheck(seq, why) => {
+                write!(f, "can't record an evidence check of record {seq}: {why}")
+            }
             Self::NumberTaken { story, highest } => write!(
                 f,
                 "{story} isn't the next free number: its prefix already reaches {highest}"
@@ -1465,6 +1484,28 @@ fn transition(
             story.team = None;
             story.submitted_by = None;
         }
+        Change::EvidenceCheck { submit, .. } => {
+            require_kind(record, Kind::Observed)?;
+            let submitted = story
+                .history
+                .iter()
+                .any(|entry| entry.seq == *submit && matches!(entry.change, Change::Submit { .. }));
+            if !submitted {
+                return Err(LedgerError::InvalidEvidenceCheck(
+                    *submit,
+                    "it isn't a submission of this story",
+                ));
+            }
+            let checked = story.history.iter().any(|entry| {
+                matches!(&entry.change, Change::EvidenceCheck { submit: s, .. } if s == submit)
+            });
+            if checked {
+                return Err(LedgerError::InvalidEvidenceCheck(
+                    *submit,
+                    "it's already checked",
+                ));
+            }
+        }
         Change::Submit { team, .. } => {
             require_kind(record, Kind::Declared)?;
             if story.state != State::Claimed {
@@ -1775,6 +1816,7 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         }
         Change::Unblock { note, .. } => &[("note", note)],
         Change::Submit { team, evidence, .. } => &[("team", team), ("evidence", evidence)],
+        Change::EvidenceCheck { .. } => &[],
         Change::Verify { note, .. }
         | Change::SendBack { note, .. }
         | Change::RequestRead { note, .. }
@@ -1835,9 +1877,16 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
         Change::Annotate { team, note, .. } => {
             text.extend([("team", team.as_str()), ("note", note)])
         }
-        Change::Submit { team, evidence, .. } => {
+        Change::Submit {
+            team,
+            evidence,
+            untested,
+            ..
+        } => {
             text.extend([("team", team.as_str()), ("evidence", evidence)]);
+            text.extend(untested.as_deref().map(|untested| ("note", untested)));
         }
+        Change::EvidenceCheck { .. } => {}
         Change::Correct { note, team, .. } => {
             text.push(("note", note));
             text.extend(team.as_deref().map(|team| ("team", team)));
@@ -2919,6 +2968,54 @@ mod tests {
         assert_eq!(
             ledger.check(ledger.last_seq() + 1, &blank),
             Err(LedgerError::EmptyField("title"))
+        );
+    }
+
+    #[test]
+    fn rally_records_one_evidence_check_per_submission_as_observed() {
+        let observed = |submit: u64| {
+            let source = Source {
+                credential: "rally".into(),
+                declared_name: None,
+            };
+            let body = json!({"change": "evidence_check", "story": STORY, "submit": submit,
+                              "outcome": {"checkable": true, "exists": false}});
+            Record::new(Kind::Observed, source, 1_000, body).unwrap()
+        };
+        let mut ledger = ledger_with(&[ready(), claim(), submit()]);
+        // Only of a submission of this story, and only by Rally.
+        assert_eq!(
+            ledger.check(4, &observed(2)),
+            Err(LedgerError::InvalidEvidenceCheck(
+                2,
+                "it isn't a submission of this story"
+            ))
+        );
+        let declared = team(
+            json!({"change": "evidence_check", "story": STORY, "submit": 3,
+                                    "outcome": {"checkable": true}}),
+        );
+        assert!(matches!(
+            ledger.check(4, &declared),
+            Err(LedgerError::WrongKind { .. })
+        ));
+        push(&mut ledger, &observed(3));
+        // It changes no state, and there's one per submission.
+        assert_eq!(state(&ledger), State::InReview);
+        assert_eq!(
+            ledger.check(5, &observed(3)),
+            Err(LedgerError::InvalidEvidenceCheck(3, "it's already checked"))
+        );
+        // What wasn't tested is its own field, limited like a note.
+        let mut claimed = ledger_with(&[ready(), claim()]);
+        let with_untested = team(json!({"change": "submit", "story": STORY, "team": "rally",
+                                         "evidence": "r@1", "untested": "the Windows build"}));
+        push(&mut claimed, &with_untested);
+        let too_long = team(json!({"change": "submit", "story": STORY, "team": "rally",
+                                    "evidence": "r@1", "untested": "x".repeat(4_001)}));
+        assert_eq!(
+            ledger_with(&[ready(), claim()]).check(3, &too_long),
+            Err(LedgerError::TooLong("note", 4_000))
         );
     }
 
