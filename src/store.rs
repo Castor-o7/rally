@@ -877,10 +877,25 @@ impl Store {
         &self,
         key: Option<&crate::designation::OperatorKey>,
     ) -> Result<serde_json::Value, StoreError> {
+        self.with_chain(|ledger, hashes| crate::designation::report(ledger, hashes, key))
+    }
+
+    /// Every verification and send-back, labelled watchman, peer or other by the designations in
+    /// force when it was written (RAL-51).
+    pub fn verifications_report(
+        &self,
+        key: Option<&crate::designation::OperatorKey>,
+    ) -> Result<serde_json::Value, StoreError> {
+        self.with_chain(|ledger, hashes| crate::designation::verifications(ledger, hashes, key))
+    }
+
+    /// `read` given the current ledger and its chain hashes: a writer's kept copy, or replayed from
+    /// Postgres.
+    fn with_chain<T>(&self, read: impl FnOnce(&Ledger, &[String]) -> T) -> Result<T, StoreError> {
         if let Some(writer) = &self.writer {
             writer.ensure_kept()?;
             if let Some(kept) = writer.kept().as_ref() {
-                return Ok(crate::designation::report(&kept.ledger, &kept.hashes, key));
+                return Ok(read(&kept.ledger, &kept.hashes));
             }
         }
         let (rows, _) = self.with_sql(durable_rows)?;
@@ -894,7 +909,7 @@ impl Store {
             })?;
         let ledger = replay(&records)?;
         let hashes: Vec<String> = rows.into_iter().map(|row| row.hash).collect();
-        Ok(crate::designation::report(&ledger, &hashes, key))
+        Ok(read(&ledger, &hashes))
     }
 
     /// Makes every later append check the ledger's size and its disk's free space first.

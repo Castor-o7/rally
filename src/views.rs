@@ -417,8 +417,102 @@ pub fn track_records(ledger: &Ledger, team: Option<&str>, page: &Page) -> Result
         .collect();
     let mut value = base;
     value["teams"] = Value::Object(shown);
+    value["verifiers"] = verifiers(ledger);
+    value["verifiers_are"] = json!(VERIFIERS_ARE);
     continue_with(&mut value, "next", next.map(|key| json!(key)));
     Ok(value)
+}
+
+/// What the verifier counts are (RAL-51).
+pub const VERIFIERS_ARE: &str = "Verifications and send-backs each declared name gave, including by \
+correction. A record names its verifier but not the verifier's team, so these are by name.";
+
+/// Verifications and send-backs given, by the verifier's declared name, lowercased (RAL-51).
+fn verifiers(ledger: &Ledger) -> Value {
+    let mut given: BTreeMap<String, (usize, usize, i64)> = BTreeMap::new();
+    for story in ledger.stories().values() {
+        for entry in &story.history {
+            let state = match &entry.change {
+                Change::Verify { .. } => State::Verified,
+                Change::SendBack { .. } => State::SentBack,
+                Change::Correct {
+                    state: Some(state @ (State::Verified | State::SentBack)),
+                    ..
+                } => *state,
+                _ => continue,
+            };
+            let name = match (&entry.backfilled, &entry.source.declared_name) {
+                (Some(backfill), _) => backfill.entered_by.clone(),
+                (None, Some(name)) => name.clone(),
+                (None, None) => continue,
+            };
+            let counts = given.entry(team_key(&name)).or_default();
+            match state {
+                State::Verified => counts.0 += 1,
+                _ => counts.1 += 1,
+            }
+            counts.2 = counts.2.max(entry.at_ms);
+        }
+    }
+    Value::Object(
+        given
+            .into_iter()
+            .map(|(name, (verifications, send_backs, last))| {
+                (
+                    name,
+                    json!({"verifications_given": verifications, "send_backs_given": send_backs,
+                           "last_at_ms": last}),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Submissions waiting for a reader, oldest submission first, each with what to read: the
+/// evidence it was submitted with and the commits of any open requested reads (RAL-51).
+pub fn waiting(ledger: &Ledger) -> Value {
+    let mut rows: Vec<(u64, Value)> = ledger
+        .stories()
+        .iter()
+        .filter(|(_, story)| story.state == State::InReview)
+        .filter_map(|(id, story)| {
+            let submit = story
+                .history
+                .iter()
+                .rev()
+                .find(|entry| matches!(entry.change, Change::Submit { .. }))?;
+            let Change::Submit { evidence, .. } = &submit.change else {
+                return None;
+            };
+            let reads: Vec<Value> = story
+                .requested_reads
+                .iter()
+                .map(
+                    |read| json!({"seq": read.seq, "commit": read.commit, "by": read.requested_by}),
+                )
+                .collect();
+            Some((
+                submit.seq,
+                json!({
+                    "story": id, "team": story.team, "submitted_seq": submit.seq,
+                    "submitted_at_ms": submit.at_ms, "submitted_by": story.submitted_by,
+                    "evidence": evidence, "requested_reads": reads,
+                }),
+            ))
+        })
+        .collect();
+    rows.sort_by_key(|(seq, _)| *seq);
+    let total = rows.len();
+    let shown: Vec<Value> = rows
+        .into_iter()
+        .take(LIST_LIMIT)
+        .map(|(_, row)| row)
+        .collect();
+    json!({
+        "untrusted_text": UNTRUSTED_TEXT, "as_of": ledger.last_seq(), "waiting": shown,
+        "total": total,
+        "rule": "While a watchman is designated, merges still wait for the watchman's read.",
+    })
 }
 
 /// Every team's declared state, a page at a time, or one team with a page of its history. `Err`
@@ -461,6 +555,18 @@ mod tests {
             declared_name: Some("someone".into()),
         };
         Record::new(Kind::Declared, source, 1, body).unwrap()
+    }
+
+    fn rec(name: &str, body: Value) -> Record {
+        let source = Source {
+            credential: "a1".into(),
+            declared_name: Some(name.into()),
+        };
+        let kind = match body["change"].as_str() {
+            Some("verify" | "send_back") => Kind::Verified,
+            _ => Kind::Declared,
+        };
+        Record::new(kind, source, 1, body).unwrap()
     }
 
     /// `stories` stories, and `states` declared states of one team.
@@ -780,5 +886,78 @@ mod tests {
         assert!(value.get("earlier").is_none());
         // The first record's correction marks are still there.
         assert!(value["detail"]["history"][0]["corrected_by"].is_array());
+    }
+
+    #[test]
+    fn waiting_lists_submissions_oldest_first_with_what_to_read() {
+        let records = vec![
+            rec("t", json!({"change": "ready", "story": "RAL-2"})),
+            rec(
+                "t",
+                json!({"change": "claim", "story": "RAL-2", "team": "t"}),
+            ),
+            rec("t", json!({"change": "ready", "story": "RAL-1"})),
+            rec(
+                "t",
+                json!({"change": "claim", "story": "RAL-1", "team": "t"}),
+            ),
+            rec(
+                "t",
+                json!({"change": "submit", "story": "RAL-2", "team": "t", "evidence": "r@2"}),
+            ),
+            rec(
+                "t",
+                json!({"change": "submit", "story": "RAL-1", "team": "t", "evidence": "r@1"}),
+            ),
+            rec(
+                "w",
+                json!({"change": "request_read", "story": "RAL-1", "commit": "d".repeat(40), "note": "x"}),
+            ),
+        ];
+        let ledger = Ledger::replay(&records).unwrap();
+        let out = waiting(&ledger);
+        let rows = out["waiting"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["story"], "RAL-2", "submitted first");
+        assert_eq!(rows[0]["evidence"], "r@2");
+        assert_eq!(rows[1]["requested_reads"][0]["commit"], "d".repeat(40));
+        assert!(out["rule"].as_str().unwrap().contains("watchman"));
+    }
+
+    #[test]
+    fn track_records_count_what_each_verifier_gave() {
+        let records = vec![
+            rec("t", json!({"change": "ready", "story": "RAL-1"})),
+            rec(
+                "t",
+                json!({"change": "claim", "story": "RAL-1", "team": "t"}),
+            ),
+            rec(
+                "t",
+                json!({"change": "submit", "story": "RAL-1", "team": "t", "evidence": "e"}),
+            ),
+            rec(
+                "Ann",
+                json!({"change": "send_back", "story": "RAL-1", "note": "tests"}),
+            ),
+            rec(
+                "t",
+                json!({"change": "claim", "story": "RAL-1", "team": "t"}),
+            ),
+            rec(
+                "t",
+                json!({"change": "submit", "story": "RAL-1", "team": "t", "evidence": "e"}),
+            ),
+            rec(
+                "ann",
+                json!({"change": "verify", "story": "RAL-1", "note": "ok", "commit": "c".repeat(40)}),
+            ),
+        ];
+        let ledger = Ledger::replay(&records).unwrap();
+        let out = track_records(&ledger, None, &Page::default()).unwrap();
+        assert_eq!(out["verifiers"]["ann"]["verifications_given"], 1);
+        assert_eq!(out["verifiers"]["ann"]["send_backs_given"], 1);
+        assert!(out["verifiers"]["t"].is_null());
+        assert!(out["verifiers_are"].as_str().unwrap().contains("by name"));
     }
 }

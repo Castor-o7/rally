@@ -155,6 +155,93 @@ pub fn report(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -> 
     })
 }
 
+/// From which record each valid designation held: `(seq, watchman)`, oldest first, with `None`
+/// after an `--end`. Without a key, there are none.
+pub fn eras(
+    ledger: &Ledger,
+    hashes: &[String],
+    key: Option<&OperatorKey>,
+) -> Vec<(u64, Option<String>)> {
+    let Some(key) = key else {
+        return Vec::new();
+    };
+    ledger
+        .designations()
+        .iter()
+        .filter(|d| fault(d, hashes, key).is_none())
+        .map(|d| (d.seq, d.watchman.clone()))
+        .collect()
+}
+
+/// The watchman in force when record `seq` was written, if any.
+fn watchman_at(eras: &[(u64, Option<String>)], seq: u64) -> Option<&str> {
+    eras.iter()
+        .rev()
+        .find(|(from, _)| *from < seq)
+        .and_then(|(_, watchman)| watchman.as_deref())
+}
+
+/// Every verification and send-back, including by correction, newest first, each labelled by who
+/// read while what was designated (RAL-51): `watchman` if the designated watchman wrote it,
+/// `peer` if no watchman was designated, and `other` if one was but someone else wrote it. Names
+/// are declared, so `watchman` means the record's declared name matched.
+pub fn verifications(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -> Value {
+    use crate::ledger::{Change, State, same_name};
+    let eras = eras(ledger, hashes, key);
+    let mut rows: Vec<(u64, Value)> = Vec::new();
+    for (id, story) in ledger.stories() {
+        for entry in &story.history {
+            let (verdict, commit) = match &entry.change {
+                Change::Verify { commit, .. } => ("verified", commit),
+                Change::SendBack { commit, .. } => ("sent_back", commit),
+                Change::Correct {
+                    state: Some(State::Verified),
+                    commit,
+                    ..
+                } => ("verified", commit),
+                Change::Correct {
+                    state: Some(State::SentBack),
+                    commit,
+                    ..
+                } => ("sent_back", commit),
+                _ => continue,
+            };
+            let by = entry
+                .backfilled
+                .as_ref()
+                .map(|b| b.entered_by.clone())
+                .or_else(|| entry.source.declared_name.clone());
+            let designated = watchman_at(&eras, entry.seq);
+            let reader = match (designated, &by) {
+                // Without the operator's key, no designation can be checked, so who read can't be
+                // said either; calling it a peer read would be a guess.
+                _ if key.is_none() => "unknown",
+                (None, _) => "peer",
+                (Some(watchman), Some(by)) if same_name(watchman, by) => "watchman",
+                (Some(_), _) => "other",
+            };
+            rows.push((
+                entry.seq,
+                json!({
+                    "story": id, "seq": entry.seq, "at_ms": entry.at_ms, "verdict": verdict,
+                    "commit": commit, "by": by, "reader": reader,
+                    "watchman_designated": designated,
+                }),
+            ));
+        }
+    }
+    rows.sort_by_key(|(seq, _)| std::cmp::Reverse(*seq));
+    let total = rows.len();
+    json!({
+        "verifications": rows.into_iter().take(crate::views::LIST_LIMIT).map(|(_, r)| r).collect::<Vec<_>>(),
+        "total": total,
+        "operator_key": key.map(OperatorKey::fingerprint),
+        "readers_are": "watchman: the designated watchman's declared name; peer: no watchman was \
+                        designated; other: one was, and someone else wrote it; unknown: there's no \
+                        operator key to check designations with. Names are declared.",
+    })
+}
+
 /// What `serve --secure` requires of `path`: it, and every directory above it, owned by `uid`
 /// (root, outside tests) and writable by no one else. Stops above `stop`, for tests only.
 pub fn check_owned(path: &Path, uid: u32, stop: Option<&Path>) -> Result<(), String> {
@@ -279,11 +366,20 @@ mod tests {
         }
 
         fn push(&mut self, body: Value) {
+            self.push_as("operator", body);
+        }
+
+        fn push_as(&mut self, name: &str, body: Value) {
             let source = Source {
                 credential: "a1".into(),
-                declared_name: Some("operator".into()),
+                declared_name: Some(name.into()),
             };
-            let record = Record::new(Kind::Declared, source, 1_000, body).unwrap();
+            // A verifier's record is of the verified kind, as the ledger wants.
+            let kind = match body["change"].as_str() {
+                Some("verify" | "send_back") => Kind::Verified,
+                _ => Kind::Declared,
+            };
+            let record = Record::new(kind, source, 1_000, body).unwrap();
             let (seq, previous) = self.head();
             self.hashes
                 .push(chain_hash(&previous, seq + 1, &record.to_json()));
@@ -402,6 +498,76 @@ mod tests {
                 .unwrap()
                 .contains("out of place")
         );
+    }
+
+    /// Readies, claims and submits `story` as team `t`, for someone else to read.
+    fn submitted(chain: &mut Chain, story: &str) {
+        chain.push_as("t", json!({"change": "ready", "story": story}));
+        chain.push_as("t", json!({"change": "claim", "story": story, "team": "t"}));
+        chain.push_as(
+            "t",
+            json!({"change": "submit", "story": story, "team": "t", "evidence": "repo@abc"}),
+        );
+    }
+
+    fn verify(chain: &mut Chain, by: &str, story: &str) {
+        chain.push_as(
+            by,
+            json!({"change": "verify", "story": story, "note": "read it", "commit": "c".repeat(40)}),
+        );
+    }
+
+    #[test]
+    fn each_verification_is_labelled_by_the_designation_when_it_was_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let (private, key) = keypair(dir.path(), "operator");
+        let mut chain = Chain::new();
+        submitted(&mut chain, "RAL-1");
+        verify(&mut chain, "peer-a", "RAL-1");
+        chain.designate(&private, &key, Some("Grand-Photon"));
+        submitted(&mut chain, "RAL-2");
+        verify(&mut chain, "grand-photon", "RAL-2");
+        submitted(&mut chain, "RAL-3");
+        chain.push_as(
+            "someone",
+            json!({"change": "send_back", "story": "RAL-3", "note": "no tests"}),
+        );
+        chain.designate(&private, &key, None);
+        submitted(&mut chain, "RAL-4");
+        verify(&mut chain, "peer-b", "RAL-4");
+
+        let ledger = Ledger::replay(&chain.records).unwrap();
+        let report = verifications(&ledger, &chain.hashes, Some(&key));
+        let rows = report["verifications"].as_array().unwrap();
+        let by_story = |story: &str| rows.iter().find(|r| r["story"] == story).unwrap().clone();
+        assert_eq!(by_story("RAL-1")["reader"], "peer");
+        assert_eq!(
+            by_story("RAL-2")["reader"],
+            "watchman",
+            "names compare case-blind"
+        );
+        assert_eq!(by_story("RAL-2")["watchman_designated"], "Grand-Photon");
+        assert_eq!(by_story("RAL-3")["reader"], "other");
+        assert_eq!(by_story("RAL-3")["verdict"], "sent_back");
+        assert_eq!(by_story("RAL-4")["reader"], "peer", "after --end");
+        assert_eq!(report["total"], 4);
+        assert_eq!(rows[0]["story"], "RAL-4", "newest first");
+
+        // Without the key, who read can't be said.
+        let blind = verifications(&ledger, &chain.hashes, None);
+        assert!(
+            blind["verifications"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["reader"] == "unknown")
+        );
+
+        // A designation that doesn't verify doesn't make anyone the watchman.
+        let (_, stranger) = keypair(dir.path(), "stranger");
+        let wrong = verifications(&ledger, &chain.hashes, Some(&stranger));
+        let rows = wrong["verifications"].as_array().unwrap();
+        assert!(rows.iter().all(|r| r["reader"] == "peer"));
     }
 
     #[test]

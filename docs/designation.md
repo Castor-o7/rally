@@ -101,6 +101,17 @@ rally designation        # who the watchman is, each designation checked again
 itself doesn't show what you're signing. If another record lands in between, the service refuses the designation
 ("read the head again"). Run it again.
 
+## Who verified, and what's waiting
+
+- `rally verifications` lists every verification and send-back, newest first. Each is labelled `watchman` if
+  the designated watchman's declared name wrote it, `peer` if no watchman was designated, `other` if one was
+  designated but someone else wrote it, or `unknown` if the service has no operator key to check designations
+  with. Names are declared.
+- `rally waiting` lists submissions waiting for a reader, oldest first, with the evidence and the commit of any
+  requested read.
+- `rally track-record` now also counts what each verifier gave, by declared name, since a record names its
+  verifier but not the verifier's team.
+
 ## Limits
 
 - **A deleted designation.** If a later designation, such as an `--end`, were deleted from Postgres, an earlier one

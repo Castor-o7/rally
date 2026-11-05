@@ -1091,7 +1091,7 @@ fn require_verifier(
 }
 
 /// Compares declared names, ignoring case and surrounding space, to catch honest slips.
-fn same_name(a: &str, b: &str) -> bool {
+pub fn same_name(a: &str, b: &str) -> bool {
     name_key(a) == name_key(b)
 }
 

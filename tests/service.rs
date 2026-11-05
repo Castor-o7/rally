@@ -10,7 +10,7 @@ use rally::client::{Reply, request};
 use rally::scratch_pg::{self, Cluster, Database};
 use serde_json::{Value, json};
 
-const ROUTES: [(&str, &str); 8] = [
+const ROUTES: [(&str, &str); 10] = [
     ("POST", "/v1/records"),
     ("GET", "/v1/stories"),
     ("GET", "/v1/stories/RAL-13"),
@@ -19,6 +19,8 @@ const ROUTES: [(&str, &str); 8] = [
     ("GET", "/v1/check"),
     ("GET", "/v1/whoami"),
     ("GET", "/v1/designation"),
+    ("GET", "/v1/verifications"),
+    ("GET", "/v1/waiting"),
 ];
 
 struct Service<'a> {
@@ -247,7 +249,10 @@ fn a_client_cannot_choose_its_credential_or_time() {
 
 #[test]
 fn every_route_refuses_no_token_or_a_wrong_token_and_changes_nothing() {
-    let service = start();
+    // Two wrong tokens per route would pass the default failed-token burst of 20.
+    let mut limits = GENEROUS.to_vec();
+    limits.extend(["--failed-token-burst", "100"]);
+    let service = start_with(&limits);
     let a1 = service.add("a1", false);
     let body = json!({"kind": "declared", "declared_name": "x",
                       "body": {"change": "ready", "story": "RAL-13"}})

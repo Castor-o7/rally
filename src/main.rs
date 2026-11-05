@@ -198,6 +198,12 @@ enum Command {
     },
     /// Who the watchman is, each designation checked again against the operator's key (RAL-51).
     Designation,
+    /// Every verification and send-back, newest first, labelled watchman, peer or other by the
+    /// designation in force when it was written (RAL-51).
+    Verifications,
+    /// Submissions waiting for a reader, oldest first, with the evidence and any requested reads'
+    /// commits to read (RAL-51).
+    Waiting,
     /// Save a pair code from `add-machine` on this machine, read from standard input so that it
     /// stays out of shell history and process listings.
     Pair,
@@ -1254,14 +1260,36 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 json!({"change": "withdraw_read", "story": story, "request": request, "note": note}),
             )
         }
-        Command::Designation => {
+        Command::Designation | Command::Verifications => {
+            let verifications = matches!(cli.command, Command::Verifications);
             if let Some(location) = &location {
+                // On the host, without the service's key: nothing counts as designated.
                 let store = Store::open_read_only(location)?;
-                return Ok(store.designation_report(None)?.to_string());
+                let report = if verifications {
+                    store.verifications_report(None)?
+                } else {
+                    store.designation_report(None)?
+                };
+                return Ok(report.to_string());
             }
             let pairing = read_pairing(&config_path(cli.config.clone())?)?;
-            let reply = client::request(&pairing, "GET", "/v1/designation", None, &[])?;
+            let path = if verifications {
+                "/v1/verifications"
+            } else {
+                "/v1/designation"
+            };
+            let reply = client::request(&pairing, "GET", path, None, &[])?;
             return Ok(reply_value(&reply)?.to_string());
+        }
+        Command::Waiting => {
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
+            let page = Page {
+                after: None,
+                before: None,
+            };
+            return backend.read("/v1/waiting", None, &page, |ledger, _| {
+                Ok(views::waiting(ledger))
+            });
         }
         Command::Designate { watchman, end, key } => {
             debug_assert!(end != watchman.is_some());
