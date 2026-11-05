@@ -323,10 +323,11 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
 
 The operator asked on 2026-11-05 whether a rally can run without a watchman. The watchman's answer, which the
 operator agreed to go ahead with: teams can pace themselves, but that night they stalled on mechanical gaps.
-Two teams sat idle with ready work, one slept for about 2 h with no way to wake it, and five Muster story IDs
-were taken twice (MUS-69, MUS-72 to 74 and MUS-81). Rally closes those gaps, so that a watchman adds judgement
-and isn't needed to keep work moving. Each story below comes from that question. Which ones Rally builds first,
-and how they fit the board process, follows the watchman's order and the operator's word.
+Two teams sat idle with ready work, and one slept for about 2 h with no way to wake it. Four Muster story IDs
+were taken twice (MUS-69, and MUS-72 to 74), and a fifth nearly was (MUS-81). Rally closes those gaps, so that a
+watchman adds judgement and isn't needed to keep work moving. Each story below comes from that question. Which
+ones Rally builds first, and how they fit the board process, follows the watchman's order and the operator's
+word.
 
 - [ ] **RAL-54: Wake an idle team with its next story.** From the operator's question of 2026-11-05, and from RAL-7
   and RAL-8. Done when: if a team is idle, or its claim has gone quiet past an agreed time, while a ready story
