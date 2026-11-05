@@ -2047,6 +2047,10 @@ fn waiting_suggests_a_reader_from_another_team() {
         waiting["readers"].as_str().unwrap().contains("can't check"),
         "{waiting}"
     );
+    // A past state would be the wrong answer, so it's refused, not ignored.
+    let past = call(&pairing, "GET", "/v1/waiting?as_of=1", None);
+    assert_eq!(past.status, 400, "{}", past.body);
+    assert!(past.body.contains("doesn't take as_of"));
 }
 
 /// `rally next` reads every page of blockers at the first page's instant (RAL-56), and the

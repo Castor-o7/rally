@@ -983,6 +983,12 @@ impl Store {
 
     /// `read` given the current ledger and its chain hashes: a writer's kept copy, or replayed from
     /// Postgres.
+    /// Whether this store keeps the chain's hashes, as a writer does, so reading them with the
+    /// ledger costs no replay (RAL-57).
+    pub fn keeps_chain(&self) -> bool {
+        self.writer.is_some()
+    }
+
     fn with_chain<T>(&self, read: impl FnOnce(&Ledger, &[String]) -> T) -> Result<T, StoreError> {
         if let Some(writer) = &self.writer {
             writer.ensure_kept()?;

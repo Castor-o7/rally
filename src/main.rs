@@ -151,6 +151,20 @@ enum Command {
         /// Read the watchman's writeups from this local folder instead of GitHub.
         #[arg(long, value_name = "FOLDER")]
         watchman_summaries: Option<PathBuf>,
+        /// The viewer key's private file (RAL-29), made if it isn't there. Defaults to web-key
+        /// beside the pairing. The key never goes in a URL; sign in with --login.
+        #[arg(long)]
+        key_file: Option<PathBuf>,
+        /// Ask the viewer running at --bind for a one-time code, and print the address to open
+        /// with it. The code works once, within a minute.
+        #[arg(long, conflicts_with = "new_key")]
+        login: bool,
+        /// Replace the viewer key, which signs every browser out of the running viewer.
+        #[arg(long)]
+        new_key: bool,
+        /// How long a one-time code works, in seconds.
+        #[arg(long, default_value_t = 60, hide = true)]
+        code_seconds: u64,
     },
     /// On the service's host, add a machine and write its pair code to a private file.
     AddMachine {
@@ -1313,6 +1327,45 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
     Box::new(move || read().map_err(|error| error.to_string()))
 }
 
+/// `rally web --login`: asks the running viewer for a one-time code, showing the key in a header
+/// over loopback, never in a URL or an argument, and prints the address to open (RAL-29).
+fn web_login(bind: &str, key_file: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::{Read, Write};
+    let address: std::net::SocketAddr = bind.parse()?;
+    if !address.ip().is_loopback() {
+        return Err(format!("the viewer only runs on a loopback address, not {address}").into());
+    }
+    let key = std::fs::read_to_string(key_file)
+        .map_err(|e| format!("can't read {}: {e}", key_file.display()))?;
+    let key = key.trim();
+    let mut stream =
+        std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(5))
+            .map_err(|e| format!("no viewer is answering at {address}: {e}"))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    write!(
+        stream,
+        "POST {} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {key}\r\n\
+         Content-Length: 0\r\nConnection: close\r\n\r\n",
+        web::CODE_PATH
+    )?;
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply)?;
+    let (head, body) = reply.split_once("\r\n\r\n").unwrap_or((&reply, ""));
+    if !head.starts_with("HTTP/1.1 200") {
+        let status = head.lines().next().unwrap_or("no answer");
+        return Err(format!("the viewer refused: {status}: {}", body.trim()).into());
+    }
+    let value: Value =
+        serde_json::from_str(body.trim()).map_err(|_| "the viewer sent an unreadable code")?;
+    let code = value["code"].as_str().ok_or("the viewer sent no code")?;
+    Ok(json!({
+        "open": format!("http://{address}/?code={code}"),
+        "expires_in_seconds": value["expires_in_seconds"],
+        "note": "The code works once. Open it in the browser you'll view from.",
+    })
+    .to_string())
+}
+
 fn run_viewer(
     bind: &str,
     projects: Option<PathBuf>,
@@ -1320,7 +1373,9 @@ fn run_viewer(
     config: PathBuf,
     backup: Option<BackupWatch>,
     local: LocalSummaries,
+    sign_in: web::SignIn,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    let key_file = sign_in.key_file.as_path();
     let text = match projects {
         Some(path) => std::fs::read_to_string(path)?,
         None => DEFAULT_PROJECTS.to_owned(),
@@ -1338,13 +1393,47 @@ fn run_viewer(
     if !address.ip().is_loopback() {
         return Err(format!("the viewer only runs on a loopback address, not {address}").into());
     }
+    // The viewer key, once the address is known to be loopback: kept in a private file and never
+    // printed (RAL-29). A key others can read isn't a key.
+    #[cfg(unix)]
+    if let Ok(metadata) = std::fs::metadata(key_file) {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(format!(
+                "{} can be read by others; make it private (chmod 600) or remove it",
+                key_file.display()
+            )
+            .into());
+        }
+    }
+    match std::fs::read_to_string(key_file) {
+        Ok(text) if web::is_key(text.trim()) => {}
+        Ok(_) => return Err(format!("{} doesn't hold a viewer key", key_file.display()).into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = key_file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            rally::access::write_private(key_file, web::new_key()?.as_bytes())?;
+        }
+        Err(error) => return Err(format!("can't read {}: {error}", key_file.display()).into()),
+    }
     let listener = TcpListener::bind(address)?;
     let listening = listener.local_addr()?;
-    println!("{}", json!({"listening": listening.to_string()}));
+    println!(
+        "{}",
+        json!({"listening": listening.to_string(), "key_file": key_file,
+               "sign_in": format!("rally web --bind {listening} --login")})
+    );
     std::io::Write::flush(&mut std::io::stdout())?;
     let reader = ledger_reader(location, config);
-    tokio::runtime::Runtime::new()?
-        .block_on(web::serve(listener, projects, reader, backup, local))?;
+    tokio::runtime::Runtime::new()?.block_on(web::serve(
+        listener,
+        sign_in.clone(),
+        projects,
+        reader,
+        backup,
+        local,
+    ))?;
     Ok(json!({"stopped": true}).to_string())
 }
 
@@ -1560,7 +1649,26 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             backup_max_age_hours,
             summaries,
             watchman_summaries,
+            key_file,
+            login,
+            new_key,
+            code_seconds,
         } => {
+            let config = config_path(cli.config)?;
+            let key_file = key_file.unwrap_or_else(|| config.with_file_name("web-key"));
+            if new_key {
+                let key = web::new_key()?;
+                if let Some(parent) = key_file.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                rally::access::write_private(&key_file, key.as_bytes())?;
+                return Ok(json!({"new_key": key_file,
+                                 "signed_out": "every browser signed in to a viewer using this file"})
+                .to_string());
+            }
+            if login {
+                return web_login(&bind, &key_file);
+            }
             let backup = backup_dir.map(|dir| BackupWatch {
                 dir,
                 max_age_hours: backup_max_age_hours,
@@ -1581,9 +1689,13 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 &bind,
                 projects,
                 location,
-                config_path(cli.config)?,
+                config,
                 backup,
                 local,
+                web::SignIn {
+                    key_file,
+                    code_ttl: std::time::Duration::from_secs(code_seconds),
+                },
             );
         }
         Command::Backup { to, max_age_hours } => {
