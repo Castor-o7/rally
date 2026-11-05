@@ -1558,3 +1558,96 @@ fn ready_with(pairing: &Pairing) -> Reply {
         json!({"change": "ready", "story": story}),
     )
 }
+
+#[test]
+fn session_start_shows_a_teams_state_through_the_service() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let commit = "a".repeat(40);
+    for (name, args) in [
+        ("r", vec!["ready", "RAL-60"]),
+        ("r", vec!["claim", "RAL-60", "--team", "rally"]),
+        ("m", vec!["ready", "RAL-61"]),
+        ("m", vec!["claim", "RAL-61", "--team", "muster"]),
+        (
+            "m",
+            vec![
+                "submit",
+                "RAL-61",
+                "--team",
+                "muster",
+                "--evidence",
+                "muster@aaaa",
+            ],
+        ),
+        (
+            "w",
+            vec![
+                "request-read",
+                "RAL-61",
+                "--commit",
+                &commit,
+                "--note",
+                "please",
+            ],
+        ),
+        (
+            "r",
+            vec![
+                "block",
+                "--team",
+                "rally",
+                "--note",
+                "waiting on <the operator>",
+            ],
+        ),
+        (
+            "m",
+            vec![
+                "block",
+                "--team",
+                "muster",
+                "--on-story",
+                "RAL-60",
+                "--note",
+                "needs RAL-60",
+            ],
+        ),
+    ] {
+        let out = cli(&config, name, &args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let out = rally()
+        .arg("--config")
+        .arg(&config)
+        .args(["session-start", "--team", "rally"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("<rally_state team=\"rally\">"), "{text}");
+    assert!(text.contains("- RAL-60: claimed (declared)"), "{text}");
+    assert!(
+        text.contains("- RAL-61 (team muster): in review (declared)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("- RAL-61 (team muster): 1 open (declared)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("team rally waits: waiting on &lt;the operator> (declared)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("team muster waits on RAL-60: needs RAL-60"),
+        "{text}"
+    );
+    assert!(text.trim_end().ends_with("</rally_state>"), "{text}");
+}

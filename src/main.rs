@@ -162,6 +162,17 @@ enum Command {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
+    /// For a Claude Code SessionStart hook: print what the team should know, read-only through the
+    /// service, as one <rally_state> block. Prints nothing and succeeds if anything fails, so a
+    /// session never fails to start because of Rally. See docs/session-hook.md.
+    SessionStart {
+        /// Your team. Without one, it prints nothing.
+        #[arg(long, env = "RALLY_TEAM")]
+        team: Option<String>,
+        /// Say on standard error why nothing was printed.
+        #[arg(long)]
+        verbose: bool,
+    },
     /// Save a pair code from `add-machine` on this machine, read from standard input so that it
     /// stays out of shell history and process listings.
     Pair,
@@ -414,7 +425,12 @@ fn escape_for_terminal(text: &str) -> String {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let cli = Cli::parse();
+    if let Command::SessionStart { team, verbose } = &cli.command {
+        session_start(cli.config.clone(), team.as_deref(), *verbose);
+        return ExitCode::SUCCESS;
+    }
+    match run(cli) {
         Ok(output) => {
             println!("{}", escape_for_terminal(&output));
             ExitCode::SUCCESS
@@ -423,6 +439,34 @@ fn main() -> ExitCode {
             eprintln!("rally: {}", escape_for_terminal(&error.to_string()));
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `rally session-start`: the block, or nothing at all. Never fails.
+fn session_start(config: Option<PathBuf>, team: Option<&str>, verbose: bool) {
+    let quiet = |why: &str| {
+        if verbose {
+            eprintln!("rally session-start: {why}");
+        }
+    };
+    let Some(team) = team.filter(|t| !t.trim().is_empty()) else {
+        return quiet("no team: pass --team or set RALLY_TEAM");
+    };
+    let path = match config_path(config) {
+        Ok(path) => path,
+        Err(error) => return quiet(&error.to_string()),
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return quiet(&format!("no pairing at {}", path.display()));
+    };
+    let Ok(pairing) = serde_json::from_str::<Pairing>(&text) else {
+        return quiet(&format!("{} can't be read", path.display()));
+    };
+    match rally::session::fetch(&pairing, rally::session::DEADLINE) {
+        Ok((stories, blockers)) => {
+            println!("{}", rally::session::render(team, &stories, &blockers))
+        }
+        Err(error) => quiet(&escape_for_terminal(&error)),
     }
 }
 
@@ -834,6 +878,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             return Ok(json!({"revoked": name}).to_string());
         }
         Command::Init { .. } => unreachable!("handled before the ledger is opened"),
+        Command::SessionStart { .. } => unreachable!("handled in main"),
         Command::Pair => {
             let mut code = String::new();
             std::io::stdin().read_line(&mut code)?;

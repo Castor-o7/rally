@@ -167,6 +167,27 @@ pub fn request(
     request_within(pairing, method, path, body, extra_headers, LIMITS)
 }
 
+/// [`request`], but given up after `total` overall rather than the usual deadline, for callers
+/// that mustn't wait long, such as the session-start hook (RAL-50).
+pub fn request_for(
+    pairing: &Pairing,
+    method: &str,
+    path: &str,
+    total: Duration,
+) -> Result<Reply, Box<dyn std::error::Error>> {
+    request_within(
+        pairing,
+        method,
+        path,
+        None,
+        &[],
+        Limits {
+            total: total.min(TOTAL),
+            max_reply_bytes: MAX_REPLY_BYTES,
+        },
+    )
+}
+
 fn request_within(
     pairing: &Pairing,
     method: &str,
@@ -313,6 +334,19 @@ mod tests {
         assert!(error.contains("too long"), "{error}");
         assert!(
             started.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn request_for_gives_up_at_its_own_deadline() {
+        let pairing = fake_service(b"x", Duration::from_millis(100), 1_000);
+        let started = Instant::now();
+        let result = request_for(&pairing, "GET", "/", Duration::from_millis(800));
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
             "{:?}",
             started.elapsed()
         );
