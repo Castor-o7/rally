@@ -1423,6 +1423,22 @@ fn digest_pass(
             }
         }
     };
+    // Every page of the story list, for RAL-31's comparison of merges.
+    let all_stories = || -> Result<Value, Box<dyn std::error::Error>> {
+        let mut merged = serde_json::Map::new();
+        let mut path = "/v1/stories".to_owned();
+        for _ in 0..DIGEST_PAGES {
+            let page = get(&path)?;
+            if let Some(rows) = page["stories"].as_object() {
+                merged.extend(rows.clone());
+            }
+            match page["next"].as_str() {
+                Some(next) => path = format!("/v1/stories?after={}", encode(next)),
+                None => break,
+            }
+        }
+        Ok(json!({"stories": merged}))
+    };
     let handover = get("/v1/handover")?;
     let mut watchmen: Vec<Watchman> = handover["watchmen"]
         .as_array()
@@ -1491,9 +1507,12 @@ fn digest_pass(
                     // Nothing is kept, so show what the digest would say now.
                     let to = recs.last().map_or(kept.head, |r| r.seq);
                     let waiting = get("/v1/waiting")?;
+                    let stories = all_stories()?;
                     let reads = rally::digest::Reads {
                         waiting: &waiting,
                         handover: &handover,
+                        stories: &stories,
+                        landed: &web::pr_head,
                     };
                     row["preview"] = json!(rally::digest::render(
                         kept.head, to, &recs, watch, &reads, now_ms
@@ -1502,9 +1521,12 @@ fn digest_pass(
             }
             Decision::Send { from, to } => {
                 let waiting = get("/v1/waiting")?;
+                let stories = all_stories()?;
                 let reads = rally::digest::Reads {
                     waiting: &waiting,
                     handover: &handover,
+                    stories: &stories,
+                    landed: &web::pr_head,
                 };
                 let digest = rally::digest::render(from, to, &recs, watch, &reads, now_ms);
                 if report_only {

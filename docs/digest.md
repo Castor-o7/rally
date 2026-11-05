@@ -57,8 +57,9 @@ Waiting for you (2)
 Peer-verified, awaiting your re-read (RAL-52) (1)
 - CAT-36 catapp: verified by peppy-atoll at b77dde3 9m ago [verified]; merged at 7f1bb71 [observed].
 
-Merged (1)
+Merged (2)
 - RAL-65: at bb0f6ea 20m ago [declared].
+- RAL-22: at fef242d 1h ago [declared]; landed 7fc4bef [observed], not the commit verified, bee9f46.
 
 Blockers (1 opened, 1 closed)
 - opened: rally on RAL-38, waiting on MUS-44 [declared], 6m ago.
@@ -74,7 +75,8 @@ Teams
 - **Each fact carries its kind** (observed, declared or verified) and its **age**, as the viewer shows them.
 - **Sections:** waiting for the watchman (submissions and open read requests); RAL-52's handover list
   (peer-verified since the last designation, awaiting the watchman's re-read, with the commit read, the
-  verifier, and whether and where it merged); merges;
+  verifier, and whether and where it merged); merges, flagging one whose pull request's head at merge isn't the
+  commit verified;
   blockers opened and closed; questions to the operator; team-state changes. An empty section is left out, except
   "Waiting for you", which always shows its count.
 - **Bounded:** at most 40 lines and 4 KB, like `rally session-start`. Past that, each section shows its count and
@@ -106,6 +108,11 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rally.digest.plist
 tail -f ~/.local/state/rally-digest.log
 ```
 
+The agent's `PATH` is `~/.local/bin` first, then `/opt/homebrew/bin`, `/usr/bin` and `/bin`: `rally` runs
+`muster-shim` by name, and a1's `~/.cargo/bin` holds a stale one from 2026-10-29, so that directory is left out.
+Check with `ls -l ~/.local/bin/muster-shim`. `gh` must be signed in on a1 for the merge comparison; without it,
+each flagged merge says it couldn't be checked.
+
 The first pass starts at the ledger's current head and sends nothing; the first digest covers what happens after.
 Each pass logs one line of JSON per watchman: `nothing new`, `batching` with `due_in_s`, `sent` with the records
 covered, or why it couldn't send. To stop it: `launchctl bootout gui/$(id -u)/com.rally.digest`. To change the
@@ -114,8 +121,12 @@ watchman, re-run the `sed` and the two `launchctl` lines.
 ## As built
 
 - A watchman with no digest yet starts at the current head, so the first digest isn't the whole history.
-- Merges are listed without comparing the merged commit with the one read: a merge commit never is the one
-  read, so the flag would be on nearly every merge. `rally show <story>` has that comparison.
+- Merges are checked as RAL-31 asks, but against what landed: a merge or squash commit is never the commit
+  read, so for a story whose merged commit isn't the one verified, `gh` reads the merged pull request's head
+  (read-only) and the digest flags it only when that head isn't the commit verified, or no pull request landed
+  it. When GitHub can't be read, it says so instead of taking it as a match. On Murph's ledger on
+  2026-11-05 that flagged 4 of 24 merges, not 21; one, RAL-22, landed #123's head 7fc4bef against a
+  verification at bee9f46.
 - Records come from `/v1/export` after each watchman's head, at most 20 pages a pass; the waiting list, the
   handover list and the stories are read once a digest is due. Reads only, through the paired service.
 - `--report-only` prints the digest (or, while batching, a preview of it) and keeps nothing.

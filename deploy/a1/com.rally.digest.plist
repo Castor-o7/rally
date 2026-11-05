@@ -13,7 +13,9 @@
 
        rally runs directly, not through a shell, for macOS's Local Network permission (see
        docs/service.md). launchd doesn't expand ~ or $HOME, so __HOME__ is filled in when it's
-       installed, as docs/digest.md says. PATH includes ~/.cargo/bin for muster-shim. -->
+       installed, as docs/digest.md says. PATH puts ~/.local/bin first, for the current muster-shim:
+       a1's ~/.cargo/bin holds a stale one from Oct 29, so it's left out. /opt/homebrew/bin is for gh,
+       which reads what landed for each merge. -->
   <key>Label</key>
   <string>com.rally.digest</string>
   <key>ProgramArguments</key>
@@ -32,7 +34,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>__HOME__/.cargo/bin:__HOME__/.local/bin:/usr/bin:/bin</string>
+    <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
   </dict>
   <key>StandardOutPath</key>
   <string>__HOME__/.local/state/rally-digest.log</string>

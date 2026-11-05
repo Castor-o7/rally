@@ -226,12 +226,49 @@ struct Section {
     always: bool,
 }
 
+/// The head of the pull request that landed merged commit `commit` in `repo`, read from GitHub:
+/// `Ok(None)` when no merged pull request contains it, so the commit itself is what landed.
+pub type Landed<'a> = &'a dyn Fn(&str, &str) -> Result<Option<String>, String>;
+
 /// The current reads a digest draws on, beside the records.
 pub struct Reads<'a> {
     /// `/v1/waiting`.
     pub waiting: &'a Value,
     /// `/v1/handover`.
     pub handover: &'a Value,
+    /// `/v1/stories`: which merged stories' merged commit isn't the one verified, and their evidence.
+    pub stories: &'a Value,
+    /// What landed, for those (RAL-31).
+    pub landed: Landed<'a>,
+}
+
+/// RAL-31 for a merge: compare what landed with the commit verified. A merge or squash commit is
+/// never the commit read, so it's the pull request's head at merge time that's compared. `None`
+/// when they match or the story's merged commit is the one verified.
+fn landed_note(story: &Value, landed: Landed) -> Option<String> {
+    let differs = story.get("commit_differs")?;
+    let merged = differs["merged"].as_str().unwrap_or("");
+    let verified = differs["verified"].as_str().unwrap_or("");
+    let evidence = story["evidence"]["text"].as_str().unwrap_or("");
+    let Ok((repo, _)) = crate::evidence::parse(evidence) else {
+        return Some("; what landed couldn't be checked: no repository in the evidence".into());
+    };
+    match landed(&repo, merged) {
+        Ok(Some(head)) if head.eq_ignore_ascii_case(verified) => None,
+        Ok(Some(head)) => Some(format!(
+            "; landed {} [observed], not the commit verified, {}",
+            short(&head),
+            short(verified)
+        )),
+        Ok(None) => Some(format!(
+            "; no pull request landed it, and it isn't the commit verified, {} [observed]",
+            short(verified)
+        )),
+        Err(error) => Some(format!(
+            "; what landed couldn't be checked: {}",
+            clean(&error)
+        )),
+    }
 }
 
 /// The digest for `watchman`, covering records after `from` up to `to`. `recs` are those records;
@@ -323,11 +360,11 @@ pub fn render(
             .iter()
             .filter(|r| r.change() == "merge")
             .map(|r| {
-                // Not compared with the commit read: a merge commit is never the one read, so
-                // that flag would be on nearly every merge. `rally show` has the comparison.
+                let story = r.text("story");
+                let note = landed_note(&reads.stories["stories"][&story], reads.landed)
+                    .unwrap_or_default();
                 format!(
-                    "- {}: at {} {} [declared]",
-                    r.text("story"),
+                    "- {story}: at {} {} [declared]{note}",
                     short(&r.text("commit")),
                     age(r.at_ms, now_ms)
                 )
@@ -664,9 +701,28 @@ mod tests {
              "merged": null, "status": "re-read by the watchman at record 5"},
         ]});
         let to = recs.iter().map(|r| r.seq).max().unwrap_or(0).max(20);
+        let stories = json!({"stories": {
+            "RAL-65": {"commit_differs": {"merged": "bb0f6ea", "verified": "216121c5ff"},
+                       "evidence": {"text": format!("Castor-o7/rally@{}", "a".repeat(40))}},
+            "RAL-66": {"commit_differs": {"merged": "ee649a3", "verified": "1111111aaa"},
+                       "evidence": {"text": format!("Castor-o7/rally@{}", "a".repeat(40))}},
+        }});
+        // RAL-65 was squashed from the head read; RAL-66 had a push after the read.
+        let landed = |_: &str, merged: &str| -> Result<Option<String>, String> {
+            Ok(Some(
+                if merged == "bb0f6ea" {
+                    "216121C5FF"
+                } else {
+                    "2222222bbb"
+                }
+                .into(),
+            ))
+        };
         let reads = Reads {
             waiting: &waiting,
             handover: &handover,
+            stories: &stories,
+            landed: &landed,
         };
         render(0, to, recs, &watch(), &reads, 1_000_000)
     }
@@ -678,6 +734,11 @@ mod tests {
                 10,
                 "a",
                 json!({"change": "merge", "story": "RAL-65", "commit": "bb0f6ea12"}),
+            ),
+            rec(
+                10,
+                "a",
+                json!({"change": "merge", "story": "RAL-66", "commit": "ee649a3"}),
             ),
             rec(
                 11,
@@ -718,8 +779,10 @@ mod tests {
             "Peer-verified, awaiting your re-read (RAL-52) (1)",
             "CAT-36: verified by peppy-atoll at b77dde3",
             "merged at 7f1bb71 [observed]",
-            "Merged (1)",
+            "Merged (2)",
             "RAL-65: at bb0f6ea",
+            "RAL-66: at ee649a3",
+            "landed 2222222 [observed], not the commit verified, 1111111",
             "Blockers (2)",
             "opened #11: rally on RAL-38, waiting on MUS-44: \"roster\" [declared]",
             "closed: #7 \"freed\" [declared]",
@@ -736,6 +799,9 @@ mod tests {
                 .unwrap_or_else(|| panic!("{part:?} missing or out of order in\n{digest}"));
             at += found;
         }
+        // A squash of the head that was read lands that head: no flag.
+        let ral65 = digest.lines().find(|l| l.contains("RAL-65: at")).unwrap();
+        assert!(!ral65.contains("landed"), "{ral65}");
         assert!(
             !digest.contains("RAL-9"),
             "the watchman's own merge was shown"
@@ -747,11 +813,55 @@ mod tests {
     }
 
     #[test]
+    fn what_landed_is_flagged_only_when_it_isnt_the_commit_verified() {
+        let story = |merged: &str, verified: &str| {
+            json!({"commit_differs": {"merged": merged, "verified": verified},
+                   "evidence": {"text": format!("o/r@{}", "a".repeat(40))}})
+        };
+        let head = |sha: &'static str| move |_: &str, _: &str| Ok(Some(sha.to_owned()));
+        // Merged as the commit verified: nothing to compare.
+        assert_eq!(landed_note(&json!({}), &head("x")), None);
+        // Squashed from the head read.
+        assert_eq!(landed_note(&story("m", "abc"), &head("abc")), None);
+        // A push after the read.
+        let note = landed_note(&story("m", "abc"), &head("def")).unwrap();
+        assert!(
+            note.contains("landed def") && note.contains("abc"),
+            "{note}"
+        );
+        // Pushed straight to the branch, no pull request.
+        let none = |_: &str, _: &str| -> Result<Option<String>, String> { Ok(None) };
+        assert!(
+            landed_note(&story("m", "abc"), &none)
+                .unwrap()
+                .contains("no pull request")
+        );
+        // GitHub couldn't be read: said so, not taken as a match.
+        let fail =
+            |_: &str, _: &str| -> Result<Option<String>, String> { Err("gh: timed out".into()) };
+        let note = landed_note(&story("m", "abc"), &fail).unwrap();
+        assert!(
+            note.contains("couldn't be checked: gh: timed out"),
+            "{note}"
+        );
+        // Evidence with no repository.
+        let bare = json!({"commit_differs": {"merged": "m", "verified": "abc"}, "evidence": {"text": "x"}});
+        assert!(
+            landed_note(&bare, &head("abc"))
+                .unwrap()
+                .contains("no repository")
+        );
+    }
+
+    #[test]
     fn empty_sections_are_left_out_but_waiting_always_shows() {
         let (waiting, empty) = (json!({"waiting": []}), json!({}));
+        let landed = |_: &str, _: &str| -> Result<Option<String>, String> { Ok(None) };
         let reads = Reads {
             waiting: &waiting,
             handover: &empty,
+            stories: &empty,
+            landed: &landed,
         };
         let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
         assert!(digest.contains("Waiting for you (0)"), "{digest}");
