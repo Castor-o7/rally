@@ -50,7 +50,7 @@ impl Session {
         self.activity.as_deref() == Some("idle") || self.wake.as_deref() == Some("waiting")
     }
 
-    fn wakeable(&self) -> bool {
+    pub fn wakeable(&self) -> bool {
         self.wake.as_deref().is_some_and(|wake| wake != "none")
     }
 }
