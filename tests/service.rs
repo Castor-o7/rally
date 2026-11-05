@@ -2103,7 +2103,13 @@ fn the_service_gives_a_new_watchman_one_brief() {
             .unwrap()
             .contains("confers no authority")
     );
-    assert!(brief["not_recorded"].as_str().unwrap().contains("RAL-64"));
+    assert!(
+        brief["standings_note"]
+            .as_str()
+            .unwrap()
+            .contains("confers no authority")
+    );
+    assert_eq!(brief["grants"].as_array().unwrap().len(), 0);
     // Without the operator's key the service can't check designations.
     assert!(brief["watchman"].is_null());
     assert!(
@@ -2112,6 +2118,42 @@ fn the_service_gives_a_new_watchman_one_brief() {
             .unwrap()
             .contains("no operator key")
     );
+}
+
+/// RAL-64: a grant and a hold go through the service as declared records, a relayed grant says
+/// so, an ended hold leaves the brief, and the service refuses them as any other kind.
+#[test]
+fn holds_and_grants_are_declared_and_listed_until_ended() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let grant = json!({"change": "standing", "standing": "grant", "team": "rally",
+                       "scope": "merge in Castor-o7/rally", "note": "merge as you go",
+                       "given": {"from": "relayed", "by": "fiery-snapper"}});
+    let hold = json!({"change": "standing", "standing": "hold", "team": "rally",
+                      "note": "no deploys", "releases": "the operator's word"});
+    let refused = write(&pairing, "r", "verified", grant.clone());
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert!(refused.body.contains("needs a Declared record"));
+    assert_eq!(write(&pairing, "r", "declared", grant).status, 200);
+    let reply = write(&pairing, "r", "declared", hold);
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let hold_seq: Value = serde_json::from_str(&reply.body).unwrap();
+    let hold_seq = hold_seq["recorded"].as_u64().unwrap();
+
+    let brief = || -> Value {
+        serde_json::from_str(&call(&pairing, "GET", "/v1/brief", None).body).unwrap()
+    };
+    let before = brief();
+    assert_eq!(before["grants"][0]["kind"], "declared", "{before}");
+    assert_eq!(before["grants"][0]["given"]["from"], "relayed");
+    assert_eq!(before["grants"][0]["given"]["by"], "fiery-snapper");
+    assert_eq!(before["holds"][0]["releases"], "the operator's word");
+
+    let end = json!({"change": "end_standing", "standing": hold_seq, "note": "released"});
+    assert_eq!(write(&pairing, "r", "declared", end).status, 200);
+    let after = brief();
+    assert_eq!(after["holds_total"], 0, "{after}");
+    assert_eq!(after["grants_total"], 1);
 }
 
 /// `rally next` reads every page of blockers at the first page's instant (RAL-56), and the

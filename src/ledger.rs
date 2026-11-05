@@ -228,6 +228,29 @@ pub enum Change {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// A team records something standing in force (RAL-64): a hold and what releases it, a
+    /// condition on the order of work, or a grant with its scope and whether it came directly from
+    /// the operator or was relayed, and by whom. Declared, and only declared: a grant's record
+    /// confers no authority, since approvals come from the operator directly. It stays in force
+    /// until an `end_standing` ends it.
+    Standing {
+        standing: StandingKind,
+        team: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        story: Option<String>,
+        note: String,
+        /// For a hold: what releases it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        releases: Option<String>,
+        /// For a grant: what it allows, and where.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+        /// For a grant: whether the operator gave it directly, or it was relayed, and by whom.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        given: Option<Answer>,
+    },
+    /// Anyone ends a hold, condition or grant in force, saying why (RAL-64).
+    EndStanding { standing: u64, note: String },
 }
 
 impl Change {
@@ -237,7 +260,9 @@ impl Change {
             Self::TeamState { story, .. } | Self::Block { story, .. } => {
                 story.as_deref().unwrap_or_default()
             }
+            Self::Standing { story, .. } => story.as_deref().unwrap_or_default(),
             Self::Unblock { .. }
+            | Self::EndStanding { .. }
             | Self::Shelve { .. }
             | Self::OperatorAway { .. }
             | Self::Designate { .. }
@@ -447,6 +472,42 @@ pub enum Answer {
     Relayed { by: String },
 }
 
+/// What a standing record is (RAL-64).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandingKind {
+    /// Work held until something releases it.
+    Hold,
+    /// A condition on the order of work.
+    Condition,
+    /// Something the operator allowed, with its scope. Recorded, never conferred.
+    Grant,
+}
+
+/// A hold, condition or grant, as a team declared it, and its end if it has one (RAL-64).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Standing {
+    pub seq: u64,
+    pub kind: Kind,
+    pub source: Source,
+    pub at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backfilled: Option<Backfill>,
+    pub standing: StandingKind,
+    pub team: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub story: Option<String>,
+    pub note: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub releases: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub given: Option<Answer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended: Option<Closure>,
+}
+
 /// Who shelved a story waiting on the operator, and when (RAL-56).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Shelf {
@@ -566,6 +627,8 @@ pub enum LedgerError {
     },
     /// An unblock names a record that isn't an open blocker (RAL-20).
     InvalidBlockerTarget(u64),
+    /// An `end_standing` names a record that isn't a hold, condition or grant in force (RAL-64).
+    InvalidStandingTarget(u64),
     /// A shelve names a blocker that isn't an open question to the operator about a story, held
     /// by the shelving team, or that's already shelved (RAL-56).
     InvalidShelf(u64, &'static str),
@@ -656,6 +719,9 @@ impl fmt::Display for LedgerError {
                 )
             }
             Self::InvalidBlockerTarget(seq) => write!(f, "record {seq} isn't an open blocker"),
+            Self::InvalidStandingTarget(seq) => {
+                write!(f, "record {seq} isn't a hold, condition or grant in force")
+            }
             Self::InvalidShelf(seq, why) => write!(f, "can't shelve on record {seq}: {why}"),
             Self::ReservedTeam => write!(
                 f,
@@ -718,6 +784,8 @@ pub struct Ledger {
     teams: BTreeMap<String, Team>,
     /// Every blocker by its record number, open and closed (RAL-20).
     blockers: BTreeMap<u64, Blocker>,
+    /// Every hold, condition and grant by its record number, in force and ended (RAL-64).
+    standings: BTreeMap<u64, Standing>,
     /// Every designation record, in order, whether or not its signature holds (RAL-51).
     designations: Vec<Designation>,
     /// Teams' annotations, by the record each annotates (RAL-19).
@@ -896,6 +964,13 @@ impl Ledger {
         }) {
             return true;
         }
+        if self
+            .standings
+            .get(&seq)
+            .is_some_and(|standing| same_name(&standing.team, team))
+        {
+            return true;
+        }
         self.stories
             .values()
             .any(|story| story.held_by(team).contains(&seq))
@@ -909,6 +984,11 @@ impl Ledger {
     /// Every blocker by its record number, open and closed (RAL-20).
     pub fn blockers(&self) -> &BTreeMap<u64, Blocker> {
         &self.blockers
+    }
+
+    /// Every hold, condition and grant by its record number, in force and ended (RAL-64).
+    pub fn standings(&self) -> &BTreeMap<u64, Standing> {
+        &self.standings
     }
 
     /// Says whether a new record may be appended next, without changing anything: whether
@@ -945,8 +1025,15 @@ impl Ledger {
                 if let Some(open) = self.blockers.get(&blocker) {
                     trial.blockers.insert(blocker, open.clone());
                 }
-            } else if !matches!(change, Change::TeamState { .. } | Change::Block { .. })
-                && let Some(story) = self.stories.get(change.story())
+            } else if let Change::EndStanding { standing, .. } = change {
+                // Ending a standing record depends only on that record.
+                if let Some(open) = self.standings.get(&standing) {
+                    trial.standings.insert(standing, open.clone());
+                }
+            } else if !matches!(
+                change,
+                Change::TeamState { .. } | Change::Block { .. } | Change::Standing { .. }
+            ) && let Some(story) = self.stories.get(change.story())
             {
                 trial
                     .stories
@@ -1045,6 +1132,14 @@ impl Ledger {
                 }
                 _ => {}
             }
+        }
+        if let Change::Standing {
+            given: Some(Answer::Relayed { by }),
+            ..
+        } = change
+            && !crate::record::is_clear_name(by)
+        {
+            return Err(LedgerError::InvisibleCharacter("relayed by"));
         }
         // So that `RAL-1` and `RAL-01` can't be two stories.
         let id = change.story();
@@ -1209,6 +1304,56 @@ impl Ledger {
                         shelves: Vec::new(),
                     },
                 );
+                self.last_seq = seq;
+                return Ok(());
+            }
+            Change::Standing {
+                standing,
+                team,
+                story,
+                note,
+                releases,
+                scope,
+                given,
+            } => {
+                require_kind(record, Kind::Declared)?;
+                self.standings.insert(
+                    seq,
+                    Standing {
+                        seq,
+                        kind: record.kind(),
+                        source: record.source().clone(),
+                        at_ms: record.at_ms(),
+                        backfilled: backfill,
+                        standing,
+                        team,
+                        story,
+                        note,
+                        releases,
+                        scope,
+                        given,
+                        ended: None,
+                    },
+                );
+                self.last_seq = seq;
+                return Ok(());
+            }
+            Change::EndStanding { standing, note } => {
+                require_kind(record, Kind::Declared)?;
+                let open = self
+                    .standings
+                    .get_mut(&standing)
+                    .filter(|open| open.ended.is_none())
+                    .ok_or(LedgerError::InvalidStandingTarget(standing))?;
+                open.ended = Some(Closure {
+                    seq,
+                    kind: record.kind(),
+                    source: record.source().clone(),
+                    at_ms: record.at_ms(),
+                    backfilled: backfill,
+                    note,
+                    answer: None,
+                });
                 self.last_seq = seq;
                 return Ok(());
             }
@@ -1457,6 +1602,8 @@ fn transition(
         | Change::Backfill { .. }
         | Change::Block { .. }
         | Change::Unblock { .. }
+        | Change::Standing { .. }
+        | Change::EndStanding { .. }
         | Change::Shelve { .. }
         | Change::OperatorAway { .. }
         | Change::Designate { .. }
@@ -1734,6 +1881,8 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::TeamState { story: None, .. }
             | Change::Block { story: None, .. }
             | Change::Unblock { .. }
+            | Change::Standing { story: None, .. }
+            | Change::EndStanding { .. }
             | Change::Shelve { .. }
             | Change::OperatorAway { .. }
             | Change::Designate { .. }
@@ -1762,6 +1911,21 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         {
             return Err(LedgerError::EmptyField("on_team"));
         }
+    }
+    if let Change::Standing {
+        standing,
+        releases,
+        scope,
+        given,
+        ..
+    } = change
+    {
+        check_standing_fields(
+            *standing,
+            releases.as_deref(),
+            scope.as_deref(),
+            given.as_ref(),
+        )?;
     }
     if let Change::TeamState { status, note, .. } = change {
         let has_note = note.as_deref().is_some_and(|n| !n.trim().is_empty());
@@ -1811,10 +1975,10 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         | Change::Release { team, .. }
         | Change::Shelve { team, .. }
         | Change::TeamState { team, .. } => &[("team", team)],
-        Change::Block { team, note, .. } | Change::Annotate { team, note, .. } => {
-            &[("team", team), ("note", note)]
-        }
-        Change::Unblock { note, .. } => &[("note", note)],
+        Change::Block { team, note, .. }
+        | Change::Annotate { team, note, .. }
+        | Change::Standing { team, note, .. } => &[("team", team), ("note", note)],
+        Change::Unblock { note, .. } | Change::EndStanding { note, .. } => &[("note", note)],
         Change::Submit { team, evidence, .. } => &[("team", team), ("evidence", evidence)],
         Change::EvidenceCheck { .. } => &[],
         Change::Verify { note, .. }
@@ -1831,6 +1995,53 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
     Ok(())
 }
 
+/// What each kind of standing record needs, and what it mustn't carry (RAL-64): a hold says what
+/// releases it, and a grant its scope and where it came from.
+fn check_standing_fields(
+    standing: StandingKind,
+    releases: Option<&str>,
+    scope: Option<&str>,
+    given: Option<&Answer>,
+) -> Result<(), LedgerError> {
+    let blank = |value: Option<&str>| value.is_some_and(|value| value.trim().is_empty());
+    if blank(releases) {
+        return Err(LedgerError::EmptyField("releases"));
+    }
+    if blank(scope) {
+        return Err(LedgerError::EmptyField("scope"));
+    }
+    if let Some(Answer::Relayed { by }) = given
+        && by.trim().is_empty()
+    {
+        return Err(LedgerError::EmptyField("relayed by"));
+    }
+    let wrong = |what: &str| {
+        Err(LedgerError::InvalidChange(format!(
+            "only a {what}; this is a {}",
+            match standing {
+                StandingKind::Hold => "hold",
+                StandingKind::Condition => "condition",
+                StandingKind::Grant => "grant",
+            }
+        )))
+    };
+    match standing {
+        StandingKind::Hold if releases.is_none() => Err(LedgerError::EmptyField("releases")),
+        StandingKind::Grant if scope.is_none() => Err(LedgerError::EmptyField("scope")),
+        StandingKind::Grant if given.is_none() => Err(LedgerError::InvalidChange(
+            "a grant says whether the operator gave it directly or it was relayed, and by whom"
+                .into(),
+        )),
+        StandingKind::Hold | StandingKind::Condition if scope.is_some() || given.is_some() => {
+            wrong("grant has a scope and says where it came from")
+        }
+        StandingKind::Grant | StandingKind::Condition if releases.is_some() => {
+            wrong("hold says what releases it")
+        }
+        _ => Ok(()),
+    }
+}
+
 /// The team a change acts as, as against one it names as waited on.
 fn own_team(change: &Change) -> Option<&str> {
     match change {
@@ -1839,6 +2050,7 @@ fn own_team(change: &Change) -> Option<&str> {
         | Change::Shelve { team, .. }
         | Change::TeamState { team, .. }
         | Change::Block { team, .. }
+        | Change::Standing { team, .. }
         | Change::Annotate { team, .. }
         | Change::Submit { team, .. } => Some(team),
         Change::Correct { team, .. }
@@ -1895,7 +2107,23 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
             text.push(("note", note));
             text.extend(team.as_deref().map(|team| ("team", team)));
         }
+        Change::Standing {
+            team,
+            note,
+            releases,
+            scope,
+            given,
+            ..
+        } => {
+            text.extend([("team", team.as_str()), ("note", note)]);
+            text.extend(releases.as_deref().map(|releases| ("note", releases)));
+            text.extend(scope.as_deref().map(|scope| ("note", scope)));
+            if let Some(Answer::Relayed { by }) = given {
+                text.push(("team", by));
+            }
+        }
         Change::Unblock { note, .. }
+        | Change::EndStanding { note, .. }
         | Change::RequestRead { note, .. }
         | Change::WithdrawRead { note, .. } => text.push(("note", note)),
     }
@@ -2141,6 +2369,64 @@ mod tests {
 
     fn state(ledger: &Ledger) -> State {
         ledger.story(STORY).unwrap().state
+    }
+
+    #[test]
+    fn standing_records_are_declared_checked_by_kind_and_end_once() {
+        let rec = |kind: Kind, body: serde_json::Value| {
+            let source = crate::record::Source {
+                credential: "a1".into(),
+                // An observed record names no one.
+                declared_name: (kind != Kind::Observed).then(|| "r".into()),
+            };
+            Record::new(kind, source, 1_000, body).unwrap()
+        };
+        let grant = json!({"change": "standing", "standing": "grant", "team": "rally",
+                           "scope": "merge", "note": "yes", "given": {"from": "direct"}});
+        let mut ledger = Ledger::default();
+        // Only declared: a grant can't be written as verified or observed.
+        for kind in [Kind::Verified, Kind::Observed] {
+            assert!(matches!(
+                ledger.clone().apply(1, &rec(kind, grant.clone())),
+                Err(LedgerError::WrongKind { .. })
+            ));
+        }
+        ledger.apply(1, &rec(Kind::Declared, grant)).unwrap();
+        let standing = &ledger.standings()[&1];
+        assert_eq!(standing.standing, StandingKind::Grant);
+        assert_eq!(standing.given, Some(Answer::Direct));
+
+        // Each kind carries what it needs, and nothing that belongs to another.
+        let refused = [
+            json!({"change": "standing", "standing": "hold", "team": "rally", "note": "n"}),
+            json!({"change": "standing", "standing": "grant", "team": "rally", "note": "n",
+                   "given": {"from": "direct"}}),
+            json!({"change": "standing", "standing": "grant", "team": "rally", "note": "n",
+                   "scope": "s"}),
+            json!({"change": "standing", "standing": "grant", "team": "rally", "note": "n",
+                   "scope": "s", "given": {"from": "relayed", "by": " "}}),
+            json!({"change": "standing", "standing": "condition", "team": "rally", "note": "n",
+                   "releases": "r"}),
+            json!({"change": "standing", "standing": "hold", "team": "rally", "note": "n",
+                   "releases": "r", "scope": "s"}),
+            json!({"change": "standing", "standing": "hold", "team": "rally", "note": " ",
+                   "releases": "r"}),
+        ];
+        for body in refused {
+            assert!(
+                ledger.check(2, &rec(Kind::Declared, body.clone())).is_err(),
+                "{body}"
+            );
+        }
+
+        let end = json!({"change": "end_standing", "standing": 1, "note": "withdrawn"});
+        ledger.check(2, &rec(Kind::Declared, end.clone())).unwrap();
+        ledger.apply(2, &rec(Kind::Declared, end.clone())).unwrap();
+        assert!(ledger.standings()[&1].ended.is_some());
+        assert_eq!(
+            ledger.check(3, &rec(Kind::Declared, end)),
+            Err(LedgerError::InvalidStandingTarget(1))
+        );
     }
 
     #[test]
