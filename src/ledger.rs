@@ -19,6 +19,8 @@ use crate::record::{Kind, Record, Source};
 const MAX_TEAM_CHARS: usize = 64;
 const MAX_NOTE_CHARS: usize = 4_000;
 const MAX_EVIDENCE_CHARS: usize = 1_000;
+/// A new story's title (RAL-55), which a roadmap line repeats.
+const MAX_TITLE_CHARS: usize = 200;
 const MAX_STORY_ID_BYTES: usize = 32;
 
 /// A story's state.
@@ -56,6 +58,11 @@ pub enum TeamStatus {
 pub enum Change {
     /// A team marks a story as ready to claim.
     Ready { story: String },
+    /// A team takes the next free number for a prefix, as a new ready story with a title
+    /// (RAL-55). Refused unless the number is above every one that prefix has in the ledger, so
+    /// two teams can't take one number: the writer's lock puts appends in order, and the loser
+    /// tries the next.
+    NewStory { story: String, title: String },
     /// A team takes a ready or sent-back story.
     Claim { story: String, team: String },
     /// The team holding a claim gives it up.
@@ -220,6 +227,7 @@ impl Change {
             | Self::Annotate { .. } => "",
             Self::Backfill { entry, .. } => entry.story(),
             Self::Ready { story }
+            | Self::NewStory { story, .. }
             | Self::Claim { story, .. }
             | Self::Release { story, .. }
             | Self::Submit { story, .. }
@@ -546,6 +554,11 @@ pub enum LedgerError {
     /// A new record uses `operator` as its own team's name, which is kept for waiting on the
     /// operator, so no team can look like the operator (RAL-56).
     ReservedTeam,
+    /// A new story's number isn't above every one its prefix has in the ledger (RAL-55).
+    NumberTaken {
+        story: String,
+        highest: u64,
+    },
     /// A read names the story's own team as the reader's (RAL-57).
     ReaderIsAuthor(String),
     /// An away record that doesn't follow from the ledger (RAL-56).
@@ -629,6 +642,10 @@ impl fmt::Display for LedgerError {
                 "\"{OPERATOR}\" is kept for waiting on the operator, so no team can use it as its name"
             ),
             Self::AnswerSource(why) => write!(f, "{why}"),
+            Self::NumberTaken { story, highest } => write!(
+                f,
+                "{story} isn't the next free number: its prefix already reaches {highest}"
+            ),
             Self::ReaderIsAuthor(team) => {
                 write!(
                     f,
@@ -781,6 +798,17 @@ impl Ledger {
             .collect()
     }
 
+    /// The highest number any story with `prefix` has in the ledger, or 0 (RAL-55).
+    pub fn highest_number(&self, prefix: &str) -> u64 {
+        let lead = format!("{prefix}-");
+        self.stories
+            .range(lead.clone()..)
+            .take_while(|(id, _)| id.starts_with(&lead))
+            .filter_map(|(id, _)| id[lead.len()..].parse::<u64>().ok())
+            .max()
+            .unwrap_or(0)
+    }
+
     /// The latest time the operator was treated as away, if ever (RAL-56).
     pub fn operator_away(&self) -> Option<&Away> {
         self.aways.last()
@@ -902,6 +930,18 @@ impl Ledger {
             change => (change, record.source().declared_name.as_deref()),
         };
         check_text(record, &parsed, change)?;
+        if let Change::NewStory { story, .. } = change
+            && let Some((prefix, number)) = story.split_once('-')
+            && let Ok(number) = number.parse::<u64>()
+        {
+            let highest = self.highest_number(prefix);
+            if number <= highest {
+                return Err(LedgerError::NumberTaken {
+                    story: story.clone(),
+                    highest,
+                });
+            }
+        }
         if own_team(change).is_some_and(|team| same_name(team, OPERATOR)) {
             return Err(LedgerError::ReservedTeam);
         }
@@ -1303,7 +1343,7 @@ impl Ledger {
         }
         let id = change.story().to_owned();
 
-        if matches!(change, Change::Ready { .. }) {
+        if matches!(change, Change::Ready { .. } | Change::NewStory { .. }) {
             if self.stories.contains_key(&id) {
                 return Err(LedgerError::AlreadyExists(id));
             }
@@ -1366,6 +1406,7 @@ fn transition(
     };
     match change {
         Change::Ready { .. }
+        | Change::NewStory { .. }
         | Change::TeamState { .. }
         | Change::Backfill { .. }
         | Change::Block { .. }
@@ -1689,6 +1730,7 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         return Err(LedgerError::InvalidCommit);
     }
     let fields: &[(&'static str, &str)] = match change {
+        Change::NewStory { title, .. } => &[("title", title)],
         Change::Ready { .. }
         | Change::Merge { .. }
         | Change::Backfill { .. }
@@ -1741,6 +1783,7 @@ fn own_team(change: &Change) -> Option<&str> {
 fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
     let mut text: Vec<(&'static str, &str)> = Vec::new();
     match change {
+        Change::NewStory { title, .. } => text.push(("title", title)),
         Change::Ready { .. }
         | Change::Merge { .. }
         | Change::Backfill { .. }
@@ -1907,6 +1950,7 @@ fn check_limit(name: &'static str, value: &str) -> Result<(), LedgerError> {
     let limit = match name {
         "team" => MAX_TEAM_CHARS,
         "evidence" => MAX_EVIDENCE_CHARS,
+        "title" => MAX_TITLE_CHARS,
         _ => MAX_NOTE_CHARS,
     };
     if value.chars().count() > limit {
@@ -2787,6 +2831,48 @@ mod tests {
         );
         // Without one, as before RAL-57.
         assert!(ledger.check(4, &verify()).is_ok());
+    }
+
+    #[test]
+    fn a_new_story_takes_a_number_above_every_one_its_prefix_has() {
+        let new =
+            |story: &str| team(json!({"change": "new_story", "story": story, "title": "A title"}));
+        // STORY is RAL-3.
+        let mut ledger = ledger_with(&[ready()]);
+        assert_eq!(ledger.highest_number("RAL"), 3);
+        // Taken, or below the highest: refused, so two teams can't share one.
+        for story in ["RAL-3", "RAL-1"] {
+            assert_eq!(
+                ledger.check(2, &new(story)),
+                Err(LedgerError::NumberTaken {
+                    story: story.into(),
+                    highest: 3
+                })
+            );
+        }
+        push(&mut ledger, &new("RAL-4"));
+        assert_eq!(ledger.story("RAL-4").unwrap().state, State::Ready);
+        assert_eq!(
+            ledger.check(3, &new("RAL-4")),
+            Err(LedgerError::NumberTaken {
+                story: "RAL-4".into(),
+                highest: 4
+            })
+        );
+        // Another prefix has its own numbers, a skip ahead is allowed, and IDs by hand still work.
+        push(&mut ledger, &new("MUS-1"));
+        push(&mut ledger, &new("RAL-9"));
+        push(
+            &mut ledger,
+            &team(json!({"change": "ready", "story": "RAL-5"})),
+        );
+        assert_eq!(ledger.highest_number("RAL"), 9);
+        assert_eq!(ledger.highest_number("MUS"), 1);
+        let blank = team(json!({"change": "new_story", "story": "RAL-10", "title": " "}));
+        assert_eq!(
+            ledger.check(ledger.last_seq() + 1, &blank),
+            Err(LedgerError::EmptyField("title"))
+        );
     }
 
     #[test]

@@ -45,6 +45,8 @@ Where you use Rally:
 - **Pick your next story**: `rally next --team <team>` gives it by roadmap order, and says
   what it skipped and why. A story that needs the operator isn't skipped: ask the operator, and
   record the question with `rally block --story <STORY> --on-team operator`.
+- **Number a new story** with `rally new-story <PREFIX> --title \"...\"`, which takes the next free
+  number, so two teams never write the same ID.
 - **Claim** a ready story: `rally claim <STORY> --team <team>`. Give it up with
   `rally release <STORY> --team <team>`.
 - **Submit** it when it's pushed: `rally submit <STORY> --team <team> --evidence \"<repo>@<full commit>\"`.

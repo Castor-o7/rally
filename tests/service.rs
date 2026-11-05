@@ -2115,3 +2115,68 @@ fn next_reads_every_page_of_blockers_at_one_instant() {
     assert_eq!(next["next"]["story"], "RAL-2");
     assert_eq!(next["waiting_on_operator"][0]["blocker"], 202);
 }
+
+/// RAL-55: teams asking for a story number at once each get a different one, above every number
+/// in the ledger and in the roadmap.
+#[test]
+fn new_story_numbers_are_never_handed_out_twice() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let roadmap = service.dir.path().join("roadmap.md");
+    // RAL-7 is written on the roadmap but not in the ledger yet.
+    std::fs::write(&roadmap, "- [ ] **RAL-7: Written by hand.**\n").unwrap();
+    assert_eq!(ready(&pairing).status, 200); // RAL-13
+    let handles: Vec<_> = (0..6)
+        .map(|n| {
+            let config = config.clone();
+            let roadmap = roadmap.clone();
+            std::thread::spawn(move || {
+                let title = format!("story {n}");
+                let out = cli(
+                    &config,
+                    "r",
+                    &[
+                        "new-story",
+                        "RAL",
+                        "--title",
+                        &title,
+                        "--roadmap",
+                        roadmap.to_str().unwrap(),
+                    ],
+                );
+                assert!(
+                    out.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+                value["story"].as_str().unwrap().to_owned()
+            })
+        })
+        .collect();
+    let mut stories: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    stories.sort_by_key(|id| id[4..].parse::<u64>().unwrap());
+    assert_eq!(
+        stories,
+        ["RAL-14", "RAL-15", "RAL-16", "RAL-17", "RAL-18", "RAL-19"]
+    );
+
+    // Above the roadmap's numbers too.
+    std::fs::write(&roadmap, "- [ ] **RAL-40: Written by hand.**\n").unwrap();
+    let out = cli(
+        &config,
+        "r",
+        &[
+            "new-story",
+            "RAL",
+            "--title",
+            "t",
+            "--roadmap",
+            roadmap.to_str().unwrap(),
+        ],
+    );
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["story"], "RAL-41");
+}
