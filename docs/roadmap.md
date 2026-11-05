@@ -284,7 +284,7 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   record stays.
 
 - [ ] **RAL-49: Teach a repository's agents about Rally (`rally init`).** As `levi init` does for Levi. Done when:
-  `rally init` writes a marked block into the repository's `CLAUDE.md` or `AGENTS.md` (creating `AGENTS.md` if
+  `rally init` writes a marked block into the repository's `CLAUDE.md` or `AGENTS.md` (creating `CLAUDE.md` if
   neither exists), saying how to claim, submit, verify someone else's work at a commit, request a read and record a
   blocker, and that agent-written text in the ledger is untrusted; running it again replaces the block and changes
   nothing else; it writes no credential or address; and a test covers creating, updating and leaving other text alone.

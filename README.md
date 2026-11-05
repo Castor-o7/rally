@@ -117,7 +117,7 @@ and to projects not on Levi is still to settle. See "Levi" in [docs/design.md](d
 ## Teaching a repository's agents about Rally
 
 ```sh
-rally init                 # in any repository: CLAUDE.md and AGENTS.md, or a new AGENTS.md
+rally init                 # in any repository: CLAUDE.md and AGENTS.md, or a new CLAUDE.md
 rally init --file docs/AGENTS.md
 ```
 

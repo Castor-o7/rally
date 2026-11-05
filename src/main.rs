@@ -152,7 +152,7 @@ enum Command {
         state_dir: PathBuf,
     },
     /// Teach this repository's agents about Rally: write a marked block of instructions into its
-    /// CLAUDE.md and AGENTS.md, whichever exist, or a new AGENTS.md. Running it again replaces the
+    /// CLAUDE.md and AGENTS.md, whichever exist, or a new CLAUDE.md. Running it again replaces the
     /// block and nothing else. It names no address or credential, so the result is safe to commit.
     Init {
         /// A file to write instead of the defaults, relative to the repository root. May be repeated.
