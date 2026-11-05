@@ -304,7 +304,9 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   read; `track-record` counts verifications each verifier gave as well as each team received, the gave counts by
   declared name, since a record doesn't name the verifier's team; and the board process in Muster's
   `docs/board.md` says the same, through a draft PR the watchman reads as the board's keeper.
-- [ ] **RAL-52: Hand a new watchman the peer-verified work.** Depends on RAL-51. Done when: when a watchman is
+- [ ] **RAL-52: Hand a new watchman the peer-verified work.** Depends on RAL-51. Built in #99 (`rally
+  handover`) and approved by the watchman, apart from the digest, so it stays open on RAL-8, which waits on
+  MUS-43's design meeting with the operator. Done when: when a watchman is
   designated, Rally gives it one list of every story verified by a peer since the last designation, each with the
   commit read, who verified it, and whether and at what commit it merged; each stays marked "awaiting the
   watchman's re-read" until the watchman records its own verification, send-back or correction, none of which
