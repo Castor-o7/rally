@@ -152,7 +152,7 @@ The bones. Everything later reads from this.
 - [x] **RAL-6: Verify separately from the author.** Done when: a story can only be marked Verified or
   Sent back under a declared name other than its submitter's, with the verifier and note recorded, and
   the docs say that this only catches mistakes, because both may hold the same machine's credential.
-- [ ] **RAL-19: Let a team read and correct its own record.** Done when: a team can read everything
+- [x] **RAL-19: Let a team read and correct its own record.** Done when: a team can read everything
   recorded about it without asking the watchman, and can append a correction or a disagreement that's
   shown beside the original. Verification outcomes stay with the verifier.
 
