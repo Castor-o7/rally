@@ -418,10 +418,27 @@ pub fn valid_path(path: &str) -> bool {
 /// The highest `prefix` number written in `path` in any open pull request of `repo` (RAL-68), so
 /// `rally new-story` hands out none of them. When anything can't be read, it says so and gives
 /// no number, rather than a guess from what it could read.
-pub fn open_pull_ids(roadmaps: &dyn Roadmaps, repo: &str, path: &str, prefix: &str) -> Value {
+///
+/// Only repositories of `owners` are read, compared without case, so a client can't spend the
+/// token on another owner's repositories, such as private ones it can see; anything else is
+/// refused before GitHub is asked.
+pub fn open_pull_ids(
+    roadmaps: &dyn Roadmaps,
+    owners: &[String],
+    repo: &str,
+    path: &str,
+    prefix: &str,
+) -> Value {
     let refuse = |reason: String| serde_json::json!({"checked": false, "reason": reason});
     if !valid_repo(repo) {
         return refuse("the repository isn't owner/repo".into());
+    }
+    let owner = repo.split('/').next().unwrap_or("");
+    if !owners.iter().any(|o| o.eq_ignore_ascii_case(owner)) {
+        return refuse(format!(
+            "the service reads open pull requests only for {}",
+            owners.join(", ")
+        ));
     }
     if !valid_path(path) {
         return refuse("the roadmap isn't a plain path inside the repository".into());
@@ -611,7 +628,13 @@ pub const MAX_QUEUED: usize = 1_000;
 pub struct Settings {
     pub token: Option<String>,
     pub timing: Timing,
+    /// The GitHub owners whose repositories the token may be used to read open pull requests'
+    /// roadmaps in (RAL-68). Set on the service, never by a request.
+    pub owners: Vec<String>,
 }
+
+/// The owners `/v1/open-ids` may read, unless the service is told otherwise.
+pub const DEFAULT_OWNERS: &str = "Castor-o7";
 
 /// How many submissions are checked at once.
 pub const WORKERS: usize = 2;
@@ -1164,6 +1187,51 @@ mod tests {
         }
     }
 
+    fn owners() -> Vec<String> {
+        vec![DEFAULT_OWNERS.to_owned()]
+    }
+
+    /// A GitHub that mustn't be asked anything.
+    struct Untouchable;
+
+    impl Roadmaps for Untouchable {
+        fn open_pulls(&self, _: &str) -> Result<Vec<OpenPull>, String> {
+            panic!("GitHub was asked about a repository outside the allowlist")
+        }
+        fn file_at(&self, _: &str, _: &str, _: &str) -> Result<Option<String>, String> {
+            panic!("GitHub was asked about a repository outside the allowlist")
+        }
+    }
+
+    /// RAL-68: a repository outside the service's owners is refused, and the token is never used.
+    #[test]
+    fn a_repository_outside_the_owners_is_refused_without_asking_github() {
+        for repo in ["someone-else/private-repo", "Castor-o7-evil/muster"] {
+            let out = open_pull_ids(&Untouchable, &owners(), repo, "docs/roadmap.md", "MUS");
+            assert_eq!(out["checked"], false, "{out}");
+            assert!(
+                out["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("only for Castor-o7"),
+                "{out}"
+            );
+        }
+        // The owner's case doesn't matter, as on GitHub.
+        let fake = FakeRoadmaps {
+            pulls: Ok(vec![]),
+            files: vec![],
+        };
+        let out = open_pull_ids(
+            &fake,
+            &owners(),
+            "castor-o7/muster",
+            "docs/roadmap.md",
+            "MUS",
+        );
+        assert_eq!(out["checked"], true, "{out}");
+    }
+
     fn pull(number: u64) -> OpenPull {
         OpenPull {
             number,
@@ -1190,7 +1258,13 @@ mod tests {
                 (142, Ok(Some(roadmap(&["MUS-91", "RAL-99"])))),
             ],
         };
-        let out = open_pull_ids(&fake, "Castor-o7/muster", "docs/roadmap.md", "MUS");
+        let out = open_pull_ids(
+            &fake,
+            &owners(),
+            "Castor-o7/muster",
+            "docs/roadmap.md",
+            "MUS",
+        );
         assert_eq!(out["checked"], true, "{out}");
         assert_eq!(out["kind"], "observed");
         assert_eq!(out["highest"], 95);
@@ -1209,6 +1283,7 @@ mod tests {
         };
         let out = open_pull_ids(
             &unreadable_list,
+            &owners(),
             "Castor-o7/muster",
             "docs/roadmap.md",
             "MUS",
@@ -1226,6 +1301,7 @@ mod tests {
         };
         let out = open_pull_ids(
             &one_unreadable,
+            &owners(),
             "Castor-o7/muster",
             "docs/roadmap.md",
             "MUS",
@@ -1237,7 +1313,13 @@ mod tests {
             pulls: Ok((0..=MAX_OPEN_PULLS as u64).map(pull).collect()),
             files: vec![],
         };
-        let out = open_pull_ids(&many, "Castor-o7/muster", "docs/roadmap.md", "MUS");
+        let out = open_pull_ids(
+            &many,
+            &owners(),
+            "Castor-o7/muster",
+            "docs/roadmap.md",
+            "MUS",
+        );
         assert_eq!(out["checked"], false);
     }
 
@@ -1255,13 +1337,19 @@ mod tests {
             ("Castor-o7/muster", "docs/roadmap.md", "mus"),
         ] {
             assert_eq!(
-                open_pull_ids(&fake, repo, path, prefix)["checked"],
+                open_pull_ids(&fake, &owners(), repo, path, prefix)["checked"],
                 false,
                 "{repo} {path} {prefix}"
             );
         }
         assert_eq!(
-            open_pull_ids(&fake, "Castor-o7/muster", "docs/roadmap.md", "MUS")["checked"],
+            open_pull_ids(
+                &fake,
+                &owners(),
+                "Castor-o7/muster",
+                "docs/roadmap.md",
+                "MUS"
+            )["checked"],
             true
         );
     }
@@ -1295,7 +1383,13 @@ mod tests {
             }
         });
         let github = GitHub::at("read-only-token".into(), base);
-        let out = open_pull_ids(&github, "Castor-o7/muster", "docs/roadmap.md", "MUS");
+        let out = open_pull_ids(
+            &github,
+            &owners(),
+            "Castor-o7/muster",
+            "docs/roadmap.md",
+            "MUS",
+        );
         let seen = server.join().unwrap();
         assert_eq!(out["checked"], true, "{out}");
         assert_eq!(out["highest"], 95);

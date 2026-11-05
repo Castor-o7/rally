@@ -135,6 +135,10 @@ enum Command {
         /// each check is recorded as not checked. With --secure, it must be root-owned too.
         #[arg(long, env = "RALLY_GITHUB_TOKEN_FILE")]
         github_token_file: Option<PathBuf>,
+        /// The GitHub owners, comma-separated, whose repositories the token may read open pull
+        /// requests' roadmaps in for `new-story` (RAL-68). Requests can't widen it.
+        #[arg(long, env = "RALLY_GITHUB_OWNERS", default_value = rally::evidence::DEFAULT_OWNERS)]
+        github_owners: String,
         /// The longest a submission's CI is waited for before its check is recorded as pending.
         #[arg(long, default_value = "30m", value_parser = parse_window)]
         evidence_ci_wait: u64,
@@ -2007,6 +2011,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             operator_away_after,
             operator_away,
             github_token_file,
+            github_owners,
             evidence_ci_wait,
             evidence_poll,
         } => {
@@ -2023,6 +2028,11 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             };
             let evidence = rally::evidence::Settings {
                 token,
+                owners: github_owners
+                    .split(',')
+                    .map(|owner| owner.trim().to_owned())
+                    .filter(|owner| !owner.is_empty())
+                    .collect(),
                 timing: rally::evidence::Timing {
                     ceiling_ms: evidence_ci_wait,
                     poll_ms: evidence_poll,

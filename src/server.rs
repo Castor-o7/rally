@@ -95,6 +95,8 @@ struct Service {
     evidence: std::sync::OnceLock<crate::evidence::Checker>,
     /// Reads roadmaps in open pull requests with the evidence token, when there is one (RAL-68).
     roadmaps: std::sync::OnceLock<Arc<dyn crate::evidence::Roadmaps + Send + Sync>>,
+    /// The owners `roadmaps` may read for (RAL-68).
+    github_owners: std::sync::OnceLock<Vec<String>>,
     state_dir: StateDir,
     limit: RateLimit,
     buckets: Mutex<HashMap<(String, Bucket), (f64, Instant)>>,
@@ -155,6 +157,7 @@ fn start_evidence_checks(service: &Arc<Service>, settings: crate::evidence::Sett
     if let Some(github) = &github {
         let _ = service.roadmaps.set(github.clone() as _);
     }
+    let _ = service.github_owners.set(settings.owners.clone());
     let forge: Option<Arc<dyn crate::evidence::Forge + Send + Sync>> = github.map(|g| g as _);
     let weak = Arc::downgrade(service);
     let record = Arc::new(
@@ -269,6 +272,7 @@ fn router(
         operator_times,
         evidence: std::sync::OnceLock::new(),
         roadmaps: std::sync::OnceLock::new(),
+        github_owners: std::sync::OnceLock::new(),
         state_dir,
         limit,
         buckets: Mutex::new(HashMap::new()),
@@ -1056,8 +1060,15 @@ async fn open_ids(
         return Json(json!({"checked": false, "reason": "the service has no GitHub token"}))
             .into_response();
     };
+    let owners = service.github_owners.get().cloned().unwrap_or_default();
     let result = tokio::task::spawn_blocking(move || {
-        crate::evidence::open_pull_ids(roadmaps.as_ref(), &query.repo, &query.path, &query.prefix)
+        crate::evidence::open_pull_ids(
+            roadmaps.as_ref(),
+            &owners,
+            &query.repo,
+            &query.path,
+            &query.prefix,
+        )
     })
     .await;
     match result {
