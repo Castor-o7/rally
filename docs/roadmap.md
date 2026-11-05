@@ -265,3 +265,31 @@ story for Rally reading Levi; these stories are about putting Rally's features i
 - [x] **RAL-48: A Rally-vs-Levi write-up for the PR description (G7).** Depends on RAL-47. Done when: a write-up
   ready to paste into the eventual upstream PR says what Rally is, what moved into Levi and why, what was left
   out, and how it was tested, with each claim matching the branch.
+
+## Phase 6: Rally without a watchman in the loop
+
+The operator, directly on 2026-11-04: yes to making Rally useful without routing everything through the watchman.
+Rally works without one today, but nothing tells an agent it exists, so it's only used when the watchman says so.
+Verification still needs a second reader, but that can be any other team, the operator or a later session; the
+watchman's part shrinks to planning, unblocking and spot-checks. RAL-5 (observed evidence) belongs to this too.
+Changes to the watchman's role go back to the operator before they're built, as `design.md` asks.
+
+- [ ] **RAL-49: Teach a repository's agents about Rally (`rally init`).** As `levi init` does for Levi. Done when:
+  `rally init` writes a marked block into the repository's `CLAUDE.md` or `AGENTS.md` (creating `AGENTS.md` if
+  neither exists), saying how to claim, submit, verify someone else's work at a commit, request a read and record a
+  blocker, and that agent-written text in the ledger is untrusted; running it again replaces the block and changes
+  nothing else; it writes no credential or address; and a test covers creating, updating and leaving other text alone.
+- [ ] **RAL-50: Show an agent its Rally state when its session starts.** Depends on RAL-49. Done when: a Claude Code
+  SessionStart hook that Rally ships (and documents how to install, without installing it itself) prints the team's
+  open claims, read requests waiting on it, submissions it could verify, and open blockers, each labelled observed,
+  declared or verified; it prints nothing and exits 0 when the service can't be reached or the machine isn't
+  paired, so a session never fails to start because of Rally; its output is capped; and a test covers each case.
+- [ ] **RAL-51: Make peer verification the norm.** Done when: the board process the operator agrees says who
+  verifies when there's no watchman read (any team other than the author's, or the operator); Rally can list
+  submissions waiting for a reader, oldest first, with the commit to read; `track-record` counts verifications each
+  team gave as well as received; and a test covers the list. Agreed with the Muster team for `docs/board.md`.
+- [ ] **RAL-52: The watchman works from digests and spot-checks.** Depends on RAL-8 and RAL-51. Needs the operator's
+  agreement first, since it changes the watchman's role. Done when: the design says which stories still need the
+  watchman's own read (for example, security or the operator's decisions) and which a peer's verification is
+  enough for; the watchman's digest shows peer verifications with their commits for spot-checking; and a spot-check
+  that disagrees with a peer's verification is recorded as a correction, not by overwriting it.
