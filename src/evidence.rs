@@ -271,6 +271,59 @@ impl GitHub {
     }
 }
 
+/// What a merge attempt with the service's token showed (RAL-18).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "result")]
+pub enum MergeProbe {
+    /// GitHub refused the merge for want of access: the token is read-only for that repository.
+    Refused { status: u16, message: String },
+    /// GitHub got past the access check, so the token can write. Nothing merged: the head given
+    /// can never match.
+    CanWrite { status: u16, message: String },
+    /// Neither: the answer doesn't show which.
+    Unclear { status: u16, message: String },
+}
+
+/// The head a merge attempt names: no commit has it, so GitHub can never merge on it.
+pub const NO_HEAD: &str = "0000000000000000000000000000000000000000";
+
+impl GitHub {
+    /// Try to merge pull request `pull` of `repo` with this token, naming a head that can't
+    /// match, so the attempt can't merge even if the token could write. The pull request must be
+    /// readable first, so a refusal isn't mistaken for a missing pull request. Only the operator
+    /// runs this (`rally check-github-token`); the service never does.
+    pub fn probe_merge(&self, repo: &str, pull: u64) -> Result<MergeProbe, String> {
+        self.ok(&format!("/repos/{repo}/pulls/{pull}"))?;
+        let mut response = self
+            .agent
+            .put(&format!("{}/repos/{repo}/pulls/{pull}/merge", self.base))
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "rally-evidence-check")
+            .header("Content-Type", "application/json")
+            .send(serde_json::json!({ "sha": NO_HEAD }).to_string())
+            .map_err(|e| e.to_string())?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(64 * 1024)
+            .read_to_string()
+            .unwrap_or_default();
+        let message = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| v["message"].as_str().map(str::to_owned))
+            .unwrap_or_default();
+        Ok(match status {
+            // 404 too: GitHub answers a write it won't allow with 404 on some tokens, and the
+            // pull request was just read.
+            403 | 404 => MergeProbe::Refused { status, message },
+            405 | 409 | 422 => MergeProbe::CanWrite { status, message },
+            _ => MergeProbe::Unclear { status, message },
+        })
+    }
+}
+
 impl Forge for GitHub {
     fn commit_message(&self, repo: &str, commit: &str) -> Result<Option<String>, String> {
         match self.get(&format!("/repos/{repo}/commits/{commit}"))? {
@@ -752,6 +805,162 @@ mod tests {
         assert_eq!(combine(&failed, &no_status), Ci::Failed);
         let status_failed = json!({"state": "failure", "statuses": [{"state": "failure"}]});
         assert_eq!(combine(&passed, &status_failed), Ci::Failed);
+    }
+
+    /// One request a stand-in GitHub saw: its method, path and body.
+    type Seen = (String, String, String);
+
+    /// A stand-in GitHub on a local port that answers each request with `reply(method, path)`
+    /// and records every request line and body, until `count` requests have come.
+    fn recording_github(
+        count: usize,
+        reply: fn(&str, &str) -> (u16, &'static str),
+    ) -> (String, std::thread::JoinHandle<Vec<Seen>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for stream in listener.incoming().take(count) {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let mut parts = line.split_whitespace();
+                let method = parts.next().unwrap_or_default().to_owned();
+                let path = parts.next().unwrap_or_default().to_owned();
+                let mut length = 0;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = header.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; length];
+                reader.read_exact(&mut body).unwrap();
+                let (status, json) = reply(&method, &path);
+                let answer = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}",
+                    json.len()
+                );
+                stream.write_all(answer.as_bytes()).unwrap();
+                seen.push((method, path, String::from_utf8_lossy(&body).into_owned()));
+            }
+            seen
+        });
+        (base, handle)
+    }
+
+    /// RAL-18: a whole check only reads. Every request is a GET of one of the four read endpoints
+    /// for the submitted commit; nothing clones, fetches a tarball or writes.
+    #[test]
+    fn a_check_only_reads_the_commit_its_pulls_and_its_ci() {
+        let (base, server) = recording_github(4, |_, path| {
+            if path.ends_with("/pulls") {
+                (200, r#"[{"title":"feat: RAL-18"}]"#)
+            } else if path.contains("/check-runs") {
+                (
+                    200,
+                    r#"{"check_runs":[{"status":"completed","conclusion":"success"}]}"#,
+                )
+            } else if path.ends_with("/status") {
+                (200, r#"{"state":"success","statuses":[]}"#)
+            } else {
+                // Not naming the story, so its pull requests are read too.
+                (200, r#"{"commit":{"message":"feat: the work"}}"#)
+            }
+        });
+        let github = GitHub::at("read-only-token".into(), base);
+        let outcome = check(Some(&github), "RAL-18", &evidence());
+        let seen = server.join().unwrap();
+        assert_eq!(outcome.exists, Some(true));
+        assert_eq!(outcome.ci, Some(Ci::Passed));
+        let prefix = format!("/repos/Castor-o7/rally/commits/{COMMIT}");
+        let allowed = [
+            prefix.clone(),
+            format!("{prefix}/pulls"),
+            format!("{prefix}/check-runs?per_page=100"),
+            format!("{prefix}/status"),
+        ];
+        assert_eq!(seen.len(), 4, "{seen:?}");
+        for (method, path, body) in &seen {
+            assert_eq!(method, "GET", "{path}");
+            assert!(allowed.contains(path), "an unexpected request: {path}");
+            assert!(body.is_empty(), "a GET with a body: {path}");
+        }
+    }
+
+    /// RAL-18: nothing in the evidence check can start a program, so it can't check out, build
+    /// or run what was submitted. Its only other way out is the HTTP client above.
+    #[test]
+    fn the_evidence_check_starts_no_program() {
+        let source = include_str!("evidence.rs");
+        for needle in [
+            ["std::", "process"].concat(),
+            ["Command", "::new"].concat(),
+            ["libc::", "exec"].concat(),
+            ["rustix::", "process"].concat(),
+        ] {
+            assert!(!source.contains(&needle), "evidence.rs uses {needle}");
+        }
+    }
+
+    #[test]
+    fn a_merge_attempt_refused_for_access_is_reported_as_refused() {
+        let (base, server) = recording_github(2, |method, _| match method {
+            "GET" => (200, r#"{"number":7,"state":"open"}"#),
+            _ => (
+                403,
+                r#"{"message":"Resource not accessible by personal access token"}"#,
+            ),
+        });
+        let github = GitHub::at("read-only-token".into(), base);
+        let probe = github.probe_merge("Castor-o7/rally", 7).unwrap();
+        let seen = server.join().unwrap();
+        assert!(
+            matches!(probe, MergeProbe::Refused { status: 403, .. }),
+            "{probe:?}"
+        );
+        assert_eq!(seen[1].0, "PUT");
+        assert_eq!(seen[1].1, "/repos/Castor-o7/rally/pulls/7/merge");
+        // The head named can never match, so even a token that can write merges nothing.
+        let body: Value = serde_json::from_str(&seen[1].2).unwrap();
+        assert_eq!(body["sha"], NO_HEAD);
+    }
+
+    #[test]
+    fn a_merge_attempt_that_gets_past_the_access_check_is_reported_as_able_to_write() {
+        let (base, server) = recording_github(2, |method, _| match method {
+            "GET" => (200, r#"{"number":7,"state":"open"}"#),
+            _ => (
+                409,
+                r#"{"message":"Head branch was modified. Review and try the merge again."}"#,
+            ),
+        });
+        let github = GitHub::at("too-much-token".into(), base);
+        let probe = github.probe_merge("Castor-o7/rally", 7).unwrap();
+        server.join().unwrap();
+        assert!(
+            matches!(probe, MergeProbe::CanWrite { status: 409, .. }),
+            "{probe:?}"
+        );
+    }
+
+    #[test]
+    fn no_merge_is_attempted_on_a_pull_request_that_cant_be_read() {
+        let (base, server) = recording_github(1, |_, _| (404, r#"{"message":"Not Found"}"#));
+        let github = GitHub::at("read-only-token".into(), base);
+        let err = github.probe_merge("Castor-o7/rally", 7).unwrap_err();
+        let seen = server.join().unwrap();
+        assert!(err.contains("404"), "{err}");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "GET");
     }
 
     /// A redirect is never followed, so the token can't be carried to another host.
