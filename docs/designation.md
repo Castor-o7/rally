@@ -192,6 +192,138 @@ are signed, so neither can be changed after the operator signs.
   until it's ended or revoked. The others aren't affected. Give each watchman its own account or machine (A or B),
   and end a watchman as soon as its session is done.
 
+## Runbook: the first real designation of two watchmen (RAL-63)
+
+For the two-watchman rally of 2026-11-05: fiery-snapper on a1 and frank-crocodile on Murph. Every step is the
+operator's, by hand. An agent can prepare the commands, but the key, the pair codes and the Touch ID are never
+passed through Muster or a session.
+
+### 0. Check the starting point
+
+On a1:
+
+```sh
+rally designation
+```
+
+Go on only when the report has an `operator_key` (the fingerprint the service was started with) and a `watchmen`
+field. On 2026-11-05 at 15:50 EST it had neither. `operator_key` was null, so the service wasn't started with
+`--secure --operator-key`, and with no `watchmen` field Murph's build predated RAL-63 (merged as cd27484). So first:
+
+1. Deploy main at cd27484 or later on Murph, by the usual rollout (`docs/service.md`, "Keeping it current").
+2. Make the binary, the key and the unit root-owned, and start with `--secure --operator-key`, as in "On Murph"
+   above. The service's startup line prints the operator key's fingerprint. Check it against Secretive's.
+
+Once the first designation is written, a build older than RAL-53 or RAL-63 can't read the ledger back, so the
+rollback window for the deploy ends there.
+
+### 1. The key, on a1
+
+As in "On a1: make the key" above: a Secretive key named "Rally designation", with Require Authentication on, its
+agent in `SSH_AUTH_SOCK`, and its public key exported to `~/rally-designation.pub`. Check:
+
+```sh
+ssh-keygen -l -f ~/rally-designation.pub        # the fingerprint, which must match the service's startup line
+ssh-add -L | grep -F "$(cut -d' ' -f2 ~/rally-designation.pub)"   # the agent holds it
+```
+
+`rally designate --key` takes this **public** key file. `ssh-keygen -Y sign` finds the private half in Secretive's
+agent, which asks for Touch ID.
+
+### 2. A pairing for each watchman's own credential, on Murph
+
+Each watchman reads with a credential that no other session holds (RAL-53). On Murph, as the service's account:
+
+```sh
+rally add-machine a1-watchman    --address 192.168.1.241:6300 --state-dir ~/.local/state/rally --out ~/a1-watchman.pair
+rally add-machine murph-watchman --address 192.168.1.241:6300 --state-dir ~/.local/state/rally --out ~/murph-watchman.pair
+```
+
+Neither pair code is printed. Carry each one yourself to where that watchman runs. Best is a separate account (A)
+or machine (B), as above. There, pair a config of its own and delete the file:
+
+```sh
+rally --config ~/.config/rally/watchman.json pair < a1-watchman.pair && rm a1-watchman.pair
+```
+
+Start that watchman's session with `RALLY_CONFIG=~/.config/rally/watchman.json`, so its `rally verify` uses this
+pairing and no other session's does. If it shares your account (option C), that catches mistakes only.
+
+### 3. Choose the scopes
+
+A `machine:` scope names a **pairing credential**, the one a submission was made with, not a host. Check which
+credentials submissions actually come from:
+
+```sh
+rally waiting      # each submission's evidence
+rally verifications | grep '"credential"' | sort | uniq -c
+```
+
+On 2026-11-05, every session on a1 wrote with the credential `a1`, and Murph's sessions weren't paired at all. Their
+records were written for them by a1 sessions, so they came from `a1` too. So:
+
+- **fiery-snapper:** `machine:a1` covers everything a1's sessions submit, and today Murph's as well. `all` covers
+  every story.
+- **frank-crocodile:** `machine:murph` covers nothing until Murph's sessions are paired under a credential named
+  `murph` (`rally add-machine murph ...` on Murph, then `rally pair` in Murph's account). Until then, a team scope
+  such as `team:catapp` covers the teams it watches. Either way, its reads outside its scope still count as a
+  watchman's.
+
+### 4. Designate, on a1
+
+In a shell whose `SSH_AUTH_SOCK` is Secretive's, one at a time:
+
+```sh
+rally designate --watchman fiery-snapper   --credential a1-watchman    --scope machine:a1    --key ~/rally-designation.pub
+rally designate --watchman frank-crocodile --credential murph-watchman --scope machine:murph --key ~/rally-designation.pub
+```
+
+Each prints what it's about to sign before asking for Touch ID. Read it before you touch. The first should be:
+
+```
+rally-designation v3
+action: add
+watchman: fiery-snapper
+credential: a1-watchman
+scope: machine:a1
+after: <seq>:<64 hex characters>
+```
+
+Check that the first line is `v3` and that the action is `add`. Check the watchman, credential and scope against
+what you meant. `after` must be the ledger's head just now (`rally check` prints it). If `designate` warns that
+watchmen are in force and this would replace them, stop: an add always has `--scope`. If another record lands
+in between, the service refuses it ("read the head again"). Run it again and read the new statement.
+
+### 5. Check what's in force
+
+```sh
+rally designation
+```
+
+`watchmen` should list both, each with its credential, its scope and `credential_paired: true`. `records` should show both
+adds as `valid`. `watchman` is null now, since there's more than one.
+
+### 6. A test read
+
+The next real verification from each watchman shows the binding. Or, to check before relying on it: from the
+watchman's own session (its own pairing), verify a story that's waiting, then
+
+```sh
+rally verifications | head -40
+```
+
+Its row should say `reader: watchman`, `watchman_name: fiery-snapper`, `matched_by: credential`. A session on the
+ordinary `a1` pairing that declares `--as fiery-snapper` and verifies would be labelled `other`, with a note
+naming the credential it came from. Don't write one just to see it, since every record stays in the ledger. The
+tests cover that case. `rally waiting` should now give each submission `awaits`, naming the watchman whose scope
+covers it.
+
+### Undoing it
+
+`rally designate --end --watchman <name> --key ~/rally-designation.pub` ends one, and the other stays.
+`rally designate --end --key ~/rally-designation.pub` ends both. `rally revoke a1-watchman` on Murph stops the
+credential working. That watchman's reads stop counting as its own until it's paired and designated again.
+
 ## Who verified, and what's waiting
 
 - `rally verifications` lists every verification and send-back, newest first. Each is labelled `watchman` if
