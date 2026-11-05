@@ -238,7 +238,9 @@ pub fn verifications(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKe
         "operator_key": key.map(OperatorKey::fingerprint),
         "readers_are": "watchman: the designated watchman's declared name; peer: no watchman was \
                         designated; other: one was, and someone else wrote it; unknown: there's no \
-                        operator key to check designations with. Names are declared.",
+                        operator key to check designations with. \"watchman\" is a match on a declared \
+                        name: any session that declares the watchman's name gets it, so it catches \
+                        mistakes, not impersonation.",
     })
 }
 

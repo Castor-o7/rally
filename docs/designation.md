@@ -118,6 +118,10 @@ itself doesn't show what you're signing. If another record lands in between, the
   would be in force again. Signatures can't show a removal. The hash chain does: run `rally check --expect` against a
   head saved somewhere the agents can't reach. Rally doesn't record whether that check last passed, so the
   designation report can't say.
+- **The `watchman` label is a name match.** A verification is labelled `watchman` when its declared name matches
+  the designated watchman's. Any session that declares that name gets the label, and on a1 every session shares
+  one credential, so Rally can't tell them apart. It catches mistakes, not impersonation. Binding the label to a
+  per-session credential is RAL-53.
 - **Readers trust the service's report.** The report is computed by the service on Murph. With the binary, key and
   unit root-owned, an agent can't change what it computes. A client doesn't yet check signatures itself.
 - **The host's root.** Anyone with root on Murph, or the operator's password, can change all of this. That's the
