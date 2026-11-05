@@ -710,6 +710,8 @@ impl Backend {
                 }
                 let path = if query.is_empty() {
                     path.to_owned()
+                } else if path.contains('?') {
+                    format!("{path}&{}", query.join("&"))
                 } else {
                     format!("{path}?{}", query.join("&"))
                 };
@@ -798,8 +800,15 @@ fn next(
     let mut away = Value::Null;
     let mut now_ms = None;
     for _ in 0..NEXT_PAGES {
-        let value = backend.read_value("/v1/blockers/all", None, &page, |ledger, page| {
-            views::blockers(ledger, true, page)
+        // Every page after the first is judged at the first page's instant, the service's.
+        let path = match now_ms {
+            Some(at_ms) => format!("/v1/blockers/all?at_ms={at_ms}"),
+            None => "/v1/blockers/all".to_owned(),
+        };
+        let at_ms = now_ms;
+        let value = backend.read_value(&path, None, &page, |ledger, page| match at_ms {
+            Some(at_ms) => views::blockers_at(ledger, true, page, at_ms),
+            None => views::blockers(ledger, true, page),
         })?;
         blockers.extend(value["blockers"].as_array().cloned().unwrap_or_default());
         // The first page's clock, the service's, decides everything time-based in the pick.
