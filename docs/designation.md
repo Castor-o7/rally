@@ -138,10 +138,65 @@ whether it's still paired. `rally revoke a1-watchman` on Murph ends it: the watc
 watchman's until it's paired again and designated again. A designation made before RAL-53, without a credential,
 still verifies and still matches by declared name, and `rally verifications` says which way each was matched.
 
+### More than one watchman at once (RAL-63)
+
+A v1 or v2 designation replaces every watchman in force. To have several at once, for example one on Murph and one
+on a1, add each with a **scope**, which makes the statement version 3:
+
+```sh
+rally designate --watchman frank-crocodile --credential murph-watchman --scope machine:murph --key ~/rally-designation.pub
+rally designate --watchman fiery-snapper --credential a1-watchman --scope machine:a1 --key ~/rally-designation.pub
+rally designate --end --watchman fiery-snapper --key ~/rally-designation.pub   # ends that one; the other stays
+rally designate --end --key ~/rally-designation.pub                            # ends every watchman
+```
+
+Each prints its statement before asking for the signature:
+
+```
+rally-designation v3
+action: add                  (or end)
+watchman: <name>
+credential: <credential>     (an add only: every v3 watchman is bound, as in RAL-53)
+scope: <scope>               (an add only)
+after: <seq>:<chain hash of the record just before it>
+```
+
+The first line keeps a v3 signature from verifying as v1 or v2, and the other way round. The scope and credential
+are signed, so neither can be changed after the operator signs.
+
+- **The set in force** is built from the valid designations in order. A v1 or v2 designation replaces it; a v3 add
+  puts its watchman in, replacing that watchman's earlier entry by name; a v3 end takes one watchman out; an `--end`
+  with no name empties it. `rally designation` lists every watchman in force under `watchmen`, with its scope,
+  credential and whether that's still paired. `watchman` is filled only while exactly one is in force.
+- **What's refused.** A v3 add whose credential is already bound to another watchman in force, so a read's label is
+  never ambiguous, and a v3 end naming no watchman in force. The service refuses both when written. A v3 add also
+  ends any watchman in force with no credential (from a v1 designation), since one matched by declared name would let
+  any session read as that watchman beside a bound one; `rally designation` says so on the add's record, under
+  `ended`. A v1 or v2 designation replaces every watchman in force, so `rally designate` warns first when more than
+  one is. One written
+  straight into Postgres is listed as not in force, with the reason, as is anything not signed by the operator's
+  key.
+- **Scopes** are `all`, `team:<team>` for stories that team holds, or `machine:<credential>` for submissions made
+  with that **pairing credential**. A machine scope names a pairing, not a host: renaming a pairing, pairing a
+  machine under a new name or `rally revoke` changes what the scope covers, so designate again after any of them.
+  A team scope matches the team that holds the story now, so a story that changes hands moves between scopes,
+  and what it waited for is judged by its current team, not the one it had when it was read.
+- **A scope only decides whose read a merge waits for.** `rally waiting` gives each submission `awaits`, the
+  watchmen whose scope covers it. If none does, it names every watchman in force and says any may read it.
+  `rally handover` gives each watchman the peer-verified stories in its scope, made while no watchman in force
+  covered them, since the story was last covered. A story goes to the first watchman whose scope covers it, even
+  when watchmen with other scopes were added in between. A watchman's read outside its scope is still labelled `watchman`, with `watchman_name` saying
+  which.
+- **With N watchmen, there are N credentials to protect.** Each holds only as well as its own pairing file, by the
+  options above. Losing one lets whoever holds it read as that watchman, anywhere, not only inside its scope,
+  until it's ended or revoked. The others aren't affected. Give each watchman its own account or machine (A or B),
+  and end a watchman as soon as its session is done.
+
 ## Who verified, and what's waiting
 
 - `rally verifications` lists every verification and send-back, newest first. Each is labelled `watchman` if
-  the designated watchman's declared name wrote it, `peer` if no watchman was designated, `other` if one was
+  a designated watchman wrote it (by its bound credential, or under v1 its declared name; `watchman_name` says
+  which watchman, RAL-63), `peer` if no watchman was designated, `other` if one was
   designated but someone else wrote it, or `unknown` if the service has no operator key to check designations
   with. Names are declared.
 - `rally handover` is for a newly designated watchman. It lists every story a peer verified since the designation
@@ -165,6 +220,9 @@ still verifies and still matches by declared name, and `rally verifications` say
   would be in force again. Signatures can't show a removal. The hash chain does: run `rally check --expect` against a
   head saved somewhere the agents can't reach. Rally doesn't record whether that check last passed, so the
   designation report can't say.
+- **Several watchmen, several pairings (RAL-63).** Each watchman's label is as strong as its own pairing file, and
+  a scope doesn't limit a stolen credential: it reads as that watchman everywhere. The set rule that one credential
+  can't be bound to two watchmen in force keeps labels unambiguous, not credentials safe.
 - **The `watchman` label is only as strong as the watchman's pairing.** Under a designation bound to a credential
   (RAL-53), the label follows that credential. It protects against every session that can't read the watchman's
   pairing file, which, with the watchman on its own account or machine, is every other session. It doesn't protect

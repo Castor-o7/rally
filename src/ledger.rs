@@ -52,6 +52,25 @@ pub enum TeamStatus {
     Resting,
 }
 
+/// What a v3 designation does to the set of watchmen in force (RAL-63).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesignateAction {
+    /// Adds the watchman, or replaces its earlier designation, leaving the others in force.
+    Add,
+    /// Ends this watchman's designation, leaving the others in force.
+    End,
+}
+
+impl DesignateAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::End => "end",
+        }
+    }
+}
+
 /// What a record does to a story or team. This is the `body` of a record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "change", rename_all = "snake_case", deny_unknown_fields)]
@@ -188,6 +207,15 @@ pub enum Change {
         /// v2 and a read counts as the watchman's only when made with this credential.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential: Option<String>,
+        /// Under v3 (RAL-63), whether this adds the watchman to the set in force or ends its
+        /// designation, leaving the others. Without it, as under v1 and v2, the designation
+        /// replaces the whole set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<DesignateAction>,
+        /// Under a v3 add, whose reads a merge waits for: `all`, `team:<team>` or
+        /// `machine:<credential>` (RAL-63).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
         after_seq: u64,
         after_hash: String,
         key_fingerprint: String,
@@ -836,6 +864,57 @@ pub fn designation_statement(
     }
 }
 
+/// The fixed text the operator signs for a v3 designation (RAL-63): one watchman added to the set
+/// in force, bound to its credential and given a scope, or one ended. Like v1 and v2 it names the
+/// record just before it, and its first line keeps a v3 signature from verifying as v1 or v2.
+pub fn designation_statement_v3(
+    action: DesignateAction,
+    watchman: &str,
+    credential: Option<&str>,
+    scope: Option<&str>,
+    after_seq: u64,
+    after_hash: &str,
+) -> String {
+    let mut text = format!(
+        "rally-designation v3\naction: {}\nwatchman: {watchman}\n",
+        action.as_str()
+    );
+    if let Some(credential) = credential {
+        text.push_str(&format!("credential: {credential}\n"));
+    }
+    if let Some(scope) = scope {
+        text.push_str(&format!("scope: {scope}\n"));
+    }
+    text.push_str(&format!("after: {after_seq}:{after_hash}\n"));
+    text
+}
+
+/// What a designation says, whichever version it is: the parts its statement is made from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Terms<'a> {
+    pub watchman: Option<&'a str>,
+    pub credential: Option<&'a str>,
+    pub action: Option<DesignateAction>,
+    pub scope: Option<&'a str>,
+}
+
+impl Terms<'_> {
+    /// The statement the operator signs for these terms, after record `after_seq`.
+    pub fn statement(&self, after_seq: u64, after_hash: &str) -> String {
+        match (self.action, self.watchman) {
+            (Some(action), Some(watchman)) => designation_statement_v3(
+                action,
+                watchman,
+                self.credential,
+                self.scope,
+                after_seq,
+                after_hash,
+            ),
+            _ => designation_statement(self.watchman, self.credential, after_seq, after_hash),
+        }
+    }
+}
+
 /// One designation record as the ledger holds it. Whether it's in force is for
 /// `designation::report` to say.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -848,6 +927,12 @@ pub struct Designation {
     /// The credential the designation is bound to, under v2 (RAL-53).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+    /// Under v3, an add or an end of one watchman (RAL-63).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<DesignateAction>,
+    /// Under a v3 add, the watchman's scope (RAL-63).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     pub after_seq: u64,
     pub after_hash: String,
     pub key_fingerprint: String,
@@ -856,12 +941,16 @@ pub struct Designation {
 
 impl Designation {
     pub fn statement(&self) -> String {
-        designation_statement(
-            self.watchman.as_deref(),
-            self.credential.as_deref(),
-            self.after_seq,
-            &self.after_hash,
-        )
+        self.terms().statement(self.after_seq, &self.after_hash)
+    }
+
+    pub fn terms(&self) -> Terms<'_> {
+        Terms {
+            watchman: self.watchman.as_deref(),
+            credential: self.credential.as_deref(),
+            action: self.action,
+            scope: self.scope.as_deref(),
+        }
     }
 }
 
@@ -1265,6 +1354,8 @@ impl Ledger {
             Change::Designate {
                 watchman,
                 credential,
+                action,
+                scope,
                 after_seq,
                 after_hash,
                 key_fingerprint,
@@ -1285,6 +1376,8 @@ impl Ledger {
                     at_ms: record.at_ms(),
                     watchman,
                     credential,
+                    action,
+                    scope,
                     after_seq,
                     after_hash,
                     key_fingerprint,
@@ -2186,10 +2279,29 @@ const MAX_SIGNATURE_CHARS: usize = 4096;
 
 /// A designation's form: a name that can't change the statement's lines, a chain hash, a key
 /// fingerprint and an armoured signature.
+/// Whether `scope` is one a v3 designation can give (RAL-63): `all`, `team:<team>` or
+/// `machine:<credential>`, with a name held to the watchman's plain characters.
+pub fn is_scope(scope: &str) -> bool {
+    let plain = |name: &str| {
+        !name.is_empty()
+            && name.chars().count() <= MAX_WATCHMAN_CHARS
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.@".contains(c))
+    };
+    match scope.split_once(':') {
+        None => scope == "all",
+        Some(("team" | "machine", name)) => plain(name),
+        Some(_) => false,
+    }
+}
+
 fn check_designation_fields(change: &Change) -> Result<(), LedgerError> {
     let Change::Designate {
         watchman,
         credential,
+        action,
+        scope,
         after_hash,
         key_fingerprint,
         signature,
@@ -2198,6 +2310,36 @@ fn check_designation_fields(change: &Change) -> Result<(), LedgerError> {
     else {
         return Ok(());
     };
+    // v3 (RAL-63): an add names a watchman, its credential and its scope; an end names only the
+    // watchman it ends. Without an action, as under v1 and v2, there's no scope.
+    match action {
+        Some(DesignateAction::Add) => {
+            if watchman.is_none() || credential.is_none() || scope.is_none() {
+                return Err(LedgerError::InvalidDesignation(
+                    "a v3 add names a watchman, its credential and its scope",
+                ));
+            }
+        }
+        Some(DesignateAction::End) => {
+            if watchman.is_none() || credential.is_some() || scope.is_some() {
+                return Err(LedgerError::InvalidDesignation(
+                    "a v3 end names only the watchman it ends",
+                ));
+            }
+        }
+        None if scope.is_some() => {
+            return Err(LedgerError::InvalidDesignation("only a v3 add has a scope"));
+        }
+        None => {}
+    }
+    if let Some(scope) = scope
+        && !is_scope(scope)
+    {
+        return Err(LedgerError::InvalidDesignation(
+            "scope: all, team:<team> or machine:<credential>, each name 1 to 64 letters, digits, \
+             '-', '_', '.' or '@'",
+        ));
+    }
     // A credential goes in the signed statement, so it's held to the same plain characters as
     // the watchman's name, and only a designation of a watchman is bound to one.
     if let Some(credential) = credential {
@@ -4460,6 +4602,79 @@ mod tests {
             let rebuilt = ledger_with(&records[..=index]);
             assert_eq!(rebuilt, live, "as of record {}", index + 1);
             assert_eq!(state(&rebuilt), expected[index]);
+        }
+    }
+
+    /// RAL-63: a v3 add names a watchman, credential and scope; an end only a watchman; and
+    /// only a v3 add has a scope, which must be one of the three forms.
+    #[test]
+    fn a_v3_designation_has_the_fields_its_action_needs() {
+        let base = || {
+            json!({"change": "designate", "watchman": "w", "after_seq": 0,
+                   "after_hash": "a".repeat(64), "key_fingerprint": "SHA256:abc",
+                   "signature": "-----BEGIN SSH SIGNATURE-----\nx\n-----END SSH SIGNATURE-----"})
+        };
+        let with = |fields: serde_json::Value| {
+            let mut body = base();
+            for (k, v) in fields.as_object().unwrap() {
+                if v.is_null() {
+                    body.as_object_mut().unwrap().remove(k);
+                } else {
+                    body[k] = v.clone();
+                }
+            }
+            let change: Change = serde_json::from_value(body).unwrap();
+            check_fields(&change)
+        };
+        assert!(with(json!({"action": "add", "credential": "a1-w", "scope": "all"})).is_ok());
+        for scope in ["team:rally", "machine:a1", "machine:a1-watch.2@x"] {
+            assert!(
+                with(json!({"action": "add", "credential": "c", "scope": scope})).is_ok(),
+                "{scope}"
+            );
+        }
+        assert!(with(json!({"action": "end"})).is_ok());
+        for (fields, why) in [
+            (json!({"action": "add", "credential": "c"}), "no scope"),
+            (json!({"action": "add", "scope": "all"}), "no credential"),
+            (
+                json!({"action": "add", "credential": "c", "scope": "all", "watchman": null}),
+                "no watchman",
+            ),
+            (
+                json!({"action": "end", "credential": "c"}),
+                "an end binds nothing",
+            ),
+            (
+                json!({"action": "end", "scope": "all"}),
+                "an end has no scope",
+            ),
+            (
+                json!({"action": "end", "watchman": null}),
+                "an end names its watchman",
+            ),
+            (json!({"scope": "all"}), "a scope without v3"),
+            (
+                json!({"action": "add", "credential": "c", "scope": "host:a1"}),
+                "unknown kind",
+            ),
+            (
+                json!({"action": "add", "credential": "c", "scope": "team:"}),
+                "empty name",
+            ),
+            (
+                json!({"action": "add", "credential": "c", "scope": "team:a b"}),
+                "a space",
+            ),
+            (
+                json!({"action": "add", "credential": "c", "scope": "machine:a1\u{200b}"}),
+                "invisible",
+            ),
+        ] {
+            assert!(
+                matches!(with(fields), Err(LedgerError::InvalidDesignation(_))),
+                "{why}"
+            );
         }
     }
 }

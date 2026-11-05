@@ -757,8 +757,9 @@ pub enum Readers {
     Suggest,
     /// No operator key to check designations with: suggest, and say so.
     Unchecked,
-    /// The watchman reads, so no suggestions.
-    Watchman(String),
+    /// Watchmen are in force, so no suggestions: each submission says whose read it waits for,
+    /// by their scopes (RAL-63).
+    Watchmen(Vec<crate::designation::Watch>),
 }
 
 /// Teams that could read, by name as the ledger compares them, each with the record number of its
@@ -828,15 +829,34 @@ pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
                     |read| json!({"seq": read.seq, "commit": read.commit, "by": read.requested_by}),
                 )
                 .collect();
-            Some((
-                submit.seq,
-                json!({
-                    "story": id, "team": story.team, "submitted_seq": submit.seq,
-                    "submitted_at_ms": submit.at_ms, "submitted_by": story.submitted_by,
-                    "evidence": evidence, "untested": untested,
-                    "evidence_check": evidence_check, "requested_reads": reads,
-                }),
-            ))
+            let mut row = json!({
+                "story": id, "team": story.team, "submitted_seq": submit.seq,
+                "submitted_at_ms": submit.at_ms, "submitted_by": story.submitted_by,
+                "submitted_with": submit.source.credential,
+                "evidence": evidence, "untested": untested,
+                "evidence_check": evidence_check, "requested_reads": reads,
+            });
+            // Whose read a merge waits for: the watchmen whose scope covers the story (RAL-63).
+            if let Readers::Watchmen(set) = readers {
+                let awaits: Vec<&String> = set
+                    .iter()
+                    .filter(|watch| {
+                        watch
+                            .scope
+                            .covers(story.team.as_deref(), Some(&submit.source.credential))
+                    })
+                    .map(|watch| &watch.name)
+                    .collect();
+                if awaits.is_empty() {
+                    row["awaits"] = json!(set.iter().map(|w| &w.name).collect::<Vec<_>>());
+                    row["awaits_note"] = json!(
+                        "no watchman's scope covers this story, so any watchman in force may read it"
+                    );
+                } else {
+                    row["awaits"] = json!(awaits);
+                }
+            }
+            Some((submit.seq, row))
         })
         .collect();
     rows.sort_by_key(|(seq, _)| *seq);
@@ -846,7 +866,7 @@ pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
         .take(LIST_LIMIT)
         .map(|(_, row)| row)
         .collect();
-    let suggesting = !matches!(readers, Readers::Watchman(_));
+    let suggesting = !matches!(readers, Readers::Watchmen(_));
     if suggesting {
         let mut last = reader_teams(ledger);
         // A suggestion counts as the team's latest read, after every recorded one, so the next
@@ -880,15 +900,23 @@ pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
              whether a watchman is designated here, without the operator's key: while one is, \
              the watchman reads."
         ),
-        Readers::Watchman(name) => json!(format!(
-            "{name} is the designated watchman and reads every submission, so no readers are \
-             suggested."
-        )),
+        Readers::Watchmen(set) => match set.as_slice() {
+            [watch] if watch.scope == crate::designation::Scope::All => json!(format!(
+                "{} is the designated watchman and reads every submission, so no readers are \
+                 suggested.",
+                watch.name
+            )),
+            _ => json!(
+                "Watchmen are designated, so no readers are suggested. Each submission's awaits \
+                 names the watchmen whose scope covers it, whose read its merge waits for."
+            ),
+        },
     };
     json!({
         "untrusted_text": UNTRUSTED_TEXT, "as_of": ledger.last_seq(), "waiting": shown,
         "total": total,
-        "rule": "While a watchman is designated, merges still wait for the watchman's read.",
+        "rule": "While a watchman is designated, merges still wait for the watchman's read: with \
+                 more than one, the read of a watchman whose scope covers the story.",
         "readers": readers_note,
     })
 }
@@ -1482,7 +1510,13 @@ mod tests {
 
         // While a watchman is designated, the watchman reads.
         let ledger = Ledger::replay(&records).unwrap();
-        let out = waiting_with(&ledger, &Readers::Watchman("grand-photon".into()));
+        let watch = crate::designation::Watch {
+            name: "grand-photon".into(),
+            credential: None,
+            scope: crate::designation::Scope::All,
+            seq: 1,
+        };
+        let out = waiting_with(&ledger, &Readers::Watchmen(vec![watch]));
         assert_eq!(suggested(&out), ["-", "-", "-", "-"]);
         assert!(out["readers"].as_str().unwrap().contains("grand-photon"));
     }

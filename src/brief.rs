@@ -54,10 +54,14 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
     let designation = designation::report(ledger, hashes, key);
     let readers = match key {
         None => Readers::Unchecked,
-        Some(_) => match designation["watchman"]["name"].as_str() {
-            Some(name) => Readers::Watchman(name.to_owned()),
-            None => Readers::Suggest,
-        },
+        Some(_) => {
+            let set = designation::in_force(ledger, hashes, key);
+            if set.is_empty() {
+                Readers::Suggest
+            } else {
+                Readers::Watchmen(set)
+            }
+        }
     };
 
     let teams: Vec<Value> = ledger
@@ -196,6 +200,7 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
         "as_of": ledger.last_seq(),
         "now_ms": now_ms,
         "watchman": designation["watchman"],
+        "watchmen": designation["watchmen"],
         "teams": teams, "teams_total": teams_total,
         "claims": claims, "claims_total": claims_total,
         "waiting": waiting["waiting"], "waiting_total": waiting["total"],
