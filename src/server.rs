@@ -688,6 +688,9 @@ struct ReadQuery {
     as_of: Option<u64>,
     after: Option<String>,
     before: Option<u64>,
+    /// For blockers: the instant to judge questions to the operator at, so that a reader paging
+    /// through gets every page at the first page's `now_ms` (RAL-56).
+    at_ms: Option<i64>,
 }
 
 /// The longest `after` accepted, well past any story ID or team name.
@@ -898,10 +901,33 @@ async fn waiting(
     Extension(identity): Extension<Identity>,
     Query(query): Query<ReadQuery>,
 ) -> Response {
-    view(service, identity, query, |ledger, _| {
-        Ok(views::waiting(ledger))
-    })
-    .await
+    // The suggestions are for now, so a past state isn't offered rather than quietly ignored.
+    if query.as_of.is_some() {
+        return failure(StatusCode::BAD_REQUEST, "waiting doesn't take as_of");
+    }
+    // The service's own store is the writer, which keeps the chain's hashes, so checking
+    // designations costs no replay. A store without them replays from Postgres, which is as
+    // costly as a check, so it's limited like one.
+    let work = if service.store.keeps_chain() {
+        Work::Read
+    } else {
+        if !service.allow(&identity.credential, Bucket::Heavy) {
+            return failure(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many checks and past-state reads",
+            );
+        }
+        Work::Heavy
+    };
+    let key = service.operator_key.clone();
+    let result = service
+        .run(work, move |store| store.waiting_report(key.as_ref()))
+        .await;
+    match result {
+        Ok(Ok(report)) => Json(report).into_response(),
+        Ok(Err(error)) => internal(&error),
+        Err(not_run) => not_run.into_response(),
+    }
 }
 
 /// Which credential this is, so that the viewer can warn if it could write.
@@ -969,8 +995,10 @@ async fn open_blockers(
     Extension(identity): Extension<Identity>,
     Query(query): Query<ReadQuery>,
 ) -> Response {
-    view(service, identity, query, |ledger, page| {
-        views::blockers(ledger, false, page)
+    let at_ms = query.at_ms;
+    view(service, identity, query, move |ledger, page| match at_ms {
+        Some(at_ms) => views::blockers_at(ledger, false, page, at_ms),
+        None => views::blockers(ledger, false, page),
     })
     .await
 }
@@ -980,8 +1008,10 @@ async fn all_blockers(
     Extension(identity): Extension<Identity>,
     Query(query): Query<ReadQuery>,
 ) -> Response {
-    view(service, identity, query, |ledger, page| {
-        views::blockers(ledger, true, page)
+    let at_ms = query.at_ms;
+    view(service, identity, query, move |ledger, page| match at_ms {
+        Some(at_ms) => views::blockers_at(ledger, true, page, at_ms),
+        None => views::blockers(ledger, true, page),
     })
     .await
 }

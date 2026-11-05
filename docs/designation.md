@@ -115,7 +115,12 @@ itself doesn't show what you're signing. If another record lands in between, the
   correction that annotates the peer's verification is enough, and the peer's record is never changed. With no
   watchman designated, it shows what the next one would get. Nothing stands on a peer's verification alone.
 - `rally waiting` lists submissions waiting for a reader, oldest first, with the evidence and the commit of any
-  requested read.
+  requested read. While no watchman is designated, it suggests a reader for each (RAL-57): a team other than the
+  author's, the one whose last read is oldest, so reads spread across teams. A suggestion counts as that team's
+  latest, so the next submission goes to another. Following it is optional, and a read counts by the rules
+  above. A reader says its team with `rally verify --team` or `rally send-back --team` (declared; refused if it's
+  the story's own team). While a watchman is designated, nothing is suggested; without the operator's key, Rally
+  can't tell, so it suggests and says so.
 - `rally track-record` now also counts what each verifier gave, by declared name, since a record names its
   verifier but not the verifier's team.
 

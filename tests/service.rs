@@ -51,6 +51,10 @@ fn rally() -> Command {
         "RALLY_CREDENTIAL",
         "RALLY_NAME",
         "RALLY_STATE_DIR",
+        "RALLY_TEAM",
+        "RALLY_OPERATOR_WINDOW",
+        "RALLY_OPERATOR_AWAY_AFTER",
+        "RALLY_OPERATOR_AWAY",
     ] {
         command.env_remove(name);
     }
@@ -2013,4 +2017,100 @@ fn three_unanswered_shelves_put_the_operator_away_for_the_agreed_time() {
     assert_eq!(after["next"]["story"], "RAL-2");
     assert_eq!(after["waiting_on_operator"][0]["ask_again"], true);
     assert_eq!(blockers()["unanswered_shelves"], json!([]));
+}
+
+/// RAL-57: without the operator's key the service can't check designations, so it suggests
+/// readers and says so; a suggestion is never the author's team.
+#[test]
+fn waiting_suggests_a_reader_from_another_team() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    for body in [
+        json!({"change": "team_state", "team": "muster", "status": "available"}),
+        json!({"change": "ready", "story": "RAL-60"}),
+        json!({"change": "claim", "story": "RAL-60", "team": "rally"}),
+        json!({"change": "submit", "story": "RAL-60", "team": "rally", "evidence": "rally@a"}),
+    ] {
+        let reply = write(&pairing, "r", "declared", body);
+        assert_eq!(reply.status, 200, "{}", reply.body);
+    }
+    let waiting: Value =
+        serde_json::from_str(&call(&pairing, "GET", "/v1/waiting", None).body).unwrap();
+    let row = &waiting["waiting"][0];
+    assert_eq!(row["story"], "RAL-60");
+    assert_eq!(
+        row["suggested_reader"],
+        json!({"team": "muster", "kind": "declared"})
+    );
+    assert!(
+        waiting["readers"].as_str().unwrap().contains("can't check"),
+        "{waiting}"
+    );
+    // A past state would be the wrong answer, so it's refused, not ignored.
+    let past = call(&pairing, "GET", "/v1/waiting?as_of=1", None);
+    assert_eq!(past.status, 400, "{}", past.body);
+    assert!(past.body.contains("doesn't take as_of"));
+}
+
+/// `rally next` reads every page of blockers at the first page's instant (RAL-56), and the
+/// service judges a page at the `at_ms` it's given.
+#[test]
+fn next_reads_every_page_of_blockers_at_one_instant() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    // Over one page of blockers, with the question to the operator on the second.
+    for n in 0..201 {
+        let reply = write(
+            &pairing,
+            "r",
+            "declared",
+            json!({"change": "block", "team": "muster", "note": format!("waiting {n}")}),
+        );
+        assert_eq!(reply.status, 200, "{}", reply.body);
+    }
+    let asked = write(
+        &pairing,
+        "r",
+        "declared",
+        json!({"change": "block", "team": "rally", "story": "RAL-2", "on_team": "operator",
+               "note": "may we?"}),
+    );
+    assert_eq!(asked.status, 200, "{}", asked.body);
+    let page: Value = serde_json::from_str(
+        &call(&pairing, "GET", "/v1/blockers/all?at_ms=5&after=200", None).body,
+    )
+    .unwrap();
+    assert_eq!(page["now_ms"], 5);
+    let question = page["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|blocker| blocker["seq"] == 202)
+        .unwrap();
+    assert_eq!(question["question"]["window_from_ms"], question["at_ms"]);
+
+    let roadmap = service.dir.path().join("roadmap.md");
+    std::fs::write(&roadmap, "- [ ] **RAL-2: Needs the operator.**\n").unwrap();
+    let out = cli(
+        &config,
+        "r",
+        &[
+            "next",
+            "--team",
+            "rally",
+            "--roadmap",
+            roadmap.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let next: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(next.get("incomplete").is_none(), "{next}");
+    assert_eq!(next["next"]["story"], "RAL-2");
+    assert_eq!(next["waiting_on_operator"][0]["blocker"], 202);
 }
