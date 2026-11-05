@@ -114,6 +114,16 @@ pub enum Decision {
     Send { from: u64, to: u64 },
 }
 
+/// What's kept for a watchman with no digest yet: start at the ledger's current head, `newest`, so
+/// the first digest covers what happens from now on, not the whole history.
+pub fn start_at(newest: u64) -> Kept {
+    Kept {
+        head: newest,
+        seen_to: newest,
+        ..Kept::default()
+    }
+}
+
 /// Decide from `recs` (every record after `kept.head`, oldest first) whether a digest is due, and
 /// update what's kept for the next pass. On `Send`, the caller calls [`sent`] once it has gone.
 pub fn step(
@@ -222,13 +232,10 @@ pub struct Reads<'a> {
     pub waiting: &'a Value,
     /// `/v1/handover`.
     pub handover: &'a Value,
-    /// `/v1/stories`, for merged commits that differ from the commit read.
-    pub stories: &'a Value,
 }
 
 /// The digest for `watchman`, covering records after `from` up to `to`. `recs` are those records;
-/// `waiting` and `handover` are the current `/v1/waiting` and `/v1/handover` reads; `stories` the
-/// current story list, for merged commits that differ from the commit read.
+/// `reads` are the current waiting and handover lists.
 pub fn render(
     from: u64,
     to: u64,
@@ -237,7 +244,7 @@ pub fn render(
     reads: &Reads,
     now_ms: i64,
 ) -> String {
-    let (waiting, handover, stories) = (reads.waiting, reads.handover, reads.stories);
+    let (waiting, handover) = (reads.waiting, reads.handover);
     let theirs: Vec<&Rec> = recs
         .iter()
         .filter(|r| r.seq > from && r.seq <= to && !watchman.wrote(r))
@@ -316,17 +323,13 @@ pub fn render(
             .iter()
             .filter(|r| r.change() == "merge")
             .map(|r| {
-                let story = r.text("story");
-                let differs = stories["stories"][&story]["commit_differs"].is_object();
+                // Not compared with the commit read: a merge commit is never the one read, so
+                // that flag would be on nearly every merge. `rally show` has the comparison.
                 format!(
-                    "- {story}: at {} {} [declared]{}",
+                    "- {}: at {} {} [declared]",
+                    r.text("story"),
                     short(&r.text("commit")),
-                    age(r.at_ms, now_ms),
-                    if differs {
-                        "; differs from the commit verified [observed]"
-                    } else {
-                        ""
-                    }
+                    age(r.at_ms, now_ms)
                 )
             })
             .collect(),
@@ -526,6 +529,18 @@ mod tests {
     }
 
     #[test]
+    fn a_first_run_starts_at_the_current_head_in_silence() {
+        let mut kept = start_at(203);
+        let recs: Vec<Rec> = (1..=203).map(|seq| claim(seq, "a")).collect();
+        let after: Vec<Rec> = recs.into_iter().filter(|r| r.seq > kept.head).collect();
+        assert_eq!(
+            step(&mut kept, &after, &watch(), TIMES, 0),
+            Decision::Nothing
+        );
+        assert_eq!(kept.head, 203);
+    }
+
+    #[test]
     fn nothing_new_sends_nothing() {
         let mut kept = Kept {
             head: 5,
@@ -648,12 +663,10 @@ mod tests {
             {"story": "CAT-1", "verified_by": "x", "commit": "c", "verified_at_ms": 0,
              "merged": null, "status": "re-read by the watchman at record 5"},
         ]});
-        let stories = json!({"stories": {"RAL-65": {"commit_differs": {"kind": "observed"}}}});
         let to = recs.iter().map(|r| r.seq).max().unwrap_or(0).max(20);
         let reads = Reads {
             waiting: &waiting,
             handover: &handover,
-            stories: &stories,
         };
         render(0, to, recs, &watch(), &reads, 1_000_000)
     }
@@ -707,7 +720,6 @@ mod tests {
             "merged at 7f1bb71 [observed]",
             "Merged (1)",
             "RAL-65: at bb0f6ea",
-            "differs from the commit verified [observed]",
             "Blockers (2)",
             "opened #11: rally on RAL-38, waiting on MUS-44: \"roster\" [declared]",
             "closed: #7 \"freed\" [declared]",
@@ -740,7 +752,6 @@ mod tests {
         let reads = Reads {
             waiting: &waiting,
             handover: &empty,
-            stories: &empty,
         };
         let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
         assert!(digest.contains("Waiting for you (0)"), "{digest}");

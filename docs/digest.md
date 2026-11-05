@@ -55,11 +55,10 @@ Waiting for you (2)
 - MUS-17 muster: submitted 12m ago [declared] …; check [observed]: commit exists · names the story · CI none.
 
 Peer-verified, awaiting your re-read (RAL-52) (1)
-- CAT-36 catapp: verified by peppy-atoll at b77dde3 9m ago [verified]; merged at 7f1bb71 [observed]: differs
-  from the commit read.
+- CAT-36 catapp: verified by peppy-atoll at b77dde3 9m ago [verified]; merged at 7f1bb71 [observed].
 
 Merged (1)
-- RAL-65: at bb0f6ea 20m ago [declared], matching the commit verified [observed].
+- RAL-65: at bb0f6ea 20m ago [declared].
 
 Blockers (1 opened, 1 closed)
 - opened: rally on RAL-38, waiting on MUS-44 [declared], 6m ago.
@@ -75,7 +74,7 @@ Teams
 - **Each fact carries its kind** (observed, declared or verified) and its **age**, as the viewer shows them.
 - **Sections:** waiting for the watchman (submissions and open read requests); RAL-52's handover list
   (peer-verified since the last designation, awaiting the watchman's re-read, with the commit read, the
-  verifier, and whether and where it merged); merges, saying when the merged commit differs from the one read;
+  verifier, and whether and where it merged); merges;
   blockers opened and closed; questions to the operator; team-state changes. An empty section is left out, except
   "Waiting for you", which always shows its count.
 - **Bounded:** at most 40 lines and 4 KB, like `rally session-start`. Past that, each section shows its count and
@@ -89,8 +88,34 @@ Beside `rally wake`, as `rally digest --every <time>`: one pass reads the ledger
 decides from the kept head and the two clocks whether a digest is due, and sends it. Reads only. It writes
 nothing to the ledger.
 
+## Running it on a1
+
+On a1, beside the backup agent: a1 has `muster-shim` and the Rally pairing. While scopes aren't applied it sends
+to one watchman only, the a1 watchman (fiery-snapper on 2026-11-05), so one change isn't two interruptions. A
+standing agent on a1 is the operator's call, so nothing is installed until the operator says so. When the operator
+agrees, from a Rally checkout on a1 at a commit that has `rally digest`:
+
+```sh
+cargo build --release --locked && codesign -s - -f target/release/rally   # as for the backup agent
+install -m 755 target/release/rally ~/.local/bin/rally
+~/.local/bin/rally digest --quiet 2m --max 10m --watchman fiery-snapper --report-only   # check it reads
+sed -e "s|__HOME__|$HOME|g" -e "s|__WATCHMAN__|fiery-snapper|g" \
+  deploy/a1/com.rally.digest.plist > ~/Library/LaunchAgents/com.rally.digest.plist
+launchctl bootout gui/$(id -u)/com.rally.digest 2>/dev/null    # only if an older one is loaded
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rally.digest.plist
+tail -f ~/.local/state/rally-digest.log
+```
+
+The first pass starts at the ledger's current head and sends nothing; the first digest covers what happens after.
+Each pass logs one line of JSON per watchman: `nothing new`, `batching` with `due_in_s`, `sent` with the records
+covered, or why it couldn't send. To stop it: `launchctl bootout gui/$(id -u)/com.rally.digest`. To change the
+watchman, re-run the `sed` and the two `launchctl` lines.
+
 ## As built
 
+- A watchman with no digest yet starts at the current head, so the first digest isn't the whole history.
+- Merges are listed without comparing the merged commit with the one read: a merge commit never is the one
+  read, so the flag would be on nearly every merge. `rally show <story>` has that comparison.
 - Records come from `/v1/export` after each watchman's head, at most 20 pages a pass; the waiting list, the
   handover list and the stories are read once a digest is due. Reads only, through the paired service.
 - `--report-only` prints the digest (or, while batching, a preview of it) and keeps nothing.

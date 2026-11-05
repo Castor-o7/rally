@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Rally's watchman digest for a1 (RAL-8): every 30 seconds, one pass of `rally digest`. It reads
+       the ledger through this machine's pairing, and when a digest is due (quiet for 2 minutes, or 10
+       minutes after the first new record, as the operator agreed) sends it with `muster-shim tell`.
+       Nothing new, nothing sent. Each watchman's last digest is kept in digest.json beside the
+       pairing, so a run that's missed while the lid is closed is caught up on the next.
+
+       While scopes aren't applied, it sends to one watchman, named here: __WATCHMAN__. Muster
+       nicknames change when a session restarts, so this needs updating then.
+
+       rally runs directly, not through a shell, for macOS's Local Network permission (see
+       docs/service.md). launchd doesn't expand ~ or $HOME, so __HOME__ is filled in when it's
+       installed, as docs/digest.md says. PATH includes ~/.cargo/bin for muster-shim. -->
+  <key>Label</key>
+  <string>com.rally.digest</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.local/bin/rally</string>
+    <string>--config</string>
+    <string>__HOME__/.config/rally/client.json</string>
+    <string>digest</string>
+    <string>--quiet</string>
+    <string>2m</string>
+    <string>--max</string>
+    <string>10m</string>
+    <string>--watchman</string>
+    <string>__WATCHMAN__</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.cargo/bin:__HOME__/.local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.local/state/rally-digest.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.local/state/rally-digest.log</string>
+  <key>StartInterval</key>
+  <integer>30</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

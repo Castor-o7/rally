@@ -1462,7 +1462,11 @@ fn digest_pass(
     let mut rows = Vec::new();
     for watch in &watchmen {
         let key = watch.name.trim().to_lowercase();
-        let mut kept = state.get(&key).cloned().unwrap_or_default();
+        let mut kept = match state.get(&key) {
+            Some(kept) => kept.clone(),
+            // A first run starts at the current head, so it doesn't send the whole history.
+            None => rally::digest::start_at(export(u64::MAX)?["head"]["seq"].as_u64().unwrap_or(0)),
+        };
         let mut recs = Vec::new();
         let mut after = kept.head;
         for _ in 0..DIGEST_PAGES {
@@ -1487,11 +1491,9 @@ fn digest_pass(
                     // Nothing is kept, so show what the digest would say now.
                     let to = recs.last().map_or(kept.head, |r| r.seq);
                     let waiting = get("/v1/waiting")?;
-                    let stories = get("/v1/stories")?;
                     let reads = rally::digest::Reads {
                         waiting: &waiting,
                         handover: &handover,
-                        stories: &stories,
                     };
                     row["preview"] = json!(rally::digest::render(
                         kept.head, to, &recs, watch, &reads, now_ms
@@ -1500,11 +1502,9 @@ fn digest_pass(
             }
             Decision::Send { from, to } => {
                 let waiting = get("/v1/waiting")?;
-                let stories = get("/v1/stories")?;
                 let reads = rally::digest::Reads {
                     waiting: &waiting,
                     handover: &handover,
-                    stories: &stories,
                 };
                 let digest = rally::digest::render(from, to, &recs, watch, &reads, now_ms);
                 if report_only {
