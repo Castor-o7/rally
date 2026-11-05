@@ -244,16 +244,22 @@ enum Command {
     /// the statement, then signs it with `ssh-keygen -Y sign` and the key given, which asks for
     /// Touch ID when the key is Secretive's. See docs/designation.md.
     Designate {
-        /// The watchman's name.
-        #[arg(long, conflicts_with = "end", required_unless_present = "end")]
+        /// The watchman's name. With --end, the one watchman whose designation to end, leaving
+        /// the others in force (RAL-63).
+        #[arg(long, required_unless_present = "end")]
         watchman: Option<String>,
-        /// End the designation: no watchman.
+        /// End the designation: with --watchman, that watchman's; without, every watchman's.
         #[arg(long)]
         end: bool,
         /// Bind the designation to the credential only the watchman's session holds (RAL-53), so a
         /// read counts as the watchman's only when made with it. See docs/designation.md.
         #[arg(long, conflicts_with = "end")]
         credential: Option<String>,
+        /// Add this watchman to those in force, with this scope, instead of replacing them all
+        /// (RAL-63): `all`, `team:<team>` or `machine:<credential>`. Needs --credential. The scope
+        /// only decides whose read a merge waits for.
+        #[arg(long, conflicts_with = "end", requires = "credential")]
+        scope: Option<String>,
         /// The operator's public key file, as `ssh-keygen -f` takes it.
         #[arg(long)]
         key: PathBuf,
@@ -2397,9 +2403,30 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             watchman,
             end,
             credential,
+            scope,
             key,
         } => {
-            debug_assert!(end != watchman.is_some());
+            // v3 (RAL-63): adding one watchman with a scope, or ending one by name. Otherwise v1 or
+            // v2, which replace every watchman in force, or end them all.
+            let action = match (end, &watchman, &scope) {
+                (false, _, Some(_)) => Some(rally::ledger::DesignateAction::Add),
+                (true, Some(_), _) => Some(rally::ledger::DesignateAction::End),
+                _ => None,
+            };
+            // Ending every watchman names none.
+            let watchman = if end && action.is_none() {
+                None
+            } else {
+                watchman
+            };
+            if let Some(scope) = &scope
+                && !rally::ledger::is_scope(scope)
+            {
+                return Err(format!(
+                    "--scope must be all, team:<team> or machine:<credential>, not {scope:?}"
+                )
+                .into());
+            }
             if location.is_some() {
                 return Err(
                     "designations go through the service, which holds the operator's key; \
@@ -2415,12 +2442,13 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             ) else {
                 return Err("the service didn't say where the ledger's head is".into());
             };
-            let statement = rally::ledger::designation_statement(
-                watchman.as_deref(),
-                credential.as_deref(),
-                after_seq,
-                after_hash,
-            );
+            let terms = rally::ledger::Terms {
+                watchman: watchman.as_deref(),
+                credential: credential.as_deref(),
+                action,
+                scope: scope.as_deref(),
+            };
+            let statement = terms.statement(after_seq, after_hash);
             let public = if key.extension().is_some_and(|e| e == "pub") {
                 key.clone()
             } else {
@@ -2440,6 +2468,12 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 });
                 if let Some(credential) = &credential {
                     body["credential"] = json!(credential);
+                }
+                if let Some(action) = action {
+                    body["action"] = json!(action);
+                }
+                if let Some(scope) = &scope {
+                    body["scope"] = json!(scope);
                 }
                 body
             })

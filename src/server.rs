@@ -951,10 +951,19 @@ async fn designation(
         .await;
     match result {
         Ok(Ok(mut report)) => {
-            // Whether the credential the watchman is bound to is still paired (RAL-53).
+            // Whether the credential each watchman is bound to is still paired (RAL-53, RAL-63).
+            let paired = |credential: &str| {
+                json!(matches!(service.state_dir.paired(credential), Ok(Some(_))))
+            };
             if let Some(credential) = report["watchman"]["credential"].as_str() {
-                report["watchman"]["credential_paired"] =
-                    json!(matches!(service.state_dir.paired(credential), Ok(Some(_))));
+                report["watchman"]["credential_paired"] = paired(credential);
+            }
+            if let Some(watchmen) = report["watchmen"].as_array_mut() {
+                for watch in watchmen {
+                    if let Some(credential) = watch["credential"].as_str() {
+                        watch["credential_paired"] = paired(credential);
+                    }
+                }
             }
             Json(report).into_response()
         }

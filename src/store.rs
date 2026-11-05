@@ -961,10 +961,11 @@ impl Store {
             let readers = match key {
                 None => crate::views::Readers::Unchecked,
                 Some(key) => {
-                    let report = crate::designation::report(ledger, hashes, Some(key));
-                    match report["watchman"]["name"].as_str() {
-                        Some(name) => crate::views::Readers::Watchman(name.to_owned()),
-                        None => crate::views::Readers::Suggest,
+                    let set = crate::designation::in_force(ledger, hashes, Some(key));
+                    if set.is_empty() {
+                        crate::views::Readers::Suggest
+                    } else {
+                        crate::views::Readers::Watchmen(set)
                     }
                 }
             };
@@ -1473,7 +1474,7 @@ impl Writer {
                 .check(seq, &record)
                 .map_err(StoreError::Refused)?;
             let previous = kept.head();
-            self.check_designation(&record, seq, &previous)?;
+            self.check_designation(&record, seq, &previous, kept)?;
             self.check_shelf(&record)?;
             (seq, previous)
         };
@@ -1585,10 +1586,13 @@ impl Writer {
         record: &Record,
         seq: u64,
         previous: &Head,
+        kept: &Kept,
     ) -> Result<(), StoreError> {
         let Ok(Change::Designate {
             watchman,
             credential,
+            action,
+            scope,
             after_seq,
             after_hash,
             key_fingerprint,
@@ -1609,15 +1613,25 @@ impl Writer {
                     .into(),
             )));
         };
+        let terms = crate::ledger::Terms {
+            watchman: watchman.as_deref(),
+            credential: credential.as_deref(),
+            action,
+            scope: scope.as_deref(),
+        };
         crate::designation::check_new(
             &key,
             seq,
             (previous.seq, &previous.hash),
-            (watchman.as_deref(), credential.as_deref()),
+            terms,
             (after_seq, &after_hash),
             &key_fingerprint,
             &signature,
         )
+        .and_then(|()| {
+            // Against the watchmen in force, under the writer's lock (RAL-63).
+            crate::designation::check_against_set(&kept.ledger, &kept.hashes, &key, terms)
+        })
         .map_err(|why| StoreError::Refused(LedgerError::DesignationRefused(why)))
     }
 
@@ -2128,6 +2142,90 @@ mod tests {
         scratch.restart();
         let report = scratch.store().designation_report(Some(&key)).unwrap();
         assert_eq!(report["watchman"]["name"], "grand-photon");
+    }
+
+    /// A v3 designation (RAL-63) through the store, signed by `private`.
+    fn designate_v3(
+        scratch: &mut Scratch,
+        private: &Path,
+        key: &crate::designation::OperatorKey,
+        action: crate::ledger::DesignateAction,
+        watchman: &str,
+        bound: Option<(&str, &str)>,
+    ) -> Result<u64, StoreError> {
+        let head = scratch.store().verify(None).unwrap().head;
+        let terms = crate::ledger::Terms {
+            watchman: Some(watchman),
+            credential: bound.map(|b| b.0),
+            action: Some(action),
+            scope: bound.map(|b| b.1),
+        };
+        let statement = terms.statement(head.seq, &head.hash);
+        let mut body = json!({
+            "change": "designate", "watchman": watchman, "action": action,
+            "after_seq": head.seq, "after_hash": head.hash,
+            "key_fingerprint": key.fingerprint(),
+            "signature": crate::designation::testing::sign(private, &statement),
+        });
+        if let Some((credential, scope)) = bound {
+            body["credential"] = json!(credential);
+            body["scope"] = json!(scope);
+        }
+        scratch.store().append(&team(body))
+    }
+
+    #[test]
+    fn the_store_keeps_several_watchmen_and_refuses_an_ambiguous_add_or_an_unknown_end() {
+        use crate::designation::testing::keypair;
+        use crate::ledger::DesignateAction::{Add, End};
+        let keys = tempfile::tempdir().unwrap();
+        let (private, key) = keypair(keys.path(), "operator");
+        let (stranger, _) = keypair(keys.path(), "stranger");
+        let mut scratch = Scratch::new();
+        scratch.store().append(&ready()).unwrap();
+        scratch.store().accept_designations(key.clone());
+        let a = Some(("a1-w", "machine:a1"));
+        let b = Some(("murph-w", "machine:murph"));
+        designate_v3(&mut scratch, &private, &key, Add, "watch-a1", a).unwrap();
+        designate_v3(&mut scratch, &private, &key, Add, "watch-murph", b).unwrap();
+        let names = |scratch: &mut Scratch| -> Vec<String> {
+            let report = scratch.store().designation_report(Some(&key)).unwrap();
+            report["watchmen"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| w["name"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(names(&mut scratch), ["watch-a1", "watch-murph"]);
+
+        let written = scratch.store().records(None).unwrap().len();
+        let error = designate_v3(&mut scratch, &private, &key, Add, "third", a).unwrap_err();
+        assert!(
+            error.to_string().contains("already bound to watch-a1"),
+            "{error}"
+        );
+        let error = designate_v3(&mut scratch, &private, &key, End, "nobody", None).unwrap_err();
+        assert!(
+            error.to_string().contains("isn't a watchman in force"),
+            "{error}"
+        );
+        let error = designate_v3(&mut scratch, &stranger, &key, End, "watch-a1", None).unwrap_err();
+        assert!(error.to_string().contains("another key"), "{error}");
+        let error =
+            designate_v3(&mut scratch, &stranger, &key, Add, "x", Some(("x", "all"))).unwrap_err();
+        assert!(error.to_string().contains("another key"), "{error}");
+        assert_eq!(
+            scratch.store().records(None).unwrap().len(),
+            written,
+            "nothing was written"
+        );
+
+        designate_v3(&mut scratch, &private, &key, End, "watch-a1", None).unwrap();
+        assert_eq!(names(&mut scratch), ["watch-murph"]);
+        // From Postgres after a restart, the same.
+        scratch.restart();
+        assert_eq!(names(&mut scratch), ["watch-murph"]);
     }
 
     #[test]
