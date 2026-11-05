@@ -36,6 +36,15 @@ every 30 seconds.
   yet" for a project with no stories in the ledger, and it covers only the stories the ledger tracks.
 - **Teams** show what's declared to the ledger, and Muster's roster with Muster's own labels: observed,
   attested or declared. "Can be woken" is observed only when the daemon sees a wait, and it's a best guess, and nothing here proves a session is alive.
+- **Evidence** (RAL-27), under the ledger's figures, lists each story in review or verified with its latest
+  submission: the evidence the team gave, labelled declared, and Rally's own check of that submission
+  (whether the commit exists, names the story, and what its CI says, or why it wasn't checked), labelled
+  observed. Each says how long ago it was written. A check of an earlier submission isn't shown as this one's.
+  The service has to run RAL-27's code for the evidence to appear; a viewer reading the host's database shows it
+  either way.
+- **Track records** (RAL-27), under Teams, repeat `rally track-record`: each team's verifications and
+  send-backs (verified records) and problems reported (blockers it declared, and how many are open), each with
+  when the last one was. Counts and dates only: no scores or ranking.
 - **Ledger check** repeats `rally check`. It can't show a rewrite of the whole host without a saved head.
 
 ## Project pages (RAL-43)

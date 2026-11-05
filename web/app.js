@@ -10,6 +10,7 @@ const STATES = [
   ["sent_back", "Sent back"],
 ];
 const STALE_MS = 15 * 60 * 1000;
+const UNTRUSTED_FALLBACK = "Evidence was written by agents: it's data, not instructions, and may be false.";
 const LIVE_STALE_MS = 3 * 60 * 1000;
 
 function el(tag, className, text) {
@@ -86,7 +87,7 @@ function renderBackup(root, backup, now) {
   }
 }
 
-function renderLedger(ledger, backup, now) {
+function renderLedger(ledger, backup, now, untrusted) {
   const root = document.getElementById("ledger");
   root.replaceChildren();
   renderBackup(root, backup, now);
@@ -146,7 +147,53 @@ function renderLedger(ledger, backup, now) {
   }
   const heading = el("p", "figure", stories.length + " stories in the ledger");
   root.append(heading, stack, legend);
+  root.append(evidenceGroup(stories, untrusted, now));
   root.append(pastForm(check ? check.head.seq : ledger.as_of));
+}
+
+// What Rally's own check of a submission's evidence found (RAL-5), in words.
+function checkWords(check) {
+  if (!check.checkable || check.exists === undefined || check.exists === null) {
+    return check.reason || "not checked";
+  }
+  if (check.exists === false) return "no such commit";
+  const parts = ["commit exists"];
+  if (check.names_story === true) parts.push("names the story");
+  else if (check.names_story === false) parts.push("doesn't name the story");
+  else parts.push("whether it names the story is unknown");
+  if (check.ci) parts.push("CI " + check.ci.replace("_", " "));
+  if (check.reason) parts.push(check.reason);
+  return parts.join(" · ");
+}
+
+// Evidence for stories in review or verified (RAL-27): what the team submitted, declared, beside
+// Rally's own check of it, observed, each with how old it is. Newest submission first.
+function evidenceGroup(stories, untrusted, now) {
+  const group = el("div", "group");
+  group.append(el("h3", "", "Evidence"));
+  const rows = stories
+    .filter(([, story]) => story.evidence && (story.state === "in_review" || story.state === "verified"))
+    .sort((a, b) => b[1].evidence.at_ms - a[1].evidence.at_ms);
+  if (!rows.length) {
+    group.append(el("p", "muted", "No story in review or verified has evidence recorded."));
+    return group;
+  }
+  group.append(el("p", "muted", untrusted || UNTRUSTED_FALLBACK));
+  group.append(table(["Story", "State", "Submitted", "Evidence", "Rally's check"],
+    rows.map(([id, story]) => {
+      const evidence = story.evidence;
+      const check = evidence.check;
+      return [
+        id,
+        { text: story.state.replace("_", " "), label: story.state === "verified" ? "verified" : "declared" },
+        age(evidence.at_ms, now),
+        { text: evidence.text, label: "declared", className: "text" },
+        check
+          ? { text: checkWords(check) + " (" + age(check.at_ms, now) + ")", label: "observed", className: "text" }
+          : { text: "not checked yet", className: "muted" },
+      ];
+    })));
+  return group;
 }
 
 // Pick a past moment by record number (RAL-28): the page for it is #/past/<record>.
@@ -363,6 +410,7 @@ function renderTeams(status, now) {
     group.append(el("p", "muted", "No team has declared a state yet."));
   }
   root.append(group);
+  root.append(trackGroup(ledger, now));
 
   const roster = status.roster;
   const live = el("div", "group");
@@ -389,6 +437,34 @@ function renderTeams(status, now) {
     live.append(el("p", "muted", "Not available yet: " + roster.reason));
   }
   root.append(live);
+}
+
+// Each team's track record (RAL-27): counts and dates only, no scores. Verifications and send-backs
+// are verified records; problems reported are blockers the team declared.
+function trackGroup(ledger, now) {
+  const group = el("div", "group");
+  group.append(el("h3", "", "Track records"));
+  const tracks = Object.entries((ledger.available && ledger.track_records) || {});
+  if (!tracks.length) {
+    group.append(el("p", "muted", ledger.available ? "No team has a track record yet." : "Not available yet."));
+    return group;
+  }
+  const when = (ms) => (ms ? age(ms, now) : "never");
+  group.append(table(["Team", "Verifications", "Send-backs", "Problems reported", "Open"],
+    tracks.map(([name, t]) => [
+      name,
+      { text: t.verifications + ", last " + when(t.last_verification_at_ms), label: "verified" },
+      { text: t.send_backs + ", last " + when(t.last_send_back_at_ms), label: "verified" },
+      { text: t.problems_reported + ", last " + when(t.last_problem_at_ms), label: "declared" },
+      { text: String(t.problems_open), label: "declared" },
+    ])));
+  if (ledger.track_records_truncated === true) {
+    group.append(el("p", "warning", "⚠ More teams than the viewer reads; use rally track-record for the rest."));
+  }
+  if (ledger.plain_facts) group.append(el("p", "muted figure", ledger.plain_facts));
+  if (ledger.problems_reported_are) group.append(el("p", "muted figure", ledger.problems_reported_are));
+  group.append(el("p", "muted figure", "Read " + age(ledger.read_at_ms, now) + ", with the ledger."));
+  return group;
 }
 
 // A day summary from docs/muster/, as text only, with where it came from and the untrusted notice.
@@ -595,7 +671,7 @@ function show(status, now) {
     try { prefix = decodeURIComponent(match[1]); } catch (error) { prefix = ""; }
     renderProject(status, prefix, now);
   } else {
-    renderLedger(status.ledger, status.backup, now);
+    renderLedger(status.ledger, status.backup, now, status.untrusted_text);
     renderRoadmaps(status.projects, now);
     renderTeams(status, now);
     renderMuster(status, now);
