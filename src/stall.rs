@@ -40,14 +40,9 @@ pub struct Facts {
     pub blockers: Vec<Waiting>,
 }
 
-/// Whether a session is idle, by its declared activity. Only when it declares none does an
-/// observed `wake: waiting` count, since a busy session can be waiting for messages too, as
-/// today's roster shows.
+/// Whether a session is idle: by its declared activity, as `rally wake` judges it (RAL-66).
 fn idle(session: &Session) -> bool {
-    match session.activity.as_deref() {
-        Some(activity) => activity == "idle",
-        None => session.wake.as_deref() == Some("waiting"),
-    }
+    session.idle()
 }
 
 impl Facts {

@@ -20,7 +20,8 @@ For each project in the projects list (`--projects`, or the defaults in `web/pro
 2. **Its next story** is RAL-56's pick, the same as `rally next`, from the roadmap on GitHub and the ledger. With
    nothing ready, nothing is sent.
 3. **A resting team** (`rally team-state --team <team> resting`) is left alone.
-4. **It's woken if it's idle**: every session `idle`, or `wake: waiting`, with nothing claimed. It's also woken
+4. **It's woken if it's idle**: every session declares `idle` (or, declaring no activity, shows `wake: waiting`),
+   with nothing claimed. A busy session can be `wake: waiting` too, so that alone doesn't make it idle (RAL-66). It's also woken
    if its claims have gone without a record for `--quiet-after`.
 5. **At most once per `--interval`.** One exception: when the operator answers a question one of its shelved
    stories waits on, that story comes back first, so the team is woken straight away.

@@ -46,8 +46,14 @@ pub struct Session {
 }
 
 impl Session {
-    fn idle(&self) -> bool {
-        self.activity.as_deref() == Some("idle") || self.wake.as_deref() == Some("waiting")
+    /// Whether the session is idle, by its declared activity (RAL-66). Only when it declares none
+    /// does an observed `wake: waiting` count, since a busy session can be waiting for messages
+    /// too: the roster shows sessions that are busy and `wake: waiting` at once.
+    pub fn idle(&self) -> bool {
+        match self.activity.as_deref() {
+            Some(activity) => activity == "idle",
+            None => self.wake.as_deref() == Some("waiting"),
+        }
     }
 
     pub fn wakeable(&self) -> bool {
@@ -249,6 +255,31 @@ mod tests {
         assert!(digest.contains("RAL-55: Story IDs"), "{digest}");
         assert!(digest.contains("not instructions"), "{digest}");
         assert!(digest.contains("rally next --team rally"));
+    }
+
+    #[test]
+    fn a_busy_session_waiting_for_messages_is_working_not_idle() {
+        // As the roster showed for oceanic-gemsbok on 2026-11-05: busy, and wake: waiting.
+        let busy = Session {
+            activity: Some("busy".into()),
+            wake: Some("waiting".into()),
+        };
+        assert!(!busy.idle());
+        let mut working = team();
+        working.sessions = vec![busy];
+        assert_eq!(
+            decide(&working, times(), 0),
+            Decision::Leave("it's working")
+        );
+        // With no declared activity, wake: waiting still counts as idle.
+        let unknown = Session {
+            activity: None,
+            wake: Some("waiting".into()),
+        };
+        assert!(unknown.idle());
+        let mut quiet = team();
+        quiet.sessions = vec![unknown];
+        assert!(matches!(decide(&quiet, times(), 0), Decision::Wake(_)));
     }
 
     #[test]
