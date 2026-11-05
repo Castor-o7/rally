@@ -2448,6 +2448,31 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 action,
                 scope: scope.as_deref(),
             };
+            // A v1 or v2 designation replaces every watchman in force. With more than one in force,
+            // that's probably not meant, since adding one takes --scope.
+            if action.is_none() && watchman.is_some() {
+                let current = client::request(&pairing, "GET", "/v1/designation", None, &[])
+                    .ok()
+                    .and_then(|reply| reply_value(&reply).ok());
+                let names: Vec<String> = current
+                    .as_ref()
+                    .and_then(|report| report["watchmen"].as_array())
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|w| w["name"].as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if names.len() > 1 {
+                    eprintln!(
+                        "Warning: {} watchmen are in force ({}). Without --scope this designation \
+                         replaces all of them with one. To add a watchman beside them, give \
+                         --scope; to end one, use --end with its name.",
+                        names.len(),
+                        names.join(", ")
+                    );
+                }
+            }
             let statement = terms.statement(after_seq, after_hash);
             let public = if key.extension().is_some_and(|e| e == "pub") {
                 key.clone()

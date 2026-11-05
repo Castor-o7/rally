@@ -169,16 +169,23 @@ are signed, so neither can be changed after the operator signs.
   with no name empties it. `rally designation` lists every watchman in force under `watchmen`, with its scope,
   credential and whether that's still paired. `watchman` is filled only while exactly one is in force.
 - **What's refused.** A v3 add whose credential is already bound to another watchman in force, so a read's label is
-  never ambiguous, and a v3 end naming no watchman in force. The service refuses both when written. One written
+  never ambiguous, and a v3 end naming no watchman in force. The service refuses both when written. A v3 add also
+  ends any watchman in force with no credential (from a v1 designation), since one matched by declared name would let
+  any session read as that watchman beside a bound one; `rally designation` says so on the add's record, under
+  `ended`. A v1 or v2 designation replaces every watchman in force, so `rally designate` warns first when more than
+  one is. One written
   straight into Postgres is listed as not in force, with the reason, as is anything not signed by the operator's
   key.
 - **Scopes** are `all`, `team:<team>` for stories that team holds, or `machine:<credential>` for submissions made
   with that **pairing credential**. A machine scope names a pairing, not a host: renaming a pairing, pairing a
   machine under a new name or `rally revoke` changes what the scope covers, so designate again after any of them.
+  A team scope matches the team that holds the story now, so a story that changes hands moves between scopes,
+  and what it waited for is judged by its current team, not the one it had when it was read.
 - **A scope only decides whose read a merge waits for.** `rally waiting` gives each submission `awaits`, the
   watchmen whose scope covers it. If none does, it names every watchman in force and says any may read it.
   `rally handover` gives each watchman the peer-verified stories in its scope, made while no watchman in force
-  covered them. A watchman's read outside its scope is still labelled `watchman`, with `watchman_name` saying
+  covered them, since the story was last covered. A story goes to the first watchman whose scope covers it, even
+  when watchmen with other scopes were added in between. A watchman's read outside its scope is still labelled `watchman`, with `watchman_name` saying
   which.
 - **With N watchmen, there are N credentials to protect.** Each holds only as well as its own pairing file, by the
   options above. Losing one lets whoever holds it read as that watchman, anywhere, not only inside its scope,

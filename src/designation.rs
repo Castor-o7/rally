@@ -108,24 +108,29 @@ pub fn check_against_set(
     change_set(&set, terms).map(|_| ())
 }
 
-/// The set after a valid designation with `terms`, from `set`, or why it can't apply.
-fn change_set(set: &[Watch], terms: Terms<'_>) -> Result<Vec<Watch>, String> {
+/// The set after a valid designation with `terms`, from `set`, and the names of any watchmen it
+/// ended as a side effect, or why it can't apply.
+fn change_set(set: &[Watch], terms: Terms<'_>) -> Result<(Vec<Watch>, Vec<String>), String> {
     let Some(action) = terms.action else {
         // v1 and v2: the designation replaces every watchman, or ends them all.
-        return Ok(terms
-            .watchman
-            .map(|name| {
-                vec![Watch {
-                    name: name.to_owned(),
-                    credential: terms.credential.map(str::to_owned),
-                    scope: Scope::All,
-                    seq: 0,
-                }]
-            })
-            .unwrap_or_default());
+        return Ok((
+            terms
+                .watchman
+                .map(|name| {
+                    vec![Watch {
+                        name: name.to_owned(),
+                        credential: terms.credential.map(str::to_owned),
+                        scope: Scope::All,
+                        seq: 0,
+                    }]
+                })
+                .unwrap_or_default(),
+            Vec::new(),
+        ));
     };
     let name = terms.watchman.unwrap_or_default();
     let mut next: Vec<Watch> = set.to_vec();
+    let mut dropped = Vec::new();
     match action {
         DesignateAction::Add => {
             let credential = terms.credential.unwrap_or_default();
@@ -139,6 +144,16 @@ fn change_set(set: &[Watch], terms: Terms<'_>) -> Result<Vec<Watch>, String> {
                 ));
             }
             next.retain(|w| !same_name(&w.name, name));
+            // A watchman with no credential, from a v1 designation, is matched by declared name,
+            // which any session can declare. Beside a bound one it would let any session label
+            // its reads as that watchman's, so an add ends it, and the report says so.
+            next.retain(|w| {
+                if w.credential.is_none() {
+                    dropped.push(w.name.clone());
+                    return false;
+                }
+                true
+            });
             next.push(Watch {
                 name: name.to_owned(),
                 credential: Some(credential.to_owned()),
@@ -155,7 +170,7 @@ fn change_set(set: &[Watch], terms: Terms<'_>) -> Result<Vec<Watch>, String> {
             next.retain(|w| !same_name(&w.name, name));
         }
     }
-    Ok(next)
+    Ok((next, dropped))
 }
 
 /// Why one designation record isn't in force by its signature and place, or `None` if it holds.
@@ -176,13 +191,13 @@ fn fault(designation: &Designation, hashes: &[String], key: &OperatorKey) -> Opt
         .err()
 }
 
+/// One designation as replayed: the record, why it isn't in force (if it isn't), the watchmen in
+/// force after it, and any it ended as a side effect.
+type Step<'a> = (&'a Designation, Option<String>, Vec<Watch>, Vec<String>);
+
 /// Each designation record, oldest first, with why it isn't in force if it isn't, and the set of
 /// watchmen in force after it. Without a key, none is.
-fn walk<'a>(
-    ledger: &'a Ledger,
-    hashes: &[String],
-    key: Option<&OperatorKey>,
-) -> Vec<(&'a Designation, Option<String>, Vec<Watch>)> {
+fn walk<'a>(ledger: &'a Ledger, hashes: &[String], key: Option<&OperatorKey>) -> Vec<Step<'a>> {
     let mut set: Vec<Watch> = Vec::new();
     let mut steps = Vec::new();
     for designation in ledger.designations() {
@@ -190,10 +205,12 @@ fn walk<'a>(
             Some(key) => fault(designation, hashes, key),
             None => Some("no operator key: the service wasn't started with --operator-key".into()),
         };
+        let mut dropped = Vec::new();
         let fault = match fault {
             Some(why) => Some(why),
             None => match change_set(&set, designation.terms()) {
-                Ok(mut next) => {
+                Ok((mut next, ended)) => {
+                    dropped = ended;
                     // The one this record names, added here.
                     for watch in &mut next {
                         if watch.seq == 0 {
@@ -206,7 +223,7 @@ fn walk<'a>(
                 Err(why) => Some(why),
             },
         };
-        steps.push((designation, fault, set.clone()));
+        steps.push((designation, fault, set.clone(), dropped));
     }
     steps
 }
@@ -215,7 +232,7 @@ fn walk<'a>(
 pub fn in_force(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -> Vec<Watch> {
     walk(ledger, hashes, key)
         .pop()
-        .map(|(_, _, set)| set)
+        .map(|(_, _, set, _)| set)
         .unwrap_or_default()
 }
 
@@ -227,9 +244,9 @@ pub fn report(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -> 
     let steps = walk(ledger, hashes, key);
     let mut records = Vec::new();
     let mut any_valid = false;
-    for (designation, fault, _) in &steps {
+    for (designation, fault, _, dropped) in &steps {
         any_valid |= fault.is_none();
-        records.push(json!({
+        let mut row = json!({
             "seq": designation.seq,
             "watchman": designation.watchman,
             "credential": designation.credential,
@@ -241,11 +258,20 @@ pub fn report(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -> 
                 None => "valid".to_string(),
                 Some(why) => format!("not in force: {why}"),
             },
-        }));
+        });
+        if !dropped.is_empty() {
+            row["ended"] = json!(dropped);
+            row["note"] = json!(format!(
+                "this add ended {}, designated without a credential, so a declared name can't \
+                 pass for a watchman beside a bound one",
+                dropped.join(", ")
+            ));
+        }
+        records.push(row);
     }
     let set = steps
         .last()
-        .map(|(_, _, set)| set.clone())
+        .map(|(_, _, set, _)| set.clone())
         .unwrap_or_default();
     let shown: Vec<Value> = set
         .iter()
@@ -290,8 +316,8 @@ pub fn eras(
     }
     walk(ledger, hashes, key)
         .into_iter()
-        .filter(|(_, fault, _)| fault.is_none())
-        .map(|(designation, _, set)| (designation.seq, set))
+        .filter(|(_, fault, _, _)| fault.is_none())
+        .map(|(designation, _, set, _)| (designation.seq, set))
         .collect()
 }
 
@@ -492,30 +518,36 @@ pub fn handover(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -
     };
     let eras = eras(ledger, hashes, Some(key));
     let current: Vec<Watch> = eras.last().map(|(_, set)| set.clone()).unwrap_or_default();
-    // Each watchman's window: from the valid designation before its own to its own. With none in
-    // force, from the last valid designation on, for whoever comes next.
-    let windows: Vec<(Option<&Watch>, u64, u64)> = if current.is_empty() {
-        vec![(None, eras.last().map_or(0, |(seq, _)| *seq), u64::MAX)]
+    // Each watchman's window closes at its own designation; with none in force, there's one
+    // window for whoever comes next. Where it opens depends on the story: at the start of the
+    // last era before it closes in which some watchman covered that story. So a peer
+    // verification made while no one covered the story goes to the first watchman whose scope
+    // covers it, whatever other watchmen were added in between.
+    let windows: Vec<(Option<&Watch>, u64)> = if current.is_empty() {
+        vec![(None, u64::MAX)]
     } else {
         current
             .iter()
-            .map(|watch| {
-                let opens = eras
-                    .iter()
-                    .rev()
-                    .find(|(seq, _)| *seq < watch.seq)
-                    .map_or(0, |(seq, _)| *seq);
-                (Some(watch), opens, watch.seq)
-            })
+            .map(|watch| (Some(watch), watch.seq))
             .collect()
     };
+    let opens_for = |closes: u64, team: Option<&str>, submitted: Option<&str>| {
+        eras.iter()
+            .rev()
+            .filter(|(seq, _)| *seq < closes)
+            .find(|(_, set)| set.iter().any(|w| w.scope.covers(team, submitted)))
+            .map_or(0, |(seq, _)| *seq)
+    };
+    let mut since_record: Option<u64> = None;
     let mut stories = Vec::new();
     for (id, story) in ledger.stories() {
         let (team, submitted) = coverage(story);
-        for (watch, opens, closes) in &windows {
+        for (watch, closes) in &windows {
             if watch.is_some_and(|watch| !watch.scope.covers(team, submitted)) {
                 continue;
             }
+            let opens = &opens_for(*closes, team, submitted);
+            since_record = Some(since_record.map_or(*opens, |since| since.min(*opens)));
             // The newest peer verification in the window: made while no watchman in force
             // covered this story.
             let peer = story.history.iter().rev().find(|entry| {
@@ -601,7 +633,7 @@ pub fn handover(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -
         "watchman": if shown.len() == 1 { shown[0].clone() } else { Value::Null },
         "watchmen": shown,
         "operator_key": key.fingerprint(),
-        "since_record": windows.iter().map(|(_, opens, _)| *opens).min().unwrap_or(0),
+        "since_record": since_record.unwrap_or(0),
         "stories": stories,
         "awaiting": awaiting,
         "rule": "Nothing stands on a peer's verification alone: the watchman whose scope covers a \
@@ -1798,5 +1830,101 @@ mod tests {
                 .unwrap()
                 .starts_with("re-read")
         );
+    }
+
+    #[test]
+    fn adding_a_bound_watchman_ends_one_with_no_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let (private, key) = keypair(dir.path(), "operator");
+        let mut chain = Chain::new();
+        // A v1 watchman W, matched by declared name, then a v3 add of V.
+        chain.designate(&private, &key, Some("W"));
+        chain.add(&private, &key, "V", "v-cred", "all");
+        let report = chain.report(Some(&key));
+        let names: Vec<&str> = report["watchmen"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["V"], "{report}");
+        let add = &report["records"][1];
+        assert_eq!(add["status"], "valid");
+        assert_eq!(add["ended"], json!(["W"]));
+        assert!(
+            add["note"]
+                .as_str()
+                .unwrap()
+                .contains("without a credential")
+        );
+
+        // A session declaring W's name is now labelled other, and V's credential is the watchman.
+        submitted(&mut chain, "RAL-1");
+        chain.push_from(
+            "a1",
+            "W",
+            json!({"change": "verify", "story": "RAL-1", "note": "n", "commit": "c".repeat(40)}),
+        );
+        submitted(&mut chain, "RAL-2");
+        chain.push_from(
+            "v-cred",
+            "anyone",
+            json!({"change": "verify", "story": "RAL-2", "note": "n", "commit": "c".repeat(40)}),
+        );
+        let ledger = chain.ledger();
+        let rows = verifications(&ledger, &chain.hashes, Some(&key));
+        let reader = |story: &str| {
+            rows["verifications"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["story"] == story)
+                .unwrap()["reader"]
+                .clone()
+        };
+        assert_eq!(reader("RAL-1"), "other");
+        assert_eq!(reader("RAL-2"), "watchman");
+    }
+
+    #[test]
+    fn a_peer_read_goes_to_the_first_watchman_whose_scope_covers_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (private, key) = keypair(dir.path(), "operator");
+        let mut chain = Chain::new();
+        // Everyone ended, then a peer verifies a team-x story, then C (team:y) and A (team:x)
+        // are added in turn.
+        chain.designate(&private, &key, Some("old"));
+        chain.designate(&private, &key, None);
+        chain.push_as("x", json!({"change": "ready", "story": "X-1"}));
+        chain.push_as("x", json!({"change": "claim", "story": "X-1", "team": "x"}));
+        chain.push_as(
+            "x",
+            json!({"change": "submit", "story": "X-1", "team": "x", "evidence": "repo@abc"}),
+        );
+        verify(&mut chain, "peer", "X-1");
+        let peer_seq = chain.records.len() as u64;
+        chain.add(&private, &key, "C", "c-cred", "team:y");
+        chain.add(&private, &key, "A", "a-cred", "team:x");
+        let ledger = chain.ledger();
+        let out = handover(&ledger, &chain.hashes, Some(&key));
+        let rows = out["stories"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{out}");
+        assert_eq!(rows[0]["story"], "X-1");
+        assert_eq!(rows[0]["watchman"], "A");
+        assert_eq!(rows[0]["verified_seq"], peer_seq);
+        assert_eq!(rows[0]["status"], "awaiting the watchman's re-read");
+
+        // And once A covers x, a later all-scope watchman doesn't get it again.
+        chain.add(&private, &key, "B", "b-cred", "all");
+        let ledger = chain.ledger();
+        let out = handover(&ledger, &chain.hashes, Some(&key));
+        let for_x: Vec<&Value> = out["stories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["story"] == "X-1")
+            .collect();
+        assert_eq!(for_x.len(), 1, "{out}");
+        assert_eq!(for_x[0]["watchman"], "A");
     }
 }
