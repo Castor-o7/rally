@@ -146,6 +146,142 @@ function renderLedger(ledger, backup, now) {
   }
   const heading = el("p", "figure", stories.length + " stories in the ledger");
   root.append(heading, stack, legend);
+  root.append(pastForm(check ? check.head.seq : ledger.as_of));
+}
+
+// Pick a past moment by record number (RAL-28): the page for it is #/past/<record>.
+function pastForm(newest) {
+  const form = el("form", "past-form");
+  const label = el("label", "", "See the ledger as it stood at record ");
+  const input = el("input");
+  input.type = "number";
+  input.min = "1";
+  if (newest) input.max = String(newest);
+  input.required = true;
+  input.name = "as_of";
+  label.append(input);
+  form.append(label, " ", el("button", "", "Show"));
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const seq = Number(input.value);
+    if (Number.isInteger(seq) && seq >= 1) location.hash = "#/past/" + seq;
+  });
+  return form;
+}
+
+let pastCache = null; // { seq, value } or { seq, error }: a past state doesn't change, so it's read once
+let pastShown = null; // the cache entry last drawn, so the 30-second refresh doesn't redraw it
+
+function when(ms) {
+  return ms ? new Date(ms).toLocaleString() : "unknown time";
+}
+
+// The ledger as it stood at a past record, and what was corrected since, kept apart and labelled.
+function renderPast(seq, untrusted) {
+  const root = document.getElementById("past-page");
+  root.replaceChildren();
+  const back = el("a", "back", "← Now");
+  back.href = "#/";
+  root.append(back, el("h2", "", "The ledger at record " + seq));
+  if (!pastCache || pastCache.seq !== seq) {
+    root.append(el("p", "muted", "Replaying the ledger to record " + seq + "…"));
+    const asked = seq;
+    pastCache = { seq, loading: true };
+    fetch("/api/past?as_of=" + encodeURIComponent(seq), { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+        return response.json();
+      })
+      .then((value) => { if (pastCache.seq === asked) pastCache = { seq: asked, value }; },
+        (error) => { if (pastCache.seq === asked) pastCache = { seq: asked, error: String(error.message || error) }; })
+      .then(() => { if (currentPast() === asked) renderPast(asked, untrusted); });
+    return;
+  }
+  if (pastCache.loading) {
+    root.append(el("p", "muted", "Replaying the ledger to record " + seq + "…"));
+    return;
+  }
+  if (pastCache.error) {
+    pastShown = pastCache;
+    root.append(el("p", "warning", "⚠ Couldn't show record " + seq + ": " + pastCache.error));
+    return;
+  }
+  pastShown = pastCache;
+  const past = pastCache.value;
+  root.append(pastForm(past.now));
+  root.append(el("p", "muted", "As it stood after record " + past.as_of + ", made " + when(past.as_of_at_ms)
+    + ": a replay of the ledger to that record."
+    + (past.now ? " The ledger is at record " + past.now + " now. " : " ")
+    + (past.untrusted_text || untrusted)));
+
+  const later = el("section", "panel");
+  later.append(el("h3", "", "Corrected later"));
+  const corrections = past.corrections || [];
+  if (past.corrections_unavailable) {
+    later.append(el("p", "warning", "⚠ Later corrections couldn't be read, so this may not show everything "
+      + "said since about this moment: " + past.corrections_unavailable));
+  } else if (corrections.length) {
+    later.append(el("p", "muted", "Recorded after record " + past.as_of
+      + ", about records at or before it. They weren't known at the time, so they're shown apart."));
+    later.append(table(["Record", "Corrects", "About", "Note", "Sets", "By", "When"],
+      corrections.map((c) => [
+        { text: "#" + c.seq, label: "later" },
+        "#" + c.corrects,
+        { text: c.story || c.team || "", className: "text" },
+        { text: c.note || "", className: "text" },
+        c.state || "",
+        { text: c.source.credential + " credential, declaring " + (c.source.declared_name || "no name"),
+          label: c.kind },
+        when(c.at_ms),
+      ])));
+    if (past.corrections_truncated) {
+      later.append(el("p", "warning", "⚠ There are more later corrections than the viewer reads."));
+    }
+  } else {
+    later.append(el("p", "muted", "Nothing recorded since corrects what the ledger held then."));
+  }
+
+  const stories = el("section", "panel");
+  stories.append(el("h3", "", "Stories then"));
+  const rows = Object.entries(past.stories || {});
+  if (rows.length) {
+    stories.append(table(["Story", "State", "Team"], rows.map(([id, story]) => [
+      id, story.state, { text: story.team || "", className: "text" }])));
+  } else {
+    stories.append(el("p", "muted", "No stories had been recorded yet."));
+  }
+  if (past.truncated) {
+    stories.append(el("p", "warning", "⚠ More stories or teams than the viewer reads; only the first are shown."));
+  }
+
+  const teams = el("section", "panel");
+  teams.append(el("h3", "", "Teams then"));
+  const teamRows = Object.entries(past.teams || {});
+  if (teamRows.length) {
+    teams.append(table(["Team", "State", "Story", "Note", "When"], teamRows.map(([name, team]) => [
+      name, { text: team.status, label: "declared" }, team.story || "",
+      { text: team.note || "", className: "text" }, when(team.at_ms)])));
+  } else {
+    teams.append(el("p", "muted", "No team had declared a state yet."));
+  }
+
+  const blockers = el("section", "panel");
+  blockers.append(el("h3", "", "Open blockers then"));
+  const open = past.blockers || [];
+  if (open.length) {
+    blockers.append(table(["Blocker", "Team", "Story", "Waits on", "Note"], open.map((b) => [
+      "#" + b.seq, { text: b.team || "", className: "text" }, b.story || "",
+      { text: b.on_story || b.on_team || "", className: "text" }, { text: b.note || "", className: "text" }])));
+    if (past.blockers_truncated) blockers.append(el("p", "warning", "⚠ Only the first page of blockers is shown."));
+  } else {
+    blockers.append(el("p", "muted", "No blockers were open."));
+  }
+  root.append(later, stories, teams, blockers);
+}
+
+function currentPast() {
+  const match = /^#\/past\/([0-9]+)$/.exec(location.hash);
+  return match ? Number(match[1]) : null;
 }
 
 function renderRoadmaps(projects, now) {
@@ -443,11 +579,18 @@ let lastStatus = null;
 
 function show(status, now) {
   const match = /^#\/project\/([^/]+)$/.exec(location.hash);
+  const pastSeq = currentPast();
   const page = document.getElementById("project-page");
   const overview = document.getElementById("overview");
+  const pastPage = document.getElementById("past-page");
   page.hidden = !match;
-  overview.hidden = Boolean(match);
-  if (match) {
+  pastPage.hidden = pastSeq === null;
+  overview.hidden = Boolean(match) || pastSeq !== null;
+  if (pastSeq !== null) {
+    if (!(pastShown && pastShown === pastCache && pastCache.seq === pastSeq)) {
+      renderPast(pastSeq, status.untrusted_text);
+    }
+  } else if (match) {
     let prefix = "";
     try { prefix = decodeURIComponent(match[1]); } catch (error) { prefix = ""; }
     renderProject(status, prefix, now);

@@ -714,6 +714,9 @@ impl std::error::Error for LedgerError {}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Ledger {
     last_seq: u64,
+    /// The time of the last record applied, or 0 for an empty ledger: the moment a past state
+    /// stands at (RAL-28).
+    last_at_ms: i64,
     stories: BTreeMap<String, Story>,
     teams: BTreeMap<String, Team>,
     /// Every blocker by its record number, open and closed (RAL-20).
@@ -807,6 +810,11 @@ impl Ledger {
     /// The last record applied, or 0 for an empty ledger.
     pub fn last_seq(&self) -> u64 {
         self.last_seq
+    }
+
+    /// The time of the last record applied, or 0 for an empty ledger (RAL-28).
+    pub fn last_at_ms(&self) -> i64 {
+        self.last_at_ms
     }
 
     pub fn story(&self, id: &str) -> Option<&Story> {
@@ -1084,6 +1092,12 @@ impl Ledger {
 
     /// Applies one record, or refuses it and leaves the state unchanged.
     pub fn apply(&mut self, seq: u64, record: &Record) -> Result<(), LedgerError> {
+        self.apply_record(seq, record)?;
+        self.last_at_ms = record.at_ms();
+        Ok(())
+    }
+
+    fn apply_record(&mut self, seq: u64, record: &Record) -> Result<(), LedgerError> {
         let expected = self.last_seq + 1;
         if seq != expected {
             return Err(LedgerError::OutOfOrder {

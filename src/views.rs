@@ -82,6 +82,85 @@ fn commit_differs(verified: &str, merged: &str) -> Value {
     json!({"kind": "observed", "verified": verified, "merged": merged})
 }
 
+/// Corrections and annotations recorded after record `since` that correct a record at or before
+/// it, oldest first, a page at a time (RAL-28). With a replay to `since`, this shows the ledger as
+/// it stood then, and what was said about that state later, kept apart and labelled later.
+/// `after` is a record number, as `next` gave it.
+pub fn corrections_since(ledger: &Ledger, since: u64, page: &Page) -> Result<Value, String> {
+    let after = match page.after.as_deref() {
+        Some(after) => after
+            .parse::<u64>()
+            .map_err(|_| format!("after must be a record number, not {after:?}"))?,
+        None => since,
+    };
+    // Kept to one page and one more, by record number, so memory stays bounded by the page.
+    let mut found: BTreeMap<u64, Value> = BTreeMap::new();
+    let mut keep = |seq: u64, row: Value| {
+        if seq <= after {
+            return;
+        }
+        found.insert(seq, row);
+        if found.len() > LIST_LIMIT + 1 {
+            found.pop_last();
+        }
+    };
+    for (id, story) in ledger.stories() {
+        for entry in &story.history {
+            if let Change::Correct {
+                corrects,
+                note,
+                state,
+                team,
+                commit,
+                ..
+            } = &entry.change
+                && entry.seq > since
+                && *corrects <= since
+            {
+                let mut row = json!({
+                    "seq": entry.seq, "kind": entry.kind, "source": entry.source,
+                    "at_ms": entry.at_ms, "corrects": corrects, "story": id, "note": note,
+                    "later": true,
+                });
+                if let Some(state) = state {
+                    row["state"] = json!(state);
+                }
+                if let Some(team) = team {
+                    row["team"] = json!(team);
+                }
+                if let Some(commit) = commit {
+                    row["commit"] = json!(commit);
+                }
+                keep(entry.seq, row);
+            }
+        }
+    }
+    for (corrects, annotations) in ledger.annotations().range(..=since) {
+        for annotation in annotations.iter().filter(|a| a.seq > since) {
+            keep(
+                annotation.seq,
+                json!({
+                    "seq": annotation.seq, "kind": annotation.kind, "source": annotation.source,
+                    "at_ms": annotation.at_ms, "corrects": corrects, "team": annotation.team,
+                    "note": annotation.note, "later": true,
+                }),
+            );
+        }
+    }
+    let next = if found.len() > LIST_LIMIT {
+        found.pop_last();
+        found.keys().next_back().map(|seq| json!(seq.to_string()))
+    } else {
+        None
+    };
+    let mut value = json!({
+        "untrusted_text": UNTRUSTED_TEXT, "as_of": ledger.last_seq(), "since": since,
+        "corrections": found.into_values().collect::<Vec<_>>(),
+    });
+    continue_with(&mut value, "next", next);
+    Ok(value)
+}
+
 /// Every story's state, a page at a time, or one story with a page of its history. `Err` holds
 /// what wasn't found.
 pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Value, String> {
@@ -149,7 +228,10 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
             (id.clone(), row)
         })
         .collect();
-    let mut value = json!({"untrusted_text": UNTRUSTED_TEXT, "as_of": as_of, "stories": summary});
+    let mut value = json!({
+        "untrusted_text": UNTRUSTED_TEXT, "as_of": as_of, "as_of_at_ms": ledger.last_at_ms(),
+        "stories": summary,
+    });
     continue_with(&mut value, "next", next.map(|key| json!(key)));
     Ok(value)
 }
@@ -820,6 +902,69 @@ mod tests {
             declared_name: Some("someone".into()),
         };
         Record::new(Kind::Declared, source, 1, body).unwrap()
+    }
+
+    /// RAL-28: corrections made after a moment to what it held, in record order, a page at a
+    /// time, and none made to later records or before the moment.
+    #[test]
+    fn corrections_since_a_moment_come_in_record_order_and_pages() {
+        let mut records = vec![
+            record(json!({"change": "ready", "story": "RAL-1"})),
+            record(json!({"change": "correct", "story": "RAL-1", "corrects": 1, "note": "before"})),
+            record(json!({"change": "ready", "story": "RAL-2"})),
+        ];
+        // The moment is record 3. Then LIST_LIMIT + 2 later corrections of records 1 and 3, and one
+        // of a record after the moment.
+        for n in 0..LIST_LIMIT + 2 {
+            let (story, corrects) = if n % 2 == 0 {
+                ("RAL-1", 1)
+            } else {
+                ("RAL-2", 3)
+            };
+            records.push(record(json!({"change": "correct", "story": story,
+                                       "corrects": corrects, "note": format!("later {n}")})));
+        }
+        records.push(record(json!({"change": "ready", "story": "RAL-3"})));
+        let last = records.len() as u64;
+        records.push(record(
+            json!({"change": "correct", "story": "RAL-3", "corrects": last,
+                                   "note": "after the moment"}),
+        ));
+        let ledger = Ledger::replay(&records).unwrap();
+
+        let first = corrections_since(&ledger, 3, &Page::default()).unwrap();
+        let rows = first["corrections"].as_array().unwrap();
+        assert_eq!(rows.len(), LIST_LIMIT);
+        assert_eq!(rows[0]["seq"], 4);
+        assert_eq!(rows[0]["note"], "later 0");
+        assert!(rows.iter().all(|row| row["later"] == true));
+        let next = first["next"].as_str().unwrap().to_owned();
+        assert_eq!(next, (3 + LIST_LIMIT).to_string());
+        let page = Page {
+            after: Some(next),
+            before: None,
+        };
+        let second = corrections_since(&ledger, 3, &page).unwrap();
+        let rest: Vec<u64> = second["corrections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["seq"].as_u64().unwrap())
+            .collect();
+        let expected = (4 + LIST_LIMIT as u64)..(4 + LIST_LIMIT as u64 + 2);
+        assert_eq!(rest, expected.collect::<Vec<_>>());
+        assert!(second.get("next").is_none());
+        // Nothing corrects a record after the moment, and the moment's own past is left alone.
+        assert!(!second.to_string().contains("after the moment"));
+        assert!(!first.to_string().contains("\"before\""));
+        // At the end of the ledger, nothing is later.
+        let at_end = corrections_since(&ledger, ledger.last_seq(), &Page::default()).unwrap();
+        assert!(at_end["corrections"].as_array().unwrap().is_empty());
+        let bad = Page {
+            after: Some("x".into()),
+            before: None,
+        };
+        assert!(corrections_since(&ledger, 3, &bad).is_err());
     }
 
     fn rec(name: &str, body: Value) -> Record {
