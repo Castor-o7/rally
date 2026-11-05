@@ -332,6 +332,17 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   credential that only the watchman's session holds, issued without passing through other sessions; a
   verification is labelled `watchman` only when made with it; a test shows another session declaring the
   watchman's name is labelled `other`; and the threat model says what the credential protects and what it doesn't.
+- [ ] **RAL-63: Designate more than one watchman at once.** Requested by the operator during the two-watchman
+  rally of 2026-11-05 (one watchman on Murph, one on a1), relayed by the Murph watchman. Today only the newest
+  designation is in force, so a second watchman's reads are labelled `other`. Done when: an operator-signed
+  designation can name a set of watchmen in force at once, each bound to its own credential (RAL-53) and given a
+  scope (for example a host or a team); `rally designation` lists every watchman in force with its scope;
+  `verifications` labels a read `watchman` when any designated watchman made it with its credential, and says which
+  watchman made it; `--end` can end one watchman's designation or all of them; `handover` and `waiting` work with
+  several watchmen, using the scopes so it's clear whose read a merge waits for; `docs/designation.md` covers the
+  threat model for N credentials; and tests show two watchmen in force with each read labelled with its own
+  watchman, a third session declaring one watchman's name labelled `other`, adding or ending a watchman refused from
+  any credential but the operator's, and ending one watchman leaving the other in force.
 
 ### A rally that keeps itself moving
 
@@ -343,18 +354,18 @@ watchman adds judgement and isn't needed to keep work moving. Each story below c
 ones Rally builds first, and how they fit the board process, follows the watchman's order and the operator's
 word.
 
-- [ ] **RAL-54: Wake an idle team with its next story.** From the operator's question of 2026-11-05, and from RAL-7
+- [x] **RAL-54: Wake an idle team with its next story.** Merged in #109 (9d44b26). From the operator's question of 2026-11-05, and from RAL-7
   and RAL-8. Done when: if a team is idle, or its claim has gone quiet past an agreed time, while a ready story
   exists for it, Rally sends that team one digest through Muster naming its next ready story (RAL-56), at most
   once per agreed interval; a team that has said it's resting, or has no ready story, gets nothing; a team that
   can't be woken is shown as such to whoever reads the state; and a test covers each of those cases, plus the
   2026-11-05 case of a team asleep with wake `none`. One moment to wake a team is when the operator's answer
   closes a question its story was shelved on (RAL-56), since that story then comes back first.
-- [ ] **RAL-55: Hand out story IDs from the ledger.** From the operator's question of 2026-11-05. Done when:
+- [x] **RAL-55: Hand out story IDs from the ledger.** Merged in #110 (da5b72d). From the operator's question of 2026-11-05. Done when:
   `rally new-story <PREFIX> --title "..."` records the next free number for that prefix, and returns it in one
   atomic write; two concurrent requests for one prefix get different numbers, with a test; a number that's already
   in the ledger, or already in the prefix's roadmap, is never handed out; and IDs written by hand still work.
-- [ ] **RAL-56: A rule for picking the next story that a team can follow alone.** From the operator's question of
+- [x] **RAL-56: A rule for picking the next story that a team can follow alone.** Merged in #106 (6aa5622). From the operator's question of
   2026-11-05. The operator added: "if the operator doesn't respond within a certain reasonable window of time then
   shelve the item. don't just inherently skip operator interaction items please". Done when: `rally next --team
   <team>` shows the team's next story, which is the first ready, unclaimed, unblocked story in roadmap order; it
@@ -375,7 +386,7 @@ word.
   test shows away isn't entered on the second unanswered shelf and is on the third, nothing is offered during the
   hour, it's revisited after it, an answer ends it early and a backdated one doesn't, and after the hour two
   shelves don't enter it again and a third does.
-- [ ] **RAL-57: Spread peer reads across teams.** From the operator's question of 2026-11-05. Done when: while no
+- [x] **RAL-57: Spread peer reads across teams.** Merged in #107 (f2cac4c). From the operator's question of 2026-11-05. Done when: while no
   watchman is designated, `rally waiting` suggests a reader for each submission: a team other than the author's,
   the one whose last suggested or recorded read is oldest first; it never suggests the author's own team;
   following the suggestion is optional, and the read still counts only by the rules of RAL-51; and a test shows
