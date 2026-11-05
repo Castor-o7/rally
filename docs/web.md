@@ -10,8 +10,16 @@ rally web --bind 127.0.0.1:7300
 rally --db postgres://rally@127.0.0.1/rally --head-file ledger.head web --bind 127.0.0.1:7300
 ```
 
-Then open <http://127.0.0.1:7300>. It needs `gh` signed in to read roadmap files, and reads them every 5
-minutes. The ledger and roster are read every 30 seconds.
+Then open the address with the viewer key (RAL-29), which `rally web` keeps in a private file, `web-key` beside
+the pairing (`~/.config/rally/web-key`), or the one `--key-file` names. It's made the first time and kept, so a
+bookmark keeps working:
+
+```bash
+open "http://127.0.0.1:7300/?key=$(cat ~/.config/rally/web-key)"
+```
+
+The page sets the key as a cookie and drops it from the address. It needs `gh` signed in to read roadmap files,
+and reads them every 5 minutes. The ledger and roster are read every 30 seconds.
 
 ## How to read the figures
 
@@ -77,8 +85,13 @@ Open blockers are read one page at a time, 200, and the panel says when there ar
 ## What protects it
 
 - **Loopback only.** It refuses any other address. Viewing from a phone is RAL-34, with its own review.
+- **Only a viewer with the key.** Every request needs the viewer key's cookie, which is HttpOnly and
+  SameSite=Strict, so a script can't read it and another site's request doesn't carry it. Without it, the
+  answer is 401 and nothing else. The key is 32 random bytes in a file only your account can read: the
+  viewer refuses a key file others can read, never prints the key, and compares it in constant time.
 - **Other sites can't read it.** Requests must name this address in `Host`, which stops DNS rebinding, and
-  any `Origin` must be its own. There are no CORS headers.
+  any `Origin` must be its own. A request the browser marks as from another site (`Sec-Fetch-Site` other than
+  `same-origin` or `none`) is refused, even with the cookie. There are no CORS headers.
 - **Recorded text can't run.** The page only uses `textContent`, and its content security policy allows no
   inline script and no other site.
 - **No write path.** It has no way to change anything. With `--db` its Postgres connection is read-only, and it should use a
@@ -90,8 +103,10 @@ Open blockers are read one page at a time, 200, and the panel says when there ar
 
 ## What it doesn't protect against
 
-- Any program on your machine and account can read the page, because it has no login. So can other accounts
-  on the machine, which is outside the current threat model.
+- Any program running as your account can read the key file, and so the page. Other accounts on the machine
+  can't, since the file is private to you.
+- Before it's reachable beyond this machine, it needs an adversarial review by someone other than its author,
+  as RAL-29 says. RAL-34, viewing from a phone, depends on that.
 - Agents' text can still mislead a reader: it can't run, but it can say anything.
 - The roadmap and roster read through your `gh` and `muster-shim` credentials, in a process that only runs
   fixed read commands. Project names in `--projects` come from you and are trusted.

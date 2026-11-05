@@ -151,6 +151,10 @@ enum Command {
         /// Read the watchman's writeups from this local folder instead of GitHub.
         #[arg(long, value_name = "FOLDER")]
         watchman_summaries: Option<PathBuf>,
+        /// The viewer key's private file (RAL-29), made if it isn't there. Defaults to web-key
+        /// beside the pairing. Open http://<address>/?key=<its contents> to view.
+        #[arg(long)]
+        key_file: Option<PathBuf>,
     },
     /// On the service's host, add a machine and write its pair code to a private file.
     AddMachine {
@@ -963,6 +967,7 @@ fn run_viewer(
     config: PathBuf,
     backup: Option<BackupWatch>,
     local: LocalSummaries,
+    key_file: &Path,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let text = match projects {
         Some(path) => std::fs::read_to_string(path)?,
@@ -981,13 +986,43 @@ fn run_viewer(
     if !address.ip().is_loopback() {
         return Err(format!("the viewer only runs on a loopback address, not {address}").into());
     }
+    // The viewer key, once the address is known to be loopback: kept in a private file and never
+    // printed (RAL-29). A key others can read isn't a key.
+    #[cfg(unix)]
+    if let Ok(metadata) = std::fs::metadata(key_file) {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(format!(
+                "{} can be read by others; make it private (chmod 600) or remove it",
+                key_file.display()
+            )
+            .into());
+        }
+    }
+    let key = match std::fs::read_to_string(key_file) {
+        Ok(text) if web::is_key(text.trim()) => text.trim().to_owned(),
+        Ok(_) => return Err(format!("{} doesn't hold a viewer key", key_file.display()).into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let key = web::new_key()?;
+            if let Some(parent) = key_file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            rally::access::write_private(key_file, key.as_bytes())?;
+            key
+        }
+        Err(error) => return Err(format!("can't read {}: {error}", key_file.display()).into()),
+    };
     let listener = TcpListener::bind(address)?;
     let listening = listener.local_addr()?;
-    println!("{}", json!({"listening": listening.to_string()}));
+    println!(
+        "{}",
+        json!({"listening": listening.to_string(), "key_file": key_file,
+               "open": format!("http://{listening}/?key=<the key in key_file>")})
+    );
     std::io::Write::flush(&mut std::io::stdout())?;
     let reader = ledger_reader(location, config);
     tokio::runtime::Runtime::new()?
-        .block_on(web::serve(listener, projects, reader, backup, local))?;
+        .block_on(web::serve(listener, key, projects, reader, backup, local))?;
     Ok(json!({"stopped": true}).to_string())
 }
 
@@ -1196,7 +1231,10 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             backup_max_age_hours,
             summaries,
             watchman_summaries,
+            key_file,
         } => {
+            let config = config_path(cli.config)?;
+            let key_file = key_file.unwrap_or_else(|| config.with_file_name("web-key"));
             let backup = backup_dir.map(|dir| BackupWatch {
                 dir,
                 max_age_hours: backup_max_age_hours,
@@ -1213,14 +1251,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     .by_prefix
                     .insert(prefix.to_owned(), expand_home(std::path::Path::new(folder)));
             }
-            return run_viewer(
-                &bind,
-                projects,
-                location,
-                config_path(cli.config)?,
-                backup,
-                local,
-            );
+            return run_viewer(&bind, projects, location, config, backup, local, &key_file);
         }
         Command::Backup { to, max_age_hours } => {
             if location.is_some() {

@@ -10,6 +10,8 @@ use serde_json::Value;
 struct Viewer {
     child: Child,
     address: String,
+    /// The viewer key, from its private file.
+    key: String,
     _db: Database<'static>,
     _dir: tempfile::TempDir,
 }
@@ -69,9 +71,12 @@ fn start_with(projects_json: &str, fake_gh: Option<&str>) -> Viewer {
         .unwrap();
     assert!(status.success());
     let mut command = on(&db, dir.path());
+    let key_file = dir.path().join("web-key");
     command
         .args(["web", "--bind", "127.0.0.1:0", "--projects"])
         .arg(&projects)
+        .arg("--key-file")
+        .arg(&key_file)
         .stdout(Stdio::piped());
     if fake_gh.is_some() {
         let path = std::env::var("PATH").unwrap_or_default();
@@ -83,9 +88,18 @@ fn start_with(projects_json: &str, fake_gh: Option<&str>) -> Viewer {
         .read_line(&mut line)
         .unwrap();
     let started: Value = serde_json::from_str(&line).unwrap();
+    // The key is in the private file, never in what was printed.
+    let key = std::fs::read_to_string(&key_file).unwrap();
+    assert!(!line.contains(&key), "the key was printed");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&key_file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "the key file isn't private");
+    }
     Viewer {
         child,
         address: started["listening"].as_str().unwrap().to_owned(),
+        key,
         _db: db,
         _dir: dir,
     }
@@ -93,7 +107,14 @@ fn start_with(projects_json: &str, fake_gh: Option<&str>) -> Viewer {
 
 const ATTACK: &str = "<script>alert(1)</script>";
 
+/// A request carrying the viewer's cookie, as the operator's browser would once it has the key.
 fn raw(viewer: &Viewer, method: &str, path: &str, host: &str, extra: &str) -> (u16, String) {
+    let extra = format!("Cookie: rally_view={}\r\n{extra}", viewer.key);
+    bare(viewer, method, path, host, &extra)
+}
+
+/// A request with only the headers given.
+fn bare(viewer: &Viewer, method: &str, path: &str, host: &str, extra: &str) -> (u16, String) {
     let mut stream = TcpStream::connect(&viewer.address).unwrap();
     write!(
         stream,
@@ -208,9 +229,12 @@ fn a_broken_chain_is_reported_as_a_failed_check() {
              WHERE item_type = 'LedgerRecord';",
         )
         .unwrap();
+    let key_file = dir.path().join("web-key");
     let mut child = on(&db, dir.path())
         .args(["web", "--bind", "127.0.0.1:0", "--projects"])
         .arg(&projects)
+        .arg("--key-file")
+        .arg(&key_file)
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -222,6 +246,7 @@ fn a_broken_chain_is_reported_as_a_failed_check() {
     let viewer = Viewer {
         child,
         address: started["listening"].as_str().unwrap().to_owned(),
+        key: std::fs::read_to_string(&key_file).unwrap(),
         _db: db,
         _dir: dir,
     };
@@ -248,12 +273,33 @@ fn wait_for_ledger(viewer: &Viewer) -> (u16, String) {
 fn it_refuses_to_listen_beyond_loopback() {
     let dir = tempfile::tempdir().unwrap();
     let db = scratch_pg::shared().database();
+    let key_file = dir.path().join("web-key");
     let output = on(&db, dir.path())
-        .args(["web", "--bind", "0.0.0.0:0"])
+        .args(["web", "--bind", "0.0.0.0:0", "--key-file"])
+        .arg(&key_file)
         .output()
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("loopback"));
+    // Refused before any key is made.
+    assert!(!key_file.exists());
+}
+
+#[test]
+fn a_key_file_others_can_read_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let db = scratch_pg::shared().database();
+    let key_file = dir.path().join("web-key");
+    std::fs::write(&key_file, "a".repeat(64)).unwrap();
+    std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let output = on(&db, dir.path())
+        .args(["web", "--bind", "127.0.0.1:0", "--key-file"])
+        .arg(&key_file)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("read by others"));
 }
 
 /// A `gh` that answers the viewer's reads for one project with text written to attack the page.
@@ -329,5 +375,58 @@ fn a_project_page_s_summary_stories_and_pr_titles_arrive_only_as_json_data() {
         for attack in ["alert(3)", "alert(4)", "alert(5)", "alert(6)", "alert(7)"] {
             assert!(!page.contains(attack), "{path} carries {attack}");
         }
+    }
+}
+
+#[test]
+fn a_viewer_without_the_key_is_refused() {
+    let viewer = start();
+    let host = viewer.address.clone();
+    for path in ["/", "/api/status", "/app.js"] {
+        let (status, text) = bare(&viewer, "GET", path, &host, "");
+        assert_eq!(status, 401, "{path}");
+        assert!(!text.contains("untrusted_text"), "{path}");
+        let wrong = format!("Cookie: rally_view={}\r\n", "0".repeat(64));
+        assert_eq!(bare(&viewer, "GET", path, &host, &wrong).0, 401, "{path}");
+    }
+    assert_eq!(bare(&viewer, "GET", "/?key=nope", &host, "").0, 401);
+}
+
+#[test]
+fn the_key_in_the_address_becomes_a_strict_cookie_once() {
+    let viewer = start();
+    let host = viewer.address.clone();
+    let (status, text) = bare(&viewer, "GET", &format!("/?key={}", viewer.key), &host, "");
+    assert_eq!(status, 303);
+    let lower = text.to_lowercase();
+    assert!(lower.contains("location: /\r\n"), "{text}");
+    let cookie = lower
+        .lines()
+        .find(|line| line.starts_with("set-cookie:"))
+        .unwrap()
+        .to_owned();
+    assert!(
+        cookie.contains("httponly") && cookie.contains("samesite=strict"),
+        "{cookie}"
+    );
+    assert_eq!(get(&viewer, "/api/status").0, 200);
+}
+
+#[test]
+fn a_request_the_browser_marks_as_from_another_site_is_refused_even_with_the_key() {
+    let viewer = start();
+    for site in ["cross-site", "same-site"] {
+        let extra = format!("Sec-Fetch-Site: {site}\r\n");
+        let (status, text) = raw(&viewer, "GET", "/api/status", &viewer.address, &extra);
+        assert_eq!(status, 403, "{site}");
+        assert!(!text.contains("untrusted_text"));
+    }
+    for site in ["same-origin", "none"] {
+        let extra = format!("Sec-Fetch-Site: {site}\r\n");
+        assert_eq!(
+            raw(&viewer, "GET", "/api/status", &viewer.address, &extra).0,
+            200,
+            "{site}"
+        );
     }
 }

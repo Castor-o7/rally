@@ -5,8 +5,11 @@
 //! thread, so requests never wait on them and a page can always show how old its data is.
 //!
 //! A web page in the same browser is the threat here. Requests must name this address in `Host`,
-//! which stops DNS rebinding, and any `Origin` must be this page's own. Nothing sends CORS headers,
-//! and the content security policy allows no inline script. See `docs/web.md`.
+//! which stops DNS rebinding, and any `Origin` must be this page's own. A request the browser marks
+//! as from another site is refused. Nothing sends CORS headers, and the content security policy
+//! allows no inline script. Only a viewer holding the key is served (RAL-29): it's kept in a
+//! private file, opening `/?key=<key>` once sets it as an HttpOnly, SameSite=Strict cookie, and
+//! every other request needs that cookie. See `docs/web.md`.
 
 use std::io::Read;
 use std::net::{SocketAddr, TcpListener};
@@ -815,6 +818,8 @@ struct App {
     local: LocalSummaries,
     snapshot: Mutex<Snapshot>,
     allowed_hosts: Vec<String>,
+    /// The viewer key (RAL-29).
+    key: String,
     /// The backup directory on this machine to report on, if any (RAL-15).
     backup: Option<BackupWatch>,
 }
@@ -934,6 +939,7 @@ pub fn backup_status(
 /// Runs the viewer until the process ends. Refuses anything but a loopback address.
 pub async fn serve(
     listener: TcpListener,
+    key: String,
     projects: Vec<Project>,
     ledger: LedgerReader,
     backup: Option<BackupWatch>,
@@ -945,6 +951,7 @@ pub async fn serve(
         local,
         snapshot: Mutex::new(Snapshot::default()),
         allowed_hosts: allowed_hosts(address)?,
+        key,
         backup,
     });
     let refresher = app.clone();
@@ -1085,10 +1092,37 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
             StatusCode::FORBIDDEN,
             "this page is only served to its own address",
         )
-    } else if !origin_allowed(request.headers().get(header::ORIGIN), host) {
+    } else if !origin_allowed(request.headers().get(header::ORIGIN), host)
+        || !fetched_from_here(request.headers().get("sec-fetch-site"))
+    {
         refused(StatusCode::FORBIDDEN, "other sites can't read this page")
     } else if !matches!(*request.method(), Method::GET | Method::HEAD) {
         refused(StatusCode::METHOD_NOT_ALLOWED, "this page is read-only")
+    } else if request.uri().path() == "/"
+        && let Some(offered) = query_key(request.uri().query())
+    {
+        // The key, offered once in the address, becomes a cookie, and the address loses it.
+        if same_key(offered, &app.key) {
+            let cookie = format!("{COOKIE}={}; HttpOnly; SameSite=Strict; Path=/", app.key);
+            match HeaderValue::from_str(&cookie) {
+                Ok(cookie) => (
+                    StatusCode::SEE_OTHER,
+                    [
+                        (header::SET_COOKIE, cookie),
+                        (header::LOCATION, HeaderValue::from_static("/")),
+                    ],
+                )
+                    .into_response(),
+                Err(_) => refused(StatusCode::INTERNAL_SERVER_ERROR, "the key can't be set"),
+            }
+        } else {
+            refused(StatusCode::UNAUTHORIZED, "that isn't this viewer's key")
+        }
+    } else if !cookie_key(request.headers()).is_some_and(|held| same_key(held, &app.key)) {
+        refused(
+            StatusCode::UNAUTHORIZED,
+            "open the address rally web printed, with the key from its key file",
+        )
     } else {
         next.run(request).await
     };
@@ -1108,6 +1142,50 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
         HeaderValue::from_static("no-referrer"),
     );
     response
+}
+
+/// The cookie that carries the viewer key.
+const COOKIE: &str = "rally_view";
+
+/// A browser says where a request came from in `Sec-Fetch-Site`: only this page itself, or the
+/// operator typing the address, is served. A client that doesn't send it is judged by the rest.
+fn fetched_from_here(site: Option<&HeaderValue>) -> bool {
+    site.is_none_or(|site| matches!(site.as_bytes(), b"same-origin" | b"none"))
+}
+
+fn query_key(query: Option<&str>) -> Option<&str> {
+    query?.split('&').find_map(|pair| pair.strip_prefix("key="))
+}
+
+fn cookie_key(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .find_map(|pair| pair.trim().strip_prefix(&format!("{COOKIE}=")))
+}
+
+/// Compares keys in time that doesn't depend on where they differ.
+fn same_key(offered: &str, key: &str) -> bool {
+    offered.len() == key.len()
+        && offered
+            .bytes()
+            .zip(key.bytes())
+            .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+            == 0
+}
+
+/// A new viewer key: 32 random bytes, as hex.
+pub fn new_key() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(hex::encode(bytes))
+}
+
+/// Whether `text` is a key `new_key` could have made.
+pub fn is_key(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn origin_allowed(origin: Option<&HeaderValue>, host: &str) -> bool {
