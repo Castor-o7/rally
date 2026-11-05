@@ -270,9 +270,18 @@ story for Rally reading Levi; these stories are about putting Rally's features i
 
 The operator, directly on 2026-11-04: yes to making Rally useful without routing everything through the watchman.
 Rally works without one today, but nothing tells an agent it exists, so it's only used when the watchman says so.
-Verification still needs a second reader, but that can be any other team, the operator or a later session; the
-watchman's part shrinks to planning, unblocking and spot-checks. RAL-5 (observed evidence) belongs to this too.
-Changes to the watchman's role go back to the operator before they're built, as `design.md` asks.
+RAL-5 (observed evidence) belongs to this too.
+
+The operator then ruled, as relayed by the watchman (grand-photon) the same night:
+
+- **While the operator has designated a watchman,** the rally works as it does now: the watchman reads every PR
+  at the head being merged. Peer verification counts only while no watchman is designated.
+- **Whether a watchman is designated is the operator's declaration,** recorded in the ledger. No agent can set it
+  for itself.
+- **A newly designated watchman re-reads the work that was peer-verified while there was none,** and decides with
+  critical judgement whether to keep it, send it back or ask for fixes. Nothing is accepted on the strength of a
+  peer's verification alone. Its decisions are recorded as its own verifications or corrections, and the peer's
+  record stays.
 
 - [ ] **RAL-49: Teach a repository's agents about Rally (`rally init`).** As `levi init` does for Levi. Done when:
   `rally init` writes a marked block into the repository's `CLAUDE.md` or `AGENTS.md` (creating `AGENTS.md` if
@@ -284,12 +293,15 @@ Changes to the watchman's role go back to the operator before they're built, as 
   open claims, read requests waiting on it, submissions it could verify, and open blockers, each labelled observed,
   declared or verified; it prints nothing and exits 0 when the service can't be reached or the machine isn't
   paired, so a session never fails to start because of Rally; its output is capped; and a test covers each case.
-- [ ] **RAL-51: Make peer verification the norm.** Done when: the board process the operator agrees says who
-  verifies when there's no watchman read (any team other than the author's, or the operator); Rally can list
-  submissions waiting for a reader, oldest first, with the commit to read; `track-record` counts verifications each
-  team gave as well as received; and a test covers the list. Agreed with the Muster team for `docs/board.md`.
-- [ ] **RAL-52: The watchman works from digests and spot-checks.** Depends on RAL-8 and RAL-51. Needs the operator's
-  agreement first, since it changes the watchman's role. Done when: the design says which stories still need the
-  watchman's own read (for example, security or the operator's decisions) and which a peer's verification is
-  enough for; the watchman's digest shows peer verifications with their commits for spot-checking; and a spot-check
-  that disagrees with a peer's verification is recorded as a correction, not by overwriting it.
+- [ ] **RAL-51: Peer verification while no watchman is designated.** Done when: the ledger records the operator's
+  designation and end of a watchman, accepted only from the operator's own credential and refused from any other,
+  with a test of the refusal; each verification is labelled `watchman` or `peer` by whether a watchman was
+  designated when it was recorded; Rally lists submissions waiting for a reader, oldest first, with the commit to
+  read; `track-record` counts verifications each team gave as well as received; and the board process in Muster's
+  `docs/board.md` says the same, through a draft PR the watchman reads as the board's keeper.
+- [ ] **RAL-52: Hand a new watchman the peer-verified work.** Depends on RAL-51. Done when: when a watchman is
+  designated, Rally gives it one list of every story verified by a peer since the last designation, each with the
+  commit read, who verified it, and whether and at what commit it merged; each stays marked "awaiting the
+  watchman's re-read" until the watchman records its own verification, send-back or correction, none of which
+  overwrites the peer's record; the RAL-8 digest carries the list until it's empty; and a test covers a
+  designation partway through, with stories merged and unmerged.
