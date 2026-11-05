@@ -972,6 +972,15 @@ impl Store {
         })
     }
 
+    /// One brief for a new watchman, as of `now_ms` (RAL-22a).
+    pub fn brief_report(
+        &self,
+        key: Option<&crate::designation::OperatorKey>,
+        now_ms: i64,
+    ) -> Result<serde_json::Value, StoreError> {
+        self.with_chain(|ledger, hashes| crate::brief::brief(ledger, hashes, key, now_ms))
+    }
+
     /// What a newly designated watchman re-reads: the peer-verified stories since the designation
     /// before it (RAL-52).
     pub fn handover_report(

@@ -229,6 +229,17 @@ enum Command {
         #[arg(long, env = "RALLY_HARNESS")]
         harness: Option<String>,
     },
+    /// A checkout's Levi tasks, read-only, each fact labelled observed or declared (RAL-40). Runs
+    /// `levi --no-sync ls --all --json` in the checkout; writes nothing to Levi and never contacts
+    /// a Levi hub. Needs no pairing. See docs/levi.md.
+    Levi {
+        /// The checkout to read.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// The `levi` to run.
+        #[arg(long, env = "RALLY_LEVI", default_value = "levi")]
+        levi: PathBuf,
+    },
     /// The operator designates the watchman, or with --end ends the designation (RAL-51). It prints
     /// the statement, then signs it with `ssh-keygen -Y sign` and the key given, which asks for
     /// Touch ID when the key is Secretive's. See docs/designation.md.
@@ -255,6 +266,11 @@ enum Command {
     /// For a newly designated watchman: every story a peer verified since the designation before
     /// it, merged or not, each awaiting the watchman's re-read until it records its own (RAL-52).
     Handover,
+    /// One brief for a new watchman: each team's state, open claims (with whether the claimant's
+    /// session is still on Muster's roster), submissions waiting, open blockers, questions to the
+    /// operator and who each holds up, and the handover list, each fact with its kind and age
+    /// (RAL-22a). It confers no authority.
+    Brief,
     /// Submissions waiting for a reader, oldest first, with the evidence and any requested reads'
     /// commits to read (RAL-51).
     Waiting,
@@ -645,6 +661,19 @@ fn main() -> ExitCode {
         let harness = rally::session::Harness::parse(harness.as_deref());
         session_start(cli.config.clone(), team.as_deref(), *verbose, harness);
         return ExitCode::SUCCESS;
+    }
+    if let Command::Levi { repo, levi } = &cli.command {
+        return match rally::levi::read(levi, repo) {
+            Ok(out) => {
+                let text = serde_json::to_string_pretty(&out).unwrap_or_default();
+                println!("{}", escape_for_terminal(&text));
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("rally: {}", escape_for_terminal(&error.to_string()));
+                ExitCode::FAILURE
+            }
+        };
     }
     match run(cli) {
         Ok(output) => {
@@ -1781,7 +1810,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             return Ok(json!({"revoked": name}).to_string());
         }
         Command::Init { .. } => unreachable!("handled before the ledger is opened"),
-        Command::SessionStart { .. } => unreachable!("handled in main"),
+        Command::SessionStart { .. } | Command::Levi { .. } => unreachable!("handled in main"),
         Command::Pair => {
             let mut code = String::new();
             std::io::stdin().read_line(&mut code)?;
@@ -2229,6 +2258,29 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
         Command::Past { as_of } => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             return Ok(serde_json::to_string_pretty(&read_past(&backend, as_of)?)?);
+        }
+        Command::Brief => {
+            let mut report = if let Some(location) = &location {
+                // On the host, without the service's key: designations can't be checked.
+                Store::open_read_only(location)?.brief_report(None, now_ms()?)?
+            } else {
+                let pairing = read_pairing(&config_path(cli.config.clone())?)?;
+                let reply = client::request(&pairing, "GET", "/v1/brief", None, &[])?;
+                reply_value(&reply)?
+            };
+            // Muster is optional: without it, claims say their sessions couldn't be checked.
+            let roster = rally::wake::muster_available()
+                .then(|| {
+                    std::process::Command::new("muster-shim")
+                        .arg("roster")
+                        .output()
+                        .ok()
+                        .filter(|out| out.status.success())
+                        .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
+                })
+                .flatten();
+            rally::brief::mark_sessions(&mut report, roster.as_ref());
+            return Ok(report.to_string());
         }
         Command::Waiting => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;

@@ -18,10 +18,11 @@ from Rally `f2cac4c`.
 
 ## Where they stand today
 
-Rally doesn't read or write Levi yet. RAL-40 is the story for reading it: Rally would read Levi from a
-checkout with `levi --json`, write nothing to it, and label each fact by how it's known. A task closed at a
-commit that's an ancestor of the branch's history is observed. A task's text and claims are declared, and
-untrusted. Rally wouldn't trust a Levi hub, which by its own startup warning has no authentication.
+Rally reads Levi and doesn't write to it (RAL-40). `rally levi` runs `levi --no-sync ls --all --json` in a
+checkout and labels each fact by how it's known: a status Levi resolved against the checkout's own history is
+observed, and a task's text and claims are declared and untrusted. It doesn't contact a Levi hub, which by its
+own startup warning has no authentication. See [levi.md](levi.md), which also says what happens to Rally's
+claims.
 
 Nothing here has been sent to ignition-is-go. Phase 5's stories (RAL-46 to RAL-48) build on a local checkout
 first, and nothing goes upstream until the operator says so. **RAL-47 has already built Rally's review half for
@@ -35,7 +36,7 @@ These are the same concepts in both, and each would need a decision before anyth
 
 | Concept | Rally | Levi | The conflict |
 |---|---|---|---|
-| **Claims** | `rally claim` and `release` on a ready or sent-back story. The service checks the holder on `submit`. | `Claim` events, `levi next --claim`, `start`, `steal`, `drop`. Advisory, keyed to (dev, machine, worktree), with a 24 h TTL. Atomic on one machine only. `check-claims` in CI keeps a branch answerable for every task ever claimed on it. | Two sources of truth. The operator ruled that **claims live in Levi** (RAL-40), so Rally's claim commands would read Levi's or go, for projects on Levi. What happens to Rally's holder check, and to projects not on Levi, is still RAL-40's to settle. |
+| **Claims** | `rally claim` and `release` on a ready or sent-back story. The service checks the holder on `submit`. | `Claim` events, `levi next --claim`, `start`, `steal`, `drop`. Advisory, keyed to (dev, machine, worktree), with a 24 h TTL. Atomic on one machine only. `check-claims` in CI keeps a branch answerable for every task ever claimed on it. | Two sources of truth. The operator ruled that **claims live in Levi** (RAL-40), and RAL-40 settled it: projects not on Levi keep Rally's claims unchanged; on a project on Levi the claim is Levi's, and `rally claim` becomes the team's record of it for the holder check (not built until a project moves). See [levi.md](levi.md). |
 | **Stories and tasks** | Stories are IDs in each project's own `roadmap.md` (RAL-nn), whose team owns the text. Rally records their state and evidence, not their text. | `Task` events in `refs/levi/events`, with short ids `lv-xxxx`, a priority, labels and a body. | The same unit of work in two stores, with two id schemes. Mapping one to the other is for RAL-40; a Rally story could name a Levi task. |
 | **`next`** | `rally next` (RAL-56): your team's own sent-back work, then shelved stories the operator has answered, then the first free story in roadmap order. Read-only. | `levi next`: open here, every blocker closed here, no live claim by another; ranked by priority, then how many tasks it unblocks, then age. `--claim` takes it. | Same name, different ranking. Changing `levi next`'s order would be a **default change** for every Levi user. |
 | **`init`** | `rally init` (RAL-49) writes a `<!-- rally:begin -->` block into `CLAUDE.md` and `AGENTS.md`, whichever exist, or a new `CLAUDE.md`. | `levi init` writes a `<!-- levi:begin -->` block into `AGENTS.md` or `CLAUDE.md`. | The files are shared, but the blocks are separate and each tool replaces only its own, so the files don't clash. The **instructions** can: Levi's tells an agent to pick work with `levi next --claim --json` (checked at `56aceb2`), and Rally's tells it to `rally claim`. In one repo they'd need to agree, which is the claims question again. |
