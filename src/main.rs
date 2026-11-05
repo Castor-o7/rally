@@ -237,6 +237,10 @@ enum Command {
         /// End the designation: no watchman.
         #[arg(long)]
         end: bool,
+        /// Bind the designation to the credential only the watchman's session holds (RAL-53), so a
+        /// read counts as the watchman's only when made with it. See docs/designation.md.
+        #[arg(long, conflicts_with = "end")]
+        credential: Option<String>,
         /// The operator's public key file, as `ssh-keygen -f` takes it.
         #[arg(long)]
         key: PathBuf,
@@ -2131,7 +2135,12 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 Ok(views::waiting(ledger))
             });
         }
-        Command::Designate { watchman, end, key } => {
+        Command::Designate {
+            watchman,
+            end,
+            credential,
+            key,
+        } => {
             debug_assert!(end != watchman.is_some());
             if location.is_some() {
                 return Err(
@@ -2148,8 +2157,12 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             ) else {
                 return Err("the service didn't say where the ledger's head is".into());
             };
-            let statement =
-                rally::ledger::designation_statement(watchman.as_deref(), after_seq, after_hash);
+            let statement = rally::ledger::designation_statement(
+                watchman.as_deref(),
+                credential.as_deref(),
+                after_seq,
+                after_hash,
+            );
             let public = if key.extension().is_some_and(|e| e == "pub") {
                 key.clone()
             } else {
@@ -2161,14 +2174,17 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 key.display()
             );
             let signature = ssh_sign(&key, &statement)?;
-            (
-                Kind::Declared,
-                json!({
+            (Kind::Declared, {
+                let mut body = json!({
                     "change": "designate", "watchman": watchman, "after_seq": after_seq,
                     "after_hash": after_hash, "key_fingerprint": fingerprint,
                     "signature": signature,
-                }),
-            )
+                });
+                if let Some(credential) = &credential {
+                    body["credential"] = json!(credential);
+                }
+                body
+            })
         }
         Command::Annotate {
             corrects,

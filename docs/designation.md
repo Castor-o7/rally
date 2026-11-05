@@ -103,6 +103,41 @@ rally designation        # who the watchman is, each designation checked again
 itself doesn't show what you're signing. If another record lands in between, the service refuses the designation
 ("read the head again"). Run it again.
 
+### Binding the watchman to its own credential (RAL-53)
+
+Without a credential, a verification is labelled `watchman` when its declared name matches, and any session can
+declare any name. A designation can instead name a credential that only the watchman's session holds. Then a read
+counts as the watchman's only when it's made with that credential, which the service sets from the connection,
+and a session that declares the watchman's name from any other credential is labelled `other`, with a note.
+
+The credential is only as private as its pairing file. Every session on one macOS account can read every file
+that account can, so choose where the watchman runs:
+
+- **(A) Recommended: a separate macOS account on a1** for the watchman's session. Its pairing is in that
+  account's home, mode 0600, where the sessions on your own account can't read it.
+- **(B) Another machine** for the watchman, with its own pairing.
+- **(C) The same account, with a separate pairing file.** This catches mistakes, such as a session on the
+  default pairing that declares the watchman's name. It doesn't stop a session that goes looking for the file.
+
+Then, by hand, never through Muster or any session:
+
+1. On Murph: `rally add-machine a1-watchman --address 192.168.1.241:6300 --state-dir ~/.local/state/rally --out
+   ~/a1-watchman.pair`. The pair code is written to that private file, never printed.
+2. Carry the code to the watchman's account or machine yourself, for example by AirDrop to that account, and
+   there run `rally --config ~/.config/rally/client.json pair < a1-watchman.pair`, then delete the file.
+3. Start the watchman's session there, so its `rally verify` uses that pairing.
+4. Designate it, bound to the credential:
+
+```sh
+rally designate --watchman grand-photon --credential a1-watchman --key ~/rally-designation.pub
+```
+
+The statement is then version 2, with a `credential:` line, so the signature covers the binding. The service
+refuses a credential that isn't paired, or is read-only. `rally designation` shows the bound credential, and
+whether it's still paired. `rally revoke a1-watchman` on Murph ends it: the watchman's reads stop counting as the
+watchman's until it's paired again and designated again. A designation made before RAL-53, without a credential,
+still verifies and still matches by declared name, and `rally verifications` says which way each was matched.
+
 ## Who verified, and what's waiting
 
 - `rally verifications` lists every verification and send-back, newest first. Each is labelled `watchman` if
@@ -130,10 +165,12 @@ itself doesn't show what you're signing. If another record lands in between, the
   would be in force again. Signatures can't show a removal. The hash chain does: run `rally check --expect` against a
   head saved somewhere the agents can't reach. Rally doesn't record whether that check last passed, so the
   designation report can't say.
-- **The `watchman` label is a name match.** A verification is labelled `watchman` when its declared name matches
-  the designated watchman's. Any session that declares that name gets the label, and on a1 every session shares
-  one credential, so Rally can't tell them apart. It catches mistakes, not impersonation. Binding the label to a
-  per-session credential is RAL-53.
+- **The `watchman` label is only as strong as the watchman's pairing.** Under a designation bound to a credential
+  (RAL-53), the label follows that credential. It protects against every session that can't read the watchman's
+  pairing file, which, with the watchman on its own account or machine, is every other session. It doesn't protect
+  against anything that can read that file: the watchman's own account, root, or, if the watchman shares your
+  account (option C), every session. Under a designation without a credential, the label is a declared-name match,
+  which catches mistakes, not impersonation.
 - **Readers trust the service's report.** The report is computed by the service on Murph. With the binary, key and
   unit root-owned, an agent can't change what it computes. A client doesn't yet check signatures itself.
 - **The host's root.** Anyone with root on Murph, or the operator's password, can change all of this. That's the

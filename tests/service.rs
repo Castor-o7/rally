@@ -2194,6 +2194,35 @@ fn new_story_numbers_are_never_handed_out_twice() {
     assert_eq!(value["story"], "RAL-41");
 }
 
+/// RAL-53: a designation bound to a credential must name one that's paired and can write.
+#[test]
+fn a_bound_designation_must_name_a_paired_credential_that_can_write() {
+    let service = start();
+    let a1 = service.add("a1", false);
+    let _viewer = service.add("viewer", true);
+    let designate = |credential: &str| {
+        write(
+            &a1,
+            "operator",
+            "declared",
+            json!({"change": "designate", "watchman": "grand-photon", "credential": credential,
+                   "after_seq": 0, "after_hash": "0".repeat(64), "key_fingerprint": "SHA256:x",
+                   "signature": "-----BEGIN SSH SIGNATURE-----\nx\n-----END SSH SIGNATURE-----\n"}),
+        )
+    };
+    let ghost = designate("a1-watchman");
+    assert_eq!(ghost.status, 409, "{}", ghost.body);
+    assert!(ghost.body.contains("isn't paired"), "{}", ghost.body);
+    let viewer = designate("viewer");
+    assert_eq!(viewer.status, 409, "{}", viewer.body);
+    assert!(viewer.body.contains("read-only"), "{}", viewer.body);
+    // A paired credential that can write passes this check, and goes on to the operator's key.
+    let _watchman = service.add("a1-watchman", false);
+    let keyless = designate("a1-watchman");
+    assert_eq!(keyless.status, 409, "{}", keyless.body);
+    assert!(keyless.body.contains("--secure"), "{}", keyless.body);
+}
+
 /// RAL-5: a submission's evidence is checked by Rally itself, recorded as observed beside the
 /// evidence. Without a token, it says it wasn't checked, and evidence Rally can't read says why.
 #[test]

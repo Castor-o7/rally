@@ -669,6 +669,28 @@ async fn write_record(
     {
         fields.insert("window_ms".into(), json!(times.window_ms));
     }
+    // A designation bound to a credential must name one that's paired and can write (RAL-53), so
+    // the watchman's reads can carry it.
+    if body["change"] == "designate"
+        && let Some(credential) = body["credential"].as_str()
+    {
+        match service.state_dir.paired(credential) {
+            Ok(Some(false)) => {}
+            Ok(Some(true)) => {
+                return failure(
+                    StatusCode::CONFLICT,
+                    format!("{credential} is read-only, so the watchman couldn't verify with it"),
+                );
+            }
+            Ok(None) => {
+                return failure(
+                    StatusCode::CONFLICT,
+                    format!("{credential} isn't paired: run rally add-machine for it first"),
+                );
+            }
+            Err(error) => return failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        }
+    }
     let submitted = (body["change"] == "submit")
         .then(|| {
             Some((
@@ -924,7 +946,14 @@ async fn designation(
         })
         .await;
     match result {
-        Ok(Ok(report)) => Json(report).into_response(),
+        Ok(Ok(mut report)) => {
+            // Whether the credential the watchman is bound to is still paired (RAL-53).
+            if let Some(credential) = report["watchman"]["credential"].as_str() {
+                report["watchman"]["credential_paired"] =
+                    json!(matches!(service.state_dir.paired(credential), Ok(Some(_))));
+            }
+            Json(report).into_response()
+        }
         Ok(Err(error)) => internal(&error),
         Err(not_run) => not_run.into_response(),
     }
