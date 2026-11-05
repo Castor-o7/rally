@@ -365,6 +365,62 @@ enum Command {
         #[arg(long)]
         relayed_by: Option<String>,
     },
+    /// Record a hold in force and what releases it (RAL-64). Declared: it informs, and doesn't
+    /// stop anything.
+    Hold {
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        story: Option<String>,
+        /// What's held, in words.
+        #[arg(long)]
+        note: String,
+        /// What releases it.
+        #[arg(long)]
+        releases: String,
+    },
+    /// Record a condition on the order of work (RAL-64), such as "RAL-9 before any deploy".
+    Condition {
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        story: Option<String>,
+        #[arg(long)]
+        note: String,
+    },
+    /// Record a standing grant from the operator, with its scope, and whether it came --direct
+    /// or --relayed-by someone (RAL-64). The record confers no authority: approvals still come
+    /// from the operator directly.
+    Grant {
+        /// The team it was given to.
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        story: Option<String>,
+        /// What it allows, and where.
+        #[arg(long)]
+        scope: String,
+        /// The operator's words, or what was said.
+        #[arg(long)]
+        note: String,
+        /// The operator gave it to you directly.
+        #[arg(
+            long,
+            conflicts_with = "relayed_by",
+            required_unless_present = "relayed_by"
+        )]
+        direct: bool,
+        /// Who relayed it to you.
+        #[arg(long)]
+        relayed_by: Option<String>,
+    },
+    /// End a hold, condition or grant, saying why (RAL-64).
+    EndStanding {
+        /// Its record number, as `hold`, `condition`, `grant` or `brief` gave it.
+        standing: u64,
+        #[arg(long)]
+        note: String,
+    },
     /// Your team's next story (RAL-56): its own sent-back work, then shelved stories the operator
     /// has answered, then the first free story in roadmap order. Read-only: it says what to run
     /// to record a skip or a shelve. See docs/next.md.
@@ -2057,6 +2113,51 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             (Kind::Declared, body)
         }
+        Command::Hold {
+            team,
+            story,
+            note,
+            releases,
+        } => {
+            let mut body = json!({"change": "standing", "standing": "hold", "team": team,
+                                  "note": note, "releases": releases});
+            if let Some(story) = story {
+                body["story"] = json!(story);
+            }
+            (Kind::Declared, body)
+        }
+        Command::Condition { team, story, note } => {
+            let mut body =
+                json!({"change": "standing", "standing": "condition", "team": team, "note": note});
+            if let Some(story) = story {
+                body["story"] = json!(story);
+            }
+            (Kind::Declared, body)
+        }
+        Command::Grant {
+            team,
+            story,
+            scope,
+            note,
+            direct,
+            relayed_by,
+        } => {
+            let given = match (direct, relayed_by) {
+                (true, _) => json!({"from": "direct"}),
+                (false, Some(by)) => json!({"from": "relayed", "by": by}),
+                (false, None) => return Err("say --direct or --relayed-by".into()),
+            };
+            let mut body = json!({"change": "standing", "standing": "grant", "team": team,
+                                  "scope": scope, "note": note, "given": given});
+            if let Some(story) = story {
+                body["story"] = json!(story);
+            }
+            (Kind::Declared, body)
+        }
+        Command::EndStanding { standing, note } => (
+            Kind::Declared,
+            json!({"change": "end_standing", "standing": standing, "note": note}),
+        ),
         Command::Unblock {
             blocker,
             note,

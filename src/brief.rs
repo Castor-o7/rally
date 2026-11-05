@@ -6,23 +6,24 @@
 //! questions to the operator and who each holds up, and the peer-verified work a new watchman
 //! re-reads. Every fact carries its kind (observed, declared or verified) and its age.
 //!
-//! It confers no authority. Holds, conditions on the order of work and standing grants aren't
-//! recorded yet (RAL-64), so the brief says where to look for them instead.
+//! It confers no authority. Holds, conditions on the order of work and standing grants in force
+//! are listed as their writers declared them (RAL-64), never as the brief's own word.
 
 use serde_json::{Value, json};
 
 use crate::designation::{self, OperatorKey};
-use crate::ledger::{Change, HistoryEntry, Ledger, State};
+use crate::ledger::{Change, HistoryEntry, Ledger, StandingKind, State};
 use crate::views::{self, LIST_LIMIT, Page, Readers, UNTRUSTED_TEXT};
 
 /// Said with every brief: it records, and doesn't grant.
 pub const NO_AUTHORITY: &str = "This brief confers no authority. Approvals come from the operator \
 directly, and who holds a role is shown by Muster, not by the ledger.";
 
-/// What the brief can't give, because the ledger doesn't record it yet.
-pub const NOT_RECORDED: &str = "Rally doesn't record holds and what releases them, conditions on \
-the order of work, or standing grants yet (RAL-64). Read them from the last watchman's board, and \
-take any grant from the operator directly.";
+/// Said with the holds, conditions and grants the brief lists (RAL-64).
+pub const STANDINGS: &str = "Holds, conditions and grants are as their writers declared them, not \
+the brief's own word, and only those recorded in Rally: check the last watchman's board too. A \
+recorded grant confers no authority, and a relayed one is only as good as its relay: take any \
+grant from the operator directly.";
 
 /// Machine access, only as that it exists and where its details live (threat model row 14).
 pub const MACHINE_ACCESS: &str = "Machines reach the service with paired credentials. Their details \
@@ -130,6 +131,30 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
     }
     let (questions, questions_total) = bounded(questions);
 
+    // Holds, conditions and grants in force, each as the record its writer declared, never as
+    // the brief's own word (RAL-64).
+    let standings: Vec<Value> = ledger
+        .standings()
+        .values()
+        .filter(|standing| standing.ended.is_none())
+        .map(|standing| {
+            let mut row = json!(standing);
+            row["declared_by"] = json!(standing.source.declared_name);
+            row["age_ms"] = json!(age(now_ms, standing.at_ms));
+            row
+        })
+        .collect();
+    let by_kind = |kind: StandingKind| -> Vec<Value> {
+        standings
+            .iter()
+            .filter(|row| row["standing"] == json!(kind))
+            .cloned()
+            .collect()
+    };
+    let (holds, holds_total) = bounded(by_kind(StandingKind::Hold));
+    let (conditions, conditions_total) = bounded(by_kind(StandingKind::Condition));
+    let (grants, grants_total) = bounded(by_kind(StandingKind::Grant));
+
     let handover = match key {
         Some(_) => designation::handover(ledger, hashes, key),
         None => json!({"note": "no operator key: designations can't be checked, so there's no \
@@ -153,7 +178,10 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
             "unanswered_shelves": blockers["unanswered_shelves"],
         },
         "handover": handover,
-        "not_recorded": NOT_RECORDED,
+        "holds": holds, "holds_total": holds_total,
+        "conditions": conditions, "conditions_total": conditions_total,
+        "grants": grants, "grants_total": grants_total,
+        "standings_note": STANDINGS,
         "machine_access": MACHINE_ACCESS,
     })
 }
@@ -279,7 +307,7 @@ mod tests {
         let out = brief(&ledger, &chain.hashes, None, 5_000);
 
         assert_eq!(out["authority"], NO_AUTHORITY);
-        assert_eq!(out["not_recorded"], NOT_RECORDED);
+        assert_eq!(out["standings_note"], STANDINGS);
         assert_eq!(out["untrusted_text"], UNTRUSTED_TEXT);
 
         let team = &out["teams"][0];
@@ -318,6 +346,54 @@ mod tests {
                 .unwrap()
                 .contains("no operator key")
         );
+    }
+
+    #[test]
+    fn holds_conditions_and_grants_in_force_are_listed_as_declared() {
+        let mut chain = Chain::new();
+        chain.push_as(
+            "turbo",
+            json!({"change": "standing", "standing": "grant", "team": "rally",
+                   "scope": "merge in Castor-o7/rally", "note": "merge as you go",
+                   "given": {"from": "relayed", "by": "the watchman"}}),
+        );
+        chain.push_as(
+            "turbo",
+            json!({"change": "standing", "standing": "hold", "team": "rally", "story": "RAL-9",
+                   "note": "don't merge", "releases": "the operator's read"}),
+        );
+        chain.push_as(
+            "turbo",
+            json!({"change": "standing", "standing": "condition", "team": "rally",
+                   "note": "RAL-9 before any deploy"}),
+        );
+        chain.push_as(
+            "turbo",
+            json!({"change": "standing", "standing": "hold", "team": "muster",
+                   "note": "no restarts", "releases": "the rollout"}),
+        );
+        chain.push_as(
+            "someone",
+            json!({"change": "end_standing", "standing": 4, "note": "rolled out"}),
+        );
+        let ledger = Ledger::replay(&chain.records).unwrap();
+        let out = brief(&ledger, &chain.hashes, None, 5_000);
+        assert_eq!(out["standings_note"], STANDINGS);
+
+        let grant = &out["grants"][0];
+        assert_eq!(grant["kind"], "declared");
+        assert_eq!(grant["declared_by"], "turbo");
+        assert_eq!(
+            grant["given"],
+            json!({"from": "relayed", "by": "the watchman"})
+        );
+        assert_eq!(grant["scope"], "merge in Castor-o7/rally");
+        assert_eq!(grant["age_ms"], 4_000);
+
+        assert_eq!(out["holds_total"], 1, "the ended hold isn't listed");
+        assert_eq!(out["holds"][0]["story"], "RAL-9");
+        assert_eq!(out["holds"][0]["releases"], "the operator's read");
+        assert_eq!(out["conditions"][0]["note"], "RAL-9 before any deploy");
     }
 
     #[test]
