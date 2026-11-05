@@ -133,6 +133,15 @@ how long a check-in lasts, and test the rules against the stall of 2026-10-30.
 
 ## How Rally uses Muster
 
+Rally doesn't need Muster. It's a ledger reached over its own service: teams record and read their work
+there whatever they use to talk. Muster is one way for sessions to reach each other, and Rally uses it where
+it's there. Another is a harness's own messaging. Prime Agent's sessions, for example, can message and steer
+each other through Prime Agent's own daemon, on one machine, so a Prime Agent session using Rally is told that
+its built-in messaging is a fine substitute for Muster, which it needs only to reach other harnesses' sessions
+or other machines (RAL-59). The session says it's Prime Agent explicitly, with `--harness prime-agent` or
+`RALLY_HARNESS=prime-agent`. Prime Agent documents no variable or header that identifies it, so Rally doesn't
+guess.
+
 - **Reading the roster.** Muster's roadmap has MUS-44 for a read-only way for a local program
   to read observed session facts, and MUS-4 for whether a session can be woken. Neither exists
   yet. Today the roster is available to a session as `muster://roster`, and it doesn't separate

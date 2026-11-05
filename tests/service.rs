@@ -52,6 +52,7 @@ fn rally() -> Command {
         "RALLY_NAME",
         "RALLY_STATE_DIR",
         "RALLY_TEAM",
+        "RALLY_HARNESS",
         "RALLY_OPERATOR_WINDOW",
         "RALLY_OPERATOR_AWAY_AFTER",
         "RALLY_OPERATOR_AWAY",

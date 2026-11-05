@@ -370,6 +370,17 @@ word.
   The operator decides when. Done when: for one rally session, teams pick their own stories by RAL-56's rule and
   the watchman only verifies; afterwards, a write-up compares that session's idle time, ID collisions and
   send-backs with 2026-11-05's, from the ledger and Muster's roster, and says what still needed the watchman.
+- [ ] **RAL-59: Tell Prime Agent sessions their own messaging will do.** The operator, relayed by the watchman on
+  2026-11-05: "in the case that prime agent is using the rally service please add a notification to warn prime
+  agents that their own built in communication is a fine substitute for muster when using the rally service."
+  Prime Agent ([PrimeIntellect-ai/prime-agent](https://github.com/PrimeIntellect-ai/prime-agent), its README and
+  [release notes](https://github.com/PrimeIntellect-ai/prime-agent/releases)) lets running sessions discover,
+  message and steer each other through its own background daemon, on a local socket, so one machine and Prime
+  Agent sessions only. Done when: a Prime Agent session using Rally gets a notice in its session-start briefing
+  and in `rally init`'s block, saying its built-in messaging is a fine substitute for Muster, and that Muster is
+  needed only to reach sessions of other harnesses or on other machines; how a Prime Agent session is detected is
+  decided and documented, without guessing from names; a test shows the notice for Prime Agent and not for other
+  harnesses; and `docs/design.md` says Rally works without Muster, with Prime Agent's messaging as the example.
 - [ ] **RAL-60: Rally's CI checks dependencies with cargo-deny.** From the watchman's read of RAL-5, which adds
   `ureq`. Done when: a `deny.toml` lists the licences Rally accepts (including `webpki-roots`'s
   CDLA-Permissive-2.0) and the sources it allows; CI runs `cargo deny check` on every PR; and today's advisory,

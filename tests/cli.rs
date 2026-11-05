@@ -40,6 +40,7 @@ fn rally(db: &Ledger, name: &str, args: &[&str]) -> Output {
         .env_remove("RALLY_CREDENTIAL")
         .env_remove("RALLY_NAME")
         .env_remove("RALLY_TEAM")
+        .env_remove("RALLY_HARNESS")
         .output()
         .unwrap()
 }
@@ -705,6 +706,7 @@ fn session_start(home: &std::path::Path, args: &[&str]) -> Output {
         .env_remove("RALLY_HEAD_FILE")
         .env_remove("RALLY_CONFIG")
         .env_remove("RALLY_TEAM")
+        .env_remove("RALLY_HARNESS")
         .output()
         .unwrap()
 }
