@@ -10,7 +10,7 @@ use rally::client::{Reply, request};
 use rally::scratch_pg::{self, Cluster, Database};
 use serde_json::{Value, json};
 
-const ROUTES: [(&str, &str); 11] = [
+const ROUTES: [(&str, &str); 12] = [
     ("POST", "/v1/records"),
     ("GET", "/v1/stories"),
     ("GET", "/v1/stories/RAL-13"),
@@ -22,6 +22,7 @@ const ROUTES: [(&str, &str); 11] = [
     ("GET", "/v1/verifications"),
     ("GET", "/v1/waiting"),
     ("GET", "/v1/handover"),
+    ("GET", "/v1/teams/rally/record"),
 ];
 
 struct Service<'a> {

@@ -136,6 +136,15 @@ pub enum Change {
         key_fingerprint: String,
         signature: String,
     },
+    /// A team annotates an earlier record that names it, to correct it or disagree (RAL-19): one of
+    /// its declared states, a blocker it raised or that waits on it, or a record of a story it
+    /// held. It changes nothing else, so a verification's outcome stays with the verifier, and it
+    /// can't annotate another annotation, so threads stay one deep.
+    Annotate {
+        corrects: u64,
+        team: String,
+        note: String,
+    },
     /// Annotates an earlier record of the same story, which stays in the history. Can also set the
     /// state: a team can only do that for a story it holds, naming itself in `team`, and moving a
     /// story into or out of a verifier's state takes a verifier. Without a state, it's only an
@@ -171,7 +180,7 @@ impl Change {
             Self::TeamState { story, .. } | Self::Block { story, .. } => {
                 story.as_deref().unwrap_or_default()
             }
-            Self::Unblock { .. } | Self::Designate { .. } => "",
+            Self::Unblock { .. } | Self::Designate { .. } | Self::Annotate { .. } => "",
             Self::Backfill { entry, .. } => entry.story(),
             Self::Ready { story }
             | Self::Claim { story, .. }
@@ -210,6 +219,35 @@ pub struct HistoryEntry {
     /// Later records that correct this one. The entry itself is never changed otherwise.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub corrected_by: Vec<u64>,
+}
+
+impl Story {
+    /// The records of this story made while `team` held it, from its claim to its release or a
+    /// correction back to Ready, the release included (RAL-19). The team record shows these, and a
+    /// team may annotate only these, so the two match.
+    pub fn held_by(&self, team: &str) -> BTreeSet<u64> {
+        let mut holding = false;
+        let mut seqs = BTreeSet::new();
+        for entry in &self.history {
+            match &entry.change {
+                Change::Claim { team: by, .. } => holding = same_name(by, team),
+                Change::Correct {
+                    state: Some(State::Ready),
+                    ..
+                } => holding = false,
+                _ => {}
+            }
+            let releasing =
+                matches!(&entry.change, Change::Release { team: by, .. } if same_name(by, team));
+            if holding || releasing {
+                seqs.insert(entry.seq);
+            }
+            if releasing {
+                holding = false;
+            }
+        }
+        seqs
+    }
 }
 
 /// A story's current state and everything that happened to it.
@@ -395,6 +433,13 @@ pub enum LedgerError {
     InvalidBlockerTarget(u64),
     /// A story is named as waiting on itself.
     BlockedOnItself(String),
+    /// An annotation names a record that isn't an earlier record naming its team (RAL-19).
+    InvalidAnnotationTarget {
+        corrects: u64,
+        team: String,
+    },
+    /// An annotation names another annotation; annotate the original (RAL-19).
+    AnnotationOfAnnotation(u64),
     /// A designation doesn't name the record just before it (RAL-51).
     DesignationOutOfPlace {
         seq: u64,
@@ -458,6 +503,15 @@ impl fmt::Display for LedgerError {
                 seq - 1
             ),
             Self::InvalidDesignation(what) => write!(f, "a designation's {what}"),
+            Self::InvalidAnnotationTarget { corrects, team } => write!(
+                f,
+                "record {corrects} isn't an earlier record that names {team}: one of its states, a \
+                 blocker by or on it, or a record of a story it held"
+            ),
+            Self::AnnotationOfAnnotation(seq) => write!(
+                f,
+                "record {seq} is itself an annotation; annotate the record it annotates"
+            ),
             Self::DesignationRefused(why) => write!(f, "the designation was refused: {why}"),
             Self::BackfillNotEarlier {
                 entered_at_ms,
@@ -486,6 +540,21 @@ pub struct Ledger {
     blockers: BTreeMap<u64, Blocker>,
     /// Every designation record, in order, whether or not its signature holds (RAL-51).
     designations: Vec<Designation>,
+    /// Teams' annotations, by the record each annotates (RAL-19).
+    annotations: BTreeMap<u64, Vec<Annotation>>,
+    /// The records that are annotations, so that none is annotated in turn.
+    annotation_seqs: BTreeSet<u64>,
+}
+
+/// A team's annotation of an earlier record (RAL-19). Declared, like the team's name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Annotation {
+    pub seq: u64,
+    pub kind: Kind,
+    pub source: Source,
+    pub at_ms: i64,
+    pub team: String,
+    pub note: String,
 }
 
 /// The fixed text the operator signs to designate a watchman, or with none to end a designation.
@@ -547,6 +616,31 @@ impl Ledger {
         &self.designations
     }
 
+    /// Teams' annotations, by the record each annotates (RAL-19).
+    pub fn annotations(&self) -> &BTreeMap<u64, Vec<Annotation>> {
+        &self.annotations
+    }
+
+    /// Whether earlier record `seq` names `team`: one of its declared states, a blocker it raised
+    /// or that waits on it, or a record of a story it ever claimed.
+    fn names_team(&self, seq: u64, team: &str) -> bool {
+        if self
+            .teams
+            .get(&name_key(team))
+            .is_some_and(|t| t.history.iter().any(|entry| entry.seq == seq))
+        {
+            return true;
+        }
+        if self.blockers.get(&seq).is_some_and(|b| {
+            same_name(&b.team, team) || b.on_team.as_deref().is_some_and(|t| same_name(t, team))
+        }) {
+            return true;
+        }
+        self.stories
+            .values()
+            .any(|story| story.held_by(team).contains(&seq))
+    }
+
     /// Teams by name, in lower case without surrounding space, so `Rally` and `rally` are one team.
     pub fn teams(&self) -> &BTreeMap<String, Team> {
         &self.teams
@@ -564,6 +658,13 @@ impl Ledger {
     /// story's size, not the ledger's.
     pub fn check(&self, seq: u64, record: &Record) -> Result<(), LedgerError> {
         self.check_new_rules(record)?;
+        // An annotation's target can be anywhere, so it's checked against everything. They're rare.
+        if matches!(
+            serde_json::from_value::<Change>(record.body().clone()),
+            Ok(Change::Annotate { .. })
+        ) {
+            return self.clone().apply(seq, record);
+        }
         let mut trial = Self {
             last_seq: self.last_seq,
             ..Self::default()
@@ -683,6 +784,38 @@ impl Ledger {
             .map(|backfill| backfill.entered_by.as_str())
             .or(record.source().declared_name.as_deref());
         match change {
+            Change::Annotate {
+                corrects,
+                team,
+                note,
+            } => {
+                require_kind(record, Kind::Declared)?;
+                if backfill.is_some() {
+                    return Err(LedgerError::InvalidChange(
+                        "an annotation can't be backfilled".into(),
+                    ));
+                }
+                if self.annotation_seqs.contains(&corrects) {
+                    return Err(LedgerError::AnnotationOfAnnotation(corrects));
+                }
+                if corrects >= seq || !self.names_team(corrects, &team) {
+                    return Err(LedgerError::InvalidAnnotationTarget { corrects, team });
+                }
+                self.annotations
+                    .entry(corrects)
+                    .or_default()
+                    .push(Annotation {
+                        seq,
+                        kind: record.kind(),
+                        source: record.source().clone(),
+                        at_ms: record.at_ms(),
+                        team,
+                        note,
+                    });
+                self.annotation_seqs.insert(seq);
+                self.last_seq = seq;
+                return Ok(());
+            }
             Change::Designate {
                 watchman,
                 after_seq,
@@ -868,7 +1001,8 @@ fn transition(
         | Change::Backfill { .. }
         | Change::Block { .. }
         | Change::Unblock { .. }
-        | Change::Designate { .. } => unreachable!("handled by the caller"),
+        | Change::Designate { .. }
+        | Change::Annotate { .. } => unreachable!("handled by the caller"),
         Change::Claim { team, .. } => {
             require_kind(record, Kind::Declared)?;
             match story.state {
@@ -1124,6 +1258,7 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
             | Change::Block { story: None, .. }
             | Change::Unblock { .. }
             | Change::Designate { .. }
+            | Change::Annotate { .. }
     );
     if !story_is_optional && !is_story_id(id) {
         return Err(LedgerError::InvalidStoryId(id.to_owned()));
@@ -1193,7 +1328,9 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::Claim { team, .. }
         | Change::Release { team, .. }
         | Change::TeamState { team, .. } => &[("team", team)],
-        Change::Block { team, note, .. } => &[("team", team), ("note", note)],
+        Change::Block { team, note, .. } | Change::Annotate { team, note, .. } => {
+            &[("team", team), ("note", note)]
+        }
         Change::Unblock { note, .. } => &[("note", note)],
         Change::Submit { team, evidence, .. } => &[("team", team), ("evidence", evidence)],
         Change::Verify { note, .. }

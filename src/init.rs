@@ -39,6 +39,8 @@ Where you use Rally:
 - **Record a merge**: `rally merge <STORY> --commit <full commit>`.
 - **Say what you're waiting on**: `rally block --team <team> [--story <STORY>] [--on-story <STORY> |
   --on-team <team>] --note \"...\"`, and close it with `rally unblock <N> --note \"why\"`.
+- **Read your team's record** with `rally record <team>`, and correct it or disagree with
+  `rally annotate --corrects <N> --team <team> --note \"...\"`, shown beside the original.
 - **Find work to verify**: `rally waiting` lists submissions waiting for a reader, oldest first.
 - **Read the state**: `rally show [STORY]`, `rally blockers`, `rally teams`, and
   `rally designation` for who the watchman is.

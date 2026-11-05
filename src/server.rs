@@ -215,6 +215,7 @@ fn router(
         .route("/v1/track-records/{name}", get(one_track_record))
         .route("/v1/blockers/all", get(all_blockers))
         .route("/v1/teams/{name}", get(one_team))
+        .route("/v1/teams/{name}/record", get(team_record))
         .route("/v1/check", get(check))
         .route("/v1/whoami", get(whoami))
         .route("/v1/designation", get(designation))
@@ -951,6 +952,19 @@ async fn list_teams(
 ) -> Response {
     view(service, identity, query, |ledger, page| {
         views::teams(ledger, None, page)
+    })
+    .await
+}
+
+/// Everything recorded about one team, with annotations beside each record (RAL-19).
+async fn team_record(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    UrlPath(name): UrlPath<String>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    view(service, identity, query, move |ledger, page| {
+        views::team_record(ledger, &name, page)
     })
     .await
 }
