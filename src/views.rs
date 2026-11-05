@@ -209,39 +209,22 @@ pub fn team_record(ledger: &Ledger, team: &str, page: &Page) -> Result<Value, St
         }
     }
     for (id, story) in ledger.stories() {
-        let mut holding = false;
-        let mut held = false;
-        for entry in &story.history {
-            match &entry.change {
-                Change::Claim { team: by, .. } => holding = same_name(by, team),
-                Change::Correct {
-                    state: Some(State::Ready),
-                    ..
-                } => holding = false,
-                _ => {}
-            }
-            let releasing =
-                matches!(&entry.change, Change::Release { team: by, .. } if same_name(by, team));
-            if holding || releasing {
-                held = true;
-                let mut change = serde_json::to_value(&entry.change).unwrap_or(Value::Null);
-                for field in ["note", "evidence"] {
-                    if let Some(text) = change.get(field).and_then(Value::as_str).map(clip) {
-                        change[field] = text;
-                    }
+        let held = story.held_by(team);
+        for entry in story.history.iter().filter(|e| held.contains(&e.seq)) {
+            let mut change = serde_json::to_value(&entry.change).unwrap_or(Value::Null);
+            for field in ["note", "evidence"] {
+                if let Some(text) = change.get(field).and_then(Value::as_str).map(clip) {
+                    change[field] = text;
                 }
-                items.push((
-                    entry.seq,
-                    json!({"seq": entry.seq, "at_ms": entry.at_ms, "kind": entry.kind,
-                           "by": entry.source.declared_name, "record": "story", "story": id,
-                           "change": change}),
-                ));
             }
-            if releasing {
-                holding = false;
-            }
+            items.push((
+                entry.seq,
+                json!({"seq": entry.seq, "at_ms": entry.at_ms, "kind": entry.kind,
+                       "by": entry.source.declared_name, "record": "story", "story": id,
+                       "change": change}),
+            ));
         }
-        if held {
+        if !held.is_empty() {
             own_stories.push(id);
         }
     }
@@ -1262,6 +1245,15 @@ mod tests {
         assert!(
             refused(json!({"change": "annotate", "corrects": 7, "team": "a", "note": " "}))
                 .contains("note is empty")
+        );
+        // A team annotates only its own holding of a story, as its record shows.
+        assert!(
+            refused(json!({"change": "annotate", "corrects": 5, "team": "a", "note": "n"}))
+                .contains("names a")
+        );
+        assert!(
+            refused(json!({"change": "annotate", "corrects": 2, "team": "b", "note": "n"}))
+                .contains("names b")
         );
         // No state can be set.
         assert!(!refused(json!({"change": "annotate", "corrects": 7, "team": "a", "note": "n", "state": "verified"})).is_empty());

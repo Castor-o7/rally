@@ -221,6 +221,35 @@ pub struct HistoryEntry {
     pub corrected_by: Vec<u64>,
 }
 
+impl Story {
+    /// The records of this story made while `team` held it, from its claim to its release or a
+    /// correction back to Ready, the release included (RAL-19). The team record shows these, and a
+    /// team may annotate only these, so the two match.
+    pub fn held_by(&self, team: &str) -> BTreeSet<u64> {
+        let mut holding = false;
+        let mut seqs = BTreeSet::new();
+        for entry in &self.history {
+            match &entry.change {
+                Change::Claim { team: by, .. } => holding = same_name(by, team),
+                Change::Correct {
+                    state: Some(State::Ready),
+                    ..
+                } => holding = false,
+                _ => {}
+            }
+            let releasing =
+                matches!(&entry.change, Change::Release { team: by, .. } if same_name(by, team));
+            if holding || releasing {
+                seqs.insert(entry.seq);
+            }
+            if releasing {
+                holding = false;
+            }
+        }
+        seqs
+    }
+}
+
 /// A story's current state and everything that happened to it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Story {
@@ -607,12 +636,9 @@ impl Ledger {
         }) {
             return true;
         }
-        self.stories.values().any(|story| {
-            story.history.binary_search_by_key(&seq, |e| e.seq).is_ok()
-                && story.history.iter().any(|e| {
-                    matches!(&e.change, Change::Claim { team: held, .. } if same_name(held, team))
-                })
-        })
+        self.stories
+            .values()
+            .any(|story| story.held_by(team).contains(&seq))
     }
 
     /// Teams by name, in lower case without surrounding space, so `Rally` and `rally` are one team.
