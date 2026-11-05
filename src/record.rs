@@ -34,9 +34,43 @@ pub const FORMAT_VERSION: u64 = 1;
 /// The longest credential or declared name, which others read and has to fit on a line.
 const MAX_NAME_CHARS: usize = 64;
 
-/// Whether a credential or declared name is one a record may carry.
+/// Whether a credential or declared name is one a record may carry. Replay applies this too, so it
+/// must never tighten: a stricter rule for new names goes in [`is_clear_name`] (RAL-41).
 pub fn is_good_name(name: &str) -> bool {
     name.chars().count() <= MAX_NAME_CHARS && !name.chars().any(char::is_control)
+}
+
+/// Whether a name may go on a new record: a good name with no invisible or direction-changing
+/// character, so `alice` and `al\u{200b}ice` can't pass as two people (RAL-41).
+pub fn is_clear_name(name: &str) -> bool {
+    is_good_name(name) && !name.chars().any(is_invisible)
+}
+
+/// Characters that show nothing, or change the direction of the text around them: a reader can't
+/// see them, so two names that differ only in them look the same.
+pub fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{ad}'
+            | '\u{34f}'
+            | '\u{61c}'
+            | '\u{115f}'
+            | '\u{1160}'
+            | '\u{17b4}'
+            | '\u{17b5}'
+            | '\u{180b}'..='\u{180f}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{feff}'
+            | '\u{ffa0}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0000}'..='\u{e0fff}'
+    )
 }
 
 /// How a record is known.
