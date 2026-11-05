@@ -151,6 +151,17 @@ enum Command {
         #[arg(long, env = "RALLY_STATE_DIR")]
         state_dir: PathBuf,
     },
+    /// Teach this repository's agents about Rally: write a marked block of instructions into its
+    /// CLAUDE.md and AGENTS.md, whichever exist, or a new AGENTS.md. Running it again replaces the
+    /// block and nothing else. It names no address or credential, so the result is safe to commit.
+    Init {
+        /// A file to write instead of the defaults, relative to the repository root. May be repeated.
+        #[arg(long = "file")]
+        files: Vec<PathBuf>,
+        /// The repository to write in. Defaults to the one holding the current directory.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
     /// Save a pair code from `add-machine` on this machine, read from standard input so that it
     /// stays out of shell history and process listings.
     Pair,
@@ -697,7 +708,30 @@ fn run_service(
     Ok(json!({"stopped": true}).to_string())
 }
 
+/// `rally init`: no ledger, service or credential involved.
+fn init(
+    files: &[PathBuf],
+    dir: Option<&std::path::Path>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let start = match dir {
+        Some(dir) => dir.to_path_buf(),
+        None => std::env::current_dir()?,
+    };
+    let hint = if dir.is_some() { "" } else { "; pass --dir" };
+    let root = rally::init::repo_root(&start)
+        .ok_or_else(|| format!("{} isn't in a git repository{hint}", start.display()))?;
+    let done = rally::init::run(&root, files)?;
+    let files: Vec<_> = done
+        .iter()
+        .map(|(path, outcome)| json!({"file": path.display().to_string(), "outcome": outcome.label()}))
+        .collect();
+    Ok(json!({"init": files}).to_string())
+}
+
 fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
+    if let Command::Init { files, dir } = &cli.command {
+        return init(files, dir.as_deref());
+    }
     // These never touch the database, so a stray password file setting mustn't block them.
     let uses_database = !matches!(
         cli.command,
@@ -799,6 +833,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             StateDir::open(&state_dir)?.revoke(&name)?;
             return Ok(json!({"revoked": name}).to_string());
         }
+        Command::Init { .. } => unreachable!("handled before the ledger is opened"),
         Command::Pair => {
             let mut code = String::new();
             std::io::stdin().read_line(&mut code)?;

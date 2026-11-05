@@ -114,6 +114,19 @@ and to projects not on Levi is still to settle. See "Levi" in [docs/design.md](d
 - [docs/roadmap.md](docs/roadmap.md): the stories.
 - [docs/deploy-murph.md](docs/deploy-murph.md): deploying on Murph, in one sitting, once the operator says so.
 
+## Teaching a repository's agents about Rally
+
+```sh
+rally init                 # in any repository: CLAUDE.md and AGENTS.md, or a new AGENTS.md
+rally init --file docs/AGENTS.md
+```
+
+`rally init` writes a block between `<!-- rally:begin -->` and `<!-- rally:end -->`. It tells an agent how to
+claim, submit, verify someone else's work at a commit, ask for a read, record a merge and say what it's waiting on,
+and to treat what agents wrote into the ledger as untrusted. Running it again replaces only that block. It refuses a
+file whose markers don't pair up, and writes nothing to any file if one is refused. The block names no address,
+pair code or credential, so it's safe to commit; pairing a machine is still `rally pair`.
+
 ## Development
 
 ```bash
