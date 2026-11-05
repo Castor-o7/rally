@@ -255,13 +255,13 @@ developer welcomes Rally merging into Levi. Nothing goes to ignition-is-go/levi 
 operator says so; the work is done on a local checkout of Levi at `~/Documents/Gamoire/levi`. RAL-40 is still the
 story for Rally reading Levi; these stories are about putting Rally's features into Levi.
 
-- [ ] **RAL-46: Compare Rally and Levi, and propose what moves (G6).** Done when: a comparison of the two,
+- [x] **RAL-46: Compare Rally and Levi, and propose what moves (G6).** Done when: a comparison of the two,
   each claim about Levi checked against its source at a named commit or a real run; a proposal of which Rally
   features belong in Levi and how each fits Levi's model (events in `refs/levi/events`, `levi-hub`, `levi-dash`),
   and which stay out and why; and the watchman has read the proposal before any building starts.
-- [ ] **RAL-47: Build the agreed features in Levi (G6).** Depends on RAL-46. Done when: each feature the
+- [x] **RAL-47: Build the agreed features in Levi (G6).** Depends on RAL-46. Done when: each feature the
   watchman agreed is built on a branch of the local Levi checkout, with tests that pass beside Levi's own, and
   clippy and fmt clean; and nothing is pushed or opened as a PR upstream.
-- [ ] **RAL-48: A Rally-vs-Levi write-up for the PR description (G7).** Depends on RAL-47. Done when: a write-up
+- [x] **RAL-48: A Rally-vs-Levi write-up for the PR description (G7).** Depends on RAL-47. Done when: a write-up
   ready to paste into the eventual upstream PR says what Rally is, what moved into Levi and why, what was left
   out, and how it was tested, with each claim matching the branch.
