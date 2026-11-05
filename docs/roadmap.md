@@ -297,7 +297,8 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   designation and end of a watchman, accepted only from the operator's own credential and refused from any other,
   with a test of the refusal; each verification is labelled `watchman` or `peer` by whether a watchman was
   designated when it was recorded; Rally lists submissions waiting for a reader, oldest first, with the commit to
-  read; `track-record` counts verifications each team gave as well as received; and the board process in Muster's
+  read; `track-record` counts verifications each verifier gave as well as each team received, the gave counts by
+  declared name, since a record doesn't name the verifier's team; and the board process in Muster's
   `docs/board.md` says the same, through a draft PR the watchman reads as the board's keeper.
 - [ ] **RAL-52: Hand a new watchman the peer-verified work.** Depends on RAL-51. Done when: when a watchman is
   designated, Rally gives it one list of every story verified by a peer since the last designation, each with the
@@ -305,3 +306,9 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   watchman's re-read" until the watchman records its own verification, send-back or correction, none of which
   overwrites the peer's record; the RAL-8 digest carries the list until it's empty; and a test covers a
   designation partway through, with stories merged and unmerged.
+- [ ] **RAL-53: Bind the watchman label to a per-session credential.** From the watchman's read of RAL-51b. Today
+  a verification is labelled `watchman` when its declared name matches the designated watchman's, and on a1 every
+  session shares one credential, so any session can declare that name. Done when: a designation can name a
+  credential that only the watchman's session holds, issued without passing through other sessions; a
+  verification is labelled `watchman` only when made with it; a test shows another session declaring the
+  watchman's name is labelled `other`; and the threat model says what the credential protects and what it doesn't.

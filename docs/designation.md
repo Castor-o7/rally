@@ -101,12 +101,27 @@ rally designation        # who the watchman is, each designation checked again
 itself doesn't show what you're signing. If another record lands in between, the service refuses the designation
 ("read the head again"). Run it again.
 
+## Who verified, and what's waiting
+
+- `rally verifications` lists every verification and send-back, newest first. Each is labelled `watchman` if
+  the designated watchman's declared name wrote it, `peer` if no watchman was designated, `other` if one was
+  designated but someone else wrote it, or `unknown` if the service has no operator key to check designations
+  with. Names are declared.
+- `rally waiting` lists submissions waiting for a reader, oldest first, with the evidence and the commit of any
+  requested read.
+- `rally track-record` now also counts what each verifier gave, by declared name, since a record names its
+  verifier but not the verifier's team.
+
 ## Limits
 
 - **A deleted designation.** If a later designation, such as an `--end`, were deleted from Postgres, an earlier one
   would be in force again. Signatures can't show a removal. The hash chain does: run `rally check --expect` against a
   head saved somewhere the agents can't reach. Rally doesn't record whether that check last passed, so the
   designation report can't say.
+- **The `watchman` label is a name match.** A verification is labelled `watchman` when its declared name matches
+  the designated watchman's. Any session that declares that name gets the label, and on a1 every session shares
+  one credential, so Rally can't tell them apart. It catches mistakes, not impersonation. Binding the label to a
+  per-session credential is RAL-53.
 - **Readers trust the service's report.** The report is computed by the service on Murph. With the binary, key and
   unit root-owned, an agent can't change what it computes. A client doesn't yet check signatures itself.
 - **The host's root.** Anyone with root on Murph, or the operator's password, can change all of this. That's the

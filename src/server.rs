@@ -218,6 +218,8 @@ fn router(
         .route("/v1/check", get(check))
         .route("/v1/whoami", get(whoami))
         .route("/v1/designation", get(designation))
+        .route("/v1/verifications", get(verifications))
+        .route("/v1/waiting", get(waiting))
         .route("/v1/export", get(export))
         .fallback(|| async { failure(StatusCode::NOT_FOUND, "no such route") })
         .method_not_allowed_fallback(|| async {
@@ -805,6 +807,42 @@ async fn designation(
         Ok(Err(error)) => internal(&error),
         Err(not_run) => not_run.into_response(),
     }
+}
+
+/// Every verification labelled watchman, peer or other (RAL-51). Heavy, as `designation` is.
+async fn verifications(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+) -> Response {
+    if !service.allow(&identity.credential, Bucket::Heavy) {
+        return failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many checks and past-state reads",
+        );
+    }
+    let key = service.operator_key.clone();
+    let result = service
+        .run(Work::Heavy, move |store| {
+            store.verifications_report(key.as_ref())
+        })
+        .await;
+    match result {
+        Ok(Ok(report)) => Json(report).into_response(),
+        Ok(Err(error)) => internal(&error),
+        Err(not_run) => not_run.into_response(),
+    }
+}
+
+/// Submissions waiting for a reader, oldest first (RAL-51).
+async fn waiting(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    view(service, identity, query, |ledger, _| {
+        Ok(views::waiting(ledger))
+    })
+    .await
 }
 
 /// Which credential this is, so that the viewer can warn if it could write.
