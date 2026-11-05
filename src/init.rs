@@ -1,7 +1,7 @@
 //! `rally init` (RAL-49): teach a repository's agents about Rally, as `levi init` does for Levi.
 //!
 //! It writes one marked block of instructions into the repository's `CLAUDE.md` and `AGENTS.md`,
-//! whichever exist, or a new `AGENTS.md` if neither does. Running it again replaces the block in
+//! whichever exist, or a new `CLAUDE.md` (which Claude Code reads) if neither does. Running it again replaces the block in
 //! place and leaves the rest of each file alone. The block is fixed text: it names no service
 //! address, pair code or credential, so it's safe to commit.
 
@@ -74,7 +74,7 @@ pub fn repo_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// The files to write: `files` if given (relative to `root`), else every existing `CLAUDE.md`
-/// and `AGENTS.md` at `root`, else a new `AGENTS.md`. Each must resolve inside `root`, following
+/// and `AGENTS.md` at `root`, else a new `CLAUDE.md`. Each must resolve inside `root`, following
 /// symbolic links, so `--file ../x` or a link out of the repository is refused.
 pub fn targets(root: &Path, files: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     let chosen: Vec<PathBuf> = if !files.is_empty() {
@@ -87,7 +87,7 @@ pub fn targets(root: &Path, files: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
             .filter(|name| root.join(name).symlink_metadata().is_ok())
             .collect();
         if existing.is_empty() {
-            vec![PathBuf::from("AGENTS.md")]
+            vec![PathBuf::from("CLAUDE.md")]
         } else {
             existing
         }
@@ -221,13 +221,23 @@ mod tests {
     }
 
     #[test]
-    fn creates_agents_md_when_there_is_neither_file() {
+    fn creates_claude_md_when_there_is_neither_file() {
         let dir = repo();
         let done = run(dir.path(), &[]).unwrap();
         let root = dir.path().canonicalize().unwrap();
-        assert_eq!(done, [(root.join("AGENTS.md"), Outcome::Created)]);
-        let text = read(&dir.path().join("AGENTS.md"));
+        assert_eq!(done, [(root.join("CLAUDE.md"), Outcome::Created)]);
+        let text = read(&dir.path().join("CLAUDE.md"));
         assert!(text.starts_with(BEGIN) && text.trim_end().ends_with(END));
+        assert!(!dir.path().join("AGENTS.md").exists());
+    }
+
+    #[test]
+    fn agents_md_alone_is_kept_and_no_claude_md_is_made() {
+        let dir = repo();
+        std::fs::write(dir.path().join("AGENTS.md"), "Agents.\n").unwrap();
+        let done = run(dir.path(), &[]).unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert_eq!(done, [(root.join("AGENTS.md"), Outcome::Added)]);
         assert!(!dir.path().join("CLAUDE.md").exists());
     }
 
