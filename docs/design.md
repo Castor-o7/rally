@@ -102,6 +102,19 @@ A read at a different commit than the one requested still answers the request, s
 moved on and the request's commit is no longer what would merge; the history keeps both commits.
 Whether the read covered what was merged is then `commit_differs`, once the merge is recorded.
 
+### Who verifies: watchman or peer (RAL-51, RAL-52)
+
+The operator's rulings of 2026-11-04, relayed by the watchman:
+
+- While the operator has designated a watchman, the watchman reads every PR at the head being merged, as before.
+- While none is designated, a verification by any team other than the author's, or by the operator, counts. Rally
+  labels each verification `watchman` or `peer` by whether a watchman was designated when it was recorded.
+- Designating a watchman, and ending a designation, is the operator's declaration, accepted only from the
+  operator's own credential.
+- A newly designated watchman re-reads every story verified by a peer since the last designation, merged or not,
+  and decides with critical judgement whether to keep it, send it back or ask for fixes. Nothing stands on a peer's
+  verification alone. Its decisions are its own verifications or corrections, and the peer's records stay.
+
 ## Stalls
 
 A stall is worked out from both systems. Rally reads Muster's observed roster and combines it
