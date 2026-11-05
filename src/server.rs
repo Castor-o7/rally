@@ -739,7 +739,12 @@ async fn check(
         .run(Work::Heavy, move |store| store.verify(expected.as_ref()))
         .await;
     match result {
-        Ok(Ok(result)) => Json(result).into_response(),
+        // Problems can quote a record, which an agent wrote (RAL-41).
+        Ok(Ok(result)) => {
+            let mut value = json!(result);
+            value["untrusted_text"] = json!(views::UNTRUSTED_TEXT);
+            Json(value).into_response()
+        }
         Ok(Err(error)) => internal(&error),
         Err(not_run) => not_run.into_response(),
     }

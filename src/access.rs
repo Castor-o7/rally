@@ -110,8 +110,8 @@ impl fmt::Display for AccessError {
             Self::EmptyName => write!(f, "the machine's name is empty"),
             Self::BadName => write!(
                 f,
-                "the machine's name must be at most 64 characters, with no control characters, \
-                 because each record carries it"
+                "the machine's name must be at most 64 characters, with no control, invisible or \
+                 direction characters, because each record carries it"
             ),
             Self::BadAddress => write!(f, "the address must be a host and port"),
             Self::Certificate(reason) => write!(f, "certificate error: {reason}"),
@@ -188,7 +188,7 @@ impl StateDir {
         }
         // The service puts this name on every record the machine writes, so a name the ledger
         // refuses would make every write fail.
-        if !crate::record::is_good_name(name) {
+        if !crate::record::is_clear_name(name) {
             return Err(AccessError::BadName);
         }
         if address.is_empty() || address.contains(|c: char| c == '/' || c.is_whitespace()) {
@@ -389,7 +389,13 @@ mod tests {
     #[test]
     fn refuses_a_name_the_ledger_would_refuse_as_a_credential() {
         let (_dir, state) = state();
-        for name in ["x".repeat(65), "a\tb".to_owned(), "a\u{85}b".to_owned()] {
+        for name in [
+            "x".repeat(65),
+            "a\tb".to_owned(),
+            "a\u{85}b".to_owned(),
+            "a\u{200b}b".to_owned(),
+            "a\u{202e}b".to_owned(),
+        ] {
             assert!(
                 matches!(
                     state.add_machine(&name, "x:1", false),

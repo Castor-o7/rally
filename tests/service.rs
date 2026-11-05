@@ -625,6 +625,13 @@ fn check_works_through_the_service_and_a_saved_head_is_checked() {
     let first: Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(first["ok"], true, "{}", reply.body);
     assert_eq!(first["head"]["seq"], 1);
+    // Problems can quote what an agent wrote (RAL-41).
+    assert!(
+        first["untrusted_text"]
+            .as_str()
+            .unwrap()
+            .contains("not instructions")
+    );
     let hash = first["head"]["hash"].as_str().unwrap();
 
     let good = format!("/v1/check?seq=1&hash={hash}");

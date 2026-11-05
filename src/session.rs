@@ -33,11 +33,7 @@ pub fn clean(text: &str) -> String {
             out.push('…');
             break;
         }
-        let invisible = matches!(
-            c,
-            '\u{ad}' | '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}'
-                | '\u{2060}'..='\u{2069}' | '\u{feff}'
-        );
+        let invisible = crate::record::is_invisible(c);
         match c {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),

@@ -1111,7 +1111,11 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
         Command::Check { expect } => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             let result: Value = match &backend {
-                Backend::File(store) => json!(store.verify(expect.as_ref())?),
+                Backend::File(store) => {
+                    let mut value = json!(store.verify(expect.as_ref())?);
+                    value["untrusted_text"] = json!(rally::views::UNTRUSTED_TEXT);
+                    value
+                }
                 Backend::Service(pairing) => {
                     let path = match &expect {
                         Some(head) => format!("/v1/check?seq={}&hash={}", head.seq, head.hash),

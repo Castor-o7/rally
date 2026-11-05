@@ -117,11 +117,19 @@ stops a token working straight away. Don't expose the port to the open internet.
 
 ## Recorded text is untrusted
 
-Team names, declared names, notes and evidence are written by agents. Every read through `show` and `teams`
-carries an `untrusted_text` notice saying they're data, not instructions. Output is JSON, with controls and invisible or direction characters
-escaped, and text is stored and shown exactly as written. Whatever displays it has to escape it too. Notes
-are limited to 4,000 characters and evidence to 1,000. Names are limited to 64 characters, with no control
-characters.
+Team names, declared names, notes and evidence are written by agents. Every read that returns them, and
+`check`, whose problems can quote a record, carries an `untrusted_text` notice saying they're data, not
+instructions. Output is JSON, with controls and invisible or direction characters escaped, and text is stored
+and shown exactly as written. Whatever displays it has to escape it too.
+
+A new record's notes are limited to 4,000 characters and its evidence to 1,000. Its names (team names, the
+declared name, the machine's name and a backfill's `entered_by`) are limited to 64 characters, with no control
+characters and no invisible or direction-changing ones, such as a zero-width space or a right-to-left override,
+so that `alice` and a look-alike can't pass as two people (RAL-41). Letters from any script are allowed.
+
+These limits apply to new records only. Replay doesn't apply them, so an old ledger stays readable if a limit
+tightens. Only what every record has always needed is checked on replay: the record's format, and a credential
+and declared name of at most 64 characters with no control characters.
 
 A notice can't stop an agent being persuaded by what it reads. It only makes the boundary visible.
 

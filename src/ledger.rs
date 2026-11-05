@@ -378,6 +378,8 @@ pub enum LedgerError {
     TooLong(&'static str, usize),
     /// A team's name has a control character.
     ControlCharacter(&'static str),
+    /// A name has a character that shows nothing or changes the text's direction (RAL-41).
+    InvisibleCharacter(&'static str),
     /// Records must be applied in order with no gaps.
     OutOfOrder {
         expected: u64,
@@ -465,6 +467,11 @@ impl fmt::Display for LedgerError {
             Self::EmptyField(field) => write!(f, "{field} is empty"),
             Self::TooLong(field, limit) => write!(f, "{field} is over {limit} characters"),
             Self::ControlCharacter(field) => write!(f, "{field} has a control character"),
+            Self::InvisibleCharacter(field) => write!(
+                f,
+                "{field} has an invisible or direction-changing character, so it could look like \
+                 another name"
+            ),
             Self::OutOfOrder { expected, found } => {
                 write!(f, "expected record {expected}, found record {found}")
             }
@@ -709,6 +716,7 @@ impl Ledger {
             } => (entry.as_ref(), Some(entered_by.as_str())),
             change => (change, record.source().declared_name.as_deref()),
         };
+        check_text(record, &parsed, change)?;
         // So that `RAL-1` and `RAL-01` can't be two stories.
         let id = change.story();
         if !id.is_empty() && has_leading_zero(id) {
@@ -1241,9 +1249,6 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         if entered_by.trim().is_empty() {
             return Err(LedgerError::EmptyField("entered_by"));
         }
-        if !crate::record::is_good_name(entered_by) {
-            return Err(LedgerError::ControlCharacter("entered_by"));
-        }
         if matches!(**entry, Change::Backfill { .. }) {
             return Err(LedgerError::InvalidChange(
                 "a backfilled entry can't itself be a backfill".into(),
@@ -1278,11 +1283,10 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
                 return Err(LedgerError::BlockedOnItself(on.clone()));
             }
         }
-        if let Some(on) = on_team {
-            if on.trim().is_empty() {
-                return Err(LedgerError::EmptyField("on_team"));
-            }
-            check_limit("team", on)?;
+        if let Some(on) = on_team
+            && on.trim().is_empty()
+        {
+            return Err(LedgerError::EmptyField("on_team"));
         }
     }
     if let Change::TeamState { status, note, .. } = change {
@@ -1343,17 +1347,81 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         if value.trim().is_empty() {
             return Err(LedgerError::EmptyField(name));
         }
-        check_limit(name, value)?;
     }
-    // Optional fields aren't in the list above.
+    Ok(())
+}
+
+/// The text a change carries that has a limit, required and optional, by the limit's name.
+fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
+    let mut text: Vec<(&'static str, &str)> = Vec::new();
     match change {
-        Change::Correct {
-            team: Some(team), ..
-        } => check_limit("team", team),
-        Change::TeamState {
-            note: Some(note), ..
-        } => check_limit("note", note),
-        _ => Ok(()),
+        Change::Ready { .. }
+        | Change::Merge { .. }
+        | Change::Backfill { .. }
+        | Change::Designate { .. } => {}
+        Change::Claim { team, .. } | Change::Release { team, .. } => text.push(("team", team)),
+        Change::TeamState { team, note, .. } => {
+            text.push(("team", team));
+            text.extend(note.as_deref().map(|note| ("note", note)));
+        }
+        Change::Block {
+            team,
+            note,
+            on_team,
+            ..
+        } => {
+            text.extend([("team", team.as_str()), ("note", note)]);
+            text.extend(on_team.as_deref().map(|on| ("team", on)));
+        }
+        Change::Annotate { team, note, .. } => {
+            text.extend([("team", team.as_str()), ("note", note)])
+        }
+        Change::Submit { team, evidence, .. } => {
+            text.extend([("team", team.as_str()), ("evidence", evidence)]);
+        }
+        Change::Correct { note, team, .. } => {
+            text.push(("note", note));
+            text.extend(team.as_deref().map(|team| ("team", team)));
+        }
+        Change::Unblock { note, .. }
+        | Change::Verify { note, .. }
+        | Change::SendBack { note, .. }
+        | Change::RequestRead { note, .. }
+        | Change::WithdrawRead { note, .. } => text.push(("note", note)),
+    }
+    text
+}
+
+/// Limits on a new record's text and names (RAL-16, RAL-41). Only new records meet them: replay
+/// doesn't, so tightening one never makes a ledger that already holds a longer note, or a name
+/// with a character now refused, unreadable.
+fn check_text(record: &Record, parsed: &Change, change: &Change) -> Result<(), LedgerError> {
+    for (name, value) in limited_text(change) {
+        check_limit(name, value)?;
+        if name == "team" && value.chars().any(crate::record::is_invisible) {
+            return Err(LedgerError::InvisibleCharacter("team"));
+        }
+    }
+    let mut names = vec![("source.credential", record.source().credential.as_str())];
+    names.extend(
+        record
+            .source()
+            .declared_name
+            .as_deref()
+            .map(|name| ("declared name", name)),
+    );
+    if let Change::Backfill { entered_by, .. } = parsed {
+        if !crate::record::is_good_name(entered_by) {
+            return Err(LedgerError::ControlCharacter("entered_by"));
+        }
+        names.push(("entered_by", entered_by));
+    }
+    match names
+        .into_iter()
+        .find(|(_, name)| !crate::record::is_clear_name(name))
+    {
+        Some((field, _)) => Err(LedgerError::InvisibleCharacter(field)),
+        None => Ok(()),
     }
 }
 
@@ -1900,8 +1968,13 @@ mod tests {
         );
         let control = backfilled(Kind::Declared, "watch", "bob\u{7}", 400, claim.clone());
         assert_eq!(
-            apply_next(&mut ledger, &control),
+            ledger.check(ledger.last_seq() + 1, &control),
             Err(LedgerError::ControlCharacter("entered_by"))
+        );
+        let hidden = backfilled(Kind::Declared, "watch", "b\u{200b}ob", 400, claim.clone());
+        assert_eq!(
+            ledger.check(ledger.last_seq() + 1, &hidden),
+            Err(LedgerError::InvisibleCharacter("entered_by"))
         );
         let inner = json!({
             "change": "backfill", "entered_at_ms": 300, "entered_by": "bob", "entry": claim
@@ -2898,23 +2971,116 @@ mod tests {
 
     #[test]
     fn refuses_text_over_its_limit() {
-        let mut ledger = ledger_with(&[ready(), claim()]);
+        let ledger = ledger_with(&[ready(), claim()]);
+        let next = ledger.last_seq() + 1;
         let long = "x".repeat(4_001);
         let body = json!({"change": "correct", "story": STORY, "corrects": 2, "note": long});
-        assert!(apply_next(&mut ledger, &team(body)).is_err());
+        assert_eq!(
+            ledger.check(next, &team(body)),
+            Err(LedgerError::TooLong("note", 4_000))
+        );
         let long = "x".repeat(1_001);
         let body = json!({"change": "submit", "story": STORY, "team": "rally", "evidence": long});
-        assert!(apply_next(&mut ledger, &team(body)).is_err());
+        assert_eq!(
+            ledger.check(next, &team(body)),
+            Err(LedgerError::TooLong("evidence", 1_000))
+        );
         let long = "x".repeat(65);
         let body = json!({"change": "team_state", "team": long, "status": "working"});
-        assert!(apply_next(&mut ledger, &team(body)).is_err());
+        assert_eq!(
+            ledger.check(next, &team(body)),
+            Err(LedgerError::TooLong("team", 64))
+        );
+        let long = "x".repeat(65);
+        let body = json!({"change": "block", "team": "rally", "on_team": long, "note": "n"});
+        assert_eq!(
+            ledger.check(next, &team(body)),
+            Err(LedgerError::TooLong("team", 64))
+        );
     }
 
     #[test]
     fn refuses_control_characters_in_team_names() {
-        let mut ledger = Ledger::default();
+        let ledger = Ledger::default();
         let body = json!({"change": "team_state", "team": "ral\nly", "status": "working"});
-        assert!(apply_next(&mut ledger, &team(body)).is_err());
+        assert_eq!(
+            ledger.check(1, &team(body)),
+            Err(LedgerError::ControlCharacter("team"))
+        );
+    }
+
+    #[test]
+    fn refuses_invisible_and_direction_characters_in_new_names() {
+        let ledger = ledger_with(&[ready()]);
+        // A zero-width space, a right-to-left override, a word joiner, a tag character.
+        for name in [
+            "al\u{200b}ice",
+            "\u{202e}ecila",
+            "ali\u{2060}ce",
+            "alice\u{e0041}",
+        ] {
+            let next = ledger.last_seq() + 1;
+            let body = json!({"change": "claim", "story": STORY, "team": name});
+            assert_eq!(
+                ledger.check(next, &team(body)),
+                Err(LedgerError::InvisibleCharacter("team")),
+                "{name:?}"
+            );
+            let body = json!({"change": "team_state", "team": "rally", "status": "working"});
+            let declared = record(Kind::Declared, name, body.clone());
+            assert_eq!(
+                ledger.check(next, &declared),
+                Err(LedgerError::InvisibleCharacter("declared name")),
+                "{name:?}"
+            );
+            let source = Source {
+                credential: name.into(),
+                declared_name: Some("alice".into()),
+            };
+            let machine = Record::new(Kind::Declared, source, 1_000, body).unwrap();
+            assert_eq!(
+                ledger.check(next, &machine),
+                Err(LedgerError::InvisibleCharacter("source.credential")),
+                "{name:?}"
+            );
+            let body = json!({
+                "change": "block", "team": "rally", "on_team": name, "note": "waiting"
+            });
+            assert_eq!(
+                ledger.check(next, &team(body)),
+                Err(LedgerError::InvisibleCharacter("team")),
+                "{name:?}"
+            );
+        }
+        // Letters from other scripts are names like any other.
+        let body = json!({"change": "claim", "story": STORY, "team": "équipe-東京"});
+        assert!(ledger.check(ledger.last_seq() + 1, &team(body)).is_ok());
+    }
+
+    #[test]
+    fn an_old_ledger_replays_after_its_limits_tighten() {
+        // Records written before a limit, or a refused character, still replay: those rules are
+        // for new records only (RAL-41).
+        let long = "x".repeat(4_001);
+        let hidden = "ral\u{200b}ly";
+        let records = [
+            ready(),
+            team(json!({"change": "claim", "story": STORY, "team": hidden})),
+            record(
+                Kind::Declared,
+                "ali\u{202e}ce",
+                json!({"change": "submit", "story": STORY, "team": hidden, "evidence": long}),
+            ),
+        ];
+        let ledger = ledger_with(&records);
+        assert_eq!(ledger.story(STORY).unwrap().state, State::InReview);
+        for (seq, record) in records.iter().enumerate().skip(1) {
+            let before = ledger_with(&records[..seq]);
+            assert!(
+                before.check(seq as u64 + 1, record).is_err(),
+                "record {seq}"
+            );
+        }
     }
 
     #[test]
