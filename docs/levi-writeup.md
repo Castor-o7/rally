@@ -34,7 +34,8 @@ see its test `unknown_item_type_is_ignored`). No existing event, field or comman
   has, as its newest review applying at the tested commit, a verification of the commit it closed at or a later
   one, and has no open read request. A verification strictly older than the close, or on a parallel branch, fails
   (`stale_review`), since the commits in between were never read. Where git can't say how the two commits are
-  ordered, it fails as `partial`, so the gate never passes on a guess.
+  ordered, it fails as `partial`, so the gate never passes on a guess. A close made with `--no-anchor` has no
+  commit to compare, so for it any applying verification counts.
 - **Requested reads.** `levi request-read ID [--commit SHA]` asks for a read before a merge, and
   `levi withdraw-read ID` takes your own back. One request per requester per task: asking again replaces it. A
   later review by anyone answers it, provided it read the requested commit or a later one. If git can't place the two
