@@ -9,6 +9,10 @@ the proposal, and each half was read by the other builder.
 The watchman approved the stack (RAL-47) at `baec03a`. It read the core in full, and the CLI through the two
 builders' reads of each other's halves.
 
+
+**The branch for the PR** is `ral47/linear` on `murph:git/levi.git` at `44c886b`: a linear rebuild, by
+chartreuse-meerkat, of the stack the watchman approved. The working branches with merge commits are left as they
+are. Which one goes up, and when, is for the operator to say.
 ---
 
 ## Summary
@@ -56,8 +60,8 @@ All changes are additive, on the existing schema versions:
 - `levi.show/1` gains the same review fields, plus `reviews[]`, `read_requests[]` and `blockers[]`. Each entry has
   `source: "declared"`.
 - `levi.check-claims/1` tasks gain `review`, `review_source`, `review_resolution`, `review_differs`, `open_reads`,
-  `stale_review` and `self_review_warning`, on every run, not only with `--require-review`. The proposal named one
-  added field; this adds seven, so that a CI log shows why a task would fail the gate before anyone turns it on.
+  `stale_review` and `self_review_warning`, on every run, not only with `--require-review`, so that
+  a CI log shows why a task would fail the gate before anyone turns it on.
 
 ## What it doesn't do, and its limits
 
@@ -74,23 +78,40 @@ All changes are additive, on the existing schema versions:
 - **Touch the hub or the dashboard.** The hub carries the new events in `LogEntry` like any other, with a test that a
   `Review` round-trips. The dashboard doesn't show reviews yet; that's a later change.
 - **Bring in the rest of Rally.** Rally's hash-chained ledger, authenticated service, team state and backups stay in
-  Rally. They're about the muster, or they'd fight Levi's union-merged, offline-first model. The proposal says why
-  for each.
+  Rally. They're about coordinating teams of agents across machines, or they'd fight Levi's union-merged, offline-first
+  model.
 
 ## How it was tested
 
 - `cargo test --workspace`: Levi's 125 tests, plus the new ones. There are unit tests in `levi-core` for replay,
   resolution, ranking, the self-review rule and the gate. There are CLI integration tests against scripted repos
   in `levi/tests/cli_reviews.rs` (8), `cli_reads.rs` (5) and `cli_blockers.rs` (3), using a second git worktree as
-  the second reader. 177 pass at `baec03a` (Levi's 125 and 52 new), on a1 and on Murph. The `self_review_warning` path is covered by a core
+  the second reader. 177 pass at `baec03a` (Levi's 125 and 52 new), on two machines. The `self_review_warning` path is covered by a core
   test only: every test worktree shares one email and hostname, so an end-to-end case can't separate a closer who
   never claimed the task from one who did.
 - `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` pass. The `levi-dash` wasm
-  check and clippy pass on Murph.
+  check and clippy pass too.
 
 ## Commits
 
-Conventional commits, with `feat(core):` for the core and `feat:` for the CLI. Following Levi's `CLAUDE.md`, and the
-operator's ruling for this PR, they carry no AI attribution. The working branches have merge commits where the two
-builders' branches met, and they're left as they are. chartreuse-meerkat is building `ral47/linear`, a linear
-history with the same final tree as `baec03a`, for the PR. Which one goes up, and when, is for the operator to say.
+Fourteen conventional commits on `56aceb2`, with `feat(core):` for the core and `feat:` for the CLI, ordered by
+feature: reviews and the gate, then requested reads, then blockers. There are no merge commits, and the tree is
+identical to the reviewed stack (`baec03a`, tree `d78a6d0`). Each commit passes `cargo check`, and the last passes
+the full suite.
+
+| Commit | Change |
+|---|---|
+| `74cd68b` | feat(core): reviews of a task at a commit, resolved by ancestry |
+| `7cefcf8` | feat(core): warn rather than refuse when a reviewer matches a closer on host only |
+| `7f5b4dc` | feat(core): the review gate for check-claims --require-review |
+| `a58b795` | feat: verify and send back a task at a commit, and gate CI on it |
+| `3e37578` | docs: send-back doesn't reopen, and a send-back fails the review gate |
+| `bd1d1f3` | test: isolate the review condition in check-claims --require-review |
+| `e1da8ed` | feat: the review gate requires a read at or after the close |
+| `7d8026f` | feat(core): requested reads, answered by a later review |
+| `7adc8bc` | feat(core): an open read request fails the review gate |
+| `ee5561b` | feat: request a read of a task before it merges, or withdraw it |
+| `ca54b8e` | feat: a read request is answered only by a read of that commit or later |
+| `65c126a` | feat(core): blockers that aren't tasks |
+| `e5dcca5` | feat: block a task on something that isn't a task, and unblock it with why |
+| `44c886b` | test: compare next's ids to a vec, for clippy |
