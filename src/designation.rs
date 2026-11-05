@@ -244,6 +244,110 @@ pub fn verifications(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKe
     })
 }
 
+/// What a newly designated watchman re-reads (RAL-52): every story verified by a peer since the
+/// designation before the current one, each with the commit read, who verified it and whether and
+/// where it merged. Each stays "awaiting the watchman's re-read" until the watchman, by declared
+/// name, records its own verification, send-back or correction of that story after it was
+/// designated; the peer's record is never changed. With no watchman designated, the list is what
+/// the next one would get. Nothing stands on a peer's verification alone.
+pub fn handover(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -> Value {
+    use crate::ledger::{Change, State, same_name};
+    let Some(key) = key else {
+        return json!({
+            "watchman": null, "operator_key": null, "stories": [],
+            "note": "no operator key: designations can't be checked, so there's no handover list",
+        });
+    };
+    let eras = eras(ledger, hashes, Some(key));
+    // The current designation, if a watchman is in force, and where the window opens: just after
+    // the valid designation before it, or the ledger's start.
+    let (current, opens) = match eras.last() {
+        Some((seq, Some(watchman))) => (
+            Some((*seq, watchman.clone())),
+            eras.iter().rev().nth(1).map_or(0, |(seq, _)| *seq),
+        ),
+        Some((seq, None)) => (None, *seq),
+        None => (None, 0),
+    };
+    let closes = current.as_ref().map_or(u64::MAX, |(seq, _)| *seq);
+    let mut stories = Vec::new();
+    for (id, story) in ledger.stories() {
+        // The newest peer verification in the window: made while nobody was designated.
+        let peer = story.history.iter().rev().find(|entry| {
+            entry.seq > opens
+                && entry.seq < closes
+                && watchman_at(&eras, entry.seq).is_none()
+                && matches!(
+                    entry.change,
+                    Change::Verify { .. }
+                        | Change::Correct {
+                            state: Some(State::Verified),
+                            ..
+                        }
+                )
+        });
+        let Some(peer) = peer else { continue };
+        let commit = match &peer.change {
+            Change::Verify { commit, .. } | Change::Correct { commit, .. } => commit.clone(),
+            _ => None,
+        };
+        let by = peer
+            .backfilled
+            .as_ref()
+            .map(|b| b.entered_by.clone())
+            .or_else(|| peer.source.declared_name.clone());
+        let merged = story
+            .history
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.change {
+                Change::Merge { commit, .. } => Some(json!({"seq": entry.seq, "commit": commit})),
+                _ => None,
+            });
+        let reread = current.as_ref().and_then(|(designated, watchman)| {
+            story.history.iter().find(|entry| {
+                entry.seq > *designated
+                    && entry
+                        .source
+                        .declared_name
+                        .as_deref()
+                        .is_some_and(|name| same_name(name, watchman))
+                    && matches!(
+                        entry.change,
+                        Change::Verify { .. } | Change::SendBack { .. } | Change::Correct { .. }
+                    )
+            })
+        });
+        let status = match (&current, reread) {
+            (None, _) => "awaiting a watchman".to_string(),
+            (Some(_), None) => "awaiting the watchman's re-read".to_string(),
+            (Some(_), Some(entry)) => format!("re-read by the watchman at record {}", entry.seq),
+        };
+        stories.push(json!({
+            "story": id, "verified_seq": peer.seq, "verified_at_ms": peer.at_ms,
+            "commit": commit, "verified_by": by, "merged": merged, "state": story.state,
+            "status": status,
+        }));
+    }
+    let awaiting = stories
+        .iter()
+        .filter(|s| {
+            s["status"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("awaiting"))
+        })
+        .count();
+    json!({
+        "watchman": current.as_ref().map(|(seq, name)| json!({"name": name, "seq": seq})),
+        "operator_key": key.fingerprint(),
+        "since_record": opens,
+        "stories": stories,
+        "awaiting": awaiting,
+        "rule": "Nothing stands on a peer's verification alone: the watchman re-reads each, merged or \
+                 not, and keeps it, sends it back or asks for fixes. The peer's record stays.",
+    })
+}
+
 /// What `serve --secure` requires of `path`: it, and every directory above it, owned by `uid`
 /// (root, outside tests) and writable by no one else. Stops above `stop`, for tests only.
 pub fn check_owned(path: &Path, uid: u32, stop: Option<&Path>) -> Result<(), String> {
@@ -570,6 +674,111 @@ mod tests {
         let wrong = verifications(&ledger, &chain.hashes, Some(&stranger));
         let rows = wrong["verifications"].as_array().unwrap();
         assert!(rows.iter().all(|r| r["reader"] == "peer"));
+    }
+
+    #[test]
+    fn a_new_watchman_gets_the_peer_verified_work_until_it_rereads_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let (private, key) = keypair(dir.path(), "operator");
+        let mut chain = Chain::new();
+        // Under a first watchman: not handed over.
+        chain.designate(&private, &key, Some("first"));
+        submitted(&mut chain, "RAL-1");
+        verify(&mut chain, "first", "RAL-1");
+        chain.designate(&private, &key, None);
+        // With no watchman: two peer verifications, one merged.
+        submitted(&mut chain, "RAL-2");
+        verify(&mut chain, "peer-a", "RAL-2");
+        let merge = "e".repeat(40);
+        chain.push_as(
+            "t",
+            json!({"change": "merge", "story": "RAL-2", "commit": merge}),
+        );
+        submitted(&mut chain, "RAL-3");
+        verify(&mut chain, "peer-b", "RAL-3");
+        let pending = handover(
+            &Ledger::replay(&chain.records).unwrap(),
+            &chain.hashes,
+            Some(&key),
+        );
+        assert!(pending["watchman"].is_null());
+        assert_eq!(pending["stories"][0]["status"], "awaiting a watchman");
+
+        // A watchman is designated partway through.
+        chain.designate(&private, &key, Some("second"));
+        let ledger = Ledger::replay(&chain.records).unwrap();
+        let out = handover(&ledger, &chain.hashes, Some(&key));
+        assert_eq!(out["watchman"]["name"], "second");
+        let stories: Vec<&str> = out["stories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["story"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            stories,
+            ["RAL-2", "RAL-3"],
+            "not RAL-1, read under a watchman"
+        );
+        let row = |out: &Value, story: &str| {
+            out["stories"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["story"] == story)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(row(&out, "RAL-2")["merged"]["commit"], merge.as_str());
+        assert_eq!(row(&out, "RAL-2")["verified_by"], "peer-a");
+        assert_eq!(row(&out, "RAL-2")["commit"], "c".repeat(40));
+        assert!(row(&out, "RAL-3")["merged"].is_null());
+        assert_eq!(
+            row(&out, "RAL-3")["status"],
+            "awaiting the watchman's re-read"
+        );
+        assert_eq!(out["awaiting"], 2);
+
+        // The watchman re-reads RAL-2 with a correction, and it leaves the list's awaiting count.
+        let verified_seq = row(&out, "RAL-2")["verified_seq"].as_u64().unwrap();
+        chain.push_as(
+            "Second",
+            json!({"change": "correct", "story": "RAL-2", "corrects": verified_seq,
+                   "note": "re-read at the merged commit: keeps"}),
+        );
+        // Someone else's correction of RAL-3 isn't the watchman's re-read.
+        let verified_3 = row(&out, "RAL-3")["verified_seq"].as_u64().unwrap();
+        chain.push_as(
+            "peer-a",
+            json!({"change": "correct", "story": "RAL-3", "corrects": verified_3, "note": "fine"}),
+        );
+        let ledger = Ledger::replay(&chain.records).unwrap();
+        let out = handover(&ledger, &chain.hashes, Some(&key));
+        assert!(
+            row(&out, "RAL-2")["status"]
+                .as_str()
+                .unwrap()
+                .starts_with("re-read by the watchman")
+        );
+        assert_eq!(
+            row(&out, "RAL-3")["status"],
+            "awaiting the watchman's re-read"
+        );
+        assert_eq!(out["awaiting"], 1);
+        // The peer's verification is still the story's record.
+        assert_eq!(
+            ledger.story("RAL-2").unwrap().state,
+            crate::ledger::State::Verified
+        );
+
+        // Without the key there's no list.
+        assert_eq!(
+            handover(&ledger, &chain.hashes, None)["stories"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[test]

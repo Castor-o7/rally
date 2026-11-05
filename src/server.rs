@@ -219,6 +219,7 @@ fn router(
         .route("/v1/whoami", get(whoami))
         .route("/v1/designation", get(designation))
         .route("/v1/verifications", get(verifications))
+        .route("/v1/handover", get(handover))
         .route("/v1/waiting", get(waiting))
         .route("/v1/export", get(export))
         .fallback(|| async { failure(StatusCode::NOT_FOUND, "no such route") })
@@ -824,6 +825,30 @@ async fn verifications(
     let result = service
         .run(Work::Heavy, move |store| {
             store.verifications_report(key.as_ref())
+        })
+        .await;
+    match result {
+        Ok(Ok(report)) => Json(report).into_response(),
+        Ok(Err(error)) => internal(&error),
+        Err(not_run) => not_run.into_response(),
+    }
+}
+
+/// The peer-verified work a newly designated watchman re-reads (RAL-52). Heavy.
+async fn handover(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+) -> Response {
+    if !service.allow(&identity.credential, Bucket::Heavy) {
+        return failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many checks and past-state reads",
+        );
+    }
+    let key = service.operator_key.clone();
+    let result = service
+        .run(Work::Heavy, move |store| {
+            store.handover_report(key.as_ref())
         })
         .await;
     match result {

@@ -889,6 +889,15 @@ impl Store {
         self.with_chain(|ledger, hashes| crate::designation::verifications(ledger, hashes, key))
     }
 
+    /// What a newly designated watchman re-reads: the peer-verified stories since the designation
+    /// before it (RAL-52).
+    pub fn handover_report(
+        &self,
+        key: Option<&crate::designation::OperatorKey>,
+    ) -> Result<serde_json::Value, StoreError> {
+        self.with_chain(|ledger, hashes| crate::designation::handover(ledger, hashes, key))
+    }
+
     /// `read` given the current ledger and its chain hashes: a writer's kept copy, or replayed from
     /// Postgres.
     fn with_chain<T>(&self, read: impl FnOnce(&Ledger, &[String]) -> T) -> Result<T, StoreError> {

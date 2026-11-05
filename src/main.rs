@@ -201,6 +201,9 @@ enum Command {
     /// Every verification and send-back, newest first, labelled watchman, peer or other by the
     /// designation in force when it was written (RAL-51).
     Verifications,
+    /// For a newly designated watchman: every story a peer verified since the designation before
+    /// it, merged or not, each awaiting the watchman's re-read until it records its own (RAL-52).
+    Handover,
     /// Submissions waiting for a reader, oldest first, with the evidence and any requested reads'
     /// commits to read (RAL-51).
     Waiting,
@@ -1260,23 +1263,22 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 json!({"change": "withdraw_read", "story": story, "request": request, "note": note}),
             )
         }
-        Command::Designation | Command::Verifications => {
-            let verifications = matches!(cli.command, Command::Verifications);
+        Command::Designation | Command::Verifications | Command::Handover => {
             if let Some(location) = &location {
                 // On the host, without the service's key: nothing counts as designated.
                 let store = Store::open_read_only(location)?;
-                let report = if verifications {
-                    store.verifications_report(None)?
-                } else {
-                    store.designation_report(None)?
+                let report = match cli.command {
+                    Command::Verifications => store.verifications_report(None)?,
+                    Command::Handover => store.handover_report(None)?,
+                    _ => store.designation_report(None)?,
                 };
                 return Ok(report.to_string());
             }
             let pairing = read_pairing(&config_path(cli.config.clone())?)?;
-            let path = if verifications {
-                "/v1/verifications"
-            } else {
-                "/v1/designation"
+            let path = match cli.command {
+                Command::Verifications => "/v1/verifications",
+                Command::Handover => "/v1/handover",
+                _ => "/v1/designation",
             };
             let reply = client::request(&pairing, "GET", path, None, &[])?;
             return Ok(reply_value(&reply)?.to_string());
