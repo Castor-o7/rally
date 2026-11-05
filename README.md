@@ -129,6 +129,10 @@ included. It writes nothing to any file if one is refused. The block also states
 designated a watchman, merges wait for its read; otherwise another team, or the operator. The block names no address,
 pair code or credential, so it's safe to commit; pairing a machine is still `rally pair`.
 
+For each session to start with its team's Rally state, add the SessionStart hook in
+[docs/session-hook.md](docs/session-hook.md). It runs `rally session-start`, which is read-only and quick, and silent
+if anything fails.
+
 ## Development
 
 ```bash

@@ -687,3 +687,59 @@ fn the_watchman_reads_a_teams_declared_state_without_a_message() {
     assert_eq!(one["detail"]["current"]["status"], "working");
     assert_eq!(one["detail"]["history"].as_array().unwrap().len(), 1);
 }
+
+/// `rally session-start` with no database, in an empty home, with `config` as its pairing.
+fn session_start(home: &std::path::Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_rally"))
+        .arg("session-start")
+        .args(args)
+        .env("HOME", home)
+        .env_remove("RALLY_DB")
+        .env_remove("RALLY_HEAD_FILE")
+        .env_remove("RALLY_CONFIG")
+        .env_remove("RALLY_TEAM")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn session_start_is_silent_and_succeeds_without_a_team_or_a_pairing() {
+    let home = tempfile::tempdir().unwrap();
+    for args in [&[][..], &["--team", "rally"][..]] {
+        let out = session_start(home.path(), args);
+        assert!(out.status.success(), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+        assert!(out.stderr.is_empty(), "{args:?}");
+    }
+    let out = session_start(home.path(), &["--team", "rally", "--verbose"]);
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no pairing"));
+}
+
+#[test]
+fn session_start_is_silent_and_quick_when_the_service_cant_be_reached() {
+    let home = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    drop(listener);
+    let config = home.path().join(".config/rally");
+    std::fs::create_dir_all(&config).unwrap();
+    let pairing =
+        serde_json::json!({"address": address, "fingerprint": "00".repeat(32), "token": "t"});
+    std::fs::write(config.join("client.json"), pairing.to_string()).unwrap();
+    let started = std::time::Instant::now();
+    let out = session_start(home.path(), &["--team", "rally"]);
+    assert!(out.status.success());
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(4));
+
+    // A pairing file that isn't one is silent too.
+    std::fs::write(config.join("client.json"), "not json").unwrap();
+    let out = session_start(home.path(), &["--team", "rally"]);
+    assert!(out.status.success() && out.stdout.is_empty());
+}

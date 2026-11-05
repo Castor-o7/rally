@@ -11,6 +11,7 @@ pub mod record;
 pub mod scratch_pg;
 pub mod secrets;
 pub mod server;
+pub mod session;
 pub mod store;
 pub mod views;
 pub mod web;
