@@ -46,6 +46,10 @@ pub struct Outcome {
     /// still running when the wait ran out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// A read of GitHub failed, which may pass: a network error, a 5xx or a rate limit. Not
+    /// recorded; it only means the check is tried again until the ceiling.
+    #[serde(skip)]
+    pub unread: bool,
 }
 
 impl Outcome {
@@ -58,12 +62,13 @@ impl Outcome {
             names_story: None,
             ci: None,
             reason: Some(reason.into()),
+            unread: false,
         }
     }
 
-    /// Whether checking again could change it: only CI that's still running.
+    /// Whether checking again could change it: CI that's still running, or a read that failed.
     pub fn is_final(&self) -> bool {
-        self.ci != Some(Ci::Pending)
+        self.ci != Some(Ci::Pending) && !self.unread
     }
 }
 
@@ -130,6 +135,7 @@ pub fn check(forge: Option<&dyn Forge>, story: &str, evidence: &str) -> Outcome 
         names_story: None,
         ci: None,
         reason: None,
+        unread: false,
     };
     let Some(forge) = forge else {
         outcome.reason = Some("not checked: the service has no GitHub token".into());
@@ -139,6 +145,7 @@ pub fn check(forge: Option<&dyn Forge>, story: &str, evidence: &str) -> Outcome 
         Ok(message) => message,
         Err(error) => {
             outcome.reason = Some(format!("GitHub couldn't be read: {error}"));
+            outcome.unread = true;
             return outcome;
         }
     };
@@ -147,18 +154,29 @@ pub fn check(forge: Option<&dyn Forge>, story: &str, evidence: &str) -> Outcome 
         return outcome;
     };
     outcome.exists = Some(true);
-    let named = names(&message, story)
-        || match forge.pull_titles(&repo, &commit) {
-            Ok(titles) => titles.iter().any(|title| names(title, story)),
+    // Not named in the message and its pull requests unread is unknown, not "not named".
+    outcome.names_story = if names(&message, story) {
+        Some(true)
+    } else {
+        match forge.pull_titles(&repo, &commit) {
+            Ok(titles) => Some(titles.iter().any(|title| names(title, story))),
             Err(error) => {
                 outcome.reason = Some(format!("its pull requests couldn't be read: {error}"));
-                false
+                outcome.unread = true;
+                None
             }
-        };
-    outcome.names_story = Some(named);
+        }
+    };
     match forge.ci(&repo, &commit) {
         Ok(ci) => outcome.ci = Some(ci),
-        Err(error) => outcome.reason = Some(format!("its CI couldn't be read: {error}")),
+        Err(error) => {
+            let why = format!("its CI couldn't be read: {error}");
+            outcome.reason = Some(match outcome.reason.take() {
+                Some(earlier) => format!("{earlier}; {why}"),
+                None => why,
+            });
+            outcome.unread = true;
+        }
     }
     outcome
 }
@@ -343,10 +361,14 @@ pub fn step(mut outcome: Outcome, job: &Job, now_ms: i64, ceiling_ms: u64) -> St
         return Step::Record(outcome);
     }
     if now_ms.saturating_sub(job.submitted_at_ms) >= i64::try_from(ceiling_ms).unwrap_or(i64::MAX) {
-        outcome.reason = Some(format!(
-            "CI was still running when the wait of {} minutes ran out",
-            ceiling_ms / 60_000
-        ));
+        let minutes = ceiling_ms / 60_000;
+        outcome.reason = Some(match outcome.reason.take() {
+            // A read that kept failing says what failed.
+            Some(why) if outcome.unread => {
+                format!("{why}, still when the wait of {minutes} minutes ran out")
+            }
+            _ => format!("CI was still running when the wait of {minutes} minutes ran out"),
+        });
         return Step::Record(outcome);
     }
     Step::Again
@@ -579,13 +601,140 @@ mod tests {
         };
         assert!(!check(Some(&pending), "RAL-5", &evidence()).is_final());
 
-        // CI couldn't be read: said so.
+        // CI couldn't be read: said so, and not final, so it's tried again.
         let down = Fake {
             message: Some("RAL-5".into()),
             ..Fake::default()
         };
         let outcome = check(Some(&down), "RAL-5", &evidence());
+        assert!(!outcome.is_final());
         assert!(outcome.reason.unwrap().contains("CI couldn't be read"));
+    }
+
+    /// A forge whose every read fails, as GitHub does in an outage or past its rate limit.
+    struct Down;
+    impl Forge for Down {
+        fn commit_message(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+            Err("GitHub answered 503".into())
+        }
+        fn pull_titles(&self, _: &str, _: &str) -> Result<Vec<String>, String> {
+            Err("GitHub answered 403: API rate limit exceeded".into())
+        }
+        fn ci(&self, _: &str, _: &str) -> Result<Ci, String> {
+            Err("GitHub answered 503".into())
+        }
+    }
+
+    #[test]
+    fn a_failed_read_is_tried_again_and_recorded_with_its_reason_at_the_ceiling() {
+        let job = Job {
+            story: "RAL-5".into(),
+            submit: 4,
+            evidence: evidence(),
+            submitted_at_ms: 0,
+        };
+        let outcome = check(Some(&Down), "RAL-5", &evidence());
+        assert!(!outcome.is_final());
+        assert_eq!(step(outcome.clone(), &job, 1, 60_000), Step::Again);
+        let Step::Record(recorded) = step(outcome, &job, 60_000, 60_000) else {
+            panic!("not recorded at the ceiling");
+        };
+        let reason = recorded.reason.unwrap();
+        assert!(
+            reason.contains("GitHub couldn't be read") && reason.contains("ran out"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn unread_pull_requests_leave_whether_the_story_is_named_unknown() {
+        struct NoPulls;
+        impl Forge for NoPulls {
+            fn commit_message(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+                Ok(Some("wip".into()))
+            }
+            fn pull_titles(&self, _: &str, _: &str) -> Result<Vec<String>, String> {
+                Err("GitHub answered 502".into())
+            }
+            fn ci(&self, _: &str, _: &str) -> Result<Ci, String> {
+                Ok(Ci::Passed)
+            }
+        }
+        let outcome = check(Some(&NoPulls), "RAL-5", &evidence());
+        assert_eq!(outcome.names_story, None);
+        assert!(
+            outcome
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("pull requests couldn't be read")
+        );
+        assert!(!outcome.is_final());
+        // Named in the message, the pull requests aren't needed.
+        let named = Fake {
+            message: Some("feat: RAL-5".into()),
+            ci: Some(Ci::Passed),
+            ..Fake::default()
+        };
+        assert_eq!(
+            check(Some(&named), "RAL-5", &evidence()).names_story,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn the_checker_tries_again_after_a_failed_read() {
+        use std::sync::{Arc, Mutex};
+        struct Flaky(Mutex<u32>);
+        impl Forge for Flaky {
+            fn commit_message(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+                let mut calls = self.0.lock().unwrap();
+                *calls += 1;
+                if *calls == 1 {
+                    Err("GitHub answered 503".into())
+                } else {
+                    Ok(Some("RAL-5".into()))
+                }
+            }
+            fn pull_titles(&self, _: &str, _: &str) -> Result<Vec<String>, String> {
+                Ok(Vec::new())
+            }
+            fn ci(&self, _: &str, _: &str) -> Result<Ci, String> {
+                Ok(Ci::Passed)
+            }
+        }
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let sink = recorded.clone();
+        let checker = Checker::start(
+            Some(Arc::new(Flaky(Mutex::new(0)))),
+            1,
+            Timing {
+                ceiling_ms: 60_000,
+                poll_ms: 20,
+            },
+            Arc::new(move |_: &Job, outcome: &Outcome| {
+                sink.lock().unwrap().push(outcome.clone());
+            }),
+        );
+        assert!(checker.submit(Job {
+            story: "RAL-5".into(),
+            submit: 4,
+            evidence: evidence(),
+            submitted_at_ms: now_ms(),
+        }));
+        for _ in 0..100 {
+            if !recorded.lock().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let recorded = recorded.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            (recorded[0].exists, recorded[0].ci),
+            (Some(true), Some(Ci::Passed))
+        );
+        assert_eq!(recorded[0].reason, None);
     }
 
     #[test]
@@ -648,6 +797,7 @@ mod tests {
             names_story: Some(true),
             ci: Some(Ci::Pending),
             reason: None,
+            unread: false,
         };
         let ceiling = 30 * 60_000;
         assert_eq!(
