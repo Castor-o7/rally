@@ -87,9 +87,17 @@ service's, so what it says is due is what the service will accept.
 
 ## Limits
 
-- Entering away is a second write, made right after the shelve that completes the run. If that write fails, it's
-  tried again only on the next shelve, so if none comes, the operator is never treated as away. That fails
-  towards asking the operator more, not less.
+- Entering away is a second write, made right after the write that completes the run. If it fails, it's tried
+  again after the next write of any kind. Until then, the operator isn't treated as away, which fails towards
+  asking the operator more, not less.
+- Answers are declared. Any team's answer, `--direct` or `--relayed-by`, ends an away hour for the whole rally,
+  since there's one operator. The operator can tighten that later, for example to answers from the operator's
+  own credential.
+- `rally next` reads up to 20 pages of stories and of blockers. If the ledger has more, it says the pick may be
+  wrong.
+- When a question starts again, and whether it's shelved, comes from the ledger, as of the service's clock, in
+  each open question's `question` field in `rally blockers`. `rally next` uses that and the service's time, so
+  the reader's clock doesn't matter.
 - The roadmap is read as the team's checkout has it, which may be behind `main`.
 - "Depends on" is read from the item's text, up to the end of that sentence, and only IDs written in full (or
   as a range, `RAL-54 to 57`) count. A dependency written another way isn't seen.

@@ -363,7 +363,7 @@ pub struct Blocker {
 }
 
 impl Blocker {
-    fn waits_on_operator(&self) -> bool {
+    pub fn waits_on_operator(&self) -> bool {
         self.on_team
             .as_deref()
             .is_some_and(|on| same_name(on, OPERATOR))
@@ -770,9 +770,20 @@ impl Ledger {
         self.aways.last()
     }
 
+    /// Whether an open question to the operator is shelved as of `at_ms`: its last shelf came
+    /// after its window last started. A shelf from before an away hour ended, by running out or by
+    /// an answer, has been revisited, so the question is asked again (RAL-56).
+    pub fn is_shelved(&self, blocker: &Blocker, at_ms: i64) -> bool {
+        let start = self.question_start(blocker, at_ms);
+        blocker
+            .shelves
+            .last()
+            .is_some_and(|shelf| shelf.at_ms >= start)
+    }
+
     /// When a question's window starts: when it was asked, or when an away hour that held it
-    /// ran out, whichever is later, as of `at_ms`.
-    fn question_start(&self, blocker: &Blocker, at_ms: i64) -> i64 {
+    /// ended, whichever is later, as of `at_ms`.
+    pub fn question_start(&self, blocker: &Blocker, at_ms: i64) -> i64 {
         self.aways
             .iter()
             .filter_map(|away| away.ended_by(at_ms))

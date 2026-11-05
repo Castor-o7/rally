@@ -768,13 +768,18 @@ fn next(
     let mut page = Page::default();
     let mut more_blockers = true;
     let mut away = Value::Null;
+    let mut now_ms = None;
     for _ in 0..NEXT_PAGES {
         let value = backend.read_value("/v1/blockers/all", None, &page, |ledger, page| {
             views::blockers(ledger, true, page)
         })?;
         blockers.extend(value["blockers"].as_array().cloned().unwrap_or_default());
-        if away.is_null() {
-            away = value["operator_away"].clone();
+        // The first page's clock, the service's, decides everything time-based in the pick.
+        if now_ms.is_none() {
+            now_ms = value["now_ms"].as_i64();
+            if value["operator_away_active"] == true {
+                away = value["operator_away"].clone();
+            }
         }
         match value["next"].as_str() {
             Some(next) => page.after = Some(next.to_owned()),
@@ -796,9 +801,7 @@ fn next(
         )?)?["operator_window_ms"]
             .as_u64(),
     };
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as i64);
+    let now_ms = now_ms.ok_or("the blockers reply didn't give the service's time")?;
     let empty = serde_json::Map::new();
     let ledger = rally::next::Ledger {
         stories: stories["stories"].as_object().unwrap_or(&empty),
@@ -810,7 +813,10 @@ fn next(
     result["prefix"] = json!(prefix);
     result["untrusted_text"] = json!(views::UNTRUSTED_TEXT);
     if more_stories || more_blockers {
-        result["incomplete"] = json!("the ledger has more stories or blockers than were read");
+        result["incomplete"] = json!(
+            "The ledger has more stories or blockers than were read, so this pick may be wrong: \
+             check `rally show` and `rally blockers` before taking it."
+        );
     }
     Ok(serde_json::to_string_pretty(&result)?)
 }

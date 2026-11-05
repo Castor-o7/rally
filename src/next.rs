@@ -131,21 +131,11 @@ pub fn depends_on(item: &Item) -> Vec<String> {
 pub struct Ledger<'a> {
     /// `/v1/stories`: each story's `state` and `team`.
     pub stories: &'a serde_json::Map<String, Value>,
-    /// `/v1/blockers/all`: every blocker, open and closed.
+    /// `/v1/blockers/all`: every blocker, open and closed. Each open question to the operator
+    /// carries the ledger's own `question`: when its window starts and whether it's shelved.
     pub blockers: &'a [Value],
-    /// `/v1/blockers/all`'s `operator_away`: the operator's latest away hour, if ever.
+    /// `/v1/blockers/all`'s `operator_away`, the operator's latest away hour, if it's in force.
     pub away: Option<&'a Value>,
-}
-
-/// The operator's latest away hour, as `(when it ends or ended, still in force)`. An answer ends
-/// it early, and from then it counts as over, the same as when its hour runs out.
-fn away_of(ledger: &Ledger, now_ms: i64) -> Option<(i64, bool)> {
-    let away = ledger.away?;
-    if let Some(ended) = away["ended_early_at_ms"].as_i64() {
-        return Some((ended, false));
-    }
-    let ends_at = away["ends_at_ms"].as_i64()?;
-    Some((ends_at, now_ms < ends_at))
 }
 
 fn is_open(blocker: &Value) -> bool {
@@ -212,20 +202,15 @@ pub fn pick(
         }
     }
 
-    // The operator's away hour: while it lasts, nothing waiting on the operator is offered; once
-    // it has run out, or an answer has ended it, what it held is asked again, with the window
-    // counted from its end.
-    let away = away_of(ledger, now_ms);
-    let away_active = away.is_some_and(|(_, active)| active);
-    let ran_out_at = away
-        .filter(|(_, active)| !active)
-        .map(|(ends_at, _)| ends_at);
+    // While the operator is away, nothing waiting on the operator is offered. When each question
+    // starts again, and whether it's shelved, is the ledger's to say, as of the service's clock:
+    // the pick only reads it.
+    let away_active = ledger.away.is_some();
 
-    // The team's questions to the operator, by story, with when each one's window starts, and
-    // its shelves.
-    let mut asking: BTreeMap<String, (&Value, i64)> = BTreeMap::new();
-    let mut shelved = Vec::new();
-    let mut answered: Vec<(u64, String)> = Vec::new();
+    // The team's questions to the operator. A story's newest open question decides it; an
+    // answered shelf brings it back only when no question on it is open.
+    let mut open_questions: BTreeMap<String, &Value> = BTreeMap::new();
+    let mut answered_shelves: BTreeMap<String, (u64, &Value)> = BTreeMap::new();
     for blocker in ledger.blockers {
         let Some(story) = blocker["story"].as_str() else {
             continue;
@@ -233,34 +218,58 @@ pub fn pick(
         if !on_operator(blocker) || !names(blocker, "team", team) {
             continue;
         }
-        let asked = blocker["at_ms"].as_i64().unwrap_or(0);
-        let start = ran_out_at.map_or(asked, |ends_at| ends_at.max(asked));
-        // A shelf from before an away hour that ran out has been revisited: it's asked again.
-        let shelf = blocker["shelves"]
-            .as_array()
-            .and_then(|shelves| shelves.last())
-            .filter(|shelf| !is_open(blocker) || shelf["at_ms"].as_i64().unwrap_or(0) >= start);
-        match (is_open(blocker), shelf) {
-            (true, None) => {
-                asking.insert(story.to_owned(), (blocker, start));
+        let seq = blocker["seq"].as_u64().unwrap_or(0);
+        if is_open(blocker) {
+            let newer = open_questions
+                .get(story)
+                .is_none_or(|other| other["seq"].as_u64().unwrap_or(0) < seq);
+            if newer {
+                open_questions.insert(story.to_owned(), blocker);
             }
-            (true, Some(shelf)) => shelved.push(json!({
+        } else if let Some(shelf) = blocker["shelves"].as_array().and_then(|s| s.last()) {
+            let shelf_seq = shelf["seq"].as_u64().unwrap_or(0);
+            if answered_shelves
+                .get(story)
+                .is_none_or(|(other, _)| *other < shelf_seq)
+            {
+                answered_shelves.insert(story.to_owned(), (shelf_seq, blocker));
+            }
+        }
+    }
+    let mut asking: BTreeMap<String, (&Value, i64)> = BTreeMap::new();
+    let mut shelved = Vec::new();
+    let mut answered: Vec<(u64, String)> = Vec::new();
+    for (story, blocker) in &open_questions {
+        let question = &blocker["question"];
+        let start = question["window_from_ms"]
+            .as_i64()
+            .unwrap_or_else(|| blocker["at_ms"].as_i64().unwrap_or(0));
+        if question["shelved"] == true {
+            let shelf = blocker["shelves"].as_array().and_then(|s| s.last());
+            shelved.push(json!({
                 "story": story, "blocker": blocker["seq"], "question": blocker["note"],
-                "asked_at_ms": blocker["at_ms"], "shelved_at_ms": shelf["at_ms"], "answered": false,
-            })),
-            (false, Some(shelf)) => {
-                let (state, _) = state_of(ledger, story);
-                let ticked = roadmap.iter().any(|item| item.id == story && item.ticked);
-                if state == "ready" && !ticked {
-                    answered.push((shelf["seq"].as_u64().unwrap_or(0), story.to_owned()));
-                    shelved.push(json!({
-                        "story": story, "blocker": blocker["seq"], "question": blocker["note"],
-                        "asked_at_ms": blocker["at_ms"], "shelved_at_ms": shelf["at_ms"],
-                        "answered": true, "answer": blocker["closed"]["note"],
-                    }));
-                }
-            }
-            (false, None) => {}
+                "asked_at_ms": blocker["at_ms"],
+                "shelved_at_ms": shelf.map(|shelf| shelf["at_ms"].clone()), "answered": false,
+            }));
+        } else {
+            asking.insert(story.clone(), (blocker, start));
+        }
+    }
+    for (story, (shelf_seq, blocker)) in &answered_shelves {
+        if open_questions.contains_key(story) {
+            continue;
+        }
+        let (state, _) = state_of(ledger, story);
+        let ticked = roadmap.iter().any(|item| &item.id == story && item.ticked);
+        if state == "ready" && !ticked {
+            answered.push((*shelf_seq, story.clone()));
+            let shelf = blocker["shelves"].as_array().and_then(|s| s.last());
+            shelved.push(json!({
+                "story": story, "blocker": blocker["seq"], "question": blocker["note"],
+                "asked_at_ms": blocker["at_ms"],
+                "shelved_at_ms": shelf.map(|shelf| shelf["at_ms"].clone()),
+                "answered": true, "answer": blocker["closed"]["note"],
+            }));
         }
     }
     answered.sort();
@@ -402,9 +411,9 @@ pub fn pick(
         }
         waiting_on_operator.push(wait);
     }
-    let operator_away = match away {
-        Some((ends_at, true)) => json!({
-            "until_ms": ends_at,
+    let operator_away = match ledger.away {
+        Some(away) => json!({
+            "until_ms": away["ends_at_ms"],
             "note": "The operator is treated as away: no story waiting on the operator is offered \
                      until then, and no new questions should be asked. An answer ends it early.",
         }),
@@ -461,9 +470,11 @@ mod tests {
         rows.as_object().unwrap().clone()
     }
 
+    /// An open question to the operator, as the blockers view gives it.
     fn question(seq: u64, story: &str, team: &str, at_ms: i64) -> Value {
         json!({"seq": seq, "team": team, "story": story, "on_team": "operator",
-               "note": "may we?", "at_ms": at_ms})
+               "note": "may we?", "at_ms": at_ms,
+               "question": {"window_from_ms": at_ms, "shelved": false}})
     }
 
     fn run(stories: &serde_json::Map<String, Value>, blockers: &[Value], now: i64) -> Value {
@@ -609,6 +620,7 @@ mod tests {
         let none = stories(json!({}));
         let mut shelf = question(7, "RAL-3", "rally", 1_000);
         shelf["shelves"] = json!([{"seq": 8, "at_ms": 1_000 + HOUR as i64}]);
+        shelf["question"]["shelved"] = json!(true);
         let shelved = run(&none, std::slice::from_ref(&shelf), 2 * HOUR as i64);
         assert_eq!(shelved["next"]["story"], "RAL-5");
         assert_eq!(shelved["shelved"][0]["story"], "RAL-3");
@@ -616,6 +628,7 @@ mod tests {
         assert_eq!(shelved["shelved"][0]["answered"], false);
         // The answer brings it back to the top, ahead of RAL-5.
         shelf["closed"] = json!({"seq": 12, "note": "yes, go ahead"});
+        shelf.as_object_mut().unwrap().remove("question");
         let answered = run(&none, &[shelf.clone()], 3 * HOUR as i64);
         assert_eq!(answered["next"]["story"], "RAL-3");
         assert_eq!(
@@ -642,25 +655,77 @@ mod tests {
         );
     }
 
-    fn run_away(blockers: &[Value], away: &Value, now: i64) -> Value {
-        let roadmap = items(ROADMAP, "RAL");
-        let none = stories(json!({}));
-        let ledger = Ledger {
-            stories: &none,
-            blockers,
-            away: Some(away),
+    /// The pick as `rally next` makes it, from a real ledger through the views, at `now`.
+    fn through_views(records: &[crate::record::Record], now: i64) -> Value {
+        let ledger = crate::ledger::Ledger::replay(records).unwrap();
+        let page = crate::views::Page::default();
+        let stories = crate::views::stories(&ledger, None, &page).unwrap();
+        let blockers = crate::views::blockers_at(&ledger, true, &page, now).unwrap();
+        let away = (blockers["operator_away_active"] == true).then_some(&blockers["operator_away"]);
+        let view = Ledger {
+            stories: stories["stories"].as_object().unwrap(),
+            blockers: blockers["blockers"].as_array().unwrap(),
+            away,
         };
-        pick("rally", &roadmap, &ledger, Some(HOUR), now)
+        pick("rally", &items(ROADMAP, "RAL"), &view, Some(HOUR), now)
+    }
+
+    fn declared(at_ms: i64, body: Value) -> crate::record::Record {
+        let source = crate::record::Source {
+            credential: "a1".into(),
+            declared_name: Some("r".into()),
+        };
+        crate::record::Record::new(crate::record::Kind::Declared, source, at_ms, body).unwrap()
+    }
+
+    fn ask(at_ms: i64, story: &str) -> crate::record::Record {
+        declared(
+            at_ms,
+            json!({"change": "block", "team": "rally", "story": story, "on_team": "operator",
+                   "note": format!("may we do {story}?")}),
+        )
+    }
+
+    fn shelve(at_ms: i64, blocker: u64) -> crate::record::Record {
+        declared(
+            at_ms,
+            json!({"change": "shelve", "blocker": blocker, "team": "rally", "window_ms": HOUR}),
+        )
+    }
+
+    fn answer(at_ms: i64, blocker: u64) -> crate::record::Record {
+        declared(
+            at_ms,
+            json!({"change": "unblock", "blocker": blocker, "note": "yes",
+                   "answer": {"from": "direct"}}),
+        )
+    }
+
+    fn away(at_ms: i64, ends_at_ms: i64, shelves: &[u64]) -> crate::record::Record {
+        let source = crate::record::Source {
+            credential: "rally".into(),
+            declared_name: None,
+        };
+        let body = json!({"change": "operator_away", "entered_at_ms": at_ms,
+                          "ends_at_ms": ends_at_ms, "shelves": shelves});
+        crate::record::Record::new(crate::record::Kind::Observed, source, at_ms, body).unwrap()
     }
 
     #[test]
     fn nothing_waiting_on_the_operator_is_offered_while_the_operator_is_away() {
         let h = HOUR as i64;
-        let mut shelf = question(7, "RAL-5", "rally", 0);
-        shelf["shelves"] = json!([{"seq": 8, "at_ms": h}]);
-        let blockers = [question(6, "RAL-3", "rally", 0), shelf];
-        let away = json!({"seq": 9, "entered_at_ms": 2 * h, "ends_at_ms": 3 * h, "shelves": [8]});
-        let during = run_away(&blockers, &away, 2 * h + 5);
+        // RAL-3 and RAL-5 asked; RAL-5 and two others shelved; then the operator is away.
+        let records = vec![
+            ask(1, "RAL-3"),
+            ask(1, "RAL-5"),
+            ask(1, "RAL-8"),
+            ask(1, "RAL-9"),
+            shelve(1 + h, 2),
+            shelve(1 + h, 3),
+            shelve(1 + h, 4),
+            away(2 * h, 3 * h, &[5, 6, 7]),
+        ];
+        let during = through_views(&records, 2 * h + 5);
         // RAL-3's question is held and RAL-5 stays shelved, so nothing is left to offer.
         assert!(during["next"].is_null(), "{during}");
         assert_eq!(during["operator_away"]["until_ms"], 3 * h);
@@ -669,7 +734,7 @@ mod tests {
         assert_eq!(during["shelved"][0]["story"], "RAL-5");
 
         // After the hour both are revisited, in roadmap order, asked again from its end.
-        let after = run_away(&blockers, &away, 3 * h);
+        let after = through_views(&records, 3 * h);
         assert!(after["operator_away"].is_null());
         assert_eq!(after["next"]["story"], "RAL-3");
         let wait = &after["waiting_on_operator"][0];
@@ -681,14 +746,72 @@ mod tests {
 
         // Ended early by an answer: the operator is back, so everything it held is asked again
         // from the answer's time, as when the hour runs out.
-        let ended = json!({"seq": 9, "entered_at_ms": 2 * h, "ends_at_ms": 3 * h,
-                           "shelves": [8], "ended_early_by": 10, "ended_early_at_ms": 2 * h + 5});
-        let early = run_away(&blockers, &ended, 2 * h + 6);
+        let mut early = records.clone();
+        early.push(answer(2 * h + 5, 3));
+        let early = through_views(&early, 2 * h + 6);
         assert!(early["operator_away"].is_null());
-        assert_eq!(early["next"]["story"], "RAL-3");
-        assert_eq!(early["waiting_on_operator"][0]["window_from_ms"], 2 * h + 5);
-        assert_eq!(early["after_shelving"]["story"], "RAL-5");
-        assert_eq!(early["shelved"], json!([]));
+        // The answered one first, as always; RAL-5 and RAL-3 asked again from the answer's time.
+        assert_eq!(early["next"]["story"], "RAL-8");
+        assert_eq!(window_from(&early, "RAL-3"), Some(json!(2 * h + 5)));
+        assert_eq!(window_from(&early, "RAL-5"), Some(json!(2 * h + 5)));
+        let shelved = early["shelved"].as_array().unwrap();
+        assert_eq!(shelved.len(), 1);
+        assert_eq!(shelved[0]["story"], "RAL-8");
+        assert_eq!(shelved[0]["answered"], true);
+    }
+
+    fn window_from(result: &Value, story: &str) -> Option<Value> {
+        result["waiting_on_operator"]
+            .as_array()?
+            .iter()
+            .find(|wait| wait["story"] == story)
+            .map(|wait| wait["window_from_ms"].clone())
+    }
+
+    /// modest-roach's case: RAL-3 is shelved, an away hour runs out, a second one starts from
+    /// other shelves and an answer ends it early. RAL-3 must be asked again, not left shelved.
+    #[test]
+    fn a_question_held_through_two_away_hours_is_asked_again() {
+        let h = HOUR as i64;
+        let records = vec![
+            ask(1, "RAL-3"),
+            ask(1, "RAL-8"),
+            ask(1, "RAL-9"),
+            shelve(1 + h, 1),
+            shelve(1 + h, 2),
+            shelve(1 + h, 3),
+            away(2 * h, 3 * h, &[4, 5, 6]),
+            // After the first hour: three new shelves, not RAL-3's, start a second.
+            ask(3 * h, "RAL-10"),
+            shelve(4 * h, 2),
+            shelve(4 * h, 3),
+            shelve(4 * h, 8),
+            away(4 * h + 1, 5 * h, &[9, 10, 11]),
+            answer(4 * h + 10, 2),
+        ];
+        let result = through_views(&records, 4 * h + 20);
+        assert!(result["operator_away"].is_null(), "{result}");
+        // RAL-8's answer comes first; RAL-3 is asked again from the answer, not left shelved.
+        assert_eq!(result["next"]["story"], "RAL-8", "{result}");
+        assert_eq!(window_from(&result, "RAL-3"), Some(json!(4 * h + 10)));
+        assert!(
+            !result["shelved"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|shelf| shelf["story"] == "RAL-3")
+        );
+    }
+
+    #[test]
+    fn a_storys_newest_open_question_decides_it() {
+        let h = HOUR as i64;
+        // An old question shelved, then a new one asked on the same story.
+        let records = vec![ask(1, "RAL-3"), shelve(1 + h, 1), ask(2 * h, "RAL-3")];
+        let result = through_views(&records, 2 * h + 1);
+        assert_eq!(result["next"]["story"], "RAL-3", "{result}");
+        assert_eq!(result["waiting_on_operator"][0]["blocker"], 3);
+        assert_eq!(result["shelved"], json!([]));
     }
 
     #[test]

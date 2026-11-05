@@ -609,7 +609,6 @@ async fn write_record(
     {
         fields.insert("window_ms".into(), json!(times.window_ms));
     }
-    let is_shelve = body["change"] == "shelve";
     let source = Source {
         credential: identity.credential,
         declared_name: Some(request.declared_name),
@@ -625,10 +624,10 @@ async fn write_record(
     let appended = service
         .run(Work::Write, move |store| {
             let seq = store.append(&record)?;
-            // A shelve that completes a run of unanswered shelves puts the operator away. The
-            // shelve stands either way; a failure here is tried again on the next shelve.
-            if is_shelve
-                && let Some(times) = times
+            // A shelve that completes a run of unanswered shelves puts the operator away. It's
+            // checked after every write, so a failure here is tried again on the next one. The
+            // write stands either way.
+            if let Some(times) = times
                 && let Err(error) = store.enter_away_if_due(times)
             {
                 eprintln!("rally: couldn't record the operator as away: {error}");
