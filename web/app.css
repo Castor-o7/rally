@@ -107,3 +107,6 @@ td, .section-name, .source { unicode-bidi: isolate; }
 .story-id { display: inline-block; min-width: 64px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .summary { margin: 8px 0 0; padding: 12px; max-height: 480px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
   unicode-bidi: isolate; background: var(--track); border-radius: 6px; font: 13px/1.5 ui-monospace, monospace; }
+.past-form { margin-top: 1rem; }
+.past-form input { width: 7em; margin: 0 0.25rem; font: inherit; }
+.past-form button { font: inherit; }

@@ -19,7 +19,9 @@ use rally::record::{Kind, Record, Source};
 use rally::server::{self, RateLimit};
 use rally::store::{Head, Location, Store};
 use rally::views::{self, Page};
-use rally::web::{self, BackupWatch, DEFAULT_PROJECTS, LedgerReader, LocalSummaries, Project};
+use rally::web::{
+    self, BackupWatch, DEFAULT_PROJECTS, LedgerReader, LocalSummaries, PastReader, Project,
+};
 
 /// A ledger of progress for a muster of agents.
 #[derive(Parser)]
@@ -272,6 +274,13 @@ enum Command {
     /// Submissions waiting for a reader, oldest first, with the evidence and any requested reads'
     /// commits to read (RAL-51).
     Waiting,
+    /// The ledger as it stood at a past record: its stories, teams and open blockers, replayed to
+    /// that record, and the corrections made since to what it held then, labelled later (RAL-28).
+    /// It's what the viewer shows for that moment.
+    Past {
+        /// The record number to stand at.
+        as_of: u64,
+    },
     /// Save a pair code from `add-machine` on this machine, read from standard input so that it
     /// stays out of shell history and process listings.
     Pair,
@@ -840,28 +849,49 @@ impl Backend {
         max_pages: usize,
         local: impl Fn(&rally::ledger::Ledger, &Page) -> Result<Value, String>,
     ) -> Result<(Value, bool), Box<dyn std::error::Error>> {
+        self.read_all_as_of(path, None, field, max_pages, local)
+    }
+
+    /// [`Self::read_all`] as of a past record, if one is given. The field may be a map, whose
+    /// pages are merged, or a list, whose pages are joined in order.
+    fn read_all_as_of(
+        &self,
+        path: &str,
+        as_of: Option<u64>,
+        field: &str,
+        max_pages: usize,
+        local: impl Fn(&rally::ledger::Ledger, &Page) -> Result<Value, String>,
+    ) -> Result<(Value, bool), Box<dyn std::error::Error>> {
         let mut page = Page::default();
         let mut merged = serde_json::Map::new();
+        let mut listed: Vec<Value> = Vec::new();
+        let mut is_list = false;
         let mut first: Option<Value> = None;
+        let finish = |first: Option<Value>, merged, listed, is_list| {
+            let mut value = first.unwrap_or_default();
+            value[field] = if is_list {
+                Value::Array(listed)
+            } else {
+                Value::Object(merged)
+            };
+            value
+        };
         for _ in 0..max_pages {
-            let value = self.read_value(path, None, &page, &local)?;
+            let value = self.read_value(path, as_of, &page, &local)?;
             if let Some(entries) = value[field].as_object() {
                 merged.extend(entries.clone());
+            } else if let Some(entries) = value[field].as_array() {
+                is_list = true;
+                listed.extend(entries.iter().cloned());
             }
             let next = value["next"].as_str().map(str::to_owned);
             first.get_or_insert(value);
             match next {
                 Some(next) => page.after = Some(next),
-                None => {
-                    let mut value = first.unwrap_or_default();
-                    value[field] = Value::Object(merged);
-                    return Ok((value, false));
-                }
+                None => return Ok((finish(first, merged, listed, is_list), false)),
             }
         }
-        let mut value = first.unwrap_or_default();
-        value[field] = Value::Object(merged);
-        Ok((value, true))
+        Ok((finish(first, merged, listed, is_list), true))
     }
 }
 
@@ -1326,6 +1356,75 @@ fn config_path(config: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::E
 /// The most pages of each list the viewer reads, each of up to [`views::LIST_LIMIT`] entries.
 const VIEWER_PAGES: usize = 20;
 
+/// The most pages of later corrections the viewer reads for a past moment.
+const PAST_CORRECTION_PAGES: usize = 5;
+
+/// Reads the ledger as it stood at a past record, and the corrections made since to what it
+/// held then (RAL-28). The past state is a replay to that record, through the same views as
+/// the present one, so it's what `rally show --as-of` would show.
+fn past_reader(location: Option<Location>, config: PathBuf) -> PastReader {
+    let read = move |seq: u64| -> Result<Value, Box<dyn std::error::Error>> {
+        let backend = Backend::choose(location.as_ref(), &config, false)?;
+        read_past(&backend, seq)
+    };
+    Box::new(move |seq| read(seq).map_err(|error| error.to_string()))
+}
+
+/// The past moment [`past_reader`] and `rally past` show.
+fn read_past(backend: &Backend, seq: u64) -> Result<Value, Box<dyn std::error::Error>> {
+    if seq == 0 {
+        return Err("a past moment is a record number, from 1".into());
+    }
+    let as_of = Some(seq);
+    let (stories, more_stories) = backend.read_all_as_of(
+        "/v1/stories",
+        as_of,
+        "stories",
+        VIEWER_PAGES,
+        |ledger, page| views::stories(ledger, None, page),
+    )?;
+    // The moment the replay stands at, which may be earlier than asked for past the end.
+    let then = stories["as_of"].as_u64().unwrap_or(seq);
+    let then_ms = stories["as_of_at_ms"].as_i64().unwrap_or(0);
+    let (teams, more_teams) =
+        backend.read_all_as_of("/v1/teams", as_of, "teams", VIEWER_PAGES, |ledger, page| {
+            views::teams(ledger, None, page)
+        })?;
+    // Blockers as they stood, judged at that moment's own time, not today's.
+    let blockers = backend.read_value(
+        &format!("/v1/blockers?at_ms={then_ms}"),
+        as_of,
+        &Page::default(),
+        |ledger, page| views::blockers_at(ledger, false, page, ledger.last_at_ms()),
+    )?;
+    let mut value = json!({
+        "untrusted_text": views::UNTRUSTED_TEXT,
+        "as_of": then,
+        "as_of_at_ms": then_ms,
+        "stories": stories["stories"],
+        "teams": teams["teams"],
+        "blockers": blockers["blockers"],
+        "blockers_truncated": blockers.get("next").is_some(),
+        "truncated": more_stories || more_teams,
+    });
+    // Corrections come from the ledger as it is now, so they're shown as later. A service from
+    // before RAL-28 can't list them, which is said rather than shown as none.
+    match backend.read_all(
+        &format!("/v1/corrections?since={then}"),
+        "corrections",
+        PAST_CORRECTION_PAGES,
+        |ledger, page| views::corrections_since(ledger, then, page),
+    ) {
+        Ok((corrections, more)) => {
+            value["now"] = corrections["as_of"].clone();
+            value["corrections"] = corrections["corrections"].clone();
+            value["corrections_truncated"] = json!(more);
+        }
+        Err(error) => value["corrections_unavailable"] = json!(error.to_string()),
+    }
+    Ok(value)
+}
+
 /// Reads the ledger's stories, teams and check, from its database or through the service.
 fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
     let read = move || -> Result<Value, Box<dyn std::error::Error>> {
@@ -1471,12 +1570,14 @@ fn run_viewer(
                "sign_in": format!("rally web --bind {listening} --login")})
     );
     std::io::Write::flush(&mut std::io::stdout())?;
-    let reader = ledger_reader(location, config);
+    let reader = ledger_reader(location.clone(), config.clone());
+    let past = past_reader(location, config);
     tokio::runtime::Runtime::new()?.block_on(web::serve(
         listener,
         sign_in.clone(),
         projects,
         reader,
+        past,
         backup,
         local,
     ))?;
@@ -2153,6 +2254,10 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 location.as_ref(),
                 &config_path(cli.config)?,
             );
+        }
+        Command::Past { as_of } => {
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
+            return Ok(serde_json::to_string_pretty(&read_past(&backend, as_of)?)?);
         }
         Command::Brief => {
             let mut report = if let Some(location) = &location {

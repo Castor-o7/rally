@@ -282,6 +282,7 @@ fn router(
         .route("/v1/track-records", get(list_track_records))
         .route("/v1/track-records/{name}", get(one_track_record))
         .route("/v1/blockers/all", get(all_blockers))
+        .route("/v1/corrections", get(corrections))
         .route("/v1/teams/{name}", get(one_team))
         .route("/v1/teams/{name}/record", get(team_record))
         .route("/v1/check", get(check))
@@ -797,6 +798,8 @@ struct ReadQuery {
     /// For blockers: the instant to judge questions to the operator at, so that a reader paging
     /// through gets every page at the first page's `now_ms` (RAL-56).
     at_ms: Option<i64>,
+    /// For corrections: the past record whose later corrections to list (RAL-28).
+    since: Option<u64>,
 }
 
 /// The longest `after` accepted, well past any story ID or team name.
@@ -1139,6 +1142,28 @@ async fn open_blockers(
     view(service, identity, query, move |ledger, page| match at_ms {
         Some(at_ms) => views::blockers_at(ledger, false, page, at_ms),
         None => views::blockers(ledger, false, page),
+    })
+    .await
+}
+
+/// Corrections made after a past record to records at or before it (RAL-28), read from the
+/// ledger as it is now.
+async fn corrections(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    if query.as_of.is_some() {
+        return failure(StatusCode::BAD_REQUEST, "corrections don't take as_of");
+    }
+    let Some(since) = query.since else {
+        return failure(
+            StatusCode::BAD_REQUEST,
+            "corrections need since, a record number",
+        );
+    };
+    view(service, identity, query, move |ledger, page| {
+        views::corrections_since(ledger, since, page)
     })
     .await
 }

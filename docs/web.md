@@ -87,6 +87,26 @@ and how old that is. Until a project's stories are recorded in the ledger, every
 record, which is true: on 2026-11-04 the live ledger held no stories, so all 26 of Rally's ticks were listed.
 Open blockers are read one page at a time, 200, and the panel says when there are more.
 
+## Past moments (RAL-28)
+
+The ledger panel ends with "See the ledger as it stood at record N". It opens `#/past/<N>`, read from
+`/api/past?as_of=<N>`, which shows:
+
+- the stories, teams and open blockers as they stood after record N, a replay of the ledger to that record
+  through the same views `rally show --as-of` uses. Blockers are judged at record N's own time, so a question to
+  the operator shows as it stood then, not as it stands now;
+- **Corrected later**: every correction and annotation recorded after N that corrects a record at or before N,
+  oldest first, each labelled `later` and with its own kind, source and time. They're kept apart from the
+  state above, since nobody knew them at the time. Corrections to records after N aren't shown: they're about
+  something that hadn't happened yet.
+
+`rally past <N>` prints the same thing, and a test (`a_past_moment_matches_a_replay_to_it_and_shows_later_corrections_as_later`
+in `tests/service.rs`) checks every moment of a ledger against a replay of its exported records to that moment.
+A past moment doesn't change, so the page reads it once and the 30-second refresh leaves it alone. The viewer
+reads one past moment at a time. Through the service each one costs three past-state reads, which have their
+own limit (see service.md), so asking for many moments in a row can be refused for a few seconds; the page says
+why.
+
 ## What protects it
 
 - **Loopback only.** It refuses any other address. Viewing from a phone is RAL-34, with its own review.

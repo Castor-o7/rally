@@ -455,6 +455,10 @@ pub fn verified_for(prefix: &str, ledger: &Value) -> Value {
 /// Where the viewer reads the ledger.
 pub type LedgerReader = Box<dyn Fn() -> Result<Value, String> + Send>;
 
+/// Where the viewer reads the ledger as it stood at a past record, with the corrections made to
+/// it since (RAL-28).
+pub type PastReader = Box<dyn Fn(u64) -> Result<Value, String> + Send>;
+
 #[derive(Default)]
 struct Snapshot {
     /// Each project's latest roadmap reading, kept after a failed read so that its age shows.
@@ -840,6 +844,8 @@ struct App {
     code_ttl: Duration,
     /// The backup directory on this machine to report on, if any (RAL-15).
     backup: Option<BackupWatch>,
+    /// Reads a past state. Held by one read at a time, since each is a replay (RAL-28).
+    past: Mutex<PastReader>,
 }
 
 /// Folders on this machine holding day summaries, which the operator's rule keeps out of git, so
@@ -969,6 +975,7 @@ pub async fn serve(
     sign_in: SignIn,
     projects: Vec<Project>,
     ledger: LedgerReader,
+    past: PastReader,
     backup: Option<BackupWatch>,
     local: LocalSummaries,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -983,6 +990,7 @@ pub async fn serve(
         sessions: Mutex::new(Vec::new()),
         code_ttl: sign_in.code_ttl,
         backup,
+        past: Mutex::new(past),
     });
     let refresher = app.clone();
     std::thread::spawn(move || refresh_forever(&refresher, &ledger));
@@ -995,6 +1003,7 @@ pub async fn serve(
         .route("/app.js", get(|| async { page("text/javascript", APP_JS) }))
         .route("/app.css", get(|| async { page("text/css", APP_CSS) }))
         .route("/api/status", get(status))
+        .route("/api/past", get(past_view))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app);
     listener.set_nonblocking(true)?;
@@ -1059,6 +1068,66 @@ fn refresh_forever(app: &App, ledger: &LedgerReader) {
 
 fn page(content_type: &'static str, body: &'static str) -> Response {
     ([(header::CONTENT_TYPE, content_type)], body).into_response()
+}
+
+/// Which past moment to show: a record number (RAL-28).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PastQuery {
+    as_of: u64,
+}
+
+/// Whether a past moment can be shown, given the newest record the viewer has read: a record
+/// that exists, from the first one on. `Err` says why not.
+pub fn past_moment(as_of: u64, newest: Option<u64>) -> Result<u64, String> {
+    if as_of == 0 {
+        return Err("as_of is a record number, from 1".into());
+    }
+    match newest {
+        Some(newest) if as_of > newest => Err(format!(
+            "the ledger has {newest} records, so there's no record {as_of} yet"
+        )),
+        _ => Ok(as_of),
+    }
+}
+
+/// The ledger as it stood at a past record, and the corrections made since to what it held then,
+/// labelled as later (RAL-28).
+async fn past_view(
+    State(app): State<Arc<App>>,
+    query: Result<axum::extract::Query<PastQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let Ok(axum::extract::Query(query)) = query else {
+        return (StatusCode::BAD_REQUEST, "as_of must be a record number").into_response();
+    };
+    let newest = app
+        .snapshot
+        .lock()
+        .expect("no panics")
+        .ledger
+        .as_ref()
+        .and_then(|ledger| ledger["as_of"].as_u64());
+    let seq = match past_moment(query.as_of, newest) {
+        Ok(seq) => seq,
+        Err(reason) => return (StatusCode::BAD_REQUEST, reason).into_response(),
+    };
+    let read = tokio::task::spawn_blocking(move || {
+        let Ok(reader) = app.past.try_lock() else {
+            return Err(None);
+        };
+        reader(seq).map_err(Some)
+    })
+    .await;
+    match read {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(None)) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "another past moment is being read; try again in a moment",
+        )
+            .into_response(),
+        Ok(Err(Some(reason))) => (StatusCode::BAD_GATEWAY, reason).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the read failed").into_response(),
+    }
 }
 
 async fn status(State(app): State<Arc<App>>) -> Response {
@@ -1324,6 +1393,20 @@ fn origin_allowed(origin: Option<&HeaderValue>, host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_past_moment_is_a_record_that_exists() {
+        assert_eq!(past_moment(1, Some(10)), Ok(1));
+        assert_eq!(past_moment(10, Some(10)), Ok(10));
+        assert!(past_moment(0, Some(10)).is_err());
+        assert!(
+            past_moment(11, Some(10))
+                .unwrap_err()
+                .contains("no record 11")
+        );
+        // Before the ledger has been read, the service is the one to say.
+        assert_eq!(past_moment(5, None), Ok(5));
+    }
 
     #[test]
     fn counts_ticks_overall_and_by_section() {

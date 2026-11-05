@@ -10,7 +10,7 @@ use rally::client::{Reply, request};
 use rally::scratch_pg::{self, Cluster, Database};
 use serde_json::{Value, json};
 
-const ROUTES: [(&str, &str); 13] = [
+const ROUTES: [(&str, &str); 14] = [
     ("POST", "/v1/records"),
     ("GET", "/v1/stories"),
     ("GET", "/v1/stories/RAL-13"),
@@ -24,6 +24,7 @@ const ROUTES: [(&str, &str); 13] = [
     ("GET", "/v1/handover"),
     ("GET", "/v1/brief"),
     ("GET", "/v1/teams/rally/record"),
+    ("GET", "/v1/corrections?since=1"),
 ];
 
 struct Service<'a> {
@@ -2330,4 +2331,118 @@ fn submitted_evidence_is_checked_and_recorded_as_observed() {
                "outcome": {"checkable": true, "exists": true}}),
     );
     assert_eq!(forged.status, 403);
+}
+
+/// RAL-28: a past moment, as `rally past` and the viewer show it, is a replay of the ledger's own
+/// records to that moment, and what was corrected since is shown apart, labelled later.
+#[test]
+fn a_past_moment_matches_a_replay_to_it_and_shows_later_corrections_as_later() {
+    let service = start();
+    let a1 = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &a1.code()).status.success());
+    let writes = [
+        json!({"change": "ready", "story": "RAL-13"}), // 1
+        json!({"change": "claim", "story": "RAL-13", "team": "rally"}), // 2
+        json!({"change": "team_state", "team": "rally", "status": "working", "story": "RAL-13"}), // 3
+        json!({"change": "block", "team": "rally", "story": "RAL-13", "on_team": "muster",
+               "note": "waits on muster"}), // 4: the moment
+        json!({"change": "unblock", "blocker": 4, "note": "muster answered"}), // 5
+        json!({"change": "correct", "story": "RAL-13", "corrects": 2, "note": "claimed late"}), // 6
+        json!({"change": "annotate", "corrects": 3, "team": "rally", "note": "was idle"}), // 7
+        json!({"change": "ready", "story": "RAL-14"}),                         // 8
+        json!({"change": "correct", "story": "RAL-14", "corrects": 8, "note": "after the moment"}), // 9
+        json!({"change": "release", "story": "RAL-13", "team": "rally"}), // 10
+    ];
+    for body in writes {
+        let reply = write(&a1, "someone", "declared", body);
+        assert_eq!(reply.status, 200, "{}", reply.body);
+    }
+    let moment = 4;
+
+    let out = cli(&config, "someone", &["past", &moment.to_string()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let past: Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    // The replay to compare with: the ledger's own records, exported, up to the moment.
+    let export: Value = serde_json::from_str(&call(&a1, "GET", "/v1/export", None).body).unwrap();
+    let records: Vec<rally::record::Record> = export["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .take(moment)
+        .map(|entry| rally::record::Record::parse(entry["record"].as_str().unwrap()).unwrap())
+        .collect();
+    let then = rally::ledger::Ledger::replay(&records).unwrap();
+    let page = rally::views::Page::default();
+    let stories = rally::views::stories(&then, None, &page).unwrap();
+    let teams = rally::views::teams(&then, None, &page).unwrap();
+    let blockers = rally::views::blockers_at(&then, false, &page, then.last_at_ms()).unwrap();
+    assert_eq!(past["as_of"], moment);
+    assert_eq!(past["as_of_at_ms"], then.last_at_ms());
+    assert_eq!(past["now"], 10);
+    assert_eq!(past["stories"], stories["stories"]);
+    assert_eq!(past["teams"], teams["teams"]);
+    assert_eq!(past["blockers"], blockers["blockers"]);
+    // As it stood then: claimed, with the blocker open, and RAL-14 not yet recorded.
+    assert_eq!(past["stories"]["RAL-13"]["state"], "claimed");
+    assert!(past["stories"].get("RAL-14").is_none());
+    assert_eq!(past["blockers"].as_array().unwrap().len(), 1);
+    // RAL-13's history then holds no word of the later correction.
+    let history = past["stories"]["RAL-13"].get("history");
+    assert!(history.is_none() || !history.unwrap().to_string().contains("claimed late"));
+
+    // Later: the correction of record 2 and the annotation of record 3, in record order, and not
+    // the correction of record 8, which came after the moment.
+    let later = past["corrections"].as_array().unwrap();
+    let seqs: Vec<u64> = later.iter().map(|c| c["seq"].as_u64().unwrap()).collect();
+    assert_eq!(seqs, [6, 7]);
+    assert!(later.iter().all(|c| c["later"] == true));
+    assert_eq!(later[0]["story"], "RAL-13");
+    assert_eq!(later[0]["corrects"], 2);
+    assert_eq!(later[0]["note"], "claimed late");
+    assert_eq!(later[1]["team"], "rally");
+    assert_eq!(later[1]["corrects"], 3);
+    assert_eq!(past["untrusted_text"], rally::views::UNTRUSTED_TEXT);
+
+    // Each moment from the first record to the last matches its own replay too.
+    let all: Vec<rally::record::Record> = export["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| rally::record::Record::parse(entry["record"].as_str().unwrap()).unwrap())
+        .collect();
+    for seq in 1..=all.len() {
+        let out = cli(&config, "someone", &["past", &seq.to_string()]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let past: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let then = rally::ledger::Ledger::replay(&all[..seq]).unwrap();
+        assert_eq!(
+            past["stories"],
+            rally::views::stories(&then, None, &page).unwrap()["stories"],
+            "{seq}"
+        );
+        assert_eq!(
+            past["teams"],
+            rally::views::teams(&then, None, &page).unwrap()["teams"],
+            "{seq}"
+        );
+    }
+
+    // The service's route refuses a past state of its own, and needs to know since when.
+    assert_eq!(
+        call(&a1, "GET", "/v1/corrections?since=4&as_of=4", None).status,
+        400
+    );
+    assert_eq!(call(&a1, "GET", "/v1/corrections", None).status, 400);
+    let out = cli(&config, "someone", &["past", "0"]);
+    assert!(!out.status.success());
 }

@@ -293,6 +293,11 @@ means every open blocker that team holds. A chain that comes back round says `cy
 `chain_truncated`. `--all` adds closed blockers with their closure, and `--as-of` shows them as they stood. Over
 the service these are `/v1/blockers` and `/v1/blockers/all`.
 
+`/v1/corrections?since=<N>` lists, from the ledger as it is now, the corrections and annotations recorded after
+record N that correct a record at or before it, oldest first, 200 a page with `next`, each with `later: true`
+(RAL-28). It's the other half of a past moment: with a read `as_of` N, it shows what was said since about the
+state then. It doesn't take `as_of`. `rally past <N>` reads both.
+
 ## Track records
 
 `rally track-record` lists every team that held a story, raised a blocker or declared a state, with counts and
