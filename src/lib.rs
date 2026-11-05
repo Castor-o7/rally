@@ -8,6 +8,7 @@ pub mod entity;
 pub mod evidence;
 pub mod init;
 pub mod ledger;
+pub mod levi;
 pub mod next;
 pub mod record;
 #[doc(hidden)]

@@ -412,9 +412,12 @@ verification, evidence, team state and history. Rally reads Levi from a checkout
 and doesn't write to it at first. It doesn't trust a Levi hub, which by its own warning has no authentication. "Closed at
 a commit that's an ancestor of HEAD" is the kind of observed fact Rally wants, and could help RAL-5.
 What's in a Levi task is written by agents, so it's untrusted text, and a Levi claim is declared, not proof.
-**Claims live in Levi,** on the operator's word, so there's one source of truth for them. What that means for
-what's built is for RAL-40 to settle: Rally's `claim` and `release` changes, the holder checks on submitting, and
-the projects that don't use Levi yet. No Rally project has been checked for Levi use yet. Which of Rally's
+**Claims live in Levi,** on the operator's word, so there's one source of truth for them. **Built for RAL-40:**
+`rally levi` reads a checkout's tasks this way, read-only and without the service; see [levi.md](levi.md). RAL-40
+settled the claims: projects not on Levi, which on 2026-11-05 was all of rally, muster and catapp, keep Rally's
+`claim`, `release` and holder check unchanged. On a project that moves to Levi the claim is Levi's (`levi start`,
+`levi drop`), and `rally claim` becomes the team's record of the Levi claim it holds, which the holder check on
+`submit` still needs since the service has no checkout. That part isn't built until a project moves. Which of Rally's
 features would be additive for Levi, which would change its defaults, and which conflict with it is in
 [rally-vs-levi.md](rally-vs-levi.md).
 

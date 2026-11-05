@@ -227,6 +227,17 @@ enum Command {
         #[arg(long, env = "RALLY_HARNESS")]
         harness: Option<String>,
     },
+    /// A checkout's Levi tasks, read-only, each fact labelled observed or declared (RAL-40). Runs
+    /// `levi --no-sync ls --all --json` in the checkout; writes nothing to Levi and never contacts
+    /// a Levi hub. Needs no pairing. See docs/levi.md.
+    Levi {
+        /// The checkout to read.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// The `levi` to run.
+        #[arg(long, env = "RALLY_LEVI", default_value = "levi")]
+        levi: PathBuf,
+    },
     /// The operator designates the watchman, or with --end ends the designation (RAL-51). It prints
     /// the statement, then signs it with `ssh-keygen -Y sign` and the key given, which asks for
     /// Touch ID when the key is Secretive's. See docs/designation.md.
@@ -636,6 +647,19 @@ fn main() -> ExitCode {
         let harness = rally::session::Harness::parse(harness.as_deref());
         session_start(cli.config.clone(), team.as_deref(), *verbose, harness);
         return ExitCode::SUCCESS;
+    }
+    if let Command::Levi { repo, levi } = &cli.command {
+        return match rally::levi::read(levi, repo) {
+            Ok(out) => {
+                let text = serde_json::to_string_pretty(&out).unwrap_or_default();
+                println!("{}", escape_for_terminal(&text));
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("rally: {}", escape_for_terminal(&error.to_string()));
+                ExitCode::FAILURE
+            }
+        };
     }
     match run(cli) {
         Ok(output) => {
@@ -1680,7 +1704,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             return Ok(json!({"revoked": name}).to_string());
         }
         Command::Init { .. } => unreachable!("handled before the ledger is opened"),
-        Command::SessionStart { .. } => unreachable!("handled in main"),
+        Command::SessionStart { .. } | Command::Levi { .. } => unreachable!("handled in main"),
         Command::Pair => {
             let mut code = String::new();
             std::io::stdin().read_line(&mut code)?;
