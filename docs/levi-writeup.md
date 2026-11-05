@@ -6,7 +6,8 @@ shared Levi remote (`murph:git/levi.git`), stacked on upstream main `56aceb2` (v
 comparison and proposal behind it are in [levi-proposal.md](levi-proposal.md). The watchman, grand-photon, agreed
 the proposal, and each half was read by the other builder.
 
-**Draft.** It's finished once the watchman has read the whole stack.
+The watchman approved the stack (RAL-47) at `baec03a`. It read the core in full, and the CLI through the two
+builders' reads of each other's halves.
 
 ---
 
@@ -58,10 +59,16 @@ All changes are additive, on the existing schema versions:
   `stale_review` and `self_review_warning`, on every run, not only with `--require-review`. The proposal named one
   added field; this adds seven, so that a CI log shows why a task would fail the gate before anyone turns it on.
 
-## What it doesn't do
+## What it doesn't do, and its limits
 
-- **Prove who reviewed.** A review is a declaration by whoever's `git config user.email` it carries. That's why it's
-  labelled `declared`, and why only `review_differs`, worked out from git alone, is labelled `observed`.
+- **Prove who reviewed.** Reviews, read requests and blockers are declared events. Anyone with push access to
+  `refs/levi/events` can write one as anyone, since a review carries whatever `git config user.email` says. That's
+  why they're labelled `declared`, and why only `review_differs`, worked out from git alone, is labelled
+  `observed`.
+- **Trust clocks.** `created` comes from each machine's clock. Skew can leave a request showing open when it was
+  really answered, which fails safe, or put a close and a read in the wrong order.
+- **Check staleness for an unanchored close.** A close made with `--no-anchor` has no commit to compare, so any
+  applying verification counts for it.
 - **Stop a merge by itself.** The gate works only where CI runs `check-claims --require-review` as a required check,
   after fetching `refs/levi/events`.
 - **Touch the hub or the dashboard.** The hub carries the new events in `LogEntry` like any other, with a test that a
@@ -74,8 +81,8 @@ All changes are additive, on the existing schema versions:
 
 - `cargo test --workspace`: Levi's 125 tests, plus the new ones. There are unit tests in `levi-core` for replay,
   resolution, ranking, the self-review rule and the gate. There are CLI integration tests against scripted repos
-  in `levi/tests/cli_reviews.rs` (7), `cli_reads.rs` (4) and `cli_blockers.rs` (3), using a second git worktree as
-  the second reader. 173 pass at `7ea8b5f`, on a1 and on Murph. The `self_review_warning` path is covered by a core
+  in `levi/tests/cli_reviews.rs` (8), `cli_reads.rs` (5) and `cli_blockers.rs` (3), using a second git worktree as
+  the second reader. 177 pass at `baec03a` (Levi's 125 and 52 new), on a1 and on Murph. The `self_review_warning` path is covered by a core
   test only: every test worktree shares one email and hostname, so an end-to-end case can't separate a closer who
   never claimed the task from one who did.
 - `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` pass. The `levi-dash` wasm
@@ -84,5 +91,6 @@ All changes are additive, on the existing schema versions:
 ## Commits
 
 Conventional commits, with `feat(core):` for the core and `feat:` for the CLI. Following Levi's `CLAUDE.md`, and the
-operator's ruling for this PR, they carry no AI attribution. The stack has merge commits where the two builders'
-branches met. Whether to squash or rebase it into a linear history before the PR is for the operator to say.
+operator's ruling for this PR, they carry no AI attribution. The working branches have merge commits where the two
+builders' branches met, and they're left as they are. chartreuse-meerkat is building `ral47/linear`, a linear
+history with the same final tree as `baec03a`, for the PR. Which one goes up, and when, is for the operator to say.
