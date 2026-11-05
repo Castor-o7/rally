@@ -74,6 +74,11 @@ The bones. Everything later reads from this.
   Rally can read a repository's Levi tasks through `levi --json`
   or its hub, labelled by how each fact is known, with Levi's text treated as untrusted and nothing
   written to Levi, with a test against a real `levi` run.
+- [ ] **RAL-65: `rally levi` holds up against a misbehaving `levi` or checkout.** From the watchman's and
+  fiery-snapper's reads of RAL-40 at `4038e48`. Done when: `levi`'s output past the cap is drained rather than left
+  in a full pipe, so too much output is reported as that and not as a timeout; output held open after `levi` exits
+  (by something it started) doesn't outlast the deadline; Rally's own git call turns off what a checkout's config
+  could run, and docs/levi.md says to run it only on checkouts you trust; with a test for each of the first two.
 - [x] **RAL-42: Clear the source review's smaller findings.** From `dauntless-peacock`'s review of `a4dc39e`, all
   predicted from reading, not run. After RAL-39, since some concern the store. Done when: each is fixed, shown not
   to apply, or recorded as accepted: reads from a replaced ledger file; a submitter's verified annotation on their

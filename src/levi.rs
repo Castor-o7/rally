@@ -94,6 +94,31 @@ impl Drop for ScratchState {
     }
 }
 
+/// The most bytes of `levi`'s standard error that are kept.
+const MAX_STDERR: usize = 64 * 1024;
+
+/// Read `pipe` to its end on a thread, keeping the first `keep` bytes and discarding the rest, so
+/// a writer is never blocked on a full pipe. The bytes kept are sent when the pipe ends.
+fn drain(mut pipe: impl Read + Send + 'static, keep: usize) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let room = keep.saturating_sub(kept.len());
+                    kept.extend_from_slice(&chunk[..n.min(room)]);
+                }
+            }
+        }
+        let _ = tx.send(kept);
+    });
+    rx
+}
+
 /// Run `levi --no-sync ls --all --json` in `repo` and return what it printed.
 fn run_ls(levi: &Path, repo: &Path) -> Result<Vec<u8>, Error> {
     let state = ScratchState::new()?;
@@ -106,20 +131,8 @@ fn run_ls(levi: &Path, repo: &Path) -> Result<Vec<u8>, Error> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| error(format!("can't run {}: {e}", levi.display())))?;
-    let mut stdout = child.stdout.take().expect("piped");
-    let mut stderr = child.stderr.take().expect("piped");
-    let out = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = (&mut stdout)
-            .take(MAX_OUTPUT as u64 + 1)
-            .read_to_end(&mut buf);
-        buf
-    });
-    let err = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = (&mut stderr).take(64 * 1024).read_to_end(&mut buf);
-        buf
-    });
+    let out = drain(child.stdout.take().expect("piped"), MAX_OUTPUT + 1);
+    let err = drain(child.stderr.take().expect("piped"), MAX_STDERR);
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -136,8 +149,14 @@ fn run_ls(levi: &Path, repo: &Path) -> Result<Vec<u8>, Error> {
             Err(e) => return Err(error(format!("can't wait for levi: {e}"))),
         }
     };
-    let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
+    // Something levi started may still hold its output open after it exits: wait only until the
+    // deadline for the end of it.
+    let ended = |rx: std::sync::mpsc::Receiver<Vec<u8>>| {
+        rx.recv_timeout(DEADLINE.saturating_sub(started.elapsed()))
+            .map_err(|_| error("levi exited but its output didn't end before the deadline"))
+    };
+    let stdout = ended(out)?;
+    let stderr = ended(err)?;
     if !status.success() {
         let said = clean(String::from_utf8_lossy(&stderr).trim());
         return Err(error(format!("levi failed ({status}): {said}")));
@@ -151,14 +170,22 @@ fn run_ls(levi: &Path, repo: &Path) -> Result<Vec<u8>, Error> {
 /// The commit `refs/levi/events` points at in `repo`, or `None` when the checkout has no Levi
 /// events, so isn't on Levi.
 pub fn events_head(repo: &Path) -> Result<Option<String>, Error> {
+    // A checkout's own git config can name programs for git to run. rev-parse of a ref runs none
+    // of them, and the ones it could reach are turned off here anyway.
     let out = Command::new("git")
         .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "--no-pager",
             "rev-parse",
             "--verify",
             "--quiet",
             "refs/levi/events^{commit}",
         ])
         .current_dir(repo)
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
         .output()
         .map_err(|e| error(format!("can't run git in {}: {e}", repo.display())))?;
@@ -336,6 +363,38 @@ mod tests {
         );
         let label = out["tasks"][0]["declared"]["labels"][0].as_str().unwrap();
         assert!(!label.contains('\u{1b}'), "{label:?}");
+    }
+
+    /// A stand-in for levi: a shell script in its own directory.
+    fn fake_levi(script: &str) -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("levi");
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn too_much_output_is_reported_as_that_not_as_a_timeout() {
+        let (dir, levi) = fake_levi("head -c 9000000 /dev/zero; head -c 200000 /dev/zero >&2");
+        let started = Instant::now();
+        let err = run_ls(&levi, dir.path()).unwrap_err().to_string();
+        assert!(err.contains("printed more than"), "{err}");
+        assert!(started.elapsed() < DEADLINE, "took {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn output_held_open_after_levi_exits_doesnt_outlast_the_deadline() {
+        let (dir, levi) = fake_levi("echo '{}'; sleep 30 &");
+        let started = Instant::now();
+        let err = run_ls(&levi, dir.path()).unwrap_err().to_string();
+        assert!(err.contains("didn't end"), "{err}");
+        assert!(
+            started.elapsed() < DEADLINE + Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
