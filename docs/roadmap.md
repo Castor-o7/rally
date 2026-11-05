@@ -74,7 +74,7 @@ The bones. Everything later reads from this.
   Rally can read a repository's Levi tasks through `levi --json`
   or its hub, labelled by how each fact is known, with Levi's text treated as untrusted and nothing
   written to Levi, with a test against a real `levi` run.
-- [ ] **RAL-65: `rally levi` holds up against a misbehaving `levi` or checkout.** From the watchman's and
+- [x] **RAL-65: `rally levi` holds up against a misbehaving `levi` or checkout.** From the watchman's and
   fiery-snapper's reads of RAL-40 at `4038e48`. Done when: `levi`'s output past the cap is drained rather than left
   in a full pipe, so too much output is reported as that and not as a timeout; output held open after `levi` exits
   (by something it started) doesn't outlast the deadline; Rally's own git call turns off what a checkout's config
@@ -151,7 +151,7 @@ The bones. Everything later reads from this.
   blocks a merge is the operator's call, and this story records it either way.
 - [x] **RAL-33: Record merges as commits.** Done when: Merged records the commit, is independent of
   Verified, and doesn't claim who merged, since every session shares one GitHub account.
-- [ ] **RAL-18: Check evidence with least privilege.** Mostly in #111 (539cbd4): evidence checks only send GETs to a pinned `api.github.com`, follow no redirects (tested), and never check out or run submitted code. Left: nothing yet shows a merge attempt with that access refused, and no test shows the no-checkout part. Done when: evidence checks use read-only GitHub
+- [ ] **RAL-18: Check evidence with least privilege.** Mostly in #111 (539cbd4): evidence checks only send GETs to a pinned `api.github.com`, follow no redirects (tested), and never check out or run submitted code. RAL-18's second round adds tests that a check only GETs the four read endpoints and that the evidence module starts no program, and `rally check-github-token`, which tries a merge that can't succeed. Left: the operator places the token (MUS-12) and runs it, so a refusal is shown with the real token. Done when: evidence checks use read-only GitHub
   access, a merge attempt with that access is refused, and a test shows that Rally reads evidence without
   checking out or running submitted code.
 - [x] **RAL-6: Verify separately from the author.** Done when: a story can only be marked Verified or

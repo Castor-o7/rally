@@ -39,12 +39,32 @@ each credential's write limit on submissions, but it's a cost a submitter contro
 - The service only sends GETs to `api.github.com`, for a commit, the pull requests containing it, its check runs
   and its status. The host is fixed in the code. No redirect is followed, so the token can't be carried
   elsewhere, and a test shows it.
-- It never checks out, builds or runs submitted code.
+- It never checks out, builds or runs submitted code. Two tests show it: a whole check against a stand-in
+  GitHub sends exactly four requests, each a GET with no body, of the commit, its pull requests, its check runs
+  and its status, and nothing else (no clone, no tarball); and the evidence module can't start a program, since
+  its source uses no process API.
 - The token is read from `--github-token-file` (or `RALLY_GITHUB_TOKEN_FILE`). Under `--secure`, the file must be
   root-owned like the operator's key. It's never printed.
 
 Without a token, nothing is asked of GitHub, and each check is recorded as "not checked: the service has no
 GitHub token". An anonymous allowance isn't enough: Murph's is shared and was used up when this was built.
+
+### Showing the token can't merge
+
+`rally check-github-token` is for the operator, run by hand; the service never runs it. Point it at an
+**already-merged** pull request. It reads the pull request with the token and refuses to go on unless it's closed
+or merged; then it tries to merge it, naming head `0000000000000000000000000000000000000000`, which no commit has.
+GitHub can't merge a merged pull request, so nothing can merge even if the token could write:
+
+```sh
+rally check-github-token --github-token-file /etc/rally/github-token --repo Castor-o7/rally --pull 124
+```
+
+It succeeds only when GitHub refuses the merge for want of access (403, or 404 on a pull request it just read).
+If GitHub gets past the access check (on a merged pull request a writable token gets 405 "not mergeable"; 409 and
+422 count the same) it fails and says the token can write; any other answer fails as unclear. Its tests show
+each case, that an open pull request is refused with only a GET sent, and that the merge names the impossible
+head.
 
 ### The operator's step
 
@@ -55,6 +75,7 @@ statuses**, **Checks**, **Pull requests** and **Metadata**, all read. Then, on M
 sudo install -o root -g root -m 0644 /dev/stdin /etc/rally/github-token <<< '<the token>'
 ```
 
-and add `--github-token-file /etc/rally/github-token` to the service's `ExecStart`. With the system unit, it runs
+and add `--github-token-file /etc/rally/github-token` to the service's `ExecStart`. Then run
+`rally check-github-token` as above, and keep what it prints with the story. With the system unit, it runs
 as `joshd`, which must be able to read the file. The 0644 above allows that; tighten it with a group if the host
 has other users.

@@ -229,6 +229,20 @@ enum Command {
         #[arg(long, env = "RALLY_HARNESS")]
         harness: Option<String>,
     },
+    /// For the operator: show the service's GitHub token can't merge (RAL-18). Reads pull request
+    /// --pull, which must be already merged or closed, then tries to merge it naming a head no
+    /// commit has, so nothing can merge even if the token could write. Succeeds only when GitHub
+    /// refuses for want of access. See docs/evidence.md.
+    CheckGithubToken {
+        #[arg(long, env = "RALLY_GITHUB_TOKEN_FILE")]
+        github_token_file: PathBuf,
+        /// The repository, as owner/repo.
+        #[arg(long)]
+        repo: String,
+        /// An already-merged pull request in it. An open one is refused, and nothing is tried.
+        #[arg(long)]
+        pull: u64,
+    },
     /// A checkout's Levi tasks, read-only, each fact labelled observed or declared (RAL-40). Runs
     /// `levi --no-sync ls --all --json` in the checkout; writes nothing to Levi and never contacts
     /// a Levi hub. Needs no pairing. See docs/levi.md.
@@ -718,6 +732,23 @@ fn main() -> ExitCode {
         session_start(cli.config.clone(), team.as_deref(), *verbose, harness);
         return ExitCode::SUCCESS;
     }
+    if let Command::CheckGithubToken {
+        github_token_file,
+        repo,
+        pull,
+    } = &cli.command
+    {
+        return match check_github_token(github_token_file, repo, *pull) {
+            Ok(out) => {
+                println!("{}", escape_for_terminal(&out));
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("rally: {}", escape_for_terminal(&error));
+                ExitCode::FAILURE
+            }
+        };
+    }
     if let Command::Levi { repo, levi } = &cli.command {
         return match rally::levi::read(levi, repo) {
             Ok(out) => {
@@ -740,6 +771,36 @@ fn main() -> ExitCode {
             eprintln!("rally: {}", escape_for_terminal(&error.to_string()));
             ExitCode::FAILURE
         }
+    }
+}
+
+/// The one GitHub token in the file at `path`.
+fn read_github_token(path: &Path) -> Result<String, String> {
+    let token =
+        std::fs::read_to_string(path).map_err(|e| format!("can't read {}: {e}", path.display()))?;
+    let token = token.trim().to_owned();
+    if token.is_empty() || token.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!("{} doesn't hold one token", path.display()));
+    }
+    Ok(token)
+}
+
+/// `rally check-github-token`: whether the token can merge, by trying to on a head that can't
+/// match (RAL-18). Succeeds only when the merge is refused for want of access.
+fn check_github_token(path: &Path, repo: &str, pull: u64) -> Result<String, String> {
+    let token = read_github_token(path)?;
+    let github = rally::evidence::GitHub::new(token);
+    let probe = github.probe_merge(repo, pull)?;
+    let out = json!({"repo": repo, "pull": pull, "probe": probe});
+    let text = serde_json::to_string_pretty(&out).unwrap_or_default();
+    match probe {
+        rally::evidence::MergeProbe::Refused { .. } => Ok(text),
+        rally::evidence::MergeProbe::CanWrite { .. } => Err(format!(
+            "the token got past GitHub's access check, so it can write; nothing merged.\n{text}"
+        )),
+        rally::evidence::MergeProbe::Unclear { .. } => Err(format!(
+            "GitHub's answer doesn't show whether the token can write.\n{text}"
+        )),
     }
 }
 
@@ -1744,15 +1805,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                         rally::designation::check_owned(path, 0, None)
                             .map_err(|why| format!("--secure refused the GitHub token: {why}"))?;
                     }
-                    let token = std::fs::read_to_string(path)
-                        .map_err(|e| format!("can't read {}: {e}", path.display()))?;
-                    let token = token.trim().to_owned();
-                    if token.is_empty()
-                        || token.chars().any(|c| c.is_whitespace() || c.is_control())
-                    {
-                        return Err(format!("{} doesn't hold one token", path.display()).into());
-                    }
-                    Some(token)
+                    Some(read_github_token(path)?)
                 }
                 None => None,
             };
@@ -1866,7 +1919,9 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             return Ok(json!({"revoked": name}).to_string());
         }
         Command::Init { .. } => unreachable!("handled before the ledger is opened"),
-        Command::SessionStart { .. } | Command::Levi { .. } => unreachable!("handled in main"),
+        Command::SessionStart { .. } | Command::Levi { .. } | Command::CheckGithubToken { .. } => {
+            unreachable!("handled in main")
+        }
         Command::Pair => {
             let mut code = String::new();
             std::io::stdin().read_line(&mut code)?;
