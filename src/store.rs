@@ -36,7 +36,7 @@ use crate::access::write_private;
 use crate::entity::{
     AppendLedgerRecord, Appended, GetAllLedgerRecords, LedgerRecord, LedgerRecordId,
 };
-use crate::ledger::{Ledger, LedgerError};
+use crate::ledger::{Change, Ledger, LedgerError};
 use crate::record::{Record, RecordError};
 
 /// myko's events table and notification channel for Rally.
@@ -584,6 +584,9 @@ struct Writer {
     reply_lost: Mutex<bool>,
     /// The size limit and disk floor, checked under the writer's lock before each append.
     space: Mutex<Option<SpaceLimits>>,
+    /// The operator's key, set only by `serve --secure` (RAL-51). Without it, designations are
+    /// refused, including through `--db` on the host.
+    operator_key: Mutex<Option<crate::designation::OperatorKey>>,
     /// The current state, or `None` until it can be built: if myko's copy doesn't replay, each
     /// read and append tries again and reports why it can't.
     kept: RwLock<Option<Kept>>,
@@ -739,6 +742,7 @@ impl Store {
             sql: Mutex::new(sql),
             failures: Mutex::new(HashMap::new()),
             space: Mutex::new(None),
+            operator_key: Mutex::new(None),
             kept: RwLock::new(None),
             check_sql: Mutex::new(None),
             #[cfg(test)]
@@ -854,6 +858,43 @@ impl Store {
                 .remove(&tx)
                 .unwrap_or(StoreError::Database(error.message))),
         }
+    }
+
+    /// Lets designations be written, each checked against the operator's key (RAL-51). Only
+    /// `serve --secure` calls this.
+    pub fn accept_designations(&self, key: crate::designation::OperatorKey) {
+        if let Some(writer) = &self.writer {
+            *writer
+                .operator_key
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(key);
+        }
+    }
+
+    /// Who the watchman is, each designation checked against `key` and the chain (RAL-51). Only
+    /// a writer keeps the chain's hashes, so a read-only ledger replays them from Postgres.
+    pub fn designation_report(
+        &self,
+        key: Option<&crate::designation::OperatorKey>,
+    ) -> Result<serde_json::Value, StoreError> {
+        if let Some(writer) = &self.writer {
+            writer.ensure_kept()?;
+            if let Some(kept) = writer.kept().as_ref() {
+                return Ok(crate::designation::report(&kept.ledger, &kept.hashes, key));
+            }
+        }
+        let (rows, _) = self.with_sql(durable_rows)?;
+        let records: Vec<Record> = rows
+            .iter()
+            .map(|row| Record::parse(&row.text))
+            .collect::<Result<_, _>>()
+            .map_err(|e| StoreError::Corrupt {
+                seq: 0,
+                reason: e.to_string(),
+            })?;
+        let ledger = replay(&records)?;
+        let hashes: Vec<String> = rows.into_iter().map(|row| row.hash).collect();
+        Ok(crate::designation::report(&ledger, &hashes, key))
     }
 
     /// Makes every later append check the ledger's size and its disk's free space first.
@@ -1309,7 +1350,9 @@ impl Writer {
             kept.ledger
                 .check(seq, &record)
                 .map_err(StoreError::Refused)?;
-            (seq, kept.head())
+            let previous = kept.head();
+            self.check_designation(&record, seq, &previous)?;
+            (seq, previous)
         };
         let hash = chain_hash(&previous.hash, seq, &text);
 
@@ -1385,6 +1428,48 @@ impl Writer {
             seq,
             hash: head.hash,
         })
+    }
+
+    /// A designation is written only with the operator's key set, naming the head it follows and
+    /// signed by that key (RAL-51). Anything else passes.
+    fn check_designation(
+        &self,
+        record: &Record,
+        seq: u64,
+        previous: &Head,
+    ) -> Result<(), StoreError> {
+        let Ok(Change::Designate {
+            watchman,
+            after_seq,
+            after_hash,
+            key_fingerprint,
+            signature,
+        }) = serde_json::from_value::<Change>(record.body().clone())
+        else {
+            return Ok(());
+        };
+        let key = self
+            .operator_key
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(key) = key else {
+            return Err(StoreError::Refused(LedgerError::DesignationRefused(
+                "designations are accepted only by a service started with --secure and \
+                 --operator-key"
+                    .into(),
+            )));
+        };
+        crate::designation::check_new(
+            &key,
+            seq,
+            (previous.seq, &previous.hash),
+            watchman.as_deref(),
+            (after_seq, &after_hash),
+            &key_fingerprint,
+            &signature,
+        )
+        .map_err(|why| StoreError::Refused(LedgerError::DesignationRefused(why)))
     }
 
     /// After Postgres restarts, the connection and its lock are gone. Takes them again, so that a
@@ -1836,6 +1921,85 @@ mod tests {
             "ALTER TABLE rally_events DISABLE TRIGGER rally_no_delete;
              DELETE FROM rally_events WHERE item_type = 'LedgerRecord' AND item_id IN ({ids});"
         ));
+    }
+
+    fn designate(
+        scratch: &mut Scratch,
+        private: &Path,
+        key: &crate::designation::OperatorKey,
+        watchman: &str,
+        after: Option<(u64, String)>,
+    ) -> Result<u64, StoreError> {
+        let head = scratch.store().verify(None).unwrap().head;
+        let (seq, hash) = after.unwrap_or((head.seq, head.hash));
+        let statement = crate::ledger::designation_statement(Some(watchman), seq, &hash);
+        let body = json!({
+            "change": "designate", "watchman": watchman, "after_seq": seq, "after_hash": hash,
+            "key_fingerprint": key.fingerprint(),
+            "signature": crate::designation::testing::sign(private, &statement),
+        });
+        scratch.store().append(&team(body))
+    }
+
+    #[test]
+    fn a_designation_needs_the_operators_key_its_signature_and_the_head() {
+        use crate::designation::testing::keypair;
+        let keys = tempfile::tempdir().unwrap();
+        let (private, key) = keypair(keys.path(), "operator");
+        let (stranger, _) = keypair(keys.path(), "stranger");
+        let mut scratch = Scratch::new();
+        scratch.store().append(&ready()).unwrap();
+
+        // Without --secure's key, including through --db, it's refused.
+        let error = designate(&mut scratch, &private, &key, "w", None).unwrap_err();
+        assert!(error.to_string().contains("--secure"), "{error}");
+
+        scratch.store().accept_designations(key.clone());
+        let error = designate(&mut scratch, &stranger, &key, "w", None).unwrap_err();
+        assert!(error.to_string().contains("another key"), "{error}");
+        let stale = Some((0, CHAIN_START.to_owned()));
+        let error = designate(&mut scratch, &private, &key, "w", stale).unwrap_err();
+        assert!(error.to_string().contains("read the head again"), "{error}");
+        assert_eq!(
+            scratch.store().records(None).unwrap().len(),
+            1,
+            "nothing was written"
+        );
+
+        assert_eq!(
+            designate(&mut scratch, &private, &key, "grand-photon", None).unwrap(),
+            2
+        );
+        let report = scratch.store().designation_report(Some(&key)).unwrap();
+        assert_eq!(report["watchman"]["name"], "grand-photon");
+        // A read-only ledger, as on a host without the writer, reports the same.
+        let report = scratch.reader().designation_report(Some(&key)).unwrap();
+        assert_eq!(report["watchman"]["name"], "grand-photon");
+        // And after a restart, from Postgres.
+        scratch.restart();
+        let report = scratch.store().designation_report(Some(&key)).unwrap();
+        assert_eq!(report["watchman"]["name"], "grand-photon");
+    }
+
+    #[test]
+    fn a_designation_in_postgres_that_the_operator_didnt_sign_is_not_in_force() {
+        use crate::designation::testing::keypair;
+        let keys = tempfile::tempdir().unwrap();
+        let (_, key) = keypair(keys.path(), "operator");
+        let (stranger, stranger_key) = keypair(keys.path(), "stranger");
+        let mut scratch = Scratch::new();
+        // Stands in for a row written past the service: a writer that trusted another key.
+        scratch.store().accept_designations(stranger_key.clone());
+        designate(&mut scratch, &stranger, &stranger_key, "impostor", None).unwrap();
+        scratch.restart();
+        let report = scratch.store().designation_report(Some(&key)).unwrap();
+        assert!(report["watchman"].is_null(), "{report}");
+        assert!(
+            report["records"][0]["status"]
+                .as_str()
+                .unwrap()
+                .starts_with("not in force")
+        );
     }
 
     #[test]

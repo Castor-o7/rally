@@ -123,6 +123,19 @@ pub enum Change {
         request: u64,
         note: String,
     },
+    /// The operator designates a watchman, or with no watchman ends a designation (RAL-51). It
+    /// carries the operator's SSH signature over [`designation_statement`], which names the record
+    /// just before it. The ledger checks only its form and place; whether the signature is the
+    /// operator's is checked by the service, against the operator's key, each time it reports a
+    /// designation (see `designation.rs`), because the database can be written past the service.
+    Designate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        watchman: Option<String>,
+        after_seq: u64,
+        after_hash: String,
+        key_fingerprint: String,
+        signature: String,
+    },
     /// Annotates an earlier record of the same story, which stays in the history. Can also set the
     /// state: a team can only do that for a story it holds, naming itself in `team`, and moving a
     /// story into or out of a verifier's state takes a verifier. Without a state, it's only an
@@ -158,7 +171,7 @@ impl Change {
             Self::TeamState { story, .. } | Self::Block { story, .. } => {
                 story.as_deref().unwrap_or_default()
             }
-            Self::Unblock { .. } => "",
+            Self::Unblock { .. } | Self::Designate { .. } => "",
             Self::Backfill { entry, .. } => entry.story(),
             Self::Ready { story }
             | Self::Claim { story, .. }
@@ -382,6 +395,16 @@ pub enum LedgerError {
     InvalidBlockerTarget(u64),
     /// A story is named as waiting on itself.
     BlockedOnItself(String),
+    /// A designation doesn't name the record just before it (RAL-51).
+    DesignationOutOfPlace {
+        seq: u64,
+        after_seq: u64,
+    },
+    /// A designation's fields aren't in their form (RAL-51). Holds which.
+    InvalidDesignation(&'static str),
+    /// The service refused a designation: no operator key, the wrong place, or a signature that
+    /// isn't the operator's (RAL-51). Holds why.
+    DesignationRefused(String),
     /// A backfilled entry's time isn't before the record's own (RAL-30).
     BackfillNotEarlier {
         entered_at_ms: i64,
@@ -429,6 +452,13 @@ impl fmt::Display for LedgerError {
             }
             Self::InvalidBlockerTarget(seq) => write!(f, "record {seq} isn't an open blocker"),
             Self::BlockedOnItself(story) => write!(f, "{story} can't wait on itself"),
+            Self::DesignationOutOfPlace { seq, after_seq } => write!(
+                f,
+                "a designation at record {seq} must name record {}, not {after_seq}; read the head again and sign again",
+                seq - 1
+            ),
+            Self::InvalidDesignation(what) => write!(f, "a designation's {what}"),
+            Self::DesignationRefused(why) => write!(f, "the designation was refused: {why}"),
             Self::BackfillNotEarlier {
                 entered_at_ms,
                 at_ms,
@@ -454,6 +484,39 @@ pub struct Ledger {
     teams: BTreeMap<String, Team>,
     /// Every blocker by its record number, open and closed (RAL-20).
     blockers: BTreeMap<u64, Blocker>,
+    /// Every designation record, in order, whether or not its signature holds (RAL-51).
+    designations: Vec<Designation>,
+}
+
+/// The fixed text the operator signs to designate a watchman, or with none to end a designation.
+/// It names the record just before it by number and chain hash, so a signature can't be used
+/// anywhere else in this ledger or in another.
+pub fn designation_statement(watchman: Option<&str>, after_seq: u64, after_hash: &str) -> String {
+    format!(
+        "rally-designation v1\nwatchman: {}\nafter: {after_seq}:{after_hash}\n",
+        watchman.unwrap_or("none")
+    )
+}
+
+/// One designation record as the ledger holds it. Whether it's in force is for
+/// `designation::report` to say.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Designation {
+    pub seq: u64,
+    pub source: Source,
+    pub at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watchman: Option<String>,
+    pub after_seq: u64,
+    pub after_hash: String,
+    pub key_fingerprint: String,
+    pub signature: String,
+}
+
+impl Designation {
+    pub fn statement(&self) -> String {
+        designation_statement(self.watchman.as_deref(), self.after_seq, &self.after_hash)
+    }
 }
 
 impl Ledger {
@@ -477,6 +540,11 @@ impl Ledger {
 
     pub fn stories(&self) -> &BTreeMap<String, Story> {
         &self.stories
+    }
+
+    /// Every designation record, in order (RAL-51).
+    pub fn designations(&self) -> &[Designation] {
+        &self.designations
     }
 
     /// Teams by name, in lower case without surrounding space, so `Rally` and `rally` are one team.
@@ -615,6 +683,35 @@ impl Ledger {
             .map(|backfill| backfill.entered_by.as_str())
             .or(record.source().declared_name.as_deref());
         match change {
+            Change::Designate {
+                watchman,
+                after_seq,
+                after_hash,
+                key_fingerprint,
+                signature,
+            } => {
+                require_kind(record, Kind::Declared)?;
+                if backfill.is_some() {
+                    return Err(LedgerError::InvalidChange(
+                        "a designation can't be backfilled".into(),
+                    ));
+                }
+                if after_seq + 1 != seq {
+                    return Err(LedgerError::DesignationOutOfPlace { seq, after_seq });
+                }
+                self.designations.push(Designation {
+                    seq,
+                    source: record.source().clone(),
+                    at_ms: record.at_ms(),
+                    watchman,
+                    after_seq,
+                    after_hash,
+                    key_fingerprint,
+                    signature,
+                });
+                self.last_seq = seq;
+                return Ok(());
+            }
             Change::Block {
                 team,
                 story,
@@ -770,7 +867,8 @@ fn transition(
         | Change::TeamState { .. }
         | Change::Backfill { .. }
         | Change::Block { .. }
-        | Change::Unblock { .. } => unreachable!("handled by the caller"),
+        | Change::Unblock { .. }
+        | Change::Designate { .. } => unreachable!("handled by the caller"),
         Change::Claim { team, .. } => {
             require_kind(record, Kind::Declared)?;
             match story.state {
@@ -1025,6 +1123,7 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::TeamState { story: None, .. }
             | Change::Block { story: None, .. }
             | Change::Unblock { .. }
+            | Change::Designate { .. }
     );
     if !story_is_optional && !is_story_id(id) {
         return Err(LedgerError::InvalidStoryId(id.to_owned()));
@@ -1087,6 +1186,10 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
     }
     let fields: &[(&'static str, &str)] = match change {
         Change::Ready { .. } | Change::Merge { .. } | Change::Backfill { .. } => &[],
+        Change::Designate { .. } => {
+            check_designation_fields(change)?;
+            &[]
+        }
         Change::Claim { team, .. }
         | Change::Release { team, .. }
         | Change::TeamState { team, .. } => &[("team", team)],
@@ -1119,6 +1222,68 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
 
 /// Refuses a record with secret-looking text in any string its body carries, or in its declared
 /// name. Not the credential, which is how the service knows the writer, not text it wrote.
+/// The most characters in a watchman's name, which goes into a signed statement.
+const MAX_WATCHMAN_CHARS: usize = 64;
+/// The most characters in an armoured SSH signature.
+const MAX_SIGNATURE_CHARS: usize = 4096;
+
+/// A designation's form: a name that can't change the statement's lines, a chain hash, a key
+/// fingerprint and an armoured signature.
+fn check_designation_fields(change: &Change) -> Result<(), LedgerError> {
+    let Change::Designate {
+        watchman,
+        after_hash,
+        key_fingerprint,
+        signature,
+        ..
+    } = change
+    else {
+        return Ok(());
+    };
+    if let Some(name) = watchman {
+        let fits = !name.is_empty()
+            && name.chars().count() <= MAX_WATCHMAN_CHARS
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.@".contains(c));
+        if !fits || name == "none" {
+            return Err(LedgerError::InvalidDesignation(
+                "watchman: 1 to 64 letters, digits, '-', '_', '.' or '@', and not 'none'",
+            ));
+        }
+    }
+    if after_hash.len() != 64
+        || !after_hash
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(LedgerError::InvalidDesignation(
+            "after_hash: 64 lowercase hex digits",
+        ));
+    }
+    let fingerprint_ok = key_fingerprint.starts_with("SHA256:")
+        && key_fingerprint.len() <= 100
+        && key_fingerprint[7..]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b));
+    if !fingerprint_ok {
+        return Err(LedgerError::InvalidDesignation(
+            "key_fingerprint: SHA256:<base64>",
+        ));
+    }
+    if !signature.starts_with("-----BEGIN SSH SIGNATURE-----")
+        || !signature
+            .trim_end()
+            .ends_with("-----END SSH SIGNATURE-----")
+        || signature.chars().count() > MAX_SIGNATURE_CHARS
+    {
+        return Err(LedgerError::InvalidDesignation(
+            "signature: an armoured SSH signature, at most 4096 characters",
+        ));
+    }
+    Ok(())
+}
+
 fn check_secrets(record: &Record) -> Result<(), LedgerError> {
     fn walk(field: &str, value: &serde_json::Value) -> Result<(), LedgerError> {
         match value {

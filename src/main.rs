@@ -107,6 +107,15 @@ enum Command {
         /// Checks and past-state reads a credential regains per second.
         #[arg(long, default_value_t = RateLimit::default().heavy_per_second)]
         heavy_per_second: f64,
+        /// Refuse to start unless this binary and the operator key, and every directory above
+        /// each, are owned by root and writable by no one else, so that no agent on this host can
+        /// change either. It prints the operator's sudo steps if not. Needed to accept watchman
+        /// designations (RAL-51). See docs/designation.md.
+        #[arg(long, requires = "operator_key")]
+        secure: bool,
+        /// With --secure: the operator's OpenSSH public key, which designations must be signed by.
+        #[arg(long, requires = "secure")]
+        operator_key: Option<PathBuf>,
     },
     /// Run the read-only viewer on this machine's loopback address. See docs/web.md.
     Web {
@@ -173,6 +182,22 @@ enum Command {
         #[arg(long)]
         verbose: bool,
     },
+    /// The operator designates the watchman, or with --end ends the designation (RAL-51). It prints
+    /// the statement, then signs it with `ssh-keygen -Y sign` and the key given, which asks for
+    /// Touch ID when the key is Secretive's. See docs/designation.md.
+    Designate {
+        /// The watchman's name.
+        #[arg(long, conflicts_with = "end", required_unless_present = "end")]
+        watchman: Option<String>,
+        /// End the designation: no watchman.
+        #[arg(long)]
+        end: bool,
+        /// The operator's public key file, as `ssh-keygen -f` takes it.
+        #[arg(long)]
+        key: PathBuf,
+    },
+    /// Who the watchman is, each designation checked again against the operator's key (RAL-51).
+    Designation,
     /// Save a pair code from `add-machine` on this machine, read from standard input so that it
     /// stays out of shell history and process listings.
     Pair,
@@ -470,6 +495,45 @@ fn session_start(config: Option<PathBuf>, team: Option<&str>, verbose: bool) {
     }
 }
 
+/// The pairing at `path`, for commands that only work through the service.
+fn read_pairing(path: &Path) -> Result<Pairing, Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|_| format!("no pairing at {}: run `rally pair`", path.display()))?;
+    Ok(serde_json::from_str(&text).map_err(|_| format!("{} can't be read", path.display()))?)
+}
+
+/// `ssh-keygen -Y sign` over `statement` in the designation namespace, with the key at `key` (a
+/// public key file, signed through the SSH agent, such as Secretive's).
+fn ssh_sign(key: &Path, statement: &str) -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = std::process::Command::new("ssh-keygen")
+        .args([
+            "-q",
+            "-Y",
+            "sign",
+            "-n",
+            rally::designation::NAMESPACE,
+            "-f",
+        ])
+        .arg(key)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("ssh-keygen can't be run: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("ssh-keygen's input")?
+        .write_all(statement.as_bytes())?;
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        return Err("ssh-keygen didn't sign it, so nothing was recorded".into());
+    }
+    Ok(String::from_utf8(out.stdout)?)
+}
+
 /// Where reads and writes go.
 enum Backend {
     /// Directly on the ledger's database, on the host.
@@ -740,15 +804,22 @@ fn run_service(
     bind: &str,
     state_dir: &Path,
     limit: RateLimit,
+    operator_key: Option<rally::designation::OperatorKey>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let state = StateDir::open(state_dir)?;
     let (_, _, fingerprint) = state.certificate()?;
     let listener = TcpListener::bind(bind)?;
-    let listening =
-        json!({"listening": listener.local_addr()?.to_string(), "fingerprint": fingerprint});
+    let listening = json!({"listening": listener.local_addr()?.to_string(), "fingerprint": fingerprint,
+            "operator_key": operator_key.as_ref().map(rally::designation::OperatorKey::fingerprint)});
     println!("{listening}");
     std::io::Write::flush(&mut std::io::stdout())?;
-    tokio::runtime::Runtime::new()?.block_on(server::serve(listener, location, state, limit))?;
+    tokio::runtime::Runtime::new()?.block_on(server::serve(
+        listener,
+        location,
+        state,
+        limit,
+        operator_key,
+    ))?;
     Ok(json!({"stopped": true}).to_string())
 }
 
@@ -800,8 +871,25 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             failed_token_per_second,
             heavy_burst,
             heavy_per_second,
+            secure,
+            operator_key,
         } => {
             let location = location.ok_or("serve needs --db and --head-file")?;
+            let operator_key = if secure {
+                let key_path = operator_key.ok_or("--secure needs --operator-key")?;
+                let exe = std::env::current_exe()?;
+                for path in [&exe, &key_path] {
+                    rally::designation::check_owned(path, 0, None).map_err(|why| {
+                        format!(
+                            "--secure refused: {why}.\n{}",
+                            rally::designation::secure_steps(&exe, &key_path)
+                        )
+                    })?;
+                }
+                Some(rally::designation::OperatorKey::read(&key_path)?)
+            } else {
+                None
+            };
             if !(connection_seconds > 0.0 && connection_seconds.is_finite()) {
                 return Err("--connection-seconds must be a positive number".into());
             }
@@ -843,7 +931,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 heavy_burst,
                 heavy_per_second,
             };
-            return run_service(&location, &bind, &state_dir, limit);
+            return run_service(&location, &bind, &state_dir, limit, operator_key);
         }
         Command::AddMachine {
             name,
@@ -1164,6 +1252,54 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             (
                 kind,
                 json!({"change": "withdraw_read", "story": story, "request": request, "note": note}),
+            )
+        }
+        Command::Designation => {
+            if let Some(location) = &location {
+                let store = Store::open_read_only(location)?;
+                return Ok(store.designation_report(None)?.to_string());
+            }
+            let pairing = read_pairing(&config_path(cli.config.clone())?)?;
+            let reply = client::request(&pairing, "GET", "/v1/designation", None, &[])?;
+            return Ok(reply_value(&reply)?.to_string());
+        }
+        Command::Designate { watchman, end, key } => {
+            debug_assert!(end != watchman.is_some());
+            if location.is_some() {
+                return Err(
+                    "designations go through the service, which holds the operator's key; \
+                            don't use --db"
+                        .into(),
+                );
+            }
+            let pairing = read_pairing(&config_path(cli.config.clone())?)?;
+            let check = reply_value(&client::request(&pairing, "GET", "/v1/check", None, &[])?)?;
+            let (Some(after_seq), Some(after_hash)) = (
+                check["head"]["seq"].as_u64(),
+                check["head"]["hash"].as_str(),
+            ) else {
+                return Err("the service didn't say where the ledger's head is".into());
+            };
+            let statement =
+                rally::ledger::designation_statement(watchman.as_deref(), after_seq, after_hash);
+            let public = if key.extension().is_some_and(|e| e == "pub") {
+                key.clone()
+            } else {
+                PathBuf::from(format!("{}.pub", key.display()))
+            };
+            let fingerprint = rally::designation::OperatorKey::read(&public)?.fingerprint();
+            eprintln!(
+                "Signing this with {} ({fingerprint}). Read it before you touch:\n{statement}",
+                key.display()
+            );
+            let signature = ssh_sign(&key, &statement)?;
+            (
+                Kind::Declared,
+                json!({
+                    "change": "designate", "watchman": watchman, "after_seq": after_seq,
+                    "after_hash": after_hash, "key_fingerprint": fingerprint,
+                    "signature": signature,
+                }),
             )
         }
         Command::Merge { story, commit } => (

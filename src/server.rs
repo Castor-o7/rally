@@ -87,6 +87,8 @@ struct Service {
     // No lock of its own: appends queue on the writer's lock inside the store, and reads of
     // myko's copy need none, so a write stuck on Postgres doesn't hold up reads.
     store: Store,
+    /// The operator's key, under `serve --secure` only (RAL-51).
+    operator_key: Option<crate::designation::OperatorKey>,
     state_dir: StateDir,
     limit: RateLimit,
     buckets: Mutex<HashMap<(String, Bucket), (f64, Instant)>>,
@@ -143,6 +145,7 @@ pub async fn serve(
     location: &Location,
     state_dir: StateDir,
     limit: RateLimit,
+    operator_key: Option<crate::designation::OperatorKey>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Both ring and any other provider could be linked; the choice has to be explicit.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -155,7 +158,10 @@ pub async fn serve(
         max_ledger_bytes: limit.max_ledger_bytes,
         min_free_bytes: limit.min_free_bytes,
     });
-    let app = router(store, state_dir, limit);
+    if let Some(key) = &operator_key {
+        store.accept_designations(key.clone());
+    }
+    let app = router(store, state_dir, limit, operator_key);
     listener.set_nonblocking(true)?;
     let lifetime = Duration::from_secs_f64(limit.connection_seconds);
     let acceptor = Limited {
@@ -182,9 +188,15 @@ pub async fn serve(
     Ok(())
 }
 
-fn router(store: Store, state_dir: StateDir, limit: RateLimit) -> Router {
+fn router(
+    store: Store,
+    state_dir: StateDir,
+    limit: RateLimit,
+    operator_key: Option<crate::designation::OperatorKey>,
+) -> Router {
     let service = Arc::new(Service {
         store,
+        operator_key,
         state_dir,
         limit,
         buckets: Mutex::new(HashMap::new()),
@@ -205,6 +217,7 @@ fn router(store: Store, state_dir: StateDir, limit: RateLimit) -> Router {
         .route("/v1/teams/{name}", get(one_team))
         .route("/v1/check", get(check))
         .route("/v1/whoami", get(whoami))
+        .route("/v1/designation", get(designation))
         .route("/v1/export", get(export))
         .fallback(|| async { failure(StatusCode::NOT_FOUND, "no such route") })
         .method_not_allowed_fallback(|| async {
@@ -767,6 +780,31 @@ fn records_more(page: &Value, head: &Head) -> bool {
         .and_then(|records| records.last())
         .and_then(|last| last["seq"].as_u64())
         .is_some_and(|last| last < head.seq)
+}
+
+/// Who the watchman is, each designation checked again against the operator's key and the chain
+/// (RAL-51). Heavy: without a writer's kept copy, it replays from Postgres.
+async fn designation(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+) -> Response {
+    if !service.allow(&identity.credential, Bucket::Heavy) {
+        return failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many checks and past-state reads",
+        );
+    }
+    let key = service.operator_key.clone();
+    let result = service
+        .run(Work::Heavy, move |store| {
+            store.designation_report(key.as_ref())
+        })
+        .await;
+    match result {
+        Ok(Ok(report)) => Json(report).into_response(),
+        Ok(Err(error)) => internal(&error),
+        Err(not_run) => not_run.into_response(),
+    }
 }
 
 /// Which credential this is, so that the viewer can warn if it could write.

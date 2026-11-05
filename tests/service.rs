@@ -10,7 +10,7 @@ use rally::client::{Reply, request};
 use rally::scratch_pg::{self, Cluster, Database};
 use serde_json::{Value, json};
 
-const ROUTES: [(&str, &str); 7] = [
+const ROUTES: [(&str, &str); 8] = [
     ("POST", "/v1/records"),
     ("GET", "/v1/stories"),
     ("GET", "/v1/stories/RAL-13"),
@@ -18,6 +18,7 @@ const ROUTES: [(&str, &str); 7] = [
     ("GET", "/v1/teams/rally"),
     ("GET", "/v1/check"),
     ("GET", "/v1/whoami"),
+    ("GET", "/v1/designation"),
 ];
 
 struct Service<'a> {
@@ -1650,4 +1651,102 @@ fn session_start_shows_a_teams_state_through_the_service() {
         "{text}"
     );
     assert!(text.trim_end().ends_with("</rally_state>"), "{text}");
+}
+
+/// An ed25519 key made by ssh-keygen in `dir`; returns its private key's path.
+fn ssh_key(dir: &Path, name: &str) -> PathBuf {
+    let private = dir.join(name);
+    let status = Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f"])
+        .arg(&private)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    private
+}
+
+#[test]
+fn serve_secure_refuses_a_binary_root_doesnt_own_and_gives_the_operators_steps() {
+    let service = start();
+    let key = ssh_key(service.dir.path(), "operator");
+    let output = rally()
+        .arg("--db")
+        .arg(&service.db.url)
+        .arg("--head-file")
+        .arg(service.head_file())
+        .args([
+            "serve",
+            "--bind",
+            "127.0.0.1:0",
+            "--secure",
+            "--operator-key",
+        ])
+        .arg(key.with_extension("pub"))
+        .arg("--state-dir")
+        .arg(service.state_dir())
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "it started");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("--secure refused"), "{error}");
+    assert!(
+        error.contains("sudo install -o root -g root -m 0755"),
+        "{error}"
+    );
+    assert!(error.contains("/etc/rally/operator.pub"), "{error}");
+
+    // The key is only for --secure, and --secure needs the key.
+    for args in [&["--operator-key", "x.pub"][..], &["--secure"][..]] {
+        let output = rally()
+            .args(["serve", "--bind", "127.0.0.1:0", "--state-dir", "x"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{args:?}");
+    }
+}
+
+#[test]
+fn a_designation_is_refused_by_a_service_without_secure() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let key = ssh_key(service.dir.path(), "operator");
+    let out = rally()
+        .arg("--config")
+        .arg(&config)
+        .args([
+            "--as",
+            "operator",
+            "designate",
+            "--watchman",
+            "grand-photon",
+            "--key",
+        ])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        error.contains("rally-designation v1\nwatchman: grand-photon\nafter: 0:"),
+        "{error}"
+    );
+    assert!(error.contains("--secure"), "{error}");
+
+    let report = cli(&config, "x", &["designation"]);
+    assert!(
+        report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let report: Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert!(report["watchman"].is_null());
+    assert!(report["operator_key"].is_null());
+    assert_eq!(
+        report["records"].as_array().unwrap().len(),
+        0,
+        "nothing was recorded"
+    );
 }

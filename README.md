@@ -133,6 +133,9 @@ For each session to start with its team's Rally state, add the SessionStart hook
 [docs/session-hook.md](docs/session-hook.md). It runs `rally session-start`, which is read-only and quick, and silent
 if anything fails.
 
+Only the operator designates the watchman, by an SSH signature that needs Touch ID, checked by a service started
+with `--secure`. See [docs/designation.md](docs/designation.md), which includes the operator's own steps.
+
 ## Development
 
 ```bash
