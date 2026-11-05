@@ -51,6 +51,10 @@ fn rally() -> Command {
         "RALLY_CREDENTIAL",
         "RALLY_NAME",
         "RALLY_STATE_DIR",
+        "RALLY_TEAM",
+        "RALLY_OPERATOR_WINDOW",
+        "RALLY_OPERATOR_AWAY_AFTER",
+        "RALLY_OPERATOR_AWAY",
     ] {
         command.env_remove(name);
     }
@@ -2013,4 +2017,33 @@ fn three_unanswered_shelves_put_the_operator_away_for_the_agreed_time() {
     assert_eq!(after["next"]["story"], "RAL-2");
     assert_eq!(after["waiting_on_operator"][0]["ask_again"], true);
     assert_eq!(blockers()["unanswered_shelves"], json!([]));
+}
+
+/// RAL-57: without the operator's key the service can't check designations, so it suggests
+/// readers and says so; a suggestion is never the author's team.
+#[test]
+fn waiting_suggests_a_reader_from_another_team() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    for body in [
+        json!({"change": "team_state", "team": "muster", "status": "available"}),
+        json!({"change": "ready", "story": "RAL-60"}),
+        json!({"change": "claim", "story": "RAL-60", "team": "rally"}),
+        json!({"change": "submit", "story": "RAL-60", "team": "rally", "evidence": "rally@a"}),
+    ] {
+        let reply = write(&pairing, "r", "declared", body);
+        assert_eq!(reply.status, 200, "{}", reply.body);
+    }
+    let waiting: Value =
+        serde_json::from_str(&call(&pairing, "GET", "/v1/waiting", None).body).unwrap();
+    let row = &waiting["waiting"][0];
+    assert_eq!(row["story"], "RAL-60");
+    assert_eq!(
+        row["suggested_reader"],
+        json!({"team": "muster", "kind": "declared"})
+    );
+    assert!(
+        waiting["readers"].as_str().unwrap().contains("can't check"),
+        "{waiting}"
+    );
 }

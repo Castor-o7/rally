@@ -71,6 +71,9 @@ pub enum Change {
         note: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<String>,
+        /// The reader's own team, declared, so reads can be spread across teams (RAL-57).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team: Option<String>,
     },
     /// Someone other than the submitter returns the story, saying what's missing, and may name the
     /// commit they read.
@@ -79,6 +82,9 @@ pub enum Change {
         note: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<String>,
+        /// The reader's own team, declared (RAL-57).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team: Option<String>,
     },
     /// The story's work was merged at a commit (RAL-33). Merged is independent of Verified: it's
     /// allowed in any state and changes none. It names no merger, since every session shares one
@@ -538,6 +544,8 @@ pub enum LedgerError {
     /// A new record uses `operator` as its own team's name, which is kept for waiting on the
     /// operator, so no team can look like the operator (RAL-56).
     ReservedTeam,
+    /// A read names the story's own team as the reader's (RAL-57).
+    ReaderIsAuthor(String),
     /// An away record that doesn't follow from the ledger (RAL-56).
     InvalidAway(&'static str),
     /// Closing a question to the operator must say where the answer came from, and closing any
@@ -619,6 +627,12 @@ impl fmt::Display for LedgerError {
                 "\"{OPERATOR}\" is kept for waiting on the operator, so no team can use it as its name"
             ),
             Self::AnswerSource(why) => write!(f, "{why}"),
+            Self::ReaderIsAuthor(team) => {
+                write!(
+                    f,
+                    "{team} holds this story, so it can't read it as another team"
+                )
+            }
             Self::InvalidAway(why) => write!(f, "invalid away record: {why}"),
             Self::BlockedOnItself(story) => write!(f, "{story} can't wait on itself"),
             Self::DesignationOutOfPlace { seq, after_seq } => write!(
@@ -888,6 +902,31 @@ impl Ledger {
         check_text(record, &parsed, change)?;
         if own_team(change).is_some_and(|team| same_name(team, OPERATOR)) {
             return Err(LedgerError::ReservedTeam);
+        }
+        // A team doesn't read its own story (RAL-57).
+        if let Change::Verify {
+            team: Some(reader), ..
+        }
+        | Change::SendBack {
+            team: Some(reader), ..
+        } = change
+            && reader.trim().is_empty()
+        {
+            return Err(LedgerError::EmptyField("team"));
+        }
+        if let Change::Verify {
+            team: Some(reader), ..
+        }
+        | Change::SendBack {
+            team: Some(reader), ..
+        } = change
+            && let Some(story) = self.stories.get(change.story())
+            && story
+                .team
+                .as_deref()
+                .is_some_and(|author| same_name(author, reader))
+        {
+            return Err(LedgerError::ReaderIsAuthor(reader.clone()));
         }
         if let Change::Unblock {
             blocker, answer, ..
@@ -1689,7 +1728,9 @@ fn own_team(change: &Change) -> Option<&str> {
         | Change::Block { team, .. }
         | Change::Annotate { team, .. }
         | Change::Submit { team, .. } => Some(team),
-        Change::Correct { team, .. } => team.as_deref(),
+        Change::Correct { team, .. }
+        | Change::Verify { team, .. }
+        | Change::SendBack { team, .. } => team.as_deref(),
         _ => None,
     }
 }
@@ -1729,9 +1770,11 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
             text.push(("note", note));
             text.extend(team.as_deref().map(|team| ("team", team)));
         }
+        Change::Verify { note, team, .. } | Change::SendBack { note, team, .. } => {
+            text.push(("note", note));
+            text.extend(team.as_deref().map(|team| ("team", team)));
+        }
         Change::Unblock { note, .. }
-        | Change::Verify { note, .. }
-        | Change::SendBack { note, .. }
         | Change::RequestRead { note, .. }
         | Change::WithdrawRead { note, .. } => text.push(("note", note)),
     }
@@ -2708,6 +2751,40 @@ mod tests {
         assert!(ledger.unanswered_shelves(1 + W).is_empty());
         push(&mut ledger, &shelve(1 + W, 3, "rally"));
         assert_eq!(ledger.unanswered_shelves(1 + W), [7]);
+    }
+
+    #[test]
+    fn a_read_names_the_readers_team_but_never_the_storys_own() {
+        let ledger = ledger_with(&[ready(), claim(), submit()]);
+        let read = |team: &str| {
+            verifier(
+                json!({"change": "verify", "story": STORY, "note": "read it",
+                            "commit": COMMIT, "team": team}),
+            )
+        };
+        assert_eq!(
+            ledger.check(4, &read("Rally")),
+            Err(LedgerError::ReaderIsAuthor("Rally".into()))
+        );
+        assert_eq!(
+            ledger.check(4, &read("operator")),
+            Err(LedgerError::ReservedTeam)
+        );
+        assert_eq!(
+            ledger.check(4, &read(" ")),
+            Err(LedgerError::EmptyField("team"))
+        );
+        assert!(ledger.check(4, &read("muster")).is_ok());
+        let back = verifier(
+            json!({"change": "send_back", "story": STORY, "note": "no test",
+                                    "team": "rally"}),
+        );
+        assert_eq!(
+            ledger.check(4, &back),
+            Err(LedgerError::ReaderIsAuthor("rally".into()))
+        );
+        // Without one, as before RAL-57.
+        assert!(ledger.check(4, &verify()).is_ok());
     }
 
     #[test]

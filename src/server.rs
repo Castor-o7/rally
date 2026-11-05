@@ -893,15 +893,16 @@ async fn handover(
 }
 
 /// Submissions waiting for a reader, oldest first (RAL-51).
-async fn waiting(
-    State(service): State<Arc<Service>>,
-    Extension(identity): Extension<Identity>,
-    Query(query): Query<ReadQuery>,
-) -> Response {
-    view(service, identity, query, |ledger, _| {
-        Ok(views::waiting(ledger))
-    })
-    .await
+async fn waiting(State(service): State<Arc<Service>>) -> Response {
+    let key = service.operator_key.clone();
+    let result = service
+        .run(Work::Read, move |store| store.waiting_report(key.as_ref()))
+        .await;
+    match result {
+        Ok(Ok(report)) => Json(report).into_response(),
+        Ok(Err(error)) => internal(&error),
+        Err(not_run) => not_run.into_response(),
+    }
 }
 
 /// Which credential this is, so that the viewer can warn if it could write.

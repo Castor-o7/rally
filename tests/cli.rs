@@ -39,6 +39,7 @@ fn rally(db: &Ledger, name: &str, args: &[&str]) -> Output {
         .env_remove("RALLY_HEAD_FILE")
         .env_remove("RALLY_CREDENTIAL")
         .env_remove("RALLY_NAME")
+        .env_remove("RALLY_TEAM")
         .output()
         .unwrap()
 }

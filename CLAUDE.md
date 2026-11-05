@@ -30,6 +30,8 @@ Where you use Rally:
 - **Read your team's record** with `rally record <team>`, and correct it or disagree with
   `rally annotate --corrects <N> --team <team> --note "..."`, shown beside the original.
 - **Find work to verify**: `rally waiting` lists submissions waiting for a reader, oldest first.
+  While no watchman is designated, it suggests a reading team for each; say yours with `--team`
+  when you verify or send back.
 - **Read the state**: `rally show [STORY]`, `rally blockers`, `rally teams`, and
   `rally designation` for who the watchman is.
 
