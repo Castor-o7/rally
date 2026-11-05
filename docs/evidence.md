@@ -49,6 +49,25 @@ each credential's write limit on submissions, but it's a cost a submitter contro
 Without a token, nothing is asked of GitHub, and each check is recorded as "not checked: the service has no
 GitHub token". An anonymous allowance isn't enough: Murph's is shared and was used up when this was built.
 
+### Open pull requests' roadmaps (RAL-68)
+
+The token has one other use. `rally new-story` asks the service, at `/v1/open-ids`, for the highest number of its
+prefix written in the roadmap of any open pull request, so a number someone wrote by hand in an open pull request
+isn't handed out again, as MUS-95 was on 2026-11-05. The service lists the repository's open pull requests (at
+most 100) and reads the roadmap file at each one's head, all GETs to `api.github.com`. The repository comes from
+`--repo owner/repo`, or else the checkout's `origin` on github.com; the path is `--roadmap`, which must be a plain
+path inside the repository, such as the default `docs/roadmap.md`. The service reads only repositories of the
+owners it's given, `--github-owners` (or `RALLY_GITHUB_OWNERS`), comma-separated, `Castor-o7` by default; a
+request can't widen that, and a repository outside it is refused before GitHub is asked. Without that limit any
+paired client could spend the token on any repository it can see, private ones included, and learn their story
+numbers.
+
+`new-story` prints what it found as `open_pull_requests`: `checked: true`, labelled observed, with the highest
+number and the pull requests that use the prefix. If anything can't be read (no token, GitHub down, one pull
+request's file unreadable, more than 100 open, or no repository given), it prints `checked: false` with the
+reason, and the number comes from the ledger and the local roadmap only. It never counts a partial read as a
+check.
+
 ### Showing the token can't merge
 
 `rally check-github-token` is for the operator, run by hand; the service never runs it. Point it at an

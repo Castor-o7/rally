@@ -93,6 +93,10 @@ struct Service {
     operator_times: Option<crate::store::OperatorTimes>,
     /// Checks submitted evidence in the background, once started (RAL-5).
     evidence: std::sync::OnceLock<crate::evidence::Checker>,
+    /// Reads roadmaps in open pull requests with the evidence token, when there is one (RAL-68).
+    roadmaps: std::sync::OnceLock<Arc<dyn crate::evidence::Roadmaps + Send + Sync>>,
+    /// The owners `roadmaps` may read for (RAL-68).
+    github_owners: std::sync::OnceLock<Vec<String>>,
     state_dir: StateDir,
     limit: RateLimit,
     buckets: Mutex<HashMap<(String, Bucket), (f64, Instant)>>,
@@ -147,9 +151,14 @@ const HEADER_SECONDS: f64 = 10.0;
 /// queues every submission still in review that has no check yet, such as ones a restart cut
 /// short (RAL-5).
 fn start_evidence_checks(service: &Arc<Service>, settings: crate::evidence::Settings) {
-    let forge: Option<Arc<dyn crate::evidence::Forge + Send + Sync>> = settings
+    let github = settings
         .token
-        .map(|token| Arc::new(crate::evidence::GitHub::new(token)) as _);
+        .map(|token| Arc::new(crate::evidence::GitHub::new(token)));
+    if let Some(github) = &github {
+        let _ = service.roadmaps.set(github.clone() as _);
+    }
+    let _ = service.github_owners.set(settings.owners.clone());
+    let forge: Option<Arc<dyn crate::evidence::Forge + Send + Sync>> = github.map(|g| g as _);
     let weak = Arc::downgrade(service);
     let record = Arc::new(
         move |job: &crate::evidence::Job, outcome: &crate::evidence::Outcome| {
@@ -262,6 +271,8 @@ fn router(
         operator_key,
         operator_times,
         evidence: std::sync::OnceLock::new(),
+        roadmaps: std::sync::OnceLock::new(),
+        github_owners: std::sync::OnceLock::new(),
         state_dir,
         limit,
         buckets: Mutex::new(HashMap::new()),
@@ -290,6 +301,7 @@ fn router(
         .route("/v1/designation", get(designation))
         .route("/v1/verifications", get(verifications))
         .route("/v1/handover", get(handover))
+        .route("/v1/open-ids", get(open_ids))
         .route("/v1/brief", get(brief))
         .route("/v1/waiting", get(waiting))
         .route("/v1/export", get(export))
@@ -1020,6 +1032,48 @@ async fn brief(
         Ok(Ok(report)) => Json(report).into_response(),
         Ok(Err(error)) => internal(&error),
         Err(not_run) => not_run.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct OpenIdsQuery {
+    repo: String,
+    path: String,
+    prefix: String,
+}
+
+/// The highest story number for a prefix written in the roadmap of any open pull request
+/// (RAL-68), read from GitHub with the evidence token, read-only. Heavy: it's a GitHub read per
+/// open pull request. Without a token it says it couldn't check.
+async fn open_ids(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<OpenIdsQuery>,
+) -> Response {
+    if !service.allow(&identity.credential, Bucket::Heavy) {
+        return failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many checks and past-state reads",
+        );
+    }
+    let Some(roadmaps) = service.roadmaps.get().cloned() else {
+        return Json(json!({"checked": false, "reason": "the service has no GitHub token"}))
+            .into_response();
+    };
+    let owners = service.github_owners.get().cloned().unwrap_or_default();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::evidence::open_pull_ids(
+            roadmaps.as_ref(),
+            &owners,
+            &query.repo,
+            &query.path,
+            &query.prefix,
+        )
+    })
+    .await;
+    match result {
+        Ok(value) => Json(value).into_response(),
+        Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "the GitHub read stopped"),
     }
 }
 

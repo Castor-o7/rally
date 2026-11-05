@@ -135,6 +135,10 @@ enum Command {
         /// each check is recorded as not checked. With --secure, it must be root-owned too.
         #[arg(long, env = "RALLY_GITHUB_TOKEN_FILE")]
         github_token_file: Option<PathBuf>,
+        /// The GitHub owners, comma-separated, whose repositories the token may read open pull
+        /// requests' roadmaps in for `new-story` (RAL-68). Requests can't widen it.
+        #[arg(long, env = "RALLY_GITHUB_OWNERS", default_value = rally::evidence::DEFAULT_OWNERS)]
+        github_owners: String,
         /// The longest a submission's CI is waited for before its check is recorded as pending.
         #[arg(long, default_value = "30m", value_parser = parse_window)]
         evidence_ci_wait: u64,
@@ -488,6 +492,10 @@ enum Command {
         /// The prefix's roadmap, so a number already written there isn't handed out.
         #[arg(long, default_value = "docs/roadmap.md")]
         roadmap: PathBuf,
+        /// The GitHub repository, as owner/repo, whose open pull requests' roadmaps are read too
+        /// (RAL-68). Defaults to this checkout's `origin` on github.com.
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// Prompts for the watchman from Muster's roster and Rally's records (RAL-7): each row of the
     /// design's stall table that holds for a team, and whether every team is waiting at once, as
@@ -1167,10 +1175,58 @@ const NEW_STORY_TRIES: usize = 20;
 /// `rally new-story`: the next free number for `prefix`, above every one in the ledger and in the
 /// roadmap, written in one append. If another team takes it first, the ledger refuses and this
 /// tries the next (RAL-55).
+/// `owner/repo` from a github.com remote URL, in https or ssh form.
+fn github_repo(url: &str) -> Option<String> {
+    let rest = url
+        .trim()
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.trim().strip_prefix("git@github.com:"))
+        .or_else(|| url.trim().strip_prefix("ssh://git@github.com/"))?;
+    let repo = rest.trim_end_matches('/').trim_end_matches(".git");
+    rally::evidence::valid_repo(repo).then(|| repo.to_owned())
+}
+
+/// What the service read of open pull requests' roadmaps (RAL-68), or why it couldn't.
+fn open_pull_ids(backend: &Backend, repo: Option<&str>, roadmap: &Path, prefix: &str) -> Value {
+    let not = |reason: &str| json!({"checked": false, "reason": reason});
+    let Backend::Service(pairing) = backend else {
+        return not("on the host there's no GitHub token: run it through the service");
+    };
+    let repo = match repo {
+        Some(repo) => Some(repo.to_owned()),
+        None => std::process::Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .output()
+            .ok()
+            .and_then(|out| github_repo(&String::from_utf8_lossy(&out.stdout))),
+    };
+    let Some(repo) = repo else {
+        return not("no GitHub repository: give --repo owner/repo");
+    };
+    let Some(path) = roadmap.to_str().filter(|p| rally::evidence::valid_path(p)) else {
+        return not("the roadmap isn't a plain path inside the repository");
+    };
+    let query = format!(
+        "/v1/open-ids?repo={}&path={}&prefix={}",
+        encode(&repo),
+        encode(path),
+        encode(prefix)
+    );
+    match client::request(pairing, "GET", &query, None, &[])
+        .map_err(|e| e.to_string())
+        .and_then(|reply| reply_value(&reply).map_err(|e| e.to_string()))
+    {
+        Ok(value) => value,
+        Err(error) => not(&format!("the service couldn't be asked: {error}")),
+    }
+}
+
+/// `roadmap` is the local roadmap and the GitHub repository whose open pull requests' roadmaps are
+/// read too, if given.
 fn new_story(
     prefix: &str,
     title: &str,
-    roadmap: &Path,
+    (roadmap, repo): (&Path, Option<&str>),
     location: Option<&Location>,
     config: &Path,
     name: Option<&str>,
@@ -1205,6 +1261,11 @@ fn new_story(
         })
         .unwrap_or(0)
         .max(written);
+    // Numbers written in open pull requests' roadmaps aren't handed out either (RAL-68).
+    let open = open_pull_ids(&backend, repo, roadmap, prefix);
+    if open["checked"] == true {
+        highest = highest.max(open["highest"].as_u64().unwrap_or(0));
+    }
     for _ in 0..NEW_STORY_TRIES {
         let story = format!("{prefix}-{}", highest + 1);
         let body = json!({"change": "new_story", "story": story, "title": title});
@@ -1232,6 +1293,7 @@ fn new_story(
         match outcome {
             Ok(mut recorded) => {
                 recorded["story"] = json!(story);
+                recorded["open_pull_requests"] = open;
                 return Ok(recorded.to_string());
             }
             // Someone took it first: the refusal says how high the prefix now reaches, so take
@@ -2147,6 +2209,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             operator_away_after,
             operator_away,
             github_token_file,
+            github_owners,
             evidence_ci_wait,
             evidence_poll,
         } => {
@@ -2163,6 +2226,11 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             };
             let evidence = rally::evidence::Settings {
                 token,
+                owners: github_owners
+                    .split(',')
+                    .map(|owner| owner.trim().to_owned())
+                    .filter(|owner| !owner.is_empty())
+                    .collect(),
                 timing: rally::evidence::Timing {
                     ceiling_ms: evidence_ci_wait,
                     poll_ms: evidence_poll,
@@ -2775,12 +2843,13 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             prefix,
             title,
             roadmap,
+            repo,
         } => {
             let config = config_path(cli.config)?;
             return new_story(
                 &prefix,
                 &title,
-                &roadmap,
+                (&roadmap, repo.as_deref()),
                 location.as_ref(),
                 &config,
                 cli.name.as_deref(),
