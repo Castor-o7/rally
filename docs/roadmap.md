@@ -69,7 +69,7 @@ The bones. Everything later reads from this.
   the chain from outside myko; records survive a restart; an append isn't acknowledged until Postgres has it, with
   a test that stops Postgres; concurrent appends keep one chain; and the design's choice of no listener or loopback
   is recorded with its evidence. The licence is AGPL-3.0-or-later, decided by the operator.
-- [ ] **RAL-40: Interface with Levi.** Requested by the operator on 2026-11-02. See the design. Claims live in
+- [ ] **RAL-40: Interface with Levi.** The design is in #112 (332506a). Left: Rally reading a repository's Levi tasks through `levi --json` or its hub, labelled, read-only, with a test against a real `levi` run. Requested by the operator on 2026-11-02. See the design. Claims live in
   Levi. Done when: the design says what happens to Rally's own claim commands and to projects not on Levi, and
   Rally can read a repository's Levi tasks through `levi --json`
   or its hub, labelled by how each fact is known, with Levi's text treated as untrusted and nothing
@@ -84,7 +84,7 @@ The bones. Everything later reads from this.
   Rally's own, and later writes and checks queue behind it, each holding a blocking thread, so reads last only
   until the pool runs out; the address given to myko keeps only host, port, user, database and password; the
   password file is checked then read, with no check of its directory.
-- [ ] **RAL-41: Tighten text and name checks.** From the reads of RAL-16. Done when: zero-width and direction
+- [x] **RAL-41: Tighten text and name checks.** Merged in #104 (3c13f06). From the reads of RAL-16. Done when: zero-width and direction
   characters are refused in names, so `alice` and a look-alike can't pass as different people; `/v1/check`
   carries the untrusted-text notice; and limits don't apply on replay in a way that makes an old ledger
   unreadable if they tighten, with a test for each. Decide this before deployment.
@@ -97,7 +97,7 @@ The bones. Everything later reads from this.
 - [x] **RAL-12: Make replay deterministic.** Done when: replaying the same records always produces
   identical state, the state as of any past record can be rebuilt, and a test shows both. Replay reads
   no clock or outside system.
-- [ ] **RAL-2: Show whether a team is available, working or blocked.** Continues MUS-28. Done when: a
+- [x] **RAL-2: Show whether a team is available, working or blocked.** Merged in #12 (12133ea). Continues MUS-28. Done when: a
   team can set its state, the watchman can read it without sending a message, and it's labelled as
   declared.
 - [x] **RAL-13: Control who can write and read.** Depends on RAL-4 and RAL-10. Done when: an
@@ -134,7 +134,7 @@ The bones. Everything later reads from this.
 
 ## Phase 2: Verification
 
-- [ ] **RAL-5: Check submitted evidence.** Done when: on submission, Rally records as observed whether
+- [x] **RAL-5: Check submitted evidence.** Merged in #111 (539cbd4). Done when: on submission, Rally records as observed whether
   the commit exists, names the story and passed CI, and a test covers each failure. What a team didn't
   test is its own field, not free text.
 - [x] **RAL-31: Tie verification to a commit.** Heads can move while work waits: muster#34 changed three
@@ -146,7 +146,7 @@ The bones. Everything later reads from this.
   blocks a merge is the operator's call, and this story records it either way.
 - [x] **RAL-33: Record merges as commits.** Done when: Merged records the commit, is independent of
   Verified, and doesn't claim who merged, since every session shares one GitHub account.
-- [ ] **RAL-18: Check evidence with least privilege.** Done when: evidence checks use read-only GitHub
+- [ ] **RAL-18: Check evidence with least privilege.** Mostly in #111 (539cbd4): evidence checks only send GETs to a pinned `api.github.com`, follow no redirects (tested), and never check out or run submitted code. Left: nothing yet shows a merge attempt with that access refused, and no test shows the no-checkout part. Done when: evidence checks use read-only GitHub
   access, a merge attempt with that access is refused, and a test shows that Rally reads evidence without
   checking out or running submitted code.
 - [x] **RAL-6: Verify separately from the author.** Done when: a story can only be marked Verified or
@@ -202,7 +202,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   control, and a test shows no request through it can change the ledger.
 - [ ] **RAL-26: Agree the look with the operator.** Done when: the operator has approved a visual design
   covering the current and past views, on a phone as well as a desktop.
-- [ ] **RAL-27: Show the current ledger.** Done when: the web app shows each team's state, stories,
+- [ ] **RAL-27: Show the current ledger.** Partly done: the viewer (RAL-43, cd346a1) shows each team's declared state, stories, blockers and their freshness, labelled. Left: evidence and track records on the page, and the operator seeing it running. Done when: the web app shows each team's state, stories,
   evidence, blockers and track record, says for each whether it's observed, declared or verified and how
   fresh it is, and the operator has seen it running.
 - [x] **RAL-37: Show each roadmap's progress.** Requested by the operator on 2026-11-02. Done when: the
@@ -240,7 +240,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
 - [ ] **RAL-28: Show past ledgers.** Depends on RAL-12. Done when: a viewer can pick a past moment and
   see the ledger as it stood then, with corrections made since shown as later, and a test shows that the
   view matches a replay to that moment.
-- [ ] **RAL-29: Secure the web app.** Done when: a test shows that a cross-origin page can't read it,
+- [x] **RAL-29: Secure the web app.** Merged in #114 (1490e83). Done when: a test shows that a cross-origin page can't read it,
   that markup in recorded text doesn't run, and that an unauthorized viewer is refused; it isn't exposed
   to the open internet; and someone other than its author has reviewed it adversarially, before it's
   reachable beyond the machine it runs on.
@@ -326,7 +326,7 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   watchman's re-read" until the watchman records its own verification, send-back or correction, none of which
   overwrites the peer's record; the RAL-8 digest carries the list until it's empty; and a test covers a
   designation partway through, with stories merged and unmerged.
-- [ ] **RAL-53: Bind the watchman label to a per-session credential.** From the watchman's read of RAL-51b. Today
+- [x] **RAL-53: Bind the watchman label to a per-session credential.** Merged in #116 (280c4a6). From the watchman's read of RAL-51b. Today
   a verification is labelled `watchman` when its declared name matches the designated watchman's, and on a1 every
   session shares one credential, so any session can declare that name. Done when: a designation can name a
   credential that only the watchman's session holds, issued without passing through other sessions; a
@@ -395,7 +395,7 @@ word.
   The operator decides when. Done when: for one rally session, teams pick their own stories by RAL-56's rule and
   the watchman only verifies; afterwards, a write-up compares that session's idle time, ID collisions and
   send-backs with 2026-11-05's, from the ledger and Muster's roster, and says what still needed the watchman.
-- [ ] **RAL-59: Tell Prime Agent sessions their own messaging will do.** The operator, relayed by the watchman on
+- [x] **RAL-59: Tell Prime Agent sessions their own messaging will do.** Merged in #115 (32e82b4). The operator, relayed by the watchman on
   2026-11-05: "in the case that prime agent is using the rally service please add a notification to warn prime
   agents that their own built in communication is a fine substitute for muster when using the rally service."
   Prime Agent ([PrimeIntellect-ai/prime-agent](https://github.com/PrimeIntellect-ai/prime-agent), its README and
@@ -406,7 +406,7 @@ word.
   needed only to reach sessions of other harnesses or on other machines; how a Prime Agent session is detected is
   decided and documented, without guessing from names; a test shows the notice for Prime Agent and not for other
   harnesses; and `docs/design.md` says Rally works without Muster, with Prime Agent's messaging as the example.
-- [ ] **RAL-60: Rally's CI checks dependencies with cargo-deny.** From the watchman's read of RAL-5, which adds
+- [x] **RAL-60: Rally's CI checks dependencies with cargo-deny.** Merged in #113 (63579f8). From the watchman's read of RAL-5, which adds
   `ureq`. Done when: a `deny.toml` lists the licences Rally accepts (including `webpki-roots`'s
   CDLA-Permissive-2.0) and the sources it allows; CI runs `cargo deny check` on every PR; and today's advisory,
   RUSTSEC-2026-0387 in `crypto-bigint` through `ssh-key`, is fixed or recorded with a reason.
