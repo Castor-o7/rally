@@ -225,6 +225,9 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
             if story.merged_commit.is_some() {
                 row["merged"] = json!(true);
             }
+            if let Some(evidence) = latest_evidence(story) {
+                row["evidence"] = evidence;
+            }
             (id.clone(), row)
         })
         .collect();
@@ -234,6 +237,34 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
     });
     continue_with(&mut value, "next", next.map(|key| json!(key)));
     Ok(value)
+}
+
+/// A story's latest submission's evidence, declared and clipped, with Rally's own check of it,
+/// observed, when there is one (RAL-27).
+fn latest_evidence(story: &crate::ledger::Story) -> Option<Value> {
+    let submit = story
+        .history
+        .iter()
+        .rev()
+        .find(|entry| matches!(entry.change, Change::Submit { .. }))?;
+    let Change::Submit { evidence, .. } = &submit.change else {
+        return None;
+    };
+    let mut shown = json!({"kind": "declared", "seq": submit.seq, "at_ms": submit.at_ms,
+                           "text": clip(evidence)});
+    let check = story.history.iter().find(|entry| {
+        matches!(&entry.change, Change::EvidenceCheck { submit: s, .. } if *s == submit.seq)
+    });
+    if let Some(entry) = check
+        && let Change::EvidenceCheck { outcome, .. } = &entry.change
+    {
+        let mut checked = json!(outcome);
+        checked["kind"] = json!("observed");
+        checked["seq"] = json!(entry.seq);
+        checked["at_ms"] = json!(entry.at_ms);
+        shown["check"] = checked;
+    }
+    Some(shown)
 }
 
 /// The most characters of agent text a team record shows of any one note (RAL-19). The rest is
@@ -1105,6 +1136,59 @@ mod tests {
     }
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// RAL-27: the story list carries each story's latest evidence, declared, with Rally's check
+    /// of that submission, observed, and not a check of an earlier one.
+    #[test]
+    fn the_story_list_shows_the_latest_evidence_and_its_own_check() {
+        let team = |body: Value| as_kind(Kind::Declared, "author", body);
+        let rally = |body: Value| {
+            let source = Source {
+                credential: "rally".into(),
+                declared_name: None,
+            };
+            Record::new(Kind::Observed, source, 5, body).unwrap()
+        };
+        let checked = |submit: u64, ci: &str| {
+            json!({"change": "evidence_check", "story": "RAL-1", "submit": submit,
+                   "outcome": {"checkable": true, "repo": "o/r", "commit": COMMIT,
+                               "exists": true, "names_story": true, "ci": ci}})
+        };
+        let first = format!("o/r@{COMMIT} first");
+        let long = format!("o/r@{COMMIT} {}", "x".repeat(CLIP_CHARS * 2));
+        let records = vec![
+            team(json!({"change": "ready", "story": "RAL-1"})),
+            team(json!({"change": "claim", "story": "RAL-1", "team": "rally"})),
+            team(json!({"change": "submit", "story": "RAL-1", "team": "rally", "evidence": first})),
+            rally(checked(3, "failed")),
+            as_kind(
+                Kind::Verified,
+                "watch",
+                json!({"change": "send_back", "story": "RAL-1", "note": "red"}),
+            ),
+            team(json!({"change": "claim", "story": "RAL-1", "team": "rally"})),
+            team(json!({"change": "submit", "story": "RAL-1", "team": "rally", "evidence": long})),
+            team(json!({"change": "ready", "story": "RAL-2"})),
+        ];
+        let ledger = Ledger::replay(&records).unwrap();
+        let list = stories(&ledger, None, &Page::default()).unwrap();
+        let evidence = &list["stories"]["RAL-1"]["evidence"];
+        assert_eq!(evidence["kind"], "declared");
+        assert_eq!(evidence["seq"], 7);
+        assert!(evidence["text"].as_str().unwrap().ends_with('…'));
+        // The failed check was of the first submission, so the second has none yet.
+        assert!(evidence.get("check").is_none(), "{evidence}");
+        assert!(list["stories"]["RAL-2"].get("evidence").is_none());
+
+        let mut records = records;
+        records.push(rally(checked(7, "passed")));
+        let ledger = Ledger::replay(&records).unwrap();
+        let list = stories(&ledger, None, &Page::default()).unwrap();
+        let check = &list["stories"]["RAL-1"]["evidence"]["check"];
+        assert_eq!(check["kind"], "observed");
+        assert_eq!(check["seq"], 9);
+        assert_eq!(check["ci"], "passed");
+    }
 
     #[test]
     fn a_track_record_is_plain_facts_credited_to_the_holder() {

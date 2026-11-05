@@ -1575,9 +1575,22 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
             backend.read_value("/v1/blockers", None, &Page::default(), |ledger, page| {
                 views::blockers(ledger, false, page)
             })?;
+        // Each team's track record, one page (RAL-27); more teams than that is flagged.
+        let tracks = backend.read_value(
+            "/v1/track-records",
+            None,
+            &Page::default(),
+            |ledger, page| views::track_records(ledger, None, page),
+        )?;
         Ok(json!({
             "as_of": stories["as_of"],
+            "as_of_at_ms": stories["as_of_at_ms"],
             "stories": stories["stories"],
+            "track_records": tracks["teams"],
+            "verifiers": tracks["verifiers"],
+            "track_records_truncated": tracks.get("next").is_some(),
+            "plain_facts": tracks["plain_facts"],
+            "problems_reported_are": tracks["problems_reported_are"],
             "teams": teams["teams"],
             "blockers": blockers["blockers"],
             "blockers_truncated": blockers.get("next").is_some(),
