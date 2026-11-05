@@ -318,3 +318,45 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   credential that only the watchman's session holds, issued without passing through other sessions; a
   verification is labelled `watchman` only when made with it; a test shows another session declaring the
   watchman's name is labelled `other`; and the threat model says what the credential protects and what it doesn't.
+
+### A rally that keeps itself moving
+
+The operator asked on 2026-11-05 whether a rally can run without a watchman. The watchman's answer, which the
+operator agreed to go ahead with: teams can pace themselves, but that night they stalled on mechanical gaps.
+Two teams sat idle with ready work, and one slept for about 2 h with no way to wake it. Four Muster story IDs
+were taken twice (MUS-69, and MUS-72 to 74), and a fifth nearly was (MUS-81). Rally closes those gaps, so that a
+watchman adds judgement and isn't needed to keep work moving. Each story below comes from that question. Which
+ones Rally builds first, and how they fit the board process, follows the watchman's order and the operator's
+word.
+
+- [ ] **RAL-54: Wake an idle team with its next story.** From the operator's question of 2026-11-05, and from RAL-7
+  and RAL-8. Done when: if a team is idle, or its claim has gone quiet past an agreed time, while a ready story
+  exists for it, Rally sends that team one digest through Muster naming its next ready story (RAL-56), at most
+  once per agreed interval; a team that has said it's resting, or has no ready story, gets nothing; a team that
+  can't be woken is shown as such to whoever reads the state; and a test covers each of those cases, plus the
+  2026-11-05 case of a team asleep with wake `none`.
+- [ ] **RAL-55: Hand out story IDs from the ledger.** From the operator's question of 2026-11-05. Done when:
+  `rally new-story <PREFIX> --title "..."` records the next free number for that prefix, and returns it in one
+  atomic write; two concurrent requests for one prefix get different numbers, with a test; a number that's already
+  in the ledger, or already in the prefix's roadmap, is never handed out; and IDs written by hand still work.
+- [ ] **RAL-56: A rule for picking the next story that a team can follow alone.** From the operator's question of
+  2026-11-05. The operator added: "if the operator doesn't respond within a certain reasonable window of time then
+  shelve the item. don't just inherently skip operator interaction items please". Done when: `rally next --team
+  <team>` shows the team's next story, which is the first ready, unclaimed, unblocked story in roadmap order; it
+  skips one that waits on another team, and says why, and the team can record that skip as a block, with the
+  reason, in one command; a story that waits on the operator isn't skipped: the team asks the operator, through
+  Muster to the operator's address, and records the question as a block on the operator; if there's no answer
+  within a window agreed with the operator, the story is shelved, a recorded state that keeps the question and
+  when it was asked, and the team takes the next story; a shelved story returns to the top of the pick once the
+  operator answers; `rally next` shows shelved stories and their open questions; and a test covers the order,
+  each kind of skip, a roadmap with nothing left, and a story that isn't shelved before the window, is shelved
+  after it, and returns on an answer.
+- [ ] **RAL-57: Spread peer reads across teams.** From the operator's question of 2026-11-05. Done when: while no
+  watchman is designated, `rally waiting` suggests a reader for each submission: a team other than the author's,
+  the one whose last suggested or recorded read is oldest first; it never suggests the author's own team;
+  following the suggestion is optional, and the read still counts only by the rules of RAL-51; and a test shows
+  the suggestions rotating across three teams.
+- [ ] **RAL-58: Trial a self-paced rally.** From the operator's question of 2026-11-05. Depends on RAL-54 to 57.
+  The operator decides when. Done when: for one rally session, teams pick their own stories by RAL-56's rule and
+  the watchman only verifies; afterwards, a write-up compares that session's idle time, ID collisions and
+  send-backs with 2026-11-05's, from the ledger and Muster's roster, and says what still needed the watchman.
