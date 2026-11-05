@@ -1,6 +1,6 @@
 # Levi PR L3: the description
 
-The description for the third pull request to ignition-is-go/levi, from `l3/session-start` at `174115e` on the
+The description for the third pull request to ignition-is-go/levi, from `l3/session-start` at `18c6326` on the
 Rally team's Levi remote, on Levi main `aed6027` (v0.9.5). It's the "session-start summary" row of
 [rally-vs-levi.md](rally-vs-levi.md), taken from `rally session-start` (RAL-50). It doesn't depend on L1 or L2.
 Showing L1's sent-back tasks, requested reads and blockers in it is a later change, once L1 is in. Everything below
@@ -88,3 +88,4 @@ it may list fewer tasks than `levi next`, never more. `next` itself is unchanged
 |---|---|
 | `20d7b3d` | feat: levi session-start, what an agent should know when its session starts |
 | `174115e` | fix: session-start's block stays within 4 KB whatever the task text |
+| `18c6326` | fix: session-start's opening tag always closes |
