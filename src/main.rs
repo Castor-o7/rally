@@ -692,6 +692,11 @@ enum Command {
         team: String,
         #[arg(long)]
         note: String,
+        /// On your own verification in force: a commit you also read, such as the head of a
+        /// second pull request the story merged in (RAL-67). Repeatable. Only the verification's
+        /// own credential and name can add one.
+        #[arg(long = "also-read")]
+        also_read: Vec<String>,
     },
     /// Show the state of every story, or one story with its history.
     Show {
@@ -3014,10 +3019,15 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             corrects,
             team,
             note,
-        } => (
-            Kind::Declared,
-            json!({"change": "annotate", "corrects": corrects, "team": team, "note": note}),
-        ),
+            also_read,
+        } => {
+            let mut body =
+                json!({"change": "annotate", "corrects": corrects, "team": team, "note": note});
+            if !also_read.is_empty() {
+                body["also_read"] = json!(also_read);
+            }
+            (Kind::Declared, body)
+        }
         Command::Merge { story, commit } => (
             Kind::Declared,
             json!({"change": "merge", "story": story, "commit": commit}),

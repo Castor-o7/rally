@@ -571,10 +571,11 @@ fn run_gh(args: &[&str]) -> Result<String, String> {
     String::from_utf8(output).map_err(|_| "gh returned something unreadable".to_owned())
 }
 
-/// The head of the merged pull request that contains `commit` in `repo` (RAL-8, for RAL-31's
-/// comparison), read-only through `gh`. `None` when no merged pull request contains it. `repo` must
-/// already be checked as `owner/repo` (`evidence::parse`); `commit` must be hex.
-pub fn pr_head(repo: &str, commit: &str) -> Result<Option<String>, String> {
+/// The merged pull request that contains `commit` in `repo`, as its head at merge time and its
+/// merge or squash commit (RAL-8, RAL-67, for RAL-31's comparison), read-only through `gh`. `None`
+/// when no merged pull request contains it. `repo` must already be checked as `owner/repo`
+/// (`evidence::parse`); `commit` must be hex.
+pub fn pr_head(repo: &str, commit: &str) -> Result<Option<(String, String)>, String> {
     if commit.is_empty() || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("the merged commit isn't a hash".into());
     }
@@ -582,15 +583,18 @@ pub fn pr_head(repo: &str, commit: &str) -> Result<Option<String>, String> {
         "api",
         &format!("repos/{repo}/commits/{commit}/pulls"),
         "--jq",
-        "[.[] | select(.merged_at != null)][0].head.sha // empty",
+        "[.[] | select(.merged_at != null)][0] | select(. != null) | .head.sha + \" \" + .merge_commit_sha",
     ])?;
-    let head = out.trim();
-    if head.is_empty() {
-        Ok(None)
-    } else if head.bytes().all(|b| b.is_ascii_hexdigit()) {
-        Ok(Some(head.to_owned()))
-    } else {
-        Err("gh returned something that isn't a commit".into())
+    let line = out.trim();
+    if line.is_empty() {
+        return Ok(None);
+    }
+    let hex = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit());
+    match line.split_once(' ') {
+        Some((head, merge)) if hex(head) && hex(merge) => {
+            Ok(Some((head.to_owned(), merge.to_owned())))
+        }
+        _ => Err("gh returned something that isn't two commits".into()),
     }
 }
 
