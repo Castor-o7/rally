@@ -18,7 +18,7 @@ still be refined as each story is taken.
 - **MUS-3: Stable identity across restarts.** Claims shouldn't go stale when a session restarts.
 - **MUS-4: Show dead watchers.** Needed to tell a gone agent from a quiet one.
 - **MUS-44: Let other programs read the observed roster.** Rally's way to read session facts.
-- **MUS-43: Give muster messages a deterministic structure.** May shape Rally's notifications.
+- **MUS-43: Give muster messages a deterministic structure.** May shape Rally's notifications. RAL-8's digest format is proposed in [digest.md](digest.md).
 - **MUS-12: Give the watchman a read-only GitHub token.** Relevant to RAL-18.
 - **MUS-39: Show that a terminal message came from the operator.** Limits what RAL-6 can prove today.
 
