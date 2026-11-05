@@ -332,6 +332,14 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   credential that only the watchman's session holds, issued without passing through other sessions; a
   verification is labelled `watchman` only when made with it; a test shows another session declaring the
   watchman's name is labelled `other`; and the threat model says what the credential protects and what it doesn't.
+- [ ] **RAL-63: Designate more than one watchman at once.** Requested by the operator during the two-watchman
+  rally of 2026-11-05 (one watchman on Murph, one on a1), relayed by the Murph watchman. Today only the newest
+  designation is in force, so a second watchman's reads are labelled `other`. Done when: an operator-signed
+  designation can name a set of watchmen, each bound to its own credential (RAL-53); `rally designation` lists
+  every watchman in force; `verifications` labels a read `watchman` when any designated watchman made it with its
+  credential; `--end` can end one watchman's designation or all of them; `handover` and `waiting` work with several
+  watchmen (optionally scoped by host or team, so it's clear whose read a merge waits for); and
+  `docs/designation.md` covers the threat model for N credentials.
 
 ### A rally that keeps itself moving
 
