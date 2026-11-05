@@ -400,6 +400,28 @@ enum Command {
         #[arg(long)]
         before: Option<u64>,
     },
+    /// Everything recorded about a team, oldest first: its declared states, its stories' records
+    /// while it held them, and blockers by or on it, each with teams' annotations beside it (RAL-19).
+    Record {
+        team: String,
+        /// Show it as it stood after this record.
+        #[arg(long)]
+        as_of: Option<u64>,
+        /// The records after this one, as the last page's `next` gave it.
+        #[arg(long)]
+        after: Option<String>,
+    },
+    /// As a team, annotate an earlier record that names it, to correct it or disagree (RAL-19). It
+    /// changes nothing else, and is shown beside the original.
+    Annotate {
+        /// The record being annotated.
+        #[arg(long)]
+        corrects: u64,
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        note: String,
+    },
     /// Show the state of every story, or one story with its history.
     Show {
         story: Option<String>,
@@ -1136,6 +1158,17 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 views::teams(ledger, team.as_deref(), page)
             });
         }
+        Command::Record { team, as_of, after } => {
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
+            let path = format!("/v1/teams/{}/record", encode(&team));
+            let page = Page {
+                after,
+                before: None,
+            };
+            return backend.read(&path, as_of, &page, |ledger, page| {
+                views::team_record(ledger, &team, page)
+            });
+        }
         Command::TrackRecord { team, as_of, after } => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             let path = match &team {
@@ -1332,6 +1365,14 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 }),
             )
         }
+        Command::Annotate {
+            corrects,
+            team,
+            note,
+        } => (
+            Kind::Declared,
+            json!({"change": "annotate", "corrects": corrects, "team": team, "note": note}),
+        ),
         Command::Merge { story, commit } => (
             Kind::Declared,
             json!({"change": "merge", "story": story, "commit": commit}),

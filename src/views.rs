@@ -110,6 +110,18 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
         if !detail.requested_reads.is_empty() {
             shown["requested_reads"] = json!(detail.requested_reads);
         }
+        // Teams' annotations of this story's records, beside the record they annotate (RAL-19).
+        let annotated: Map<String, Value> = detail
+            .history
+            .iter()
+            .filter_map(|entry| {
+                let notes = ledger.annotations().get(&entry.seq)?;
+                Some((entry.seq.to_string(), annotations_json(notes)))
+            })
+            .collect();
+        if !annotated.is_empty() {
+            shown["annotations"] = Value::Object(annotated);
+        }
         let mut value = json!({
             "untrusted_text": UNTRUSTED_TEXT, "as_of": as_of, "story": id, "detail": shown,
             "history_total": detail.history.len(),
@@ -134,6 +146,152 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
         .collect();
     let mut value = json!({"untrusted_text": UNTRUSTED_TEXT, "as_of": as_of, "stories": summary});
     continue_with(&mut value, "next", next.map(|key| json!(key)));
+    Ok(value)
+}
+
+/// The most characters of agent text a team record shows of any one note (RAL-19). The rest is
+/// in the record itself, through `show`.
+pub const CLIP_CHARS: usize = 280;
+
+/// `text`, cut to [`CLIP_CHARS`] with an ellipsis. Escaping is left to whoever displays it: the
+/// CLI escapes for the terminal, the viewer for HTML.
+fn clip(text: &str) -> Value {
+    if text.chars().count() <= CLIP_CHARS {
+        json!(text)
+    } else {
+        json!(format!(
+            "{}…",
+            text.chars().take(CLIP_CHARS).collect::<String>()
+        ))
+    }
+}
+
+fn annotations_json(notes: &[crate::ledger::Annotation]) -> Value {
+    Value::Array(
+        notes
+            .iter()
+            .map(|a| {
+                json!({"seq": a.seq, "at_ms": a.at_ms, "kind": a.kind, "team": a.team,
+                       "by": a.source.declared_name, "note": clip(&a.note)})
+            })
+            .collect(),
+    )
+}
+
+/// Says what a team record is (RAL-19).
+pub const TEAM_RECORD_IS: &str = "Everything recorded about the team: its declared states, the records of \
+stories while it held them, and blockers it raised or that wait on it or its stories, each with \
+the teams' annotations beside it. Verifications it gave aren't here, because a record names its \
+verifier but not the verifier's team; see track-record's verifiers. Notes are clipped to 280 \
+characters; `show` has the rest.";
+
+/// Everything recorded about `team`, oldest first, paged by record number (RAL-19).
+pub fn team_record(ledger: &Ledger, team: &str, page: &Page) -> Result<Value, String> {
+    use crate::ledger::same_name;
+    let after = match page.after.as_deref() {
+        Some(after) => after
+            .parse::<u64>()
+            .map_err(|_| format!("after must be a record number, not {after:?}"))?,
+        None => 0,
+    };
+    let key = team_key(team);
+    let mut items: Vec<(u64, Value)> = Vec::new();
+    let mut own_stories: Vec<&str> = Vec::new();
+    if let Some(record) = ledger.teams().get(&key) {
+        for entry in &record.history {
+            items.push((
+                entry.seq,
+                json!({"seq": entry.seq, "at_ms": entry.at_ms, "kind": entry.kind,
+                       "by": entry.source.declared_name, "record": "team_state",
+                       "status": entry.status, "story": entry.story,
+                       "note": entry.note.as_deref().map(clip)}),
+            ));
+        }
+    }
+    for (id, story) in ledger.stories() {
+        let mut holding = false;
+        let mut held = false;
+        for entry in &story.history {
+            match &entry.change {
+                Change::Claim { team: by, .. } => holding = same_name(by, team),
+                Change::Correct {
+                    state: Some(State::Ready),
+                    ..
+                } => holding = false,
+                _ => {}
+            }
+            let releasing =
+                matches!(&entry.change, Change::Release { team: by, .. } if same_name(by, team));
+            if holding || releasing {
+                held = true;
+                let mut change = serde_json::to_value(&entry.change).unwrap_or(Value::Null);
+                for field in ["note", "evidence"] {
+                    if let Some(text) = change.get(field).and_then(Value::as_str).map(clip) {
+                        change[field] = text;
+                    }
+                }
+                items.push((
+                    entry.seq,
+                    json!({"seq": entry.seq, "at_ms": entry.at_ms, "kind": entry.kind,
+                           "by": entry.source.declared_name, "record": "story", "story": id,
+                           "change": change}),
+                ));
+            }
+            if releasing {
+                holding = false;
+            }
+        }
+        if held {
+            own_stories.push(id);
+        }
+    }
+    for blocker in ledger.blockers().values() {
+        let concerns = same_name(&blocker.team, team)
+            || blocker
+                .on_team
+                .as_deref()
+                .is_some_and(|t| same_name(t, team))
+            || blocker
+                .on_story
+                .as_deref()
+                .is_some_and(|s| own_stories.contains(&s));
+        if concerns {
+            items.push((
+                blocker.seq,
+                json!({"seq": blocker.seq, "at_ms": blocker.at_ms, "kind": blocker.kind,
+                       "by": blocker.source.declared_name, "record": "blocker",
+                       "team": blocker.team, "story": blocker.story,
+                       "on_story": blocker.on_story, "on_team": blocker.on_team,
+                       "note": clip(&blocker.note), "open": blocker.closed.is_none()}),
+            ));
+        }
+    }
+    if items.is_empty() {
+        return Err(format!("{team} has no record in the ledger"));
+    }
+    items.sort_by_key(|(seq, _)| *seq);
+    let mut rows: Vec<Value> = items
+        .into_iter()
+        .filter(|(seq, _)| *seq > after)
+        .take(LIST_LIMIT + 1)
+        .map(|(seq, mut row)| {
+            if let Some(notes) = ledger.annotations().get(&seq) {
+                row["annotations"] = annotations_json(notes);
+            }
+            row
+        })
+        .collect();
+    let next = if rows.len() > LIST_LIMIT {
+        rows.truncate(LIST_LIMIT);
+        rows.last().and_then(|row| row["seq"].as_u64())
+    } else {
+        None
+    };
+    let mut value = json!({
+        "untrusted_text": UNTRUSTED_TEXT, "team_record_is": TEAM_RECORD_IS,
+        "as_of": ledger.last_seq(), "team": key, "records": rows,
+    });
+    continue_with(&mut value, "next", next.map(|seq| json!(seq.to_string())));
     Ok(value)
 }
 
@@ -959,5 +1117,172 @@ mod tests {
         assert_eq!(out["verifiers"]["ann"]["send_backs_given"], 1);
         assert!(out["verifiers"]["t"].is_null());
         assert!(out["verifiers_are"].as_str().unwrap().contains("by name"));
+    }
+
+    /// RAL-1 held by team a, released, then held by b, submitted and verified; a's state; a
+    /// blocker by a; and b's blocker on RAL-2, which a holds.
+    fn two_teams() -> Vec<Record> {
+        vec![
+            rec("a", json!({"change": "ready", "story": "RAL-1"})),
+            rec(
+                "a",
+                json!({"change": "claim", "story": "RAL-1", "team": "a"}),
+            ),
+            rec(
+                "a",
+                json!({"change": "release", "story": "RAL-1", "team": "a"}),
+            ),
+            rec(
+                "b",
+                json!({"change": "claim", "story": "RAL-1", "team": "b"}),
+            ),
+            rec(
+                "b",
+                json!({"change": "submit", "story": "RAL-1", "team": "b", "evidence": "r@1"}),
+            ),
+            rec(
+                "v",
+                json!({"change": "verify", "story": "RAL-1", "note": "ok", "commit": "c".repeat(40)}),
+            ),
+            rec(
+                "a",
+                json!({"change": "team_state", "team": "a", "status": "working"}),
+            ),
+            rec(
+                "a",
+                json!({"change": "block", "team": "a", "note": "waiting on the operator"}),
+            ),
+            rec("a", json!({"change": "ready", "story": "RAL-2"})),
+            rec(
+                "a",
+                json!({"change": "claim", "story": "RAL-2", "team": "a"}),
+            ),
+            rec(
+                "b",
+                json!({"change": "block", "team": "b", "on_story": "RAL-2", "note": "needs RAL-2"}),
+            ),
+        ]
+    }
+
+    fn seqs(out: &Value) -> Vec<u64> {
+        out["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["seq"].as_u64().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_team_reads_everything_about_it_and_only_its_own_holding() {
+        let ledger = Ledger::replay(&two_teams()).unwrap();
+        let a = team_record(&ledger, "A", &Page::default()).unwrap();
+        // Its claim and release of RAL-1, not b's; its state; its blocker; its RAL-2 claim; and
+        // b's blocker waiting on RAL-2.
+        assert_eq!(seqs(&a), [2, 3, 7, 8, 10, 11]);
+        assert!(
+            a["team_record_is"]
+                .as_str()
+                .unwrap()
+                .contains("aren't here")
+        );
+        let b = team_record(&ledger, "b", &Page::default()).unwrap();
+        assert_eq!(seqs(&b), [4, 5, 6, 11]);
+        assert!(team_record(&ledger, "nobody", &Page::default()).is_err());
+    }
+
+    #[test]
+    fn annotations_sit_beside_the_record_and_change_nothing() {
+        let mut records = two_teams();
+        records.push(rec("b", json!({"change": "annotate", "corrects": 6, "team": "b", "note": "we disagree: see #12"})));
+        records.push(rec(
+            "a",
+            json!({"change": "annotate", "corrects": 7, "team": "a", "note": "x".repeat(400)}),
+        ));
+        records.push(rec(
+            "a",
+            json!({"change": "annotate", "corrects": 8, "team": "a", "note": "resolved by hand"}),
+        ));
+        let ledger = Ledger::replay(&records).unwrap();
+        assert_eq!(
+            ledger.story("RAL-1").unwrap().state,
+            State::Verified,
+            "the verifier's outcome stays"
+        );
+        let b = team_record(&ledger, "b", &Page::default()).unwrap();
+        let verify = b["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["seq"] == 6)
+            .unwrap();
+        assert_eq!(verify["annotations"][0]["note"], "we disagree: see #12");
+        let a = team_record(&ledger, "a", &Page::default()).unwrap();
+        let state = a["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["seq"] == 7)
+            .unwrap();
+        let note = state["annotations"][0]["note"].as_str().unwrap();
+        assert_eq!(note.chars().count(), CLIP_CHARS + 1, "clipped");
+        assert!(note.ends_with('…'));
+        let blocker = a["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["seq"] == 8)
+            .unwrap();
+        assert_eq!(blocker["annotations"][0]["team"], "a");
+        // And in the story's own detail.
+        let shown = stories(&ledger, Some("RAL-1"), &Page::default()).unwrap();
+        assert_eq!(
+            shown["detail"]["annotations"]["6"][0]["note"],
+            "we disagree: see #12"
+        );
+    }
+
+    #[test]
+    fn an_annotation_must_name_its_team_and_cant_be_annotated_or_set_a_state() {
+        let base = two_teams();
+        let refused = |body: Value| {
+            let mut records = base.clone();
+            records.push(rec("x", body));
+            Ledger::replay(&records).unwrap_err().to_string()
+        };
+        // b can't annotate a's state, and nobody can annotate a later or missing record.
+        assert!(
+            refused(json!({"change": "annotate", "corrects": 7, "team": "b", "note": "n"}))
+                .contains("isn't an earlier record that names b")
+        );
+        assert!(
+            refused(json!({"change": "annotate", "corrects": 99, "team": "a", "note": "n"}))
+                .contains("names a")
+        );
+        assert!(
+            refused(json!({"change": "annotate", "corrects": 7, "team": "a", "note": " "}))
+                .contains("note is empty")
+        );
+        // No state can be set.
+        assert!(!refused(json!({"change": "annotate", "corrects": 7, "team": "a", "note": "n", "state": "verified"})).is_empty());
+        // An annotation of an annotation is refused, so threads stay one deep.
+        let mut records = base.clone();
+        records.push(rec(
+            "a",
+            json!({"change": "annotate", "corrects": 7, "team": "a", "note": "first"}),
+        ));
+        let ledger = Ledger::replay(&records).unwrap();
+        let again = rec(
+            "a",
+            json!({"change": "annotate", "corrects": 12, "team": "a", "note": "on the note"}),
+        );
+        let error = ledger.check(13, &again).unwrap_err().to_string();
+        assert!(error.contains("is itself an annotation"), "{error}");
+        // But a second annotation of the original is fine, flat beside the first.
+        let second = rec(
+            "b",
+            json!({"change": "annotate", "corrects": 11, "team": "b", "note": "still waiting"}),
+        );
+        ledger.check(13, &second).unwrap();
     }
 }
