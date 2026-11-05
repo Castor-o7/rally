@@ -93,6 +93,8 @@ pub enum AccessError {
     EmptyName,
     /// The name is one the ledger would refuse as a record's credential.
     BadName,
+    /// The name Rally's own records carry.
+    ReservedName,
     /// An address is empty, or has a character a pair code can't carry.
     BadAddress,
     Certificate(String),
@@ -112,6 +114,10 @@ impl fmt::Display for AccessError {
                 f,
                 "the machine's name must be at most 64 characters, with no control, invisible or \
                  direction characters, because each record carries it"
+            ),
+            Self::ReservedName => write!(
+                f,
+                "\"rally\" is the name on Rally's own records, so no machine can use it"
             ),
             Self::BadAddress => write!(f, "the address must be a host and port"),
             Self::Certificate(reason) => write!(f, "certificate error: {reason}"),
@@ -190,6 +196,10 @@ impl StateDir {
         // refuses would make every write fail.
         if !crate::record::is_clear_name(name) {
             return Err(AccessError::BadName);
+        }
+        // Rally's own records carry this credential (RAL-56).
+        if crate::ledger::same_name(name, crate::store::RALLY_ITSELF) {
+            return Err(AccessError::ReservedName);
         }
         if address.is_empty() || address.contains(|c: char| c == '/' || c.is_whitespace()) {
             return Err(AccessError::BadAddress);

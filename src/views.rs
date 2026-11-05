@@ -141,6 +141,9 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
             if !story.requested_reads.is_empty() {
                 row["requested_reads"] = json!(story.requested_reads.len());
             }
+            if story.merged_commit.is_some() {
+                row["merged"] = json!(true);
+            }
             (id.clone(), row)
         })
         .collect();
@@ -380,9 +383,12 @@ pub fn blockers(ledger: &Ledger, all: bool, page: &Page) -> Result<Value, String
             row
         })
         .collect();
+    // The operator's latest away hour, observed, and the shelves counting towards the next one,
+    // as they'll stand once any away hour has run out (RAL-56).
     let mut value = json!({
         "untrusted_text": UNTRUSTED_TEXT, "as_of": as_of, "blockers": shown,
-        "open": open.len(),
+        "open": open.len(), "operator_away": ledger.operator_away(),
+        "unanswered_shelves": ledger.unanswered_shelves(i64::MAX),
     });
     continue_with(&mut value, "next", next.map(|seq| json!(seq.to_string())));
     Ok(value)
