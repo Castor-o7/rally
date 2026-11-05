@@ -43,19 +43,22 @@ event, field or JSON shape changes. Fields keep clear of `tx` and `createdAt`, p
 From Rally's `verify` and `send-back` (RAL-31). This is the core of the proposal.
 
 - **Event `Review`:** `project_id`, `task_id`, `verdict` (`Verified` or `SentBack`), `commit` (the full sha
-  read), `note` (what was checked, or what's missing), `by_dev`, `by_machine`, `created`.
+  read), `note` (what was checked, or what's missing), `by_dev`, `by_machine`, `by_worktree`, `created`.
 - **Commands:** `levi verify <id> --commit <sha> [-m note]` and `levi send-back <id> -m "what's missing"
-  [--commit <sha>]`. `--commit` defaults to HEAD. Refused when `by_dev` and `by_machine` match the task's closer
-  or its latest claimant, as Rally refuses a verifier verifying their own submission. Levi's identity is
-  declared, so this stops mistakes, not impostors, and the docs will say so.
+  [--commit <sha>]`. `--commit` defaults to HEAD. Refused when the reviewer's (dev, machine, worktree) matches the task's
+  closer or its latest claimant, as Rally refuses a verifier verifying their own submission. That's the triple a
+  Levi claim is keyed to. Matching on (dev, machine) alone would refuse a real second session on a1, where every
+  session shares one git email and hostname. Levi's identity is declared, so this catches mistakes, not
+  impostors, and the docs say so plainly.
 - **Resolution, the Levi way:** a review **applies here** when its commit is an ancestor of HEAD, using the same
   ancestry machinery and the same `exact`, `facts` and `squashed` grades as `StatusChange`. So a verification on
   a feature branch shows on that branch, and on main once it's merged, just as a close does.
 - **Output:** `show --json` gains `reviews[]` (each with `verdict`, `commit`, `note`, `by`, `at`, `applies_here`).
   `ls` and `next` gain a `review` field per task: `verified`, `sent_back` or `none`, from the newest review that
-  applies here. And, from Rally's `commit_differs`: when a task is closed here and its newest applying
-  verification isn't at the close's anchor commit, `review_differs: {verified, closed}`. That's worked out from
-  git alone, so it's labelled observed.
+  applies here, with `review_source: "declared"`, since a verdict is only as good as Levi's declared identity.
+  And, from Rally's `commit_differs`: when a task is closed here and its newest applying verification isn't at
+  the close's anchor commit, `review_differs: {verified, closed, source: "observed"}`. That's worked out from git
+  alone, so it's labelled observed.
 - **`next`:** a task whose newest applying review is `SentBack` and that's still open ranks as eligible again,
   with the reason "sent back: <note>".
 
@@ -89,7 +92,7 @@ can't say "waiting on the operator to open port 6300", which was most of Rally's
 - **Commands:** `levi block <id> -m reason` and `levi unblock <blocker-id> -m why`. `next` treats a task with an
   open blocker as ineligible, with the reason. `ls --json` and `show --json` include open blockers.
 
-### 5. Track record as plain facts
+### 5. Track record as plain facts (last, if there's time)
 
 From Rally's `track-record` (RAL-21). A read command over the events above, with no new event type:
 **`levi record [--dev <email>] --json`** (`levi.record/1`) gives, per dev, the verifications they gave,
@@ -99,15 +102,16 @@ shares one git email, so the record is per checkout unless sessions set their ow
 
 ### Order of building (RAL-47)
 
-1, then 3 (they're the point and depend on each other), then 2, 4 and 5. Each feature gets its own branch,
+1, then 3 (they're the point and depend on each other), then 2 and 4, then 5 if there's time. Each feature gets its own branch,
 `feat/ral47-<feature>` (starting with `feat/ral47-reviews`), shared through the bare repository on Murph at
 `murph:git/levi.git`, not GitHub. chartreuse-meerkat builds the levi-core and levi-hub half and lands each
 feature's entity types first; giddy-geyser builds the CLI, JSON and levi-dash half; each reads the other's half
 before it counts. Commits are conventional (`feat:` or `fix:`), with tests in Levi's style (CLI integration against
 scripted repos, as `levi/tests/cli_git_state.rs` does), and `cargo test --workspace`, clippy with `-D warnings`
-and fmt clean. Per Levi's `CLAUDE.md`, those commits carry no AI attribution. Nothing is pushed upstream.
-`levi-dash` changes (a review column in the browser) are left for a later story unless the watchman wants them
-now.
+and fmt clean. Whether those commits carry AI attribution, which Levi's `CLAUDE.md` forbids, is **pending the
+operator's ruling**. Local commits can be reworded either way before anything goes upstream. Nothing is pushed
+upstream.
+`levi-dash` changes (a review column in the browser) are left for a later story, on the watchman's word.
 
 ## What stays in Rally, and why
 
@@ -124,11 +128,12 @@ now.
 - **Claims.** These are already Levi's, on the operator's ruling. What happens to Rally's own `claim` and
   `release` is still RAL-40's to settle.
 - **Labelling every fact observed, declared or verified.** Levi labels ancestry answers only. Building 1 and 3
-  adds `verified`. Labelling every field would change every JSON shape, so it's left out.
+  adds two labels, `review_source: "declared"` and `review_differs`, which is observed. Labelling every field would change every JSON shape, so it's left out.
 
-## Questions for the watchman
+## The watchman's answers (grand-photon, 2026-11-04, read at `0ee9ab9`)
 
-1. Is the scope right: 1 and 3 as the core, with 2, 4 and 5 after?
-2. Should `levi-dash` show reviews in this round?
-3. The self-review refusal checks the closer and the latest claimant by (dev, machine). Is that enough, given
-   Levi's declared identity?
+1. **Scope:** 1 and 3 are the core, then 2 and 4. 5 comes last and only if there's time, since with one shared git
+   email on a1 a per-dev record says little here.
+2. **levi-dash:** not this round.
+3. **Self-review:** match on (dev, machine, worktree), not (dev, machine), and label a review's verdict as declared
+   in JSON. `review_differs` stays observed. Both are now in section 1 above.
