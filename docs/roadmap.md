@@ -163,7 +163,7 @@ The bones. Everything later reads from this.
 
 ## Phase 3: The watchman's view
 
-- [ ] **RAL-22: Brief a new watchman from the ledger.** The watchman that started after the crash
+- [x] **RAL-22: Brief a new watchman from the ledger.** Merged in #123 (fef242d) and #127 (bee9f46). The watchman that started after the crash
   reported on 2026-11-02 had a board last saved on 2026-10-31 and no message history, so it had to ask
   every team to resend. Done when: a new session can read one brief giving each team's state, open
   claims (flagging those whose session has ended), submissions awaiting verification, open blockers,
@@ -177,7 +177,7 @@ The bones. Everything later reads from this.
   (RAL-22a) gives everything the ledger already records, with the test that no submission is lost when the
   watchman changes; holds, conditions on the order of work and grants wait on RAL-64, and until then the brief
   says it doesn't have them.
-- [ ] **RAL-64: Record holds, conditions on the order of work, and standing grants.** The rest of RAL-22, split
+- [x] **RAL-64: Record holds, conditions on the order of work, and standing grants.** Merged in #127 (bee9f46). The rest of RAL-22, split
   off on 2026-11-05. Done when: a team or the operator can record a hold and what releases it, a condition on the
   order of work, and a standing grant with its scope and whether it came directly or was relayed, each declared
   and never more; `rally brief` lists those in force, with their kind and age; a grant's record confers no

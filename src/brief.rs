@@ -12,7 +12,7 @@
 use serde_json::{Value, json};
 
 use crate::designation::{self, OperatorKey};
-use crate::ledger::{Change, HistoryEntry, Ledger, StandingKind, State};
+use crate::ledger::{Change, HistoryEntry, Ledger, StandingKind, State, same_name};
 use crate::views::{self, LIST_LIMIT, Page, Readers, UNTRUSTED_TEXT};
 
 /// Said with every brief: it records, and doesn't grant.
@@ -151,6 +151,35 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
             .cloned()
             .collect()
     };
+    // Ended ones, newest end first, with who ended each beside who declared it. Any session can
+    // end any team's record, which is fine for declared records, but one ended by someone other
+    // than its writer is flagged so it stands out.
+    let mut ended: Vec<(u64, Value)> = ledger
+        .standings()
+        .values()
+        .filter_map(|standing| {
+            let end = standing.ended.as_ref()?;
+            let declared_by = standing.source.declared_name.as_deref();
+            let ended_by = end.source.declared_name.as_deref();
+            let by_someone_else = match (declared_by, ended_by) {
+                (Some(a), Some(b)) => !same_name(a, b),
+                _ => true,
+            };
+            Some((
+                end.seq,
+                json!({
+                    "seq": standing.seq, "standing": standing.standing, "team": standing.team,
+                    "story": standing.story, "note": standing.note, "kind": standing.kind,
+                    "declared_by": declared_by, "ended_by": ended_by,
+                    "ended_seq": end.seq, "ended_kind": end.kind, "ended_note": end.note,
+                    "ended_at_ms": end.at_ms, "ended_age_ms": age(now_ms, end.at_ms),
+                    "ended_by_someone_else": by_someone_else,
+                }),
+            ))
+        })
+        .collect();
+    ended.sort_by_key(|(seq, _)| std::cmp::Reverse(*seq));
+    let (ended, ended_total) = bounded(ended.into_iter().map(|(_, row)| row).collect());
     let (holds, holds_total) = bounded(by_kind(StandingKind::Hold));
     let (conditions, conditions_total) = bounded(by_kind(StandingKind::Condition));
     let (grants, grants_total) = bounded(by_kind(StandingKind::Grant));
@@ -181,6 +210,7 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
         "holds": holds, "holds_total": holds_total,
         "conditions": conditions, "conditions_total": conditions_total,
         "grants": grants, "grants_total": grants_total,
+        "ended_standings": ended, "ended_standings_total": ended_total,
         "standings_note": STANDINGS,
         "machine_access": MACHINE_ACCESS,
     })
@@ -391,9 +421,35 @@ mod tests {
         assert_eq!(grant["age_ms"], 4_000);
 
         assert_eq!(out["holds_total"], 1, "the ended hold isn't listed");
+        // It's listed as ended instead, flagged because someone other than its writer ended it.
+        let gone = &out["ended_standings"][0];
+        assert_eq!(gone["seq"], 4);
+        assert_eq!(gone["declared_by"], "turbo");
+        assert_eq!(gone["ended_by"], "someone");
+        assert_eq!(gone["ended_by_someone_else"], true);
+        assert_eq!(gone["ended_note"], "rolled out");
         assert_eq!(out["holds"][0]["story"], "RAL-9");
         assert_eq!(out["holds"][0]["releases"], "the operator's read");
         assert_eq!(out["conditions"][0]["note"], "RAL-9 before any deploy");
+    }
+
+    #[test]
+    fn a_record_ended_by_its_own_writer_isnt_flagged() {
+        let mut chain = Chain::new();
+        chain.push_as(
+            "Turbo",
+            json!({"change": "standing", "standing": "condition", "team": "rally",
+                   "note": "RAL-9 first"}),
+        );
+        chain.push_as(
+            "turbo",
+            json!({"change": "end_standing", "standing": 1, "note": "done"}),
+        );
+        let ledger = Ledger::replay(&chain.records).unwrap();
+        let out = brief(&ledger, &chain.hashes, None, 5_000);
+        assert_eq!(out["ended_standings_total"], 1);
+        assert_eq!(out["ended_standings"][0]["ended_by_someone_else"], false);
+        assert_eq!(out["conditions_total"], 0);
     }
 
     #[test]
