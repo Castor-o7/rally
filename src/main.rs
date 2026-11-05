@@ -116,6 +116,19 @@ enum Command {
         /// With --secure: the operator's OpenSSH public key, which designations must be signed by.
         #[arg(long, requires = "secure")]
         operator_key: Option<PathBuf>,
+        /// How long a team waits for the operator's answer before it can shelve the story and
+        /// take its next one (RAL-56): a number with s, m, h or d. The operator agreed 5 minutes.
+        #[arg(long, env = "RALLY_OPERATOR_WINDOW", default_value = "5m", value_parser = parse_window)]
+        operator_window: u64,
+        /// How many shelves in a row, across the rally, with no answer from the operator between
+        /// them, mean the operator is away (RAL-56). The operator agreed 3.
+        #[arg(long, env = "RALLY_OPERATOR_AWAY_AFTER", default_value_t = 3,
+              value_parser = clap::value_parser!(u64).range(1..))]
+        operator_away_after: u64,
+        /// How long the operator is treated as away (RAL-56): no story waiting on the operator is
+        /// offered, and then each is asked again. The operator agreed 1 hour.
+        #[arg(long, env = "RALLY_OPERATOR_AWAY", default_value = "1h", value_parser = parse_window)]
+        operator_away: u64,
     },
     /// Run the read-only viewer on this machine's loopback address. See docs/web.md.
     Web {
@@ -268,12 +281,41 @@ enum Command {
         #[arg(long)]
         note: String,
     },
-    /// Close an open blocker, saying why.
+    /// Close an open blocker, saying why. Closing a question to the operator (a blocker on the
+    /// team `operator`) says where the answer came from: --direct, or --relayed-by.
     Unblock {
         /// The blocker's record number, as `block` or `blockers` gave it.
         blocker: u64,
         #[arg(long)]
         note: String,
+        /// The operator answered you directly.
+        #[arg(long, conflicts_with = "relayed_by")]
+        direct: bool,
+        /// Who relayed the operator's answer to you.
+        #[arg(long)]
+        relayed_by: Option<String>,
+    },
+    /// Your team's next story (RAL-56): its own sent-back work, then shelved stories the operator
+    /// has answered, then the first free story in roadmap order. Read-only: it says what to run
+    /// to record a skip or a shelve. See docs/next.md.
+    Next {
+        #[arg(long, env = "RALLY_TEAM")]
+        team: String,
+        /// The roadmap to pick from.
+        #[arg(long, default_value = "docs/roadmap.md")]
+        roadmap: PathBuf,
+        /// The story ID prefix, such as RAL. Without it, the one most of the roadmap's stories use.
+        #[arg(long)]
+        prefix: Option<String>,
+    },
+    /// Shelve a story whose question to the operator has had no answer within the window agreed
+    /// with the operator, so your team can take its next story (RAL-56). The service checks the
+    /// window against its own clock.
+    Shelve {
+        /// The record number of the blocker on the operator that holds the question.
+        blocker: u64,
+        #[arg(long, env = "RALLY_TEAM")]
+        team: String,
     },
     /// Each team's track record as plain facts: stories verified, stories sent back and what was
     /// missing, and problems reported, which for now are the blockers it raised.
@@ -435,6 +477,25 @@ enum Command {
         #[arg(long)]
         before: Option<u64>,
     },
+}
+
+/// A window such as `90m` or `4h`, in milliseconds (RAL-56).
+fn parse_window(text: &str) -> Result<u64, String> {
+    let bad = || format!("{text:?} isn't a window: give a number with s, m, h or d, such as 4h");
+    let split = text.len().checked_sub(1).ok_or_else(bad)?;
+    let (number, unit) = text.split_at(split);
+    let number: u64 = number.parse().map_err(|_| bad())?;
+    let unit_ms: u64 = match unit {
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        _ => return Err(bad()),
+    };
+    match number.checked_mul(unit_ms) {
+        Some(ms) if ms > 0 => Ok(ms),
+        _ => Err(bad()),
+    }
 }
 
 fn parse_state(text: &str) -> Result<State, String> {
@@ -675,6 +736,91 @@ impl Backend {
     }
 }
 
+/// The most pages of stories, and of blockers, that `rally next` reads.
+const NEXT_PAGES: usize = 20;
+
+/// `rally next`: the pick, worked out here, where the roadmap is (RAL-56).
+fn next(
+    team: &str,
+    roadmap: &Path,
+    prefix: Option<String>,
+    location: Option<&Location>,
+    config: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(roadmap)
+        .map_err(|e| format!("can't read {}: {e}", roadmap.display()))?;
+    let prefix = match prefix {
+        Some(prefix) => prefix,
+        None => rally::next::prefix_of(&text).ok_or_else(|| {
+            format!(
+                "{} has no stories with IDs: pass --prefix",
+                roadmap.display()
+            )
+        })?,
+    };
+    let items = rally::next::items(&text, &prefix);
+    let backend = Backend::choose(location, config, false)?;
+    let (stories, more_stories) =
+        backend.read_all("/v1/stories", "stories", NEXT_PAGES, |ledger, page| {
+            views::stories(ledger, None, page)
+        })?;
+    let mut blockers = Vec::new();
+    let mut page = Page::default();
+    let mut more_blockers = true;
+    let mut away = Value::Null;
+    let mut now_ms = None;
+    for _ in 0..NEXT_PAGES {
+        let value = backend.read_value("/v1/blockers/all", None, &page, |ledger, page| {
+            views::blockers(ledger, true, page)
+        })?;
+        blockers.extend(value["blockers"].as_array().cloned().unwrap_or_default());
+        // The first page's clock, the service's, decides everything time-based in the pick.
+        if now_ms.is_none() {
+            now_ms = value["now_ms"].as_i64();
+            if value["operator_away_active"] == true {
+                away = value["operator_away"].clone();
+            }
+        }
+        match value["next"].as_str() {
+            Some(next) => page.after = Some(next.to_owned()),
+            None => {
+                more_blockers = false;
+                break;
+            }
+        }
+    }
+    // The window is the service's, so what's due here is what it will accept.
+    let window_ms = match &backend {
+        Backend::File(_) => None,
+        Backend::Service(pairing) => reply_value(&client::request(
+            pairing,
+            "GET",
+            "/v1/whoami",
+            None,
+            &[],
+        )?)?["operator_window_ms"]
+            .as_u64(),
+    };
+    let now_ms = now_ms.ok_or("the blockers reply didn't give the service's time")?;
+    let empty = serde_json::Map::new();
+    let ledger = rally::next::Ledger {
+        stories: stories["stories"].as_object().unwrap_or(&empty),
+        blockers: &blockers,
+        away: Some(&away).filter(|away| !away.is_null()),
+    };
+    let mut result = rally::next::pick(team, &items, &ledger, window_ms, now_ms);
+    result["roadmap"] = json!(roadmap);
+    result["prefix"] = json!(prefix);
+    result["untrusted_text"] = json!(views::UNTRUSTED_TEXT);
+    if more_stories || more_blockers {
+        result["incomplete"] = json!(
+            "The ledger has more stories or blockers than were read, so this pick may be wrong: \
+             check `rally show` and `rally blockers` before taking it."
+        );
+    }
+    Ok(serde_json::to_string_pretty(&result)?)
+}
+
 /// The reply's JSON, or the service's reason for refusing.
 fn reply_value(reply: &client::Reply) -> Result<Value, Box<dyn std::error::Error>> {
     let value: Value = serde_json::from_str(&reply.body)
@@ -836,12 +982,16 @@ fn run_service(
     state_dir: &Path,
     limit: RateLimit,
     operator_key: Option<rally::designation::OperatorKey>,
+    operator_times: rally::store::OperatorTimes,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let state = StateDir::open(state_dir)?;
     let (_, _, fingerprint) = state.certificate()?;
     let listener = TcpListener::bind(bind)?;
     let listening = json!({"listening": listener.local_addr()?.to_string(), "fingerprint": fingerprint,
-            "operator_key": operator_key.as_ref().map(rally::designation::OperatorKey::fingerprint)});
+            "operator_key": operator_key.as_ref().map(rally::designation::OperatorKey::fingerprint),
+            "operator_window_ms": operator_times.window_ms,
+            "operator_away_after": operator_times.away_after,
+            "operator_away_ms": operator_times.away_ms});
     println!("{listening}");
     std::io::Write::flush(&mut std::io::stdout())?;
     tokio::runtime::Runtime::new()?.block_on(server::serve(
@@ -850,6 +1000,7 @@ fn run_service(
         state,
         limit,
         operator_key,
+        Some(operator_times),
     ))?;
     Ok(json!({"stopped": true}).to_string())
 }
@@ -904,6 +1055,9 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             heavy_per_second,
             secure,
             operator_key,
+            operator_window,
+            operator_away_after,
+            operator_away,
         } => {
             let location = location.ok_or("serve needs --db and --head-file")?;
             let operator_key = if secure {
@@ -962,7 +1116,18 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 heavy_burst,
                 heavy_per_second,
             };
-            return run_service(&location, &bind, &state_dir, limit, operator_key);
+            return run_service(
+                &location,
+                &bind,
+                &state_dir,
+                limit,
+                operator_key,
+                rally::store::OperatorTimes {
+                    window_ms: operator_window,
+                    away_after: usize::try_from(operator_away_after).unwrap_or(usize::MAX),
+                    away_ms: operator_away,
+                },
+            );
         }
         Command::AddMachine {
             name,
@@ -1221,10 +1386,33 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             (Kind::Declared, body)
         }
-        Command::Unblock { blocker, note } => (
-            Kind::Declared,
-            json!({"change": "unblock", "blocker": blocker, "note": note}),
-        ),
+        Command::Unblock {
+            blocker,
+            note,
+            direct,
+            relayed_by,
+        } => {
+            let mut body = json!({"change": "unblock", "blocker": blocker, "note": note});
+            if direct {
+                body["answer"] = json!({"from": "direct"});
+            } else if let Some(by) = relayed_by {
+                body["answer"] = json!({"from": "relayed", "by": by});
+            }
+            (Kind::Declared, body)
+        }
+        Command::Shelve { blocker, team } => {
+            if location.is_some() {
+                return Err(
+                    "a shelve goes through the service, whose clock and agreed window decide it; \
+                     don't use --db"
+                        .into(),
+                );
+            }
+            (
+                Kind::Declared,
+                json!({"change": "shelve", "blocker": blocker, "team": team}),
+            )
+        }
         Command::TeamState {
             team,
             status,
@@ -1319,6 +1507,19 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             };
             let reply = client::request(&pairing, "GET", path, None, &[])?;
             return Ok(reply_value(&reply)?.to_string());
+        }
+        Command::Next {
+            team,
+            roadmap,
+            prefix,
+        } => {
+            return next(
+                &team,
+                &roadmap,
+                prefix,
+                location.as_ref(),
+                &config_path(cli.config)?,
+            );
         }
         Command::Waiting => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;

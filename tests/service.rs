@@ -1764,3 +1764,253 @@ fn a_designation_is_refused_by_a_service_without_secure() {
         "nothing was recorded"
     );
 }
+
+/// RAL-56 end to end: a question to the operator holds the pick until the service's window
+/// passes, the service measures the shelve by its own clock and window, and the answer, which
+/// says where it came from, brings the story back first.
+#[test]
+fn a_question_to_the_operator_is_shelved_after_the_window_and_returns_on_an_answer() {
+    let mut limits = GENEROUS.to_vec();
+    limits.extend(["--operator-window", "2s"]);
+    let service = start_with(&limits);
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let roadmap = service.dir.path().join("roadmap.md");
+    std::fs::write(
+        &roadmap,
+        "- [x] **RAL-1: Done.**\n- [ ] **RAL-2: Needs the operator.**\n- [ ] **RAL-3: Next.**\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let out = cli(&config, "r", args);
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let error = String::from_utf8_lossy(&out.stderr).into_owned();
+        (out.status.success(), text, error)
+    };
+    let next = || {
+        let (ok, text, error) = run(&[
+            "next",
+            "--team",
+            "rally",
+            "--roadmap",
+            roadmap.to_str().unwrap(),
+        ]);
+        assert!(ok, "{error}");
+        serde_json::from_str::<Value>(&text).unwrap()
+    };
+    assert_eq!(next()["next"]["story"], "RAL-2");
+    assert_eq!(next()["operator_window_ms"], 2_000);
+
+    let (ok, asked, error) = run(&[
+        "block",
+        "--team",
+        "rally",
+        "--story",
+        "RAL-2",
+        "--on-team",
+        "operator",
+        "--note",
+        "may Rally read the token file?",
+    ]);
+    assert!(ok, "{error}");
+    let blocker: Value = serde_json::from_str(&asked).unwrap();
+    let blocker = blocker["recorded"].as_u64().unwrap().to_string();
+
+    // Within the window: still the pick, and the service won't shelve it.
+    let waiting = next();
+    assert_eq!(waiting["next"]["story"], "RAL-2");
+    assert_eq!(waiting["waiting_on_operator"][0]["shelve_due"], false);
+    let (ok, _, error) = run(&["shelve", &blocker, "--team", "rally"]);
+    assert!(!ok && error.contains("window hasn't passed"), "{error}");
+    // Nor will it take a window the writer chose.
+    let early = write(
+        &pairing,
+        "r",
+        "declared",
+        json!({"change": "shelve", "blocker": blocker.parse::<u64>().unwrap(), "team": "rally",
+               "window_ms": 1}),
+    );
+    assert_eq!(early.status, 409, "{}", early.body);
+    assert!(
+        early.body.contains("isn't the one the service keeps"),
+        "{}",
+        early.body
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    let due = next();
+    assert_eq!(due["waiting_on_operator"][0]["shelve_due"], true);
+    assert_eq!(due["after_shelving"]["story"], "RAL-3");
+    let (ok, _, error) = run(&["shelve", &blocker, "--team", "rally"]);
+    assert!(ok, "{error}");
+    let shelved = next();
+    assert_eq!(shelved["next"]["story"], "RAL-3");
+    assert_eq!(shelved["shelved"][0]["story"], "RAL-2");
+    assert_eq!(
+        shelved["shelved"][0]["question"],
+        "may Rally read the token file?"
+    );
+
+    // The answer says where it came from.
+    let (ok, _, error) = run(&["unblock", &blocker, "--note", "yes"]);
+    assert!(
+        !ok && error.contains("where the answer came from"),
+        "{error}"
+    );
+    let (ok, _, error) = run(&[
+        "unblock",
+        &blocker,
+        "--note",
+        "yes",
+        "--relayed-by",
+        "grand-photon",
+    ]);
+    assert!(ok, "{error}");
+    let answered = next();
+    assert_eq!(answered["next"]["story"], "RAL-2");
+    assert_eq!(answered["shelved"][0]["answered"], true);
+    let shown: Value =
+        serde_json::from_str(&call(&pairing, "GET", "/v1/blockers/all", None).body).unwrap();
+    assert_eq!(
+        shown["blockers"][0]["closed"]["answer"],
+        json!({"from": "relayed", "by": "grand-photon"})
+    );
+}
+
+#[test]
+fn the_service_keeps_the_times_agreed_with_the_operator() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let whoami: Value =
+        serde_json::from_str(&call(&pairing, "GET", "/v1/whoami", None).body).unwrap();
+    assert_eq!(whoami["operator_window_ms"], 300_000);
+    assert_eq!(whoami["operator_away_after"], 3);
+    assert_eq!(whoami["operator_away_ms"], 3_600_000);
+    // A question asked now can't be shelved for five minutes.
+    let asked = write(
+        &pairing,
+        "r",
+        "declared",
+        json!({"change": "block", "team": "rally", "story": "RAL-2", "on_team": "operator",
+               "note": "may we?"}),
+    );
+    assert_eq!(asked.status, 200, "{}", asked.body);
+    let shelve = write(
+        &pairing,
+        "r",
+        "declared",
+        json!({"change": "shelve", "blocker": 1, "team": "rally"}),
+    );
+    assert_eq!(shelve.status, 409, "{}", shelve.body);
+    assert!(
+        shelve.body.contains("window hasn't passed"),
+        "{}",
+        shelve.body
+    );
+    // No machine can take the name on Rally's own records.
+    let out = rally()
+        .args(["add-machine", "rally", "--address", &service.address])
+        .arg("--state-dir")
+        .arg(service.state_dir())
+        .arg("--out")
+        .arg(service.dir.path().join("rally.pair"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Rally's own records"));
+}
+
+/// Three shelves in a row with no answer put the operator away for the agreed time, recorded by
+/// Rally as observed; nothing waiting on the operator is offered during it, and it's all asked
+/// again after it.
+#[test]
+fn three_unanswered_shelves_put_the_operator_away_for_the_agreed_time() {
+    let mut limits = GENEROUS.to_vec();
+    limits.extend(["--operator-window", "1s", "--operator-away", "4s"]);
+    let service = start_with(&limits);
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let roadmap = service.dir.path().join("roadmap.md");
+    std::fs::write(
+        &roadmap,
+        "- [ ] **RAL-2: A.**\n- [ ] **RAL-3: B.**\n- [ ] **RAL-4: C.**\n- [ ] **RAL-5: D.**\n",
+    )
+    .unwrap();
+    let next = || {
+        let out = cli(
+            &config,
+            "r",
+            &[
+                "next",
+                "--team",
+                "rally",
+                "--roadmap",
+                roadmap.to_str().unwrap(),
+            ],
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    let blockers = || -> Value {
+        serde_json::from_str(&call(&pairing, "GET", "/v1/blockers/all", None).body).unwrap()
+    };
+    for story in ["RAL-2", "RAL-3", "RAL-4"] {
+        let asked = write(
+            &pairing,
+            "r",
+            "declared",
+            json!({"change": "block", "team": "rally", "story": story, "on_team": "operator",
+                   "note": format!("may we do {story}?")}),
+        );
+        assert_eq!(asked.status, 200, "{}", asked.body);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    let shelve = |blocker: u64| {
+        let reply = write(
+            &pairing,
+            "r",
+            "declared",
+            json!({"change": "shelve", "blocker": blocker, "team": "rally"}),
+        );
+        assert_eq!(reply.status, 200, "{}", reply.body);
+    };
+    shelve(1);
+    shelve(2);
+    assert!(blockers()["operator_away"].is_null());
+    assert_eq!(blockers()["unanswered_shelves"], json!([4, 5]));
+    shelve(3);
+    let away = blockers()["operator_away"].clone();
+    assert_eq!(away["seq"], 7, "{away}");
+    assert_eq!(away["shelves"], json!([4, 5, 6]));
+    // Written by Rally itself, as observed.
+    let records: Value =
+        serde_json::from_str(&call(&pairing, "GET", "/v1/export?after=6", None).body).unwrap();
+    let text = records["records"][0]["record"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        text.contains("\"kind\":\"observed\"") && text.contains("\"credential\":\"rally\""),
+        "{records}"
+    );
+
+    // During the hour: RAL-5 is free, and nothing waiting on the operator is offered.
+    let during = next();
+    assert_eq!(during["next"]["story"], "RAL-5", "{during}");
+    assert!(during["operator_away"]["until_ms"].is_i64());
+    assert_eq!(during["shelved"].as_array().unwrap().len(), 3);
+
+    // After it, the three are asked again, first in roadmap order.
+    std::thread::sleep(std::time::Duration::from_millis(4_100));
+    let after = next();
+    assert!(after["operator_away"].is_null(), "{after}");
+    assert_eq!(after["next"]["story"], "RAL-2");
+    assert_eq!(after["waiting_on_operator"][0]["ask_again"], true);
+    assert_eq!(blockers()["unanswered_shelves"], json!([]));
+}

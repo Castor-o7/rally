@@ -405,6 +405,24 @@ pub struct Head {
     pub hash: String,
 }
 
+/// The credential on records Rally writes itself, such as the operator's away hours (RAL-56).
+pub const RALLY_ITSELF: &str = "rally";
+
+/// The times agreed with the operator (RAL-56): how long a question waits before its story can be
+/// shelved, how many unanswered shelves in a row mean the operator is away, and for how long.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OperatorTimes {
+    pub window_ms: u64,
+    pub away_after: usize,
+    pub away_ms: u64,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
+}
+
 /// The result of checking the ledger.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Verification {
@@ -587,6 +605,9 @@ struct Writer {
     /// The operator's key, set only by `serve --secure` (RAL-51). Without it, designations are
     /// refused, including through `--db` on the host.
     operator_key: Mutex<Option<crate::designation::OperatorKey>>,
+    /// The window agreed with the operator, set only by `serve --operator-window` (RAL-56).
+    /// Without it, shelves are refused.
+    operator_window_ms: Mutex<Option<u64>>,
     /// The current state, or `None` until it can be built: if myko's copy doesn't replay, each
     /// read and append tries again and reports why it can't.
     kept: RwLock<Option<Kept>>,
@@ -743,6 +764,7 @@ impl Store {
             failures: Mutex::new(HashMap::new()),
             space: Mutex::new(None),
             operator_key: Mutex::new(None),
+            operator_window_ms: Mutex::new(None),
             kept: RwLock::new(None),
             check_sql: Mutex::new(None),
             #[cfg(test)]
@@ -868,6 +890,46 @@ impl Store {
                 .operator_key
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(key);
+        }
+    }
+
+    /// After a shelve: once the run of unanswered shelves is `times.away_after` long, records the
+    /// operator as away for `times.away_ms`, as observed, written by Rally itself (RAL-56).
+    /// Returns the away record's number, if one was written.
+    pub fn enter_away_if_due(&self, times: OperatorTimes) -> Result<Option<u64>, StoreError> {
+        let now = now_ms();
+        let due = self.with_ledger(None, |ledger| {
+            let run = ledger.unanswered_shelves(now);
+            let away = ledger
+                .operator_away()
+                .is_some_and(|away| away.active_at(now));
+            (run.len() >= times.away_after.max(1) && !away).then_some(run)
+        })?;
+        let Some(shelves) = due else {
+            return Ok(None);
+        };
+        let source = crate::record::Source {
+            credential: RALLY_ITSELF.to_owned(),
+            declared_name: None,
+        };
+        let ends_at_ms = now.saturating_add(i64::try_from(times.away_ms).unwrap_or(i64::MAX));
+        let body = serde_json::json!({
+            "change": "operator_away", "entered_at_ms": now, "ends_at_ms": ends_at_ms,
+            "shelves": shelves,
+        });
+        let record = Record::new(crate::record::Kind::Observed, source, now, body)
+            .map_err(|e| StoreError::Database(e.to_string()))?;
+        self.append(&record).map(Some)
+    }
+
+    /// Lets stories waiting on the operator be shelved once `window_ms` has passed since the
+    /// question (RAL-56). Only `serve` calls this.
+    pub fn accept_shelves(&self, window_ms: u64) {
+        if let Some(writer) = &self.writer {
+            *writer
+                .operator_window_ms
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(window_ms);
         }
     }
 
@@ -1376,6 +1438,7 @@ impl Writer {
                 .map_err(StoreError::Refused)?;
             let previous = kept.head();
             self.check_designation(&record, seq, &previous)?;
+            self.check_shelf(&record)?;
             (seq, previous)
         };
         let hash = chain_hash(&previous.hash, seq, &text);
@@ -1452,6 +1515,31 @@ impl Writer {
             seq,
             hash: head.hash,
         })
+    }
+
+    /// A shelve must carry the service's own window, and the service must have one (RAL-56).
+    fn check_shelf(&self, record: &Record) -> Result<(), StoreError> {
+        let Ok(Change::Shelve {
+            blocker, window_ms, ..
+        }) = serde_json::from_value::<Change>(record.body().clone())
+        else {
+            return Ok(());
+        };
+        let agreed = *self
+            .operator_window_ms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match agreed {
+            None => Err(StoreError::Refused(LedgerError::InvalidShelf(
+                blocker,
+                "no window has been agreed with the operator: the service was started without \
+                 --operator-window",
+            ))),
+            Some(agreed) if agreed != window_ms => Err(StoreError::Refused(
+                LedgerError::InvalidShelf(blocker, "the window isn't the one the service keeps"),
+            )),
+            Some(_) => Ok(()),
+        }
     }
 
     /// A designation is written only with the operator's key set, naming the head it follows and

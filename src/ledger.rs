@@ -107,8 +107,33 @@ pub enum Change {
         on_team: Option<String>,
         note: String,
     },
-    /// Anyone closes an open blocker, saying why. Who closed it is the record's source.
-    Unblock { blocker: u64, note: String },
+    /// Anyone closes an open blocker, saying why. Who closed it is the record's source. Closing a
+    /// question to the operator says where the answer came from (RAL-56); records written before
+    /// that replay without it.
+    Unblock {
+        blocker: u64,
+        note: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer: Option<Answer>,
+    },
+    /// A team shelves a story whose question to the operator has had no answer within the window
+    /// agreed with the operator, so it can take its next story (RAL-56). It names the open blocker
+    /// on the operator that holds the question; closing that blocker answers it, and the story
+    /// comes back first. The service sets `window_ms` from its own setting and refuses any other,
+    /// and the record's time, which the service stamps, must be at least that long after the
+    /// question's.
+    Shelve {
+        blocker: u64,
+        team: String,
+        window_ms: u64,
+    },
+    /// Rally itself records the operator as away, when a shelve makes a run of unanswered shelves
+    /// as long as the service's setting (RAL-56). Observed, and only Rally writes it.
+    OperatorAway {
+        entered_at_ms: i64,
+        ends_at_ms: i64,
+        shelves: Vec<u64>,
+    },
     /// Someone asks for a read of the story at a commit before it's merged (RAL-32). Allowed in any
     /// state, since the ask can come before the submission. It stays open until a verify or
     /// send-back answers it, or it's withdrawn.
@@ -180,7 +205,11 @@ impl Change {
             Self::TeamState { story, .. } | Self::Block { story, .. } => {
                 story.as_deref().unwrap_or_default()
             }
-            Self::Unblock { .. } | Self::Designate { .. } | Self::Annotate { .. } => "",
+            Self::Unblock { .. }
+            | Self::Shelve { .. }
+            | Self::OperatorAway { .. }
+            | Self::Designate { .. }
+            | Self::Annotate { .. } => "",
             Self::Backfill { entry, .. } => entry.story(),
             Self::Ready { story }
             | Self::Claim { story, .. }
@@ -327,7 +356,75 @@ pub struct Blocker {
     pub note: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closed: Option<Closure>,
+    /// Each time the waiting team shelved the story because the operator hadn't answered
+    /// (RAL-56), oldest first. More than one only when an away hour ended and it was asked again.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shelves: Vec<Shelf>,
 }
+
+impl Blocker {
+    pub fn waits_on_operator(&self) -> bool {
+        self.on_team
+            .as_deref()
+            .is_some_and(|on| same_name(on, OPERATOR))
+    }
+}
+
+/// The operator treated as away, after a run of unanswered shelves (RAL-56). Recorded by Rally
+/// itself, as observed. It lasts until `ends_at_ms`, or until an answer from the operator ends it
+/// early, by the service's time on that answer's record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Away {
+    pub seq: u64,
+    pub entered_at_ms: i64,
+    pub ends_at_ms: i64,
+    /// The shelves, by record number, with no answer between them, that caused it.
+    pub shelves: Vec<u64>,
+    /// The answer that ended it before `ends_at_ms`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_early_by: Option<u64>,
+    /// When that answer was recorded, by the service's time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_early_at_ms: Option<i64>,
+}
+
+impl Away {
+    /// Whether it's in force at `at_ms`.
+    pub fn active_at(&self, at_ms: i64) -> bool {
+        self.ended_early_by.is_none() && at_ms < self.ends_at_ms
+    }
+
+    /// When it ended, if it had by `at_ms`: when its hour ran out, or when an answer ended it
+    /// early. Either way, what it held is asked again from then.
+    pub fn ended_by(&self, at_ms: i64) -> Option<i64> {
+        match self.ended_early_at_ms {
+            Some(ended) => Some(ended),
+            None => (at_ms >= self.ends_at_ms).then_some(self.ends_at_ms),
+        }
+    }
+}
+
+/// Where an answer from the operator came from (RAL-56): straight from the operator, or relayed,
+/// and by whom. Declared, like everything an agent records.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "from", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Answer {
+    Direct,
+    Relayed { by: String },
+}
+
+/// Who shelved a story waiting on the operator, and when (RAL-56).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Shelf {
+    pub seq: u64,
+    pub source: Source,
+    pub at_ms: i64,
+    pub team: String,
+    pub window_ms: u64,
+}
+
+/// The team name a blocker uses to wait on the operator (RAL-56).
+pub const OPERATOR: &str = "operator";
 
 /// Who closed a blocker, when, and why.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -339,6 +436,8 @@ pub struct Closure {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backfilled: Option<Backfill>,
     pub note: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<Answer>,
 }
 
 /// One declared state of a team.
@@ -433,6 +532,17 @@ pub enum LedgerError {
     },
     /// An unblock names a record that isn't an open blocker (RAL-20).
     InvalidBlockerTarget(u64),
+    /// A shelve names a blocker that isn't an open question to the operator about a story, held
+    /// by the shelving team, or that's already shelved (RAL-56).
+    InvalidShelf(u64, &'static str),
+    /// A new record uses `operator` as its own team's name, which is kept for waiting on the
+    /// operator, so no team can look like the operator (RAL-56).
+    ReservedTeam,
+    /// An away record that doesn't follow from the ledger (RAL-56).
+    InvalidAway(&'static str),
+    /// Closing a question to the operator must say where the answer came from, and closing any
+    /// other blocker mustn't (RAL-56).
+    AnswerSource(&'static str),
     /// A story is named as waiting on itself.
     BlockedOnItself(String),
     /// An annotation names a record that isn't an earlier record naming its team (RAL-19).
@@ -503,6 +613,13 @@ impl fmt::Display for LedgerError {
                 )
             }
             Self::InvalidBlockerTarget(seq) => write!(f, "record {seq} isn't an open blocker"),
+            Self::InvalidShelf(seq, why) => write!(f, "can't shelve on record {seq}: {why}"),
+            Self::ReservedTeam => write!(
+                f,
+                "\"{OPERATOR}\" is kept for waiting on the operator, so no team can use it as its name"
+            ),
+            Self::AnswerSource(why) => write!(f, "{why}"),
+            Self::InvalidAway(why) => write!(f, "invalid away record: {why}"),
             Self::BlockedOnItself(story) => write!(f, "{story} can't wait on itself"),
             Self::DesignationOutOfPlace { seq, after_seq } => write!(
                 f,
@@ -551,6 +668,11 @@ pub struct Ledger {
     annotations: BTreeMap<u64, Vec<Annotation>>,
     /// The records that are annotations, so that none is annotated in turn.
     annotation_seqs: BTreeSet<u64>,
+    /// Shelves, by record number and time, since the last answer from the operator or away
+    /// record (RAL-56).
+    unanswered_shelves: Vec<(u64, i64)>,
+    /// Every time the operator was treated as away, oldest first (RAL-56).
+    aways: Vec<Away>,
 }
 
 /// A team's annotation of an earlier record (RAL-19). Declared, like the team's name.
@@ -628,6 +750,49 @@ impl Ledger {
         &self.annotations
     }
 
+    /// The shelves since the last answer from the operator or away hour, across the whole rally,
+    /// as of `at_ms`: once an away hour has run out, the run starts again (RAL-56).
+    pub fn unanswered_shelves(&self, at_ms: i64) -> Vec<u64> {
+        let since = self
+            .aways
+            .last()
+            .and_then(|away| away.ended_by(at_ms))
+            .unwrap_or(i64::MIN);
+        self.unanswered_shelves
+            .iter()
+            .filter(|(_, shelved_at)| *shelved_at >= since)
+            .map(|(seq, _)| *seq)
+            .collect()
+    }
+
+    /// The latest time the operator was treated as away, if ever (RAL-56).
+    pub fn operator_away(&self) -> Option<&Away> {
+        self.aways.last()
+    }
+
+    /// Whether an open question to the operator is shelved as of `at_ms`: its last shelf came
+    /// after its window last started. A shelf from before an away hour ended, by running out or by
+    /// an answer, has been revisited, so the question is asked again (RAL-56).
+    pub fn is_shelved(&self, blocker: &Blocker, at_ms: i64) -> bool {
+        let start = self.question_start(blocker, at_ms);
+        blocker
+            .shelves
+            .last()
+            .is_some_and(|shelf| shelf.at_ms >= start)
+    }
+
+    /// When a question's window starts: when it was asked, or when an away hour that held it
+    /// ended, whichever is later, as of `at_ms`.
+    pub fn question_start(&self, blocker: &Blocker, at_ms: i64) -> i64 {
+        self.aways
+            .iter()
+            .filter_map(|away| away.ended_by(at_ms))
+            .filter(|ended| *ended > blocker.at_ms)
+            .max()
+            .unwrap_or(blocker.at_ms)
+            .max(blocker.at_ms)
+    }
+
     /// Whether earlier record `seq` names `team`: one of its declared states, a blocker it raised
     /// or that waits on it, or a record of a story it ever claimed.
     fn names_team(&self, seq: u64, team: &str) -> bool {
@@ -672,8 +837,12 @@ impl Ledger {
         ) {
             return self.clone().apply(seq, record);
         }
+        // The away hours and the run of unanswered shelves are small, and a shelve, an answer
+        // or an away record depends on them (RAL-56).
         let mut trial = Self {
             last_seq: self.last_seq,
+            unanswered_shelves: self.unanswered_shelves.clone(),
+            aways: self.aways.clone(),
             ..Self::default()
         };
         // A team's state never depends on what came before, and a change that doesn't parse is
@@ -683,7 +852,7 @@ impl Ledger {
                 Change::Backfill { entry, .. } => *entry,
                 change => change,
             };
-            if let Change::Unblock { blocker, .. } = change {
+            if let Change::Unblock { blocker, .. } | Change::Shelve { blocker, .. } = change {
                 // Closing a blocker depends only on that blocker.
                 if let Some(open) = self.blockers.get(&blocker) {
                     trial.blockers.insert(blocker, open.clone());
@@ -717,6 +886,41 @@ impl Ledger {
             change => (change, record.source().declared_name.as_deref()),
         };
         check_text(record, &parsed, change)?;
+        if own_team(change).is_some_and(|team| same_name(team, OPERATOR)) {
+            return Err(LedgerError::ReservedTeam);
+        }
+        if let Change::Unblock {
+            blocker, answer, ..
+        } = change
+            && let Some(open) = self.blockers.get(blocker)
+        {
+            let on_operator = open
+                .on_team
+                .as_deref()
+                .is_some_and(|on| same_name(on, OPERATOR));
+            match (on_operator, answer) {
+                (true, None) => {
+                    return Err(LedgerError::AnswerSource(
+                        "closing a question to the operator says where the answer came from: \
+                         direct from the operator, or relayed and by whom",
+                    ));
+                }
+                (false, Some(_)) => {
+                    return Err(LedgerError::AnswerSource(
+                        "only closing a question to the operator says where an answer came from",
+                    ));
+                }
+                (true, Some(Answer::Relayed { by })) => {
+                    if by.trim().is_empty() {
+                        return Err(LedgerError::EmptyField("relayed by"));
+                    }
+                    if !crate::record::is_clear_name(by) {
+                        return Err(LedgerError::InvisibleCharacter("relayed by"));
+                    }
+                }
+                _ => {}
+            }
+        }
         // So that `RAL-1` and `RAL-01` can't be two stories.
         let id = change.story();
         if !id.is_empty() && has_leading_zero(id) {
@@ -875,12 +1079,17 @@ impl Ledger {
                         on_team,
                         note,
                         closed: None,
+                        shelves: Vec::new(),
                     },
                 );
                 self.last_seq = seq;
                 return Ok(());
             }
-            Change::Unblock { blocker, note } => {
+            Change::Unblock {
+                blocker,
+                note,
+                answer,
+            } => {
                 if record.kind() == Kind::Observed {
                     return Err(LedgerError::WrongKind {
                         expected: Kind::Declared,
@@ -892,6 +1101,18 @@ impl Ledger {
                     .get_mut(&blocker)
                     .filter(|open| open.closed.is_none())
                     .ok_or(LedgerError::InvalidBlockerTarget(blocker))?;
+                // An answer from the operator restarts the run, and ends an away hour early, by
+                // the service's time on this record, never a time the writer declared (RAL-56).
+                if open.waits_on_operator() && answer.is_some() {
+                    self.unanswered_shelves.clear();
+                    if let Some(away) = self.aways.last_mut()
+                        && away.active_at(record.at_ms())
+                    {
+                        away.ended_early_by = Some(seq);
+                        away.ended_early_at_ms = Some(record.at_ms());
+                    }
+                }
+                let open = self.blockers.get_mut(&blocker).expect("found above");
                 open.closed = Some(Closure {
                     seq,
                     kind: record.kind(),
@@ -899,6 +1120,105 @@ impl Ledger {
                     at_ms: record.at_ms(),
                     backfilled: backfill,
                     note,
+                    answer,
+                });
+                self.last_seq = seq;
+                return Ok(());
+            }
+            Change::Shelve {
+                blocker,
+                team,
+                window_ms,
+            } => {
+                require_kind(record, Kind::Declared)?;
+                if backfill.is_some() {
+                    return Err(LedgerError::InvalidChange(
+                        "a shelve can't be backfilled".into(),
+                    ));
+                }
+                let open = self
+                    .blockers
+                    .get(&blocker)
+                    .filter(|open| open.closed.is_none())
+                    .ok_or(LedgerError::InvalidBlockerTarget(blocker))?;
+                let start = self.question_start(open, record.at_ms());
+                let why = if open.story.is_none() {
+                    Some("it blocks a team, not a story")
+                } else if !open
+                    .on_team
+                    .as_deref()
+                    .is_some_and(|on| same_name(on, OPERATOR))
+                {
+                    Some("it doesn't wait on the operator")
+                } else if !same_name(&open.team, &team) {
+                    Some("another team is waiting on it")
+                } else if open
+                    .shelves
+                    .last()
+                    .is_some_and(|shelf| shelf.at_ms >= start)
+                {
+                    Some("it's already shelved")
+                } else if window_ms == 0 {
+                    Some("the window must be longer than nothing")
+                } else if record.at_ms().saturating_sub(start)
+                    < i64::try_from(window_ms).unwrap_or(i64::MAX)
+                {
+                    Some("the operator's window hasn't passed since the question was asked")
+                } else {
+                    None
+                };
+                if let Some(why) = why {
+                    return Err(LedgerError::InvalidShelf(blocker, why));
+                }
+                self.unanswered_shelves.push((seq, record.at_ms()));
+                let open = self.blockers.get_mut(&blocker).expect("found above");
+                open.shelves.push(Shelf {
+                    seq,
+                    source: record.source().clone(),
+                    at_ms: record.at_ms(),
+                    team,
+                    window_ms,
+                });
+                self.last_seq = seq;
+                return Ok(());
+            }
+            Change::OperatorAway {
+                entered_at_ms,
+                ends_at_ms,
+                shelves,
+            } => {
+                require_kind(record, Kind::Observed)?;
+                if backfill.is_some() {
+                    return Err(LedgerError::InvalidChange(
+                        "an away hour can't be backfilled".into(),
+                    ));
+                }
+                let why = if entered_at_ms != record.at_ms() {
+                    Some("it must start at its own record's time")
+                } else if ends_at_ms <= entered_at_ms {
+                    Some("it must end after it starts")
+                } else if shelves.is_empty() || shelves != self.unanswered_shelves(record.at_ms()) {
+                    Some("its shelves must be the run of unanswered shelves")
+                } else if self
+                    .aways
+                    .last()
+                    .is_some_and(|away| away.active_at(record.at_ms()))
+                {
+                    Some("the operator is already treated as away")
+                } else {
+                    None
+                };
+                if let Some(why) = why {
+                    return Err(LedgerError::InvalidAway(why));
+                }
+                self.unanswered_shelves.clear();
+                self.aways.push(Away {
+                    seq,
+                    entered_at_ms,
+                    ends_at_ms,
+                    shelves,
+                    ended_early_by: None,
+                    ended_early_at_ms: None,
                 });
                 self.last_seq = seq;
                 return Ok(());
@@ -1009,6 +1329,8 @@ fn transition(
         | Change::Backfill { .. }
         | Change::Block { .. }
         | Change::Unblock { .. }
+        | Change::Shelve { .. }
+        | Change::OperatorAway { .. }
         | Change::Designate { .. }
         | Change::Annotate { .. } => unreachable!("handled by the caller"),
         Change::Claim { team, .. } => {
@@ -1262,6 +1584,8 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::TeamState { story: None, .. }
             | Change::Block { story: None, .. }
             | Change::Unblock { .. }
+            | Change::Shelve { .. }
+            | Change::OperatorAway { .. }
             | Change::Designate { .. }
             | Change::Annotate { .. }
     );
@@ -1324,13 +1648,17 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         return Err(LedgerError::InvalidCommit);
     }
     let fields: &[(&'static str, &str)] = match change {
-        Change::Ready { .. } | Change::Merge { .. } | Change::Backfill { .. } => &[],
+        Change::Ready { .. }
+        | Change::Merge { .. }
+        | Change::Backfill { .. }
+        | Change::OperatorAway { .. } => &[],
         Change::Designate { .. } => {
             check_designation_fields(change)?;
             &[]
         }
         Change::Claim { team, .. }
         | Change::Release { team, .. }
+        | Change::Shelve { team, .. }
         | Change::TeamState { team, .. } => &[("team", team)],
         Change::Block { team, note, .. } | Change::Annotate { team, note, .. } => {
             &[("team", team), ("note", note)]
@@ -1351,6 +1679,21 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
     Ok(())
 }
 
+/// The team a change acts as, as against one it names as waited on.
+fn own_team(change: &Change) -> Option<&str> {
+    match change {
+        Change::Claim { team, .. }
+        | Change::Release { team, .. }
+        | Change::Shelve { team, .. }
+        | Change::TeamState { team, .. }
+        | Change::Block { team, .. }
+        | Change::Annotate { team, .. }
+        | Change::Submit { team, .. } => Some(team),
+        Change::Correct { team, .. } => team.as_deref(),
+        _ => None,
+    }
+}
+
 /// The text a change carries that has a limit, required and optional, by the limit's name.
 fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
     let mut text: Vec<(&'static str, &str)> = Vec::new();
@@ -1358,8 +1701,11 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
         Change::Ready { .. }
         | Change::Merge { .. }
         | Change::Backfill { .. }
+        | Change::OperatorAway { .. }
         | Change::Designate { .. } => {}
-        Change::Claim { team, .. } | Change::Release { team, .. } => text.push(("team", team)),
+        Change::Claim { team, .. } | Change::Release { team, .. } | Change::Shelve { team, .. } => {
+            text.push(("team", team))
+        }
         Change::TeamState { team, note, .. } => {
             text.push(("team", team));
             text.extend(note.as_deref().map(|note| ("note", note)));
@@ -2047,6 +2393,342 @@ mod tests {
             .unwrap()
             .extend(body.as_object().unwrap().clone());
         team(full)
+    }
+
+    /// A declared record from `alice` at a given time, for the operator's window (RAL-56).
+    fn timed(at_ms: i64, body: serde_json::Value) -> Record {
+        let source = Source {
+            credential: "a1".into(),
+            declared_name: Some("alice".into()),
+        };
+        Record::new(Kind::Declared, source, at_ms, body).unwrap()
+    }
+
+    const HOUR_MS: u64 = 3_600_000;
+
+    /// A question to the operator about STORY, asked at 1,000 ms, as record 2.
+    fn asked_operator() -> Vec<Record> {
+        vec![
+            ready(),
+            timed(
+                1_000,
+                json!({
+                    "change": "block", "team": "rally", "story": STORY, "on_team": "operator",
+                    "note": "may Rally read the token file?"
+                }),
+            ),
+        ]
+    }
+
+    fn shelve(at_ms: i64, blocker: u64, team: &str) -> Record {
+        timed(
+            at_ms,
+            json!({"change": "shelve", "blocker": blocker, "team": team, "window_ms": HOUR_MS}),
+        )
+    }
+
+    #[test]
+    fn a_story_is_shelved_only_after_the_operators_window() {
+        let ledger = ledger_with(&asked_operator());
+        let early = shelve(1_000 + HOUR_MS as i64 - 1, 2, "rally");
+        assert_eq!(
+            ledger.check(3, &early),
+            Err(LedgerError::InvalidShelf(
+                2,
+                "the operator's window hasn't passed since the question was asked"
+            ))
+        );
+        let due = shelve(1_000 + HOUR_MS as i64, 2, "rally");
+        let mut shelved = ledger.clone();
+        shelved.apply(3, &due).unwrap();
+        let shelf = shelved.blockers()[&2].shelves.last().unwrap();
+        assert_eq!((shelf.seq, shelf.window_ms), (3, HOUR_MS));
+        // Once is enough.
+        assert_eq!(
+            shelved.check(4, &shelve(9 * HOUR_MS as i64, 2, "rally")),
+            Err(LedgerError::InvalidShelf(2, "it's already shelved"))
+        );
+        // The answer closes the question, and the shelf stays as history.
+        let answer = timed(
+            2 * HOUR_MS as i64,
+            json!({"change": "unblock", "blocker": 2, "note": "yes", "answer": {"from": "direct"}}),
+        );
+        shelved.check(4, &answer).unwrap();
+        shelved.apply(4, &answer).unwrap();
+        let blocker = &shelved.blockers()[&2];
+        assert!(blocker.closed.is_some() && !blocker.shelves.is_empty());
+        assert_eq!(
+            blocker.closed.as_ref().unwrap().answer,
+            Some(Answer::Direct)
+        );
+    }
+
+    #[test]
+    fn only_the_waiting_team_shelves_an_open_question_to_the_operator() {
+        let mut records = asked_operator();
+        records.push(timed(
+            1_000,
+            json!({"change": "block", "team": "rally", "story": STORY, "on_team": "muster",
+                   "note": "waiting on MUS-44"}),
+        ));
+        records.push(timed(
+            1_000,
+            json!({"change": "block", "team": "rally", "on_team": "operator", "note": "a login"}),
+        ));
+        let ledger = ledger_with(&records);
+        let late = 1_000 + HOUR_MS as i64;
+        for (blocker, team, why) in [
+            (2, "muster", "another team is waiting on it"),
+            (3, "rally", "it doesn't wait on the operator"),
+            (4, "rally", "it blocks a team, not a story"),
+        ] {
+            assert_eq!(
+                ledger.check(5, &shelve(late, blocker, team)),
+                Err(LedgerError::InvalidShelf(blocker, why))
+            );
+        }
+        assert_eq!(
+            ledger.check(5, &shelve(late, 1, "rally")),
+            Err(LedgerError::InvalidBlockerTarget(1))
+        );
+        let zero = timed(
+            late,
+            json!({"change": "shelve", "blocker": 2, "team": "rally", "window_ms": 0}),
+        );
+        assert_eq!(
+            ledger.check(5, &zero),
+            Err(LedgerError::InvalidShelf(
+                2,
+                "the window must be longer than nothing"
+            ))
+        );
+    }
+
+    #[test]
+    fn closing_a_question_to_the_operator_says_where_the_answer_came_from() {
+        let mut records = asked_operator();
+        records.push(block(json!({"on_team": "muster"})));
+        let ledger = ledger_with(&records);
+        let close = |blocker: u64, answer: serde_json::Value| {
+            let mut body = json!({"change": "unblock", "blocker": blocker, "note": "answered"});
+            if !answer.is_null() {
+                body["answer"] = answer;
+            }
+            timed(5_000, body)
+        };
+        assert!(matches!(
+            ledger.check(4, &close(2, serde_json::Value::Null)),
+            Err(LedgerError::AnswerSource(_))
+        ));
+        assert!(
+            ledger
+                .check(4, &close(2, json!({"from": "direct"})))
+                .is_ok()
+        );
+        assert!(
+            ledger
+                .check(
+                    4,
+                    &close(2, json!({"from": "relayed", "by": "grand-photon"}))
+                )
+                .is_ok()
+        );
+        assert_eq!(
+            ledger.check(4, &close(2, json!({"from": "relayed", "by": " "}))),
+            Err(LedgerError::EmptyField("relayed by"))
+        );
+        assert!(
+            ledger
+                .check(4, &close(2, json!({"from": "rumour"})))
+                .is_err()
+        );
+        // Another blocker's closing doesn't claim to be the operator's answer.
+        assert!(matches!(
+            ledger.check(4, &close(3, json!({"from": "direct"}))),
+            Err(LedgerError::AnswerSource(_))
+        ));
+        assert!(ledger.check(4, &close(3, serde_json::Value::Null)).is_ok());
+        // Written before RAL-56, a question to the operator closed without one still replays.
+        records.push(close(2, serde_json::Value::Null));
+        assert!(Ledger::replay(&records).is_ok());
+    }
+
+    /// Questions to the operator about RAL-2, RAL-3 and RAL-4, asked at 0, as records 1 to 3.
+    fn three_questions() -> Vec<Record> {
+        ["RAL-2", "RAL-3", "RAL-4"]
+            .into_iter()
+            .map(|story| {
+                timed(
+                    1,
+                    json!({"change": "block", "team": "rally", "story": story,
+                           "on_team": "operator", "note": "may we?"}),
+                )
+            })
+            .collect()
+    }
+
+    fn away(at_ms: i64, ends_at_ms: i64, shelves: &[u64]) -> Record {
+        let source = Source {
+            credential: "rally".into(),
+            declared_name: None,
+        };
+        let body = json!({"change": "operator_away", "entered_at_ms": at_ms,
+                          "ends_at_ms": ends_at_ms, "shelves": shelves});
+        Record::new(Kind::Observed, source, at_ms, body).unwrap()
+    }
+
+    fn answer(at_ms: i64, blocker: u64) -> Record {
+        timed(
+            at_ms,
+            json!({"change": "unblock", "blocker": blocker, "note": "yes",
+                   "answer": {"from": "direct"}}),
+        )
+    }
+
+    fn push(ledger: &mut Ledger, record: &Record) {
+        let seq = ledger.last_seq() + 1;
+        ledger.check(seq, record).unwrap();
+        ledger.apply(seq, record).unwrap();
+    }
+
+    const W: i64 = HOUR_MS as i64;
+
+    #[test]
+    fn the_operator_is_away_after_a_run_of_unanswered_shelves() {
+        let mut ledger = ledger_with(&three_questions());
+        push(&mut ledger, &shelve(1 + W, 1, "rally"));
+        push(&mut ledger, &shelve(1 + W, 2, "rally"));
+        assert_eq!(ledger.unanswered_shelves(1 + W), [4, 5]);
+        // Not on the second: the run must be all the unanswered shelves, and the third isn't yet.
+        assert_eq!(
+            ledger.check(6, &away(2 * W, 3 * W, &[4, 5, 6])),
+            Err(LedgerError::InvalidAway(
+                "its shelves must be the run of unanswered shelves"
+            ))
+        );
+        push(&mut ledger, &shelve(1 + W, 3, "rally"));
+        assert_eq!(ledger.unanswered_shelves(1 + W), [4, 5, 6]);
+        // Only Rally records it, as observed.
+        let declared = timed(
+            2 * W,
+            json!({"change": "operator_away", "entered_at_ms": 2 * W, "ends_at_ms": 3 * W,
+                   "shelves": [4, 5, 6]}),
+        );
+        assert!(matches!(
+            ledger.check(7, &declared),
+            Err(LedgerError::WrongKind { .. })
+        ));
+        push(&mut ledger, &away(2 * W, 3 * W, &[4, 5, 6]));
+        let entered = ledger.operator_away().unwrap();
+        assert_eq!((entered.seq, entered.shelves.clone()), (7, vec![4, 5, 6]));
+        assert!(entered.active_at(3 * W - 1) && !entered.active_at(3 * W));
+        // The run starts again, and a second away can't start inside the first.
+        assert!(ledger.unanswered_shelves(2 * W).is_empty());
+        assert_eq!(
+            ledger.check(8, &away(2 * W + 5, 4 * W, &[])),
+            Err(LedgerError::InvalidAway(
+                "its shelves must be the run of unanswered shelves"
+            ))
+        );
+    }
+
+    #[test]
+    fn an_answer_ends_the_away_hour_early_by_the_services_time_only() {
+        let mut ledger = ledger_with(&three_questions());
+        for blocker in 1..=3 {
+            push(&mut ledger, &shelve(1 + W, blocker, "rally"));
+        }
+        push(&mut ledger, &away(2 * W, 3 * W, &[4, 5, 6]));
+        // Recorded after the hour, though it declares it was entered during it: doesn't count.
+        let late = timed(
+            3 * W + 1,
+            json!({"change": "backfill", "entered_at_ms": 2 * W + 10, "entered_by": "alice",
+                   "entry": {"change": "unblock", "blocker": 1, "note": "yes",
+                             "answer": {"from": "direct"}}}),
+        );
+        let mut backdated = ledger.clone();
+        push(&mut backdated, &late);
+        assert_eq!(backdated.operator_away().unwrap().ended_early_by, None);
+        // Recorded during the hour: ends it.
+        push(&mut ledger, &answer(2 * W + 10, 2));
+        let ended = ledger.operator_away().unwrap();
+        assert_eq!(ended.ended_early_by, Some(8));
+        assert_eq!(ended.ended_early_at_ms, Some(2 * W + 10));
+        assert!(!ended.active_at(2 * W + 11));
+        // The operator is back, so the other shelves are asked again from the answer's time,
+        // as when the hour runs out: shelvable again a window after it, not before.
+        assert_eq!(
+            ledger.check(9, &shelve(3 * W + 9, 3, "rally")),
+            Err(LedgerError::InvalidShelf(
+                3,
+                "the operator's window hasn't passed since the question was asked"
+            ))
+        );
+        push(&mut ledger, &shelve(3 * W + 10, 3, "rally"));
+        assert_eq!(ledger.blockers()[&3].shelves.len(), 2);
+    }
+
+    #[test]
+    fn after_the_hour_questions_are_asked_again_and_the_run_starts_from_nothing() {
+        let mut ledger = ledger_with(&three_questions());
+        for blocker in 1..=3 {
+            push(&mut ledger, &shelve(1 + W, blocker, "rally"));
+        }
+        push(&mut ledger, &away(2 * W, 3 * W, &[4, 5, 6]));
+        // During the hour the shelves stand.
+        assert_eq!(
+            ledger.check(8, &shelve(3 * W - 1, 1, "rally")),
+            Err(LedgerError::InvalidShelf(1, "it's already shelved"))
+        );
+        // After it, each is asked again, with the window counted from the hour's end.
+        assert_eq!(
+            ledger.check(8, &shelve(4 * W - 1, 1, "rally")),
+            Err(LedgerError::InvalidShelf(
+                1,
+                "the operator's window hasn't passed since the question was asked"
+            ))
+        );
+        assert!(ledger.unanswered_shelves(3 * W).is_empty());
+        push(&mut ledger, &shelve(4 * W, 1, "rally"));
+        push(&mut ledger, &shelve(4 * W, 2, "rally"));
+        assert_eq!(ledger.blockers()[&1].shelves.len(), 2);
+        // Two after the hour aren't a run of three; a third is.
+        assert_eq!(ledger.unanswered_shelves(4 * W), [8, 9]);
+        push(&mut ledger, &shelve(4 * W, 3, "rally"));
+        assert_eq!(ledger.unanswered_shelves(4 * W), [8, 9, 10]);
+        push(&mut ledger, &away(4 * W + 1, 5 * W, &[8, 9, 10]));
+    }
+
+    #[test]
+    fn an_answer_at_any_time_starts_the_run_again() {
+        let mut ledger = ledger_with(&three_questions());
+        push(&mut ledger, &shelve(1 + W, 1, "rally"));
+        push(&mut ledger, &shelve(1 + W, 2, "rally"));
+        push(&mut ledger, &answer(1 + W, 1));
+        assert!(ledger.unanswered_shelves(1 + W).is_empty());
+        push(&mut ledger, &shelve(1 + W, 3, "rally"));
+        assert_eq!(ledger.unanswered_shelves(1 + W), [7]);
+    }
+
+    #[test]
+    fn no_team_can_be_named_operator() {
+        let ledger = ledger_with(&[ready()]);
+        for name in ["operator", "Operator", " OPERATOR "] {
+            for body in [
+                json!({"change": "claim", "story": STORY, "team": name}),
+                json!({"change": "team_state", "team": name, "status": "working"}),
+                json!({"change": "block", "team": name, "note": "waiting"}),
+            ] {
+                assert_eq!(
+                    ledger.check(2, &team(body.clone())),
+                    Err(LedgerError::ReservedTeam),
+                    "{body}"
+                );
+            }
+        }
+        // Waiting on the operator is what the name is for.
+        let body = json!({"change": "block", "team": "rally", "on_team": "operator", "note": "n"});
+        assert!(ledger.check(2, &team(body)).is_ok());
     }
 
     fn unblock(blocker: u64) -> Record {

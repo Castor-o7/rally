@@ -89,6 +89,8 @@ struct Service {
     store: Store,
     /// The operator's key, under `serve --secure` only (RAL-51).
     operator_key: Option<crate::designation::OperatorKey>,
+    /// The times agreed with the operator for shelving and away hours (RAL-56).
+    operator_times: Option<crate::store::OperatorTimes>,
     state_dir: StateDir,
     limit: RateLimit,
     buckets: Mutex<HashMap<(String, Bucket), (f64, Instant)>>,
@@ -146,6 +148,7 @@ pub async fn serve(
     state_dir: StateDir,
     limit: RateLimit,
     operator_key: Option<crate::designation::OperatorKey>,
+    operator_times: Option<crate::store::OperatorTimes>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Both ring and any other provider could be linked; the choice has to be explicit.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -161,7 +164,10 @@ pub async fn serve(
     if let Some(key) = &operator_key {
         store.accept_designations(key.clone());
     }
-    let app = router(store, state_dir, limit, operator_key);
+    if let Some(times) = operator_times {
+        store.accept_shelves(times.window_ms);
+    }
+    let app = router(store, state_dir, limit, operator_key, operator_times);
     listener.set_nonblocking(true)?;
     let lifetime = Duration::from_secs_f64(limit.connection_seconds);
     let acceptor = Limited {
@@ -193,10 +199,12 @@ fn router(
     state_dir: StateDir,
     limit: RateLimit,
     operator_key: Option<crate::designation::OperatorKey>,
+    operator_times: Option<crate::store::OperatorTimes>,
 ) -> Router {
     let service = Arc::new(Service {
         store,
         operator_key,
+        operator_times,
         state_dir,
         limit,
         buckets: Mutex::new(HashMap::new()),
@@ -593,6 +601,14 @@ async fn write_record(
             "only Rally itself records observed facts",
         );
     }
+    let mut body = request.body;
+    // A shelve is measured by the service's window, not one the writer chose (RAL-56).
+    if body["change"] == "shelve"
+        && body.get("window_ms").is_none()
+        && let (Some(times), Some(fields)) = (service.operator_times, body.as_object_mut())
+    {
+        fields.insert("window_ms".into(), json!(times.window_ms));
+    }
     let source = Source {
         credential: identity.credential,
         declared_name: Some(request.declared_name),
@@ -600,12 +616,24 @@ async fn write_record(
     let at_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as i64);
-    let record = match Record::new(request.kind, source, at_ms, request.body) {
+    let record = match Record::new(request.kind, source, at_ms, body) {
         Ok(record) => record,
         Err(error) => return failure(StatusCode::BAD_REQUEST, error.to_string()),
     };
+    let times = service.operator_times;
     let appended = service
-        .run(Work::Write, move |store| store.append(&record))
+        .run(Work::Write, move |store| {
+            let seq = store.append(&record)?;
+            // A shelve that completes a run of unanswered shelves puts the operator away. It's
+            // checked after every write, so a failure here is tried again on the next one. The
+            // write stands either way.
+            if let Some(times) = times
+                && let Err(error) = store.enter_away_if_due(times)
+            {
+                eprintln!("rally: couldn't record the operator as away: {error}");
+            }
+            Ok(seq)
+        })
         .await;
     let appended = match appended {
         Ok(appended) => appended,
@@ -877,9 +905,17 @@ async fn waiting(
 }
 
 /// Which credential this is, so that the viewer can warn if it could write.
-async fn whoami(Extension(identity): Extension<Identity>) -> Response {
-    Json(json!({"credential": identity.credential, "read_only": identity.read_only}))
-        .into_response()
+async fn whoami(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+) -> Response {
+    Json(json!({
+        "credential": identity.credential, "read_only": identity.read_only,
+        "operator_window_ms": service.operator_times.map(|t| t.window_ms),
+        "operator_away_after": service.operator_times.map(|t| t.away_after),
+        "operator_away_ms": service.operator_times.map(|t| t.away_ms),
+    }))
+    .into_response()
 }
 
 async fn list_stories(

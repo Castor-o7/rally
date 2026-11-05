@@ -28,6 +28,9 @@ read at the head being merged. Otherwise another team, or the operator, verifies
 
 Where you use Rally:
 
+- **Pick your next story**: `rally next --team <team>` gives it by roadmap order, and says
+  what it skipped and why. A story that needs the operator isn't skipped: ask the operator, and
+  record the question with `rally block --story <STORY> --on-team operator`.
 - **Claim** a ready story: `rally claim <STORY> --team <team>`. Give it up with
   `rally release <STORY> --team <team>`.
 - **Submit** it when it's pushed: `rally submit <STORY> --team <team> --evidence \"<repo>@<full commit>\"`.

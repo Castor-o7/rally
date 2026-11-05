@@ -334,7 +334,8 @@ word.
   exists for it, Rally sends that team one digest through Muster naming its next ready story (RAL-56), at most
   once per agreed interval; a team that has said it's resting, or has no ready story, gets nothing; a team that
   can't be woken is shown as such to whoever reads the state; and a test covers each of those cases, plus the
-  2026-11-05 case of a team asleep with wake `none`.
+  2026-11-05 case of a team asleep with wake `none`. One moment to wake a team is when the operator's answer
+  closes a question its story was shelved on (RAL-56), since that story then comes back first.
 - [ ] **RAL-55: Hand out story IDs from the ledger.** From the operator's question of 2026-11-05. Done when:
   `rally new-story <PREFIX> --title "..."` records the next free number for that prefix, and returns it in one
   atomic write; two concurrent requests for one prefix get different numbers, with a test; a number that's already
@@ -350,7 +351,16 @@ word.
   when it was asked, and the team takes the next story; a shelved story returns to the top of the pick once the
   operator answers; `rally next` shows shelved stories and their open questions; and a test covers the order,
   each kind of skip, a roadmap with nothing left, and a story that isn't shelved before the window, is shelved
-  after it, and returns on an answer.
+  after it, and returns on an answer. The operator then set the times: "maybe like 5 minutes, and if the
+  operator skips interaction 3 times then the operator interaction items are all shelved for an hour and then
+  revisted after the hour has elapsed", and the count resets after the hour. So also: the window is 5 minutes;
+  after 3 shelves in a row across the rally with no answer between them, Rally records the operator as away, as
+  observed, with when it started and ends and the 3 shelves; for an hour nothing waiting on the operator is
+  offered; after the hour it's all asked again; an answer, by the service's time, ends it early, and then it's
+  all asked again too; the count starts again at any answer and after the hour; each time can be changed; and a
+  test shows away isn't entered on the second unanswered shelf and is on the third, nothing is offered during the
+  hour, it's revisited after it, an answer ends it early and a backdated one doesn't, and after the hour two
+  shelves don't enter it again and a third does.
 - [ ] **RAL-57: Spread peer reads across teams.** From the operator's question of 2026-11-05. Done when: while no
   watchman is designated, `rally waiting` suggests a reader for each submission: a team other than the author's,
   the one whose last suggested or recorded read is oldest first; it never suggests the author's own team;

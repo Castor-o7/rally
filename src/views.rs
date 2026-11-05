@@ -141,6 +141,9 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
             if !story.requested_reads.is_empty() {
                 row["requested_reads"] = json!(story.requested_reads.len());
             }
+            if story.merged_commit.is_some() {
+                row["merged"] = json!(true);
+            }
             (id.clone(), row)
         })
         .collect();
@@ -328,6 +331,15 @@ fn chain(blocker: &Blocker, open: &[&Blocker]) -> (Vec<u64>, bool, bool) {
 /// ones too. Each open one says what it blocks, which open blockers it waits on directly, and its
 /// whole chain. `Err` holds a bad page.
 pub fn blockers(ledger: &Ledger, all: bool, page: &Page) -> Result<Value, String> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64);
+    blockers_at(ledger, all, page, now_ms)
+}
+
+/// [`blockers`] as of `now_ms`, which decides whether an away hour is over and so when each
+/// question to the operator starts again (RAL-56). Through the service, that's the service's clock.
+pub fn blockers_at(ledger: &Ledger, all: bool, page: &Page, now_ms: i64) -> Result<Value, String> {
     let as_of = ledger.last_seq();
     let after = match page.after.as_deref() {
         Some(after) => Some(
@@ -365,6 +377,14 @@ pub fn blockers(ledger: &Ledger, all: bool, page: &Page) -> Result<Value, String
             } else {
                 "team"
             });
+            // The ledger's own account of a question to the operator, so a reader such as
+            // `rally next` never works it out differently (RAL-56).
+            if blocker.closed.is_none() && blocker.waits_on_operator() {
+                row["question"] = json!({
+                    "window_from_ms": ledger.question_start(blocker, now_ms),
+                    "shelved": ledger.is_shelved(blocker, now_ms),
+                });
+            }
             if blocker.closed.is_none() {
                 let direct: Vec<u64> = waits_on(blocker, &open).iter().map(|b| b.seq).collect();
                 let (chain, truncated, cycle) = chain(blocker, &open);
@@ -380,9 +400,13 @@ pub fn blockers(ledger: &Ledger, all: bool, page: &Page) -> Result<Value, String
             row
         })
         .collect();
+    // The operator's latest away hour, observed, and the shelves counting towards the next one,
+    // as they'll stand once any away hour has run out (RAL-56).
     let mut value = json!({
         "untrusted_text": UNTRUSTED_TEXT, "as_of": as_of, "blockers": shown,
-        "open": open.len(),
+        "open": open.len(), "now_ms": now_ms, "operator_away": ledger.operator_away(),
+        "operator_away_active": ledger.operator_away().is_some_and(|away| away.active_at(now_ms)),
+        "unanswered_shelves": ledger.unanswered_shelves(now_ms),
     });
     continue_with(&mut value, "next", next.map(|seq| json!(seq.to_string())));
     Ok(value)

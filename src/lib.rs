@@ -7,6 +7,7 @@ pub mod designation;
 pub mod entity;
 pub mod init;
 pub mod ledger;
+pub mod next;
 pub mod record;
 #[doc(hidden)]
 pub mod scratch_pg;

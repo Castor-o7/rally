@@ -380,7 +380,13 @@ fn a_team_names_what_it_waits_on_and_the_watchman_lists_the_chain() {
     ok(
         &db,
         "watch",
-        &["unblock", "2", "--note", "the operator said yes"],
+        &[
+            "unblock",
+            "2",
+            "--note",
+            "the operator said yes",
+            "--direct",
+        ],
     );
     let open = ok(&db, "watch", &["blockers"]);
     assert_eq!(open["open"], 2);
