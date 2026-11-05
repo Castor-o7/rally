@@ -367,6 +367,173 @@ impl Forge for GitHub {
     }
 }
 
+/// One open pull request: its number, the repository its head is in, and its head commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenPull {
+    pub number: u64,
+    pub repo: String,
+    pub sha: String,
+}
+
+/// Reading roadmaps in open pull requests (RAL-68), read-only.
+pub trait Roadmaps {
+    /// The repository's open pull requests, at most [`MAX_OPEN_PULLS`] and one more, so that
+    /// more than that can be told.
+    fn open_pulls(&self, repo: &str) -> Result<Vec<OpenPull>, String>;
+    /// The file at `path` in `repo` at `sha`, or `None` when it isn't there.
+    fn file_at(&self, repo: &str, path: &str, sha: &str) -> Result<Option<String>, String>;
+}
+
+/// The most open pull requests whose roadmaps are read.
+pub const MAX_OPEN_PULLS: usize = 100;
+
+/// Whether `repo` is `owner/repo` in the characters GitHub allows.
+pub fn valid_repo(repo: &str) -> bool {
+    let name_ok = |part: &str| {
+        !part.is_empty()
+            && part.len() <= 100
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+            && part != "."
+            && part != ".."
+    };
+    let mut parts = repo.split('/');
+    matches!((parts.next(), parts.next(), parts.next()), (Some(o), Some(n), None) if name_ok(o) && name_ok(n))
+}
+
+/// Whether `path` is a plain relative path inside a repository: no `..`, no leading `/`.
+pub fn valid_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 200
+        && !path.starts_with('/')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
+}
+
+/// The highest `prefix` number written in `path` in any open pull request of `repo` (RAL-68), so
+/// `rally new-story` hands out none of them. When anything can't be read, it says so and gives
+/// no number, rather than a guess from what it could read.
+pub fn open_pull_ids(roadmaps: &dyn Roadmaps, repo: &str, path: &str, prefix: &str) -> Value {
+    let refuse = |reason: String| serde_json::json!({"checked": false, "reason": reason});
+    if !valid_repo(repo) {
+        return refuse("the repository isn't owner/repo".into());
+    }
+    if !valid_path(path) {
+        return refuse("the roadmap isn't a plain path inside the repository".into());
+    }
+    if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_uppercase()) {
+        return refuse("the prefix isn't capital letters".into());
+    }
+    let pulls = match roadmaps.open_pulls(repo) {
+        Ok(pulls) => pulls,
+        Err(error) => return refuse(format!("the open pull requests couldn't be read: {error}")),
+    };
+    if pulls.len() > MAX_OPEN_PULLS {
+        return refuse(format!("more than {MAX_OPEN_PULLS} open pull requests"));
+    }
+    let mut highest = 0u64;
+    let mut uses = Vec::new();
+    for pull in &pulls {
+        let text = match roadmaps.file_at(&pull.repo, path, &pull.sha) {
+            Ok(Some(text)) => text,
+            Ok(None) => continue,
+            Err(error) => {
+                return refuse(format!(
+                    "pull request #{}'s roadmap couldn't be read: {error}",
+                    pull.number
+                ));
+            }
+        };
+        let top = crate::next::items(&text, prefix)
+            .iter()
+            .filter_map(|item| item.id.split_once('-')?.1.parse::<u64>().ok())
+            .max();
+        if let Some(top) = top {
+            highest = highest.max(top);
+            uses.push(
+                serde_json::json!({"pull": pull.number, "highest": format!("{prefix}-{top}")}),
+            );
+        }
+    }
+    serde_json::json!({"checked": true, "kind": "observed", "repo": repo, "path": path,
+                       "pulls": pulls.len(), "highest": highest, "uses": uses})
+}
+
+/// Standard base64, as GitHub's contents API gives a file, ignoring line breaks.
+fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let (mut buffer, mut bits) = (0u32, 0u32);
+    for byte in text.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\n' | b'\r' => continue,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+impl Roadmaps for GitHub {
+    fn open_pulls(&self, repo: &str) -> Result<Vec<OpenPull>, String> {
+        let value = self.ok(&format!(
+            "/repos/{repo}/pulls?state=open&per_page={}",
+            MAX_OPEN_PULLS + 1
+        ))?;
+        Ok(value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|pull| {
+                let head_repo = pull["head"]["repo"]["full_name"].as_str()?;
+                let sha = pull["head"]["sha"].as_str()?;
+                (valid_repo(head_repo) && sha.bytes().all(|b| b.is_ascii_hexdigit())).then(|| {
+                    OpenPull {
+                        number: pull["number"].as_u64().unwrap_or(0),
+                        repo: head_repo.to_owned(),
+                        sha: sha.to_owned(),
+                    }
+                })
+            })
+            .collect())
+    }
+
+    fn file_at(&self, repo: &str, path: &str, sha: &str) -> Result<Option<String>, String> {
+        match self.get(&format!("/repos/{repo}/contents/{path}?ref={sha}"))? {
+            (200, value) => {
+                if value["encoding"] != "base64" {
+                    return Err("GitHub didn't give the file's contents".into());
+                }
+                let bytes = base64_decode(value["content"].as_str().unwrap_or(""))
+                    .ok_or("GitHub's copy of the file couldn't be decoded")?;
+                String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|_| "the file isn't text".into())
+            }
+            (404, _) => Ok(None),
+            (status, value) => Err(format!(
+                "GitHub answered {status}: {}",
+                value["message"].as_str().unwrap_or("no reason given")
+            )),
+        }
+    }
+}
+
 /// One submission to check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
@@ -976,6 +1143,180 @@ mod tests {
         assert!(err.contains("404"), "{err}");
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].0, "GET");
+    }
+
+    struct FakeRoadmaps {
+        pulls: Result<Vec<OpenPull>, String>,
+        files: Vec<(u64, Result<Option<String>, String>)>,
+    }
+
+    impl Roadmaps for FakeRoadmaps {
+        fn open_pulls(&self, _: &str) -> Result<Vec<OpenPull>, String> {
+            self.pulls.clone()
+        }
+        fn file_at(&self, _: &str, _: &str, sha: &str) -> Result<Option<String>, String> {
+            let number: u64 = sha.parse().unwrap();
+            self.files
+                .iter()
+                .find(|(n, _)| *n == number)
+                .map(|(_, file)| file.clone())
+                .unwrap_or(Ok(None))
+        }
+    }
+
+    fn pull(number: u64) -> OpenPull {
+        OpenPull {
+            number,
+            repo: "Castor-o7/muster".into(),
+            sha: number.to_string(),
+        }
+    }
+
+    fn roadmap(ids: &[&str]) -> String {
+        ids.iter()
+            .map(|id| format!("- [ ] **{id}: Something.** Done when: it is.\n"))
+            .collect()
+    }
+
+    /// RAL-68: an ID written by hand in an open pull request (MUS-95) is seen, so it isn't
+    /// handed out again.
+    #[test]
+    fn an_id_in_an_open_pull_requests_roadmap_is_seen() {
+        let fake = FakeRoadmaps {
+            pulls: Ok(vec![pull(140), pull(141), pull(142)]),
+            files: vec![
+                (140, Ok(Some(roadmap(&["MUS-90", "MUS-95"])))),
+                (141, Ok(None)),
+                (142, Ok(Some(roadmap(&["MUS-91", "RAL-99"])))),
+            ],
+        };
+        let out = open_pull_ids(&fake, "Castor-o7/muster", "docs/roadmap.md", "MUS");
+        assert_eq!(out["checked"], true, "{out}");
+        assert_eq!(out["kind"], "observed");
+        assert_eq!(out["highest"], 95);
+        assert_eq!(out["pulls"], 3);
+        assert_eq!(out["uses"][0]["pull"], 140);
+        assert_eq!(out["uses"][0]["highest"], "MUS-95");
+        // Another prefix's IDs don't count.
+        assert_eq!(out["uses"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn when_github_cant_be_read_it_says_so_and_gives_no_number() {
+        let unreadable_list = FakeRoadmaps {
+            pulls: Err("GitHub answered 503".into()),
+            files: vec![],
+        };
+        let out = open_pull_ids(
+            &unreadable_list,
+            "Castor-o7/muster",
+            "docs/roadmap.md",
+            "MUS",
+        );
+        assert_eq!(out["checked"], false);
+        assert!(out["reason"].as_str().unwrap().contains("503"), "{out}");
+        assert!(out.get("highest").is_none());
+        // One pull request's file failing fails the whole check, rather than a partial guess.
+        let one_unreadable = FakeRoadmaps {
+            pulls: Ok(vec![pull(140), pull(141)]),
+            files: vec![
+                (140, Ok(Some(roadmap(&["MUS-95"])))),
+                (141, Err("timed out".into())),
+            ],
+        };
+        let out = open_pull_ids(
+            &one_unreadable,
+            "Castor-o7/muster",
+            "docs/roadmap.md",
+            "MUS",
+        );
+        assert_eq!(out["checked"], false);
+        assert!(out["reason"].as_str().unwrap().contains("#141"), "{out}");
+        // Too many to read.
+        let many = FakeRoadmaps {
+            pulls: Ok((0..=MAX_OPEN_PULLS as u64).map(pull).collect()),
+            files: vec![],
+        };
+        let out = open_pull_ids(&many, "Castor-o7/muster", "docs/roadmap.md", "MUS");
+        assert_eq!(out["checked"], false);
+    }
+
+    #[test]
+    fn only_a_plain_repository_path_and_prefix_are_asked_for() {
+        let fake = FakeRoadmaps {
+            pulls: Ok(vec![]),
+            files: vec![],
+        };
+        for (repo, path, prefix) in [
+            ("Castor-o7/muster/x", "docs/roadmap.md", "MUS"),
+            ("Castor-o7/muster", "../etc/passwd", "MUS"),
+            ("Castor-o7/muster", "/docs/roadmap.md", "MUS"),
+            ("Castor-o7/muster", "docs/road map.md", "MUS"),
+            ("Castor-o7/muster", "docs/roadmap.md", "mus"),
+        ] {
+            assert_eq!(
+                open_pull_ids(&fake, repo, path, prefix)["checked"],
+                false,
+                "{repo} {path} {prefix}"
+            );
+        }
+        assert_eq!(
+            open_pull_ids(&fake, "Castor-o7/muster", "docs/roadmap.md", "MUS")["checked"],
+            true
+        );
+    }
+
+    #[test]
+    fn github_file_contents_are_decoded() {
+        assert_eq!(base64_decode("aGVs\nbG8=").unwrap(), b"hello");
+        assert!(base64_decode("not*base64").is_none());
+    }
+
+    /// RAL-68 through the real client: open pull requests and a file at each head, read with
+    /// GETs only.
+    #[test]
+    fn the_client_reads_open_pull_requests_and_their_roadmaps_with_gets() {
+        let (base, server) = recording_github(3, |_, path| {
+            if path.starts_with("/repos/Castor-o7/muster/pulls") {
+                (
+                    200,
+                    r#"[{"number": 140, "head": {"sha": "aa11", "repo": {"full_name": "Castor-o7/muster"}}},
+                          {"number": 141, "head": {"sha": "bb22", "repo": null}},
+                          {"number": 142, "head": {"sha": "cc33", "repo": {"full_name": "a-fork/muster"}}}]"#,
+                )
+            } else if path.contains("ref=aa11") {
+                // "- [ ] **MUS-95: x.**\n", base64.
+                (
+                    200,
+                    r#"{"encoding": "base64", "content": "LSBbIF0gKipNVVMtOTU6IHguKioK"}"#,
+                )
+            } else {
+                (404, r#"{"message": "Not Found"}"#)
+            }
+        });
+        let github = GitHub::at("read-only-token".into(), base);
+        let out = open_pull_ids(&github, "Castor-o7/muster", "docs/roadmap.md", "MUS");
+        let seen = server.join().unwrap();
+        assert_eq!(out["checked"], true, "{out}");
+        assert_eq!(out["highest"], 95);
+        // A deleted fork's pull request has no head repository and is passed over.
+        assert_eq!(out["pulls"], 2);
+        assert!(
+            seen.iter().all(|(method, _, _)| method == "GET"),
+            "{seen:?}"
+        );
+        assert_eq!(
+            seen[0].1,
+            "/repos/Castor-o7/muster/pulls?state=open&per_page=101"
+        );
+        assert_eq!(
+            seen[1].1,
+            "/repos/Castor-o7/muster/contents/docs/roadmap.md?ref=aa11"
+        );
+        assert_eq!(
+            seen[2].1,
+            "/repos/a-fork/muster/contents/docs/roadmap.md?ref=cc33"
+        );
     }
 
     /// A redirect is never followed, so the token can't be carried to another host.

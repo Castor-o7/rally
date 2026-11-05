@@ -2283,6 +2283,39 @@ fn new_story_numbers_are_never_handed_out_twice() {
     );
     let value: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(value["story"], "RAL-41");
+    // RAL-68: it says it didn't read open pull requests, and why, rather than claiming it did.
+    assert_eq!(value["open_pull_requests"]["checked"], false, "{value}");
+
+    // Asked for a repository with a service that has no GitHub token: said so.
+    let out = cli(
+        &config,
+        "r",
+        &[
+            "new-story",
+            "RAL",
+            "--title",
+            "t",
+            "--repo",
+            "Castor-o7/rally",
+            "--roadmap",
+            "docs/no-such-roadmap.md",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["story"], "RAL-42");
+    assert_eq!(value["open_pull_requests"]["checked"], false, "{value}");
+    assert!(
+        value["open_pull_requests"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no GitHub token"),
+        "{value}"
+    );
 }
 
 /// RAL-53: a designation bound to a credential must name one that's paired and can write.
