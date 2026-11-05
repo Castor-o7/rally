@@ -356,11 +356,11 @@ word.
   revisted after the hour has elapsed", and the count resets after the hour. So also: the window is 5 minutes;
   after 3 shelves in a row across the rally with no answer between them, Rally records the operator as away, as
   observed, with when it started and ends and the 3 shelves; for an hour nothing waiting on the operator is
-  offered; after the hour it's all asked again; an answer, by the service's time, ends it early; the count
-  starts again at any answer and after the hour; each time can be changed; and a test shows away isn't entered
-  on the second unanswered shelf and is on the third, nothing is offered during the hour, it's revisited after
-  it, an answer ends it early and a backdated one doesn't, and after the hour two shelves don't enter it again
-  and a third does.
+  offered; after the hour it's all asked again; an answer, by the service's time, ends it early, and then it's
+  all asked again too; the count starts again at any answer and after the hour; each time can be changed; and a
+  test shows away isn't entered on the second unanswered shelf and is on the third, nothing is offered during the
+  hour, it's revisited after it, an answer ends it early and a backdated one doesn't, and after the hour two
+  shelves don't enter it again and a third does.
 - [ ] **RAL-57: Spread peer reads across teams.** From the operator's question of 2026-11-05. Done when: while no
   watchman is designated, `rally waiting` suggests a reader for each submission: a team other than the author's,
   the one whose last suggested or recorded read is oldest first; it never suggests the author's own team;

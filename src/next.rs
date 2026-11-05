@@ -137,11 +137,13 @@ pub struct Ledger<'a> {
     pub away: Option<&'a Value>,
 }
 
-/// The operator's latest away hour, as `(ends_at_ms, still in force)`, unless an answer ended it.
+/// The operator's latest away hour, as `(when it ends or ended, still in force)`. An answer ends
+/// it early, and from then it counts as over, the same as when its hour runs out.
 fn away_of(ledger: &Ledger, now_ms: i64) -> Option<(i64, bool)> {
-    let away = ledger
-        .away
-        .filter(|away| away["ended_early_by"].is_null())?;
+    let away = ledger.away?;
+    if let Some(ended) = away["ended_early_at_ms"].as_i64() {
+        return Some((ended, false));
+    }
     let ends_at = away["ends_at_ms"].as_i64()?;
     Some((ends_at, now_ms < ends_at))
 }
@@ -211,7 +213,8 @@ pub fn pick(
     }
 
     // The operator's away hour: while it lasts, nothing waiting on the operator is offered; once
-    // it has run out, what it held is asked again, with the window counted from its end.
+    // it has run out, or an answer has ended it, what it held is asked again, with the window
+    // counted from its end.
     let away = away_of(ledger, now_ms);
     let away_active = away.is_some_and(|(_, active)| active);
     let ran_out_at = away
@@ -676,13 +679,16 @@ mod tests {
         assert_eq!(after["after_shelving"]["story"], "RAL-5");
         assert_eq!(after["shelved"], json!([]));
 
-        // Ended early by an answer: the shelf stands until its own question is answered.
+        // Ended early by an answer: the operator is back, so everything it held is asked again
+        // from the answer's time, as when the hour runs out.
         let ended = json!({"seq": 9, "entered_at_ms": 2 * h, "ends_at_ms": 3 * h,
-                           "shelves": [8], "ended_early_by": 10});
-        let early = run_away(&blockers, &ended, 2 * h + 5);
+                           "shelves": [8], "ended_early_by": 10, "ended_early_at_ms": 2 * h + 5});
+        let early = run_away(&blockers, &ended, 2 * h + 6);
         assert!(early["operator_away"].is_null());
         assert_eq!(early["next"]["story"], "RAL-3");
-        assert_eq!(early["shelved"][0]["story"], "RAL-5");
+        assert_eq!(early["waiting_on_operator"][0]["window_from_ms"], 2 * h + 5);
+        assert_eq!(early["after_shelving"]["story"], "RAL-5");
+        assert_eq!(early["shelved"], json!([]));
     }
 
     #[test]

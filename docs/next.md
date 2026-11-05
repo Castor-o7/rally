@@ -62,10 +62,11 @@ the operator between them** mean the operator is away:
 - **During the hour,** no story waiting on the operator is offered. A question already open is held, and
   `rally next` says not to ask new ones. Shelved stories stay shelved.
 - **An answer during the hour** ends it at once, judged by the service's time on the answer's record, never a
-  time a writer declares, as a backfill does. Answered shelves come back first, as always. Other shelves stand
-  until their own questions are answered.
-- **After the hour,** every story it held, shelved or not, comes back into the pick in roadmap order, to be asked
-  again. Its window counts from the hour's end, and it can be shelved again after that, keeping each shelf.
+  time a writer declares, as a backfill does. The operator is back, so it's treated as the hour's end: answered
+  shelves come back first, as always, and the rest come back as below.
+- **After the hour, or an answer that ends it,** every story it held, shelved or not, comes back into the pick in
+  roadmap order, to be asked again. Its window counts from the end, and it can be shelved again after that,
+  keeping each shelf.
 - **The count starts again** at any answer from the operator, and when the hour ends: it takes three new
   unanswered shelves to make the operator away again.
 
@@ -86,6 +87,9 @@ service's, so what it says is due is what the service will accept.
 
 ## Limits
 
+- Entering away is a second write, made right after the shelve that completes the run. If that write fails, it's
+  tried again only on the next shelve, so if none comes, the operator is never treated as away. That fails
+  towards asking the operator more, not less.
 - The roadmap is read as the team's checkout has it, which may be behind `main`.
 - "Depends on" is read from the item's text, up to the end of that sentence, and only IDs written in full (or
   as a range, `RAL-54 to 57`) count. A dependency written another way isn't seen.

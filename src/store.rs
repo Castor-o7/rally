@@ -1517,8 +1517,6 @@ impl Writer {
         })
     }
 
-    /// A designation is written only with the operator's key set, naming the head it follows and
-    /// signed by that key (RAL-51). Anything else passes.
     /// A shelve must carry the service's own window, and the service must have one (RAL-56).
     fn check_shelf(&self, record: &Record) -> Result<(), StoreError> {
         let Ok(Change::Shelve {
@@ -1544,6 +1542,8 @@ impl Writer {
         }
     }
 
+    /// A designation is written only with the operator's key set, naming the head it follows and
+    /// signed by that key (RAL-51). Anything else passes.
     fn check_designation(
         &self,
         record: &Record,

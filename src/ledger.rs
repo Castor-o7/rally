@@ -383,6 +383,9 @@ pub struct Away {
     /// The answer that ended it before `ends_at_ms`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_early_by: Option<u64>,
+    /// When that answer was recorded, by the service's time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_early_at_ms: Option<i64>,
 }
 
 impl Away {
@@ -391,9 +394,13 @@ impl Away {
         self.ended_early_by.is_none() && at_ms < self.ends_at_ms
     }
 
-    /// Whether it ran its full hour by `at_ms`, so what it held is asked again.
-    pub fn ran_out_by(&self, at_ms: i64) -> bool {
-        self.ended_early_by.is_none() && at_ms >= self.ends_at_ms
+    /// When it ended, if it had by `at_ms`: when its hour ran out, or when an answer ended it
+    /// early. Either way, what it held is asked again from then.
+    pub fn ended_by(&self, at_ms: i64) -> Option<i64> {
+        match self.ended_early_at_ms {
+            Some(ended) => Some(ended),
+            None => (at_ms >= self.ends_at_ms).then_some(self.ends_at_ms),
+        }
     }
 }
 
@@ -749,8 +756,8 @@ impl Ledger {
         let since = self
             .aways
             .last()
-            .filter(|away| away.ran_out_by(at_ms))
-            .map_or(i64::MIN, |away| away.ends_at_ms);
+            .and_then(|away| away.ended_by(at_ms))
+            .unwrap_or(i64::MIN);
         self.unanswered_shelves
             .iter()
             .filter(|(_, shelved_at)| *shelved_at >= since)
@@ -768,8 +775,8 @@ impl Ledger {
     fn question_start(&self, blocker: &Blocker, at_ms: i64) -> i64 {
         self.aways
             .iter()
-            .filter(|away| away.ran_out_by(at_ms) && away.ends_at_ms > blocker.at_ms)
-            .map(|away| away.ends_at_ms)
+            .filter_map(|away| away.ended_by(at_ms))
+            .filter(|ended| *ended > blocker.at_ms)
             .max()
             .unwrap_or(blocker.at_ms)
             .max(blocker.at_ms)
@@ -1091,6 +1098,7 @@ impl Ledger {
                         && away.active_at(record.at_ms())
                     {
                         away.ended_early_by = Some(seq);
+                        away.ended_early_at_ms = Some(record.at_ms());
                     }
                 }
                 let open = self.blockers.get_mut(&blocker).expect("found above");
@@ -1199,6 +1207,7 @@ impl Ledger {
                     ends_at_ms,
                     shelves,
                     ended_early_by: None,
+                    ended_early_at_ms: None,
                 });
                 self.last_seq = seq;
                 return Ok(());
@@ -2633,12 +2642,19 @@ mod tests {
         push(&mut ledger, &answer(2 * W + 10, 2));
         let ended = ledger.operator_away().unwrap();
         assert_eq!(ended.ended_early_by, Some(8));
+        assert_eq!(ended.ended_early_at_ms, Some(2 * W + 10));
         assert!(!ended.active_at(2 * W + 11));
-        // An early end isn't a run-out, so the other shelves stay shelved until answered.
+        // The operator is back, so the other shelves are asked again from the answer's time,
+        // as when the hour runs out: shelvable again a window after it, not before.
         assert_eq!(
-            ledger.check(9, &shelve(4 * W, 3, "rally")),
-            Err(LedgerError::InvalidShelf(3, "it's already shelved"))
+            ledger.check(9, &shelve(3 * W + 9, 3, "rally")),
+            Err(LedgerError::InvalidShelf(
+                3,
+                "the operator's window hasn't passed since the question was asked"
+            ))
         );
+        push(&mut ledger, &shelve(3 * W + 10, 3, "rally"));
+        assert_eq!(ledger.blockers()[&3].shelves.len(), 2);
     }
 
     #[test]
