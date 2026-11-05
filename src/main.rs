@@ -322,6 +322,32 @@ enum Command {
         #[arg(long)]
         prefix: Option<String>,
     },
+    /// Wake idle teams with their next story (RAL-54): for each team in the projects list with
+    /// sessions mapped to it, idle (or its claim quiet) with a ready story, send one digest through
+    /// Muster, at most once per interval. Without `muster-shim`, or with --report-only, it only
+    /// reports. See docs/wake.md.
+    Wake {
+        /// The projects, with each one's `team` and `sessions`, instead of the defaults.
+        #[arg(long)]
+        projects: Option<PathBuf>,
+        /// How long a claim can go without a record before its team counts as quiet, as agreed
+        /// with the operator. Without it, only idle teams are woken.
+        #[arg(long, env = "RALLY_WAKE_QUIET_AFTER", value_parser = parse_window)]
+        quiet_after: Option<u64>,
+        /// The least time between two digests to one team, as agreed with the operator. Without
+        /// it, nothing is sent.
+        #[arg(long, env = "RALLY_WAKE_INTERVAL", value_parser = parse_window)]
+        interval: Option<u64>,
+        /// Run a pass this often, until stopped. Without it, one pass.
+        #[arg(long, value_parser = parse_window)]
+        every: Option<u64>,
+        /// Where to keep when each team was last woken. Defaults to wake.json beside the pairing.
+        #[arg(long)]
+        state_file: Option<PathBuf>,
+        /// Report only: send nothing.
+        #[arg(long)]
+        report_only: bool,
+    },
     /// Shelve a story whose question to the operator has had no answer within the window agreed
     /// with the operator, so your team can take its next story (RAL-56). The service checks the
     /// window against its own clock.
@@ -431,7 +457,8 @@ enum Command {
     /// Refuses a broken chain. This also accepts any removal `check` was reporting, so compare with a
     /// head saved elsewhere first.
     AdoptHead,
-    /// Declare your team's state: available, working or blocked.
+    /// Declare your team's state: available, working, blocked or resting. A resting team isn't
+    /// woken by `rally wake`.
     TeamState {
         team: String,
         #[arg(value_parser = parse_status)]
@@ -532,7 +559,7 @@ fn parse_head(text: &str) -> Result<Head, String> {
 
 fn parse_status(text: &str) -> Result<TeamStatus, String> {
     serde_json::from_value(json!(text))
-        .map_err(|_| format!("{text:?} isn't a state: available, working or blocked"))
+        .map_err(|_| format!("{text:?} isn't a state: available, working, blocked or resting"))
 }
 
 /// Escapes what can move a terminal or disguise text: controls, including C1 and DEL, and invisible
@@ -770,6 +797,256 @@ impl Backend {
 const NEXT_PAGES: usize = 20;
 
 /// `rally next`: the pick, worked out here, where the roadmap is (RAL-56).
+/// What the pick reads from the ledger: stories, every blocker and the operator's away hour, all
+/// as of the service's clock, with the service's operator window.
+struct PickRead {
+    stories: Value,
+    blockers: Vec<Value>,
+    away: Value,
+    now_ms: i64,
+    window_ms: Option<u64>,
+    incomplete: bool,
+    /// Set when the service is older than RAL-56 and gave no time, so this machine's was used.
+    local_clock: bool,
+}
+
+impl PickRead {
+    fn read(backend: &Backend) -> Result<Self, Box<dyn std::error::Error>> {
+        let (stories, more_stories) =
+            backend.read_all("/v1/stories", "stories", NEXT_PAGES, |ledger, page| {
+                views::stories(ledger, None, page)
+            })?;
+        let mut blockers = Vec::new();
+        let mut page = Page::default();
+        let mut more_blockers = true;
+        let mut away = Value::Null;
+        let mut now_ms = None;
+        for _ in 0..NEXT_PAGES {
+            // Every page after the first is judged at the first page's instant, the service's.
+            let path = match now_ms {
+                Some(at_ms) => format!("/v1/blockers/all?at_ms={at_ms}"),
+                None => "/v1/blockers/all".to_owned(),
+            };
+            let at_ms = now_ms;
+            let value = backend.read_value(&path, None, &page, |ledger, page| match at_ms {
+                Some(at_ms) => views::blockers_at(ledger, true, page, at_ms),
+                None => views::blockers(ledger, true, page),
+            })?;
+            blockers.extend(value["blockers"].as_array().cloned().unwrap_or_default());
+            // The first page's clock, the service's, decides everything time-based in the pick.
+            if now_ms.is_none() {
+                now_ms = value["now_ms"].as_i64();
+                if value["operator_away_active"] == true {
+                    away = value["operator_away"].clone();
+                }
+            }
+            match value["next"].as_str() {
+                Some(next) => page.after = Some(next.to_owned()),
+                None => {
+                    more_blockers = false;
+                    break;
+                }
+            }
+        }
+        // The window is the service's, so what's due here is what it will accept.
+        let window_ms = match backend {
+            Backend::File(_) => None,
+            Backend::Service(pairing) => reply_value(&client::request(
+                pairing,
+                "GET",
+                "/v1/whoami",
+                None,
+                &[],
+            )?)?["operator_window_ms"]
+                .as_u64(),
+        };
+        let local_clock = now_ms.is_none();
+        let now_ms = now_ms.unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as i64)
+        });
+        Ok(Self {
+            stories,
+            blockers,
+            away,
+            now_ms,
+            window_ms,
+            incomplete: more_stories || more_blockers,
+            local_clock,
+        })
+    }
+
+    fn pick(&self, team: &str, items: &[rally::next::Item]) -> Value {
+        let empty = serde_json::Map::new();
+        let ledger = rally::next::Ledger {
+            stories: self.stories["stories"].as_object().unwrap_or(&empty),
+            blockers: &self.blockers,
+            away: Some(&self.away).filter(|away| !away.is_null()),
+        };
+        let mut result = rally::next::pick(team, items, &ledger, self.window_ms, self.now_ms);
+        if self.local_clock {
+            result["clock"] = json!(
+                "The service is older than RAL-56 and gave no time, so this machine's clock was used."
+            );
+        }
+        if self.incomplete {
+            result["incomplete"] = json!(
+                "The ledger has more stories or blockers than were read, so this pick may be \
+                 wrong: check `rally show` and `rally blockers` before taking it."
+            );
+        }
+        result
+    }
+}
+
+/// One pass of `rally wake` (RAL-54).
+fn wake_pass(
+    projects: Option<&Path>,
+    location: Option<&Location>,
+    config: &Path,
+    state_file: &Path,
+    times: rally::wake::Times,
+    report_only: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use rally::wake::{Decision, Sender};
+    let text = match projects {
+        Some(path) => std::fs::read_to_string(path)?,
+        None => DEFAULT_PROJECTS.to_owned(),
+    };
+    let projects: Vec<Project> = serde_json::from_str(&text)?;
+    let backend = Backend::choose(location, config, false)?;
+    let read = PickRead::read(&backend)?;
+    let now_ms = read.now_ms;
+    let teams = backend.read_value("/v1/teams", None, &Page::default(), |ledger, page| {
+        views::teams(ledger, None, page)
+    })?;
+    // Muster is optional: without it, teams are only reported.
+    let muster = rally::wake::muster_available();
+    let sender: Option<&dyn Sender> = (muster && !report_only).then_some(&rally::wake::MusterShim);
+    let roster = if muster {
+        std::process::Command::new("muster-shim")
+            .arg("roster")
+            .output()
+            .ok()
+            .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    let mut state: Value = std::fs::read_to_string(state_file)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| json!({"teams": {}}));
+    let mut decisions = std::collections::BTreeMap::new();
+    let mut rows = Vec::new();
+    for project in &projects {
+        let Some(team) = project.team.as_deref() else {
+            continue;
+        };
+        let key = team.trim().to_lowercase();
+        let mut row = json!({"team": team, "project": project.name});
+        let pick = match web::read_roadmap(project) {
+            Ok((_, text)) => read.pick(team, &rally::next::items(&text, &project.prefix)),
+            Err(error) => {
+                row["error"] = json!(format!("the roadmap couldn't be read: {error}"));
+                rows.push(row);
+                continue;
+            }
+        };
+        let empty = serde_json::Map::new();
+        let claims: Vec<(String, i64)> = read.stories["stories"]
+            .as_object()
+            .unwrap_or(&empty)
+            .iter()
+            .filter(|(_, story)| {
+                story["state"] == "claimed"
+                    && story["team"]
+                        .as_str()
+                        .is_some_and(|t| t.trim().to_lowercase() == key)
+            })
+            .map(|(id, story)| (id.clone(), story["last_at_ms"].as_i64().unwrap_or(0)))
+            .collect();
+        let seen: Vec<u64> = state["teams"][&key]["answers_seen"]
+            .as_array()
+            .map(|seen| seen.iter().filter_map(Value::as_u64).collect())
+            .unwrap_or_default();
+        let answers: Vec<u64> = pick["shelved"]
+            .as_array()
+            .map(|shelves| {
+                shelves
+                    .iter()
+                    .filter(|shelf| shelf["answered"] == true)
+                    .filter_map(|shelf| shelf["blocker"].as_u64())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let fresh: Vec<u64> = answers
+            .iter()
+            .copied()
+            .filter(|b| !seen.contains(b))
+            .collect();
+        let facts = rally::wake::Team {
+            name: team.to_owned(),
+            sessions: rally::wake::sessions_of(&roster, &project.sessions),
+            status: teams["teams"][&key]["status"].as_str().map(str::to_owned),
+            pick: pick.clone(),
+            claims,
+            last_woken_ms: state["teams"][&key]["last_woken_ms"].as_i64(),
+            answered: !fresh.is_empty(),
+        };
+        let decision = rally::wake::decide(&facts, times, now_ms);
+        row["next"] = pick["next"]["story"].clone();
+        if let Decision::Wake(digest) = &decision {
+            match sender {
+                Some(sender) => match sender.send(team, digest) {
+                    Ok(()) => {
+                        row["sent_by"] = json!(sender.name());
+                        state["teams"][&key]["last_woken_ms"] = json!(now_ms);
+                        let mut all = seen.clone();
+                        all.extend(fresh);
+                        state["teams"][&key]["answers_seen"] = json!(all);
+                    }
+                    Err(error) => row["error"] = json!(error),
+                },
+                None => row["sent_by"] = json!(null),
+            }
+        }
+        decisions.insert(team.to_owned(), decision);
+        rows.push(row);
+    }
+    let mut report = rally::wake::report(&decisions, now_ms);
+    // Each team's decision, with what was read and sent.
+    if let Some(list) = report["teams"].as_array_mut() {
+        for entry in list.iter_mut() {
+            if let Some(row) = rows.iter().find(|row| row["team"] == entry["team"]) {
+                for field in ["project", "next", "sent_by", "error"] {
+                    if let Some(value) = row.get(field) {
+                        entry[field] = value.clone();
+                    }
+                }
+            }
+        }
+        for row in rows
+            .iter()
+            .filter(|row| !decisions.contains_key(row["team"].as_str().unwrap_or("")))
+        {
+            list.push(row.clone());
+        }
+    }
+    report["sender"] = json!(sender.map_or("none: report only", |s| s.name()));
+    report["untrusted_text"] = json!(views::UNTRUSTED_TEXT);
+    if let Some(parent) = state_file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(state_file, serde_json::to_string_pretty(&state)?)?;
+    std::fs::write(
+        state_file.with_file_name("wake-status.json"),
+        serde_json::to_string_pretty(&report)?,
+    )?;
+    Ok(serde_json::to_string_pretty(&report)?)
+}
+
 fn next(
     team: &str,
     roadmap: &Path,
@@ -790,71 +1067,18 @@ fn next(
     };
     let items = rally::next::items(&text, &prefix);
     let backend = Backend::choose(location, config, false)?;
-    let (stories, more_stories) =
-        backend.read_all("/v1/stories", "stories", NEXT_PAGES, |ledger, page| {
-            views::stories(ledger, None, page)
-        })?;
-    let mut blockers = Vec::new();
-    let mut page = Page::default();
-    let mut more_blockers = true;
-    let mut away = Value::Null;
-    let mut now_ms = None;
-    for _ in 0..NEXT_PAGES {
-        // Every page after the first is judged at the first page's instant, the service's.
-        let path = match now_ms {
-            Some(at_ms) => format!("/v1/blockers/all?at_ms={at_ms}"),
-            None => "/v1/blockers/all".to_owned(),
-        };
-        let at_ms = now_ms;
-        let value = backend.read_value(&path, None, &page, |ledger, page| match at_ms {
-            Some(at_ms) => views::blockers_at(ledger, true, page, at_ms),
-            None => views::blockers(ledger, true, page),
-        })?;
-        blockers.extend(value["blockers"].as_array().cloned().unwrap_or_default());
-        // The first page's clock, the service's, decides everything time-based in the pick.
-        if now_ms.is_none() {
-            now_ms = value["now_ms"].as_i64();
-            if value["operator_away_active"] == true {
-                away = value["operator_away"].clone();
-            }
-        }
-        match value["next"].as_str() {
-            Some(next) => page.after = Some(next.to_owned()),
-            None => {
-                more_blockers = false;
-                break;
-            }
-        }
+    let read = PickRead::read(&backend)?;
+    let mut result = read.pick(team, &items);
+    // A team's own declared state, such as resting (RAL-54).
+    let teams = backend.read_value("/v1/teams", None, &Page::default(), |ledger, page| {
+        views::teams(ledger, None, page)
+    })?;
+    if let Some(state) = teams["teams"].get(team.trim().to_lowercase()) {
+        result["team_status"] = state["status"].clone();
     }
-    // The window is the service's, so what's due here is what it will accept.
-    let window_ms = match &backend {
-        Backend::File(_) => None,
-        Backend::Service(pairing) => reply_value(&client::request(
-            pairing,
-            "GET",
-            "/v1/whoami",
-            None,
-            &[],
-        )?)?["operator_window_ms"]
-            .as_u64(),
-    };
-    let now_ms = now_ms.ok_or("the blockers reply didn't give the service's time")?;
-    let empty = serde_json::Map::new();
-    let ledger = rally::next::Ledger {
-        stories: stories["stories"].as_object().unwrap_or(&empty),
-        blockers: &blockers,
-        away: Some(&away).filter(|away| !away.is_null()),
-    };
-    let mut result = rally::next::pick(team, &items, &ledger, window_ms, now_ms);
     result["roadmap"] = json!(roadmap);
     result["prefix"] = json!(prefix);
     result["untrusted_text"] = json!(views::UNTRUSTED_TEXT);
-    if more_stories || more_blockers {
-        result["incomplete"] = json!(
-            "The ledger has more stories or blockers than were read, so this pick may be wrong: \
-             check `rally show` and `rally blockers` before taking it."
-        );
-    }
     Ok(serde_json::to_string_pretty(&result)?)
 }
 
@@ -1560,6 +1784,39 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             };
             let reply = client::request(&pairing, "GET", path, None, &[])?;
             return Ok(reply_value(&reply)?.to_string());
+        }
+        Command::Wake {
+            projects,
+            quiet_after,
+            interval,
+            every,
+            state_file,
+            report_only,
+        } => {
+            let config = config_path(cli.config)?;
+            let state_file = match state_file {
+                Some(path) => path,
+                None => config.with_file_name("wake.json"),
+            };
+            let times = rally::wake::Times {
+                quiet_after_ms: quiet_after,
+                interval_ms: interval,
+            };
+            loop {
+                let report = wake_pass(
+                    projects.as_deref(),
+                    location.as_ref(),
+                    &config,
+                    &state_file,
+                    times,
+                    report_only,
+                )?;
+                let Some(every) = every else {
+                    return Ok(report);
+                };
+                println!("{}", escape_for_terminal(&report));
+                std::thread::sleep(std::time::Duration::from_millis(every));
+            }
         }
         Command::Next {
             team,

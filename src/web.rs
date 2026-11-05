@@ -47,6 +47,13 @@ pub struct Project {
     pub repo: String,
     pub path: String,
     pub tick_meaning: String,
+    /// The Rally team that works this roadmap, for `rally wake` (RAL-54).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+    /// That team's sessions on Muster's roster: Muster project names or session nicknames, listed
+    /// explicitly, since a session's project doesn't always name its team.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<String>,
 }
 
 /// Counts of checkboxes.
@@ -554,7 +561,8 @@ fn run_gh(args: &[&str]) -> Result<String, String> {
     String::from_utf8(output).map_err(|_| "gh returned something unreadable".to_owned())
 }
 
-fn read_roadmap(project: &Project) -> Result<(String, String), String> {
+/// A project's roadmap from GitHub, as `(commit, text)`.
+pub fn read_roadmap(project: &Project) -> Result<(String, String), String> {
     let commit = run_gh(&[
         "api",
         &format!("repos/{}/commits/HEAD", project.repo),
