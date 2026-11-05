@@ -692,9 +692,22 @@ pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
                 .iter()
                 .rev()
                 .find(|entry| matches!(entry.change, Change::Submit { .. }))?;
-            let Change::Submit { evidence, .. } = &submit.change else {
+            let Change::Submit {
+                evidence, untested, ..
+            } = &submit.change
+            else {
                 return None;
             };
+            // Rally's own check of that submission, observed (RAL-5).
+            let evidence_check = story.history.iter().find_map(|entry| match &entry.change {
+                Change::EvidenceCheck {
+                    submit: checked,
+                    outcome,
+                    ..
+                } if *checked == submit.seq => Some(json!({"kind": "observed", "seq": entry.seq,
+                                                            "outcome": outcome})),
+                _ => None,
+            });
             let reads: Vec<Value> = story
                 .requested_reads
                 .iter()
@@ -707,7 +720,8 @@ pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
                 json!({
                     "story": id, "team": story.team, "submitted_seq": submit.seq,
                     "submitted_at_ms": submit.at_ms, "submitted_by": story.submitted_by,
-                    "evidence": evidence, "requested_reads": reads,
+                    "evidence": evidence, "untested": untested,
+                    "evidence_check": evidence_check, "requested_reads": reads,
                 }),
             ))
         })

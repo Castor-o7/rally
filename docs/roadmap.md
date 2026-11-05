@@ -381,3 +381,7 @@ word.
   needed only to reach sessions of other harnesses or on other machines; how a Prime Agent session is detected is
   decided and documented, without guessing from names; a test shows the notice for Prime Agent and not for other
   harnesses; and `docs/design.md` says Rally works without Muster, with Prime Agent's messaging as the example.
+- [ ] **RAL-60: Rally's CI checks dependencies with cargo-deny.** From the watchman's read of RAL-5, which added
+  `ureq`. Done when: a `deny.toml` lists the licenses Rally accepts (including `webpki-roots`'s
+  CDLA-Permissive-2.0) and the sources it allows; CI runs `cargo deny check` on every PR; and today's advisory,
+  RUSTSEC-2026-0387 in `crypto-bigint` through `ssh-key`, is fixed or recorded with a reason.
