@@ -265,6 +265,20 @@ story for Rally reading Levi; these stories are about putting Rally's features i
 - [x] **RAL-48: A Rally-vs-Levi write-up for the PR description (G7).** Depends on RAL-47. Done when: a write-up
   ready to paste into the eventual upstream PR says what Rally is, what moved into Levi and why, what was left
   out, and how it was tested, with each claim matching the branch.
+- [ ] **RAL-61: Levi L2, a tamper check on `refs/levi/events` (`levi check-events`).** From the "Not built" rows
+  of `docs/rally-vs-levi.md`, after `rally check --expect`. Done when: on a branch of the team's Levi remote, on
+  Levi main, `levi check-events` prints the events ref's head, and `--expect SHA` fails unless that commit is
+  still in the ref's history with every event it held, so a reset, a rewrite and a removal each fail with their
+  own reason; tests cover each, plus two synced clones; clippy, fmt and Levi's own tests pass; no commit, comment
+  or test names Rally, Muster, an AI or a machine; `docs/levi-pr-l2.md` is the PR text; and a second reader has
+  read it at the head. Nothing goes upstream until the operator says so.
+- [ ] **RAL-62: Levi L3, what a session should know at start (`levi session-start`).** After `rally
+  session-start` (RAL-50). Done when: on a branch of the team's Levi remote, on Levi main, `levi session-start`
+  prints the caller's claimed tasks and the top of `next` without claiming; it writes nothing to disk, never
+  syncs or contacts a hub, gives up after a second, and on any failure prints nothing and exits 0; the block is
+  bounded and task text is escaped; `levi init` and `levi next` are unchanged; tests show each, including a
+  hub at a closed port answered in under a second; the same naming rule as RAL-61 holds; `docs/levi-pr-l3.md` is
+  the PR text; and a second reader has read it at the head. Nothing goes upstream until the operator says so.
 
 ## Phase 6: Rally without a watchman in the loop
 
