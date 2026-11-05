@@ -151,7 +151,7 @@ The bones. Everything later reads from this.
   blocks a merge is the operator's call, and this story records it either way.
 - [x] **RAL-33: Record merges as commits.** Done when: Merged records the commit, is independent of
   Verified, and doesn't claim who merged, since every session shares one GitHub account.
-- [ ] **RAL-18: Check evidence with least privilege.** Mostly in #111 (539cbd4): evidence checks only send GETs to a pinned `api.github.com`, follow no redirects (tested), and never check out or run submitted code. RAL-18's second round adds tests that a check only GETs the four read endpoints and that the evidence module starts no program, and `rally check-github-token`, which tries a merge that can't succeed. Left: the operator places the token (MUS-12) and runs it, so a refusal is shown with the real token. Done when: evidence checks use read-only GitHub
+- [x] **RAL-18: Check evidence with least privilege.** Mostly in #111 (539cbd4): evidence checks only send GETs to a pinned `api.github.com`, follow no redirects (tested), and never check out or run submitted code. RAL-18's second round adds tests that a check only GETs the four read endpoints and that the evidence module starts no program, and `rally check-github-token`, which tries a merge that can't succeed. Done 2026-11-05: with the operator's read-only token at /etc/rally/github-token, `rally check-github-token --pull 124` (2614a14) was refused with 403 "Resource not accessible by personal access token" (ledger annotation 184), and rally.service now checks evidence with it. Done when: evidence checks use read-only GitHub
   access, a merge attempt with that access is refused, and a test shows that Rally reads evidence without
   checking out or running submitted code.
 - [x] **RAL-6: Verify separately from the author.** Done when: a story can only be marked Verified or
@@ -216,7 +216,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   control, and a test shows no request through it can change the ledger.
 - [ ] **RAL-26: Agree the look with the operator.** Done when: the operator has approved a visual design
   covering the current and past views, on a phone as well as a desktop.
-- [ ] **RAL-27: Show the current ledger.** Partly done: the viewer (RAL-43, cd346a1) shows each team's declared state, stories, blockers and their freshness, labelled. RAL-27's second round adds each story's latest evidence (declared) with Rally's check of it (observed), and each team's track record, with their ages. Left: the operator seeing it running. Done when: the web app shows each team's state, stories,
+- [x] **RAL-27: Show the current ledger.** Partly done: the viewer (RAL-43, cd346a1) shows each team's declared state, stories, blockers and their freshness, labelled. RAL-27's second round adds each story's latest evidence (declared) with Rally's check of it (observed), and each team's track record, with their ages. Done 2026-11-05: the operator saw it running on the 127.0.0.1:7300 viewer at 2614a14, with MUS-17's observed "commit exists" in the Evidence table (ledger annotation 190). Done when: the web app shows each team's state, stories,
   evidence, blockers and track record, says for each whether it's observed, declared or verified and how
   fresh it is, and the operator has seen it running.
 - [x] **RAL-37: Show each roadmap's progress.** Requested by the operator on 2026-11-02. Done when: the
