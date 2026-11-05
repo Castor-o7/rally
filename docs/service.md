@@ -16,6 +16,17 @@ and `rally check`. The watchman updates a1's CLI. Red CI or a failed preflight h
 older binary can't read back, such as the first `designate --credential`, ends the rollback window, and the report
 says so. The full rule is Muster's `docs/board.md`, "Keeping the services current".
 
+Records that end the rollback window, because a binary older than the one named can't replay them (`Change` is
+`deny_unknown_fields`):
+
+| The first… | Needs at least | From |
+|---|---|---|
+| `designate --credential` | `598f2b0` | RAL-53 |
+| `hold`, `condition` or `grant` | `2614a14` | RAL-64 |
+| `annotate --also-read` | RAL-67's merge | RAL-67 |
+
+Before rolling back, check the ledger for each one written since the binary being rolled back to.
+
 ## Setting it up
 
 On the host, with a Postgres database for the ledger that only this account can reach:
