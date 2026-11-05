@@ -10,11 +10,15 @@ The watchman approved the stack (RAL-47) at `baec03a`. It read the core in full,
 builders' reads of each other's halves.
 
 
-**The branch for the PR** is `ral47/linear` on `murph:git/levi.git` at `44c886b`: a linear rebuild, by
-chartreuse-meerkat, of the stack the watchman approved. The working branches with merge commits are left as they
-are. Which one goes up, and when, is for the operator to say. Its commits carry cherry-pick trailers
-pointing back to the cross-read shas. Stripping them before an upstream PR changes all 14 shas, so the Commits table
-below has to be regenerated then.
+**The branch for the PR** is `ral47/upstream` on `murph:git/levi.git` at `a4add05`, on upstream main `aed6027`
+(v0.9.5). It's `ral47/linear`, chartreuse-meerkat's linear rebuild of the stack the watchman approved, with the
+cherry-pick trailers stripped (`ral47/upstream-base` at `2f35ec2`, tree `d78a6d0`, identical to `baec03a`), rebased
+onto v0.9.5 with no conflicts. Its diff against `aed6027` is the reviewed diff against `56aceb2`, line for line. The
+watchman checked both on 2026-11-05. `ral47/linear` and the working branches with merge commits are left as they
+are. Whether it goes up, and when, is for the operator to say.
+
+**Upstream, read 2026-11-05:** the only open PRs, #41 and #38, change CI workflows only. Of the unmerged upstream
+branches, only `lv-57e2` touches the same files, and it's #25, already squash-merged into main.
 ---
 
 ## Summary
@@ -88,32 +92,32 @@ All changes are additive, on the existing schema versions:
 - `cargo test --workspace`: Levi's 125 tests, plus the new ones. There are unit tests in `levi-core` for replay,
   resolution, ranking, the self-review rule and the gate. There are CLI integration tests against scripted repos
   in `levi/tests/cli_reviews.rs` (8), `cli_reads.rs` (5) and `cli_blockers.rs` (3), using a second git worktree as
-  the second reader. 177 pass at `baec03a` (Levi's 125 and 52 new), on two machines. The `self_review_warning` path is covered by a core
-  test only: every test worktree shares one email and hostname, so an end-to-end case can't separate a closer who
-  never claimed the task from one who did.
+  the second reader. 177 pass at `baec03a` (Levi's 125 and 52 new), on two machines, and again at `a4add05` on
+  v0.9.5. The `self_review_warning` path is covered by a core test only: every test worktree shares one email and
+  hostname, so an end-to-end case can't separate a closer who never claimed the task from one who did.
 - `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` pass. The `levi-dash` wasm
   check and clippy pass too.
 
 ## Commits
 
-Fourteen conventional commits on `56aceb2`, with `feat(core):` for the core and `feat:` for the CLI, ordered by
-feature: reviews and the gate, then requested reads, then blockers. There are no merge commits, and the tree is
-identical to the reviewed stack (`baec03a`, tree `d78a6d0`). Each commit passes `cargo check`, and the last passes
-the full suite.
+Fourteen conventional commits on `aed6027` (v0.9.5), with `feat(core):` for the core and `feat:` for the CLI,
+ordered by feature: reviews and the gate, then requested reads, then blockers. There are no merge commits and no
+trailers. Their diff is the reviewed stack's (`baec03a`), line for line. Each commit passes `cargo check
+--workspace --all-targets`, and the last passes the full suite, clippy and `cargo fmt --all --check`.
 
 | Commit | Change |
 |---|---|
-| `74cd68b` | feat(core): reviews of a task at a commit, resolved by ancestry |
-| `7cefcf8` | feat(core): warn rather than refuse when a reviewer matches a closer on host only |
-| `7f5b4dc` | feat(core): the review gate for check-claims --require-review |
-| `a58b795` | feat: verify and send back a task at a commit, and gate CI on it |
-| `3e37578` | docs: send-back doesn't reopen, and a send-back fails the review gate |
-| `bd1d1f3` | test: isolate the review condition in check-claims --require-review |
-| `e1da8ed` | feat: the review gate requires a read at or after the close |
-| `7d8026f` | feat(core): requested reads, answered by a later review |
-| `7adc8bc` | feat(core): an open read request fails the review gate |
-| `ee5561b` | feat: request a read of a task before it merges, or withdraw it |
-| `ca54b8e` | feat: a read request is answered only by a read of that commit or later |
-| `65c126a` | feat(core): blockers that aren't tasks |
-| `e5dcca5` | feat: block a task on something that isn't a task, and unblock it with why |
-| `44c886b` | test: compare next's ids to a vec, for clippy |
+| `5bdf2e6` | feat(core): reviews of a task at a commit, resolved by ancestry |
+| `a66d81a` | feat(core): warn rather than refuse when a reviewer matches a closer on host only |
+| `f9d6da3` | feat(core): the review gate for check-claims --require-review |
+| `d61994a` | feat: verify and send back a task at a commit, and gate CI on it |
+| `dd3d1f0` | docs: send-back doesn't reopen, and a send-back fails the review gate |
+| `45f45f6` | test: isolate the review condition in check-claims --require-review |
+| `70bf493` | feat: the review gate requires a read at or after the close |
+| `d59675f` | feat(core): requested reads, answered by a later review |
+| `7186b7e` | feat(core): an open read request fails the review gate |
+| `116c028` | feat: request a read of a task before it merges, or withdraw it |
+| `371d3a3` | feat: a read request is answered only by a read of that commit or later |
+| `b69df15` | feat(core): blockers that aren't tasks |
+| `b772bb0` | feat: block a task on something that isn't a task, and unblock it with why |
+| `a4add05` | test: compare next's ids to a vec, for clippy |
