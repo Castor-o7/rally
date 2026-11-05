@@ -688,6 +688,9 @@ struct ReadQuery {
     as_of: Option<u64>,
     after: Option<String>,
     before: Option<u64>,
+    /// For blockers: the instant to judge questions to the operator at, so that a reader paging
+    /// through gets every page at the first page's `now_ms` (RAL-56).
+    at_ms: Option<i64>,
 }
 
 /// The longest `after` accepted, well past any story ID or team name.
@@ -970,8 +973,10 @@ async fn open_blockers(
     Extension(identity): Extension<Identity>,
     Query(query): Query<ReadQuery>,
 ) -> Response {
-    view(service, identity, query, |ledger, page| {
-        views::blockers(ledger, false, page)
+    let at_ms = query.at_ms;
+    view(service, identity, query, move |ledger, page| match at_ms {
+        Some(at_ms) => views::blockers_at(ledger, false, page, at_ms),
+        None => views::blockers(ledger, false, page),
     })
     .await
 }
@@ -981,8 +986,10 @@ async fn all_blockers(
     Extension(identity): Extension<Identity>,
     Query(query): Query<ReadQuery>,
 ) -> Response {
-    view(service, identity, query, |ledger, page| {
-        views::blockers(ledger, true, page)
+    let at_ms = query.at_ms;
+    view(service, identity, query, move |ledger, page| match at_ms {
+        Some(at_ms) => views::blockers_at(ledger, true, page, at_ms),
+        None => views::blockers(ledger, true, page),
     })
     .await
 }
