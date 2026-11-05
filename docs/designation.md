@@ -255,19 +255,20 @@ A `machine:` scope names a **pairing credential**, the one a submission was made
 credentials submissions actually come from:
 
 ```sh
-rally waiting      # each submission's evidence
-rally verifications | grep '"credential"' | sort | uniq -c
+rally verifications | jq -r '.verifications[].credential' | sort | uniq -c   # who reads, by credential
+rally show <STORY> | jq -r '.detail.history[] | select(.change.change == "submit") | .source.credential'
 ```
 
-On 2026-11-05, every session on a1 wrote with the credential `a1`, and Murph's sessions weren't paired at all. Their
-records were written for them by a1 sessions, so they came from `a1` too. So:
+On 2026-11-05, a1's sessions wrote with the credential `a1`. That afternoon, on the operator's approval,
+frank-crocodile paired Murph as `murph` (read-write) and `murph-viewer` (read-only). Murph's records since then come
+from `murph`: its verifications from seq 40 on (RAL-40) were all written with it. Earlier that day, before Murph was
+paired, a1 sessions wrote some records for Murph's sessions, and those came from `a1`. So:
 
-- **fiery-snapper:** `machine:a1` covers everything a1's sessions submit, and today Murph's as well. `all` covers
-  every story.
-- **frank-crocodile:** `machine:murph` covers nothing until Murph's sessions are paired under a credential named
-  `murph` (`rally add-machine murph ...` on Murph, then `rally pair` in Murph's account). Until then, a team scope
-  such as `team:catapp` covers the teams it watches. Either way, its reads outside its scope still count as a
-  watchman's.
+- **fiery-snapper:** `machine:a1` covers what a1's sessions submit, plus the Murph stories recorded from a1 earlier
+  on 2026-11-05. `all` covers every story.
+- **frank-crocodile:** `machine:murph` covers what Murph's sessions submit through their own pairing. Murph stories
+  recorded from a1 before the pairing fall under `machine:a1`. Either way, a watchman's reads outside its scope
+  still count as a watchman's.
 
 ### 4. Designate, on a1
 
