@@ -447,6 +447,8 @@ pub fn secure_steps(exe: &Path, key: &Path) -> String {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
+    use crate::record::{Kind, Record, Source};
+    use crate::store::chain_hash;
     use std::process::Command;
 
     /// An ed25519 key made by ssh-keygen in `dir`, and its public key.
@@ -460,6 +462,87 @@ pub(crate) mod testing {
         assert!(status.success());
         let public = OperatorKey::read(&private.with_extension("pub")).unwrap();
         (private, public)
+    }
+
+    /// Builds a ledger from bodies, numbering from 1, with the chain hashes.
+    pub struct Chain {
+        pub records: Vec<Record>,
+        pub hashes: Vec<String>,
+    }
+
+    impl Chain {
+        pub fn new() -> Self {
+            Self {
+                records: Vec::new(),
+                hashes: Vec::new(),
+            }
+        }
+
+        pub fn head(&self) -> (u64, String) {
+            (
+                self.records.len() as u64,
+                self.hashes
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| CHAIN_START.to_string()),
+            )
+        }
+
+        pub fn push(&mut self, body: Value) {
+            self.push_as("operator", body);
+        }
+
+        pub fn push_as(&mut self, name: &str, body: Value) {
+            self.push_from("a1", name, body);
+        }
+
+        /// A record from `credential`, as the service would set it from the connection.
+        pub fn push_from(&mut self, credential: &str, name: &str, body: Value) {
+            let source = Source {
+                credential: credential.into(),
+                declared_name: Some(name.into()),
+            };
+            // A verifier's record is of the verified kind, as the ledger wants.
+            let kind = match body["change"].as_str() {
+                Some("verify" | "send_back") => Kind::Verified,
+                _ => Kind::Declared,
+            };
+            let record = Record::new(kind, source, 1_000, body).unwrap();
+            let (seq, previous) = self.head();
+            self.hashes
+                .push(chain_hash(&previous, seq + 1, &record.to_json()));
+            self.records.push(record);
+        }
+
+        pub fn designate(&mut self, private: &Path, key: &OperatorKey, watchman: Option<&str>) {
+            let (seq, hash) = self.head();
+            let statement = designation_statement(watchman, None, seq, &hash);
+            self.push(json!({
+                "change": "designate", "watchman": watchman, "after_seq": seq, "after_hash": hash,
+                "key_fingerprint": key.fingerprint(), "signature": sign(private, &statement),
+            }));
+        }
+
+        /// A v2 designation, bound to `credential` (RAL-53).
+        pub fn designate_bound(
+            &mut self,
+            private: &Path,
+            key: &OperatorKey,
+            watchman: &str,
+            credential: &str,
+        ) {
+            let (seq, hash) = self.head();
+            let statement = designation_statement(Some(watchman), Some(credential), seq, &hash);
+            self.push(json!({
+                "change": "designate", "watchman": watchman, "credential": credential,
+                "after_seq": seq, "after_hash": hash,
+                "key_fingerprint": key.fingerprint(), "signature": sign(private, &statement),
+            }));
+        }
+
+        pub fn report(&self, key: Option<&OperatorKey>) -> Value {
+            report(&Ledger::replay(&self.records).unwrap(), &self.hashes, key)
+        }
     }
 
     /// `ssh-keygen -Y sign` over `statement`, as the operator would.
@@ -486,91 +569,9 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::testing::{keypair, sign};
+    use super::testing::{Chain, keypair, sign};
     use super::*;
     use crate::record::{Kind, Record, Source};
-    use crate::store::chain_hash;
-
-    /// Builds a ledger from bodies, numbering from 1, with the chain hashes.
-    struct Chain {
-        records: Vec<Record>,
-        hashes: Vec<String>,
-    }
-
-    impl Chain {
-        fn new() -> Self {
-            Self {
-                records: Vec::new(),
-                hashes: Vec::new(),
-            }
-        }
-
-        fn head(&self) -> (u64, String) {
-            (
-                self.records.len() as u64,
-                self.hashes
-                    .last()
-                    .cloned()
-                    .unwrap_or_else(|| CHAIN_START.to_string()),
-            )
-        }
-
-        fn push(&mut self, body: Value) {
-            self.push_as("operator", body);
-        }
-
-        fn push_as(&mut self, name: &str, body: Value) {
-            self.push_from("a1", name, body);
-        }
-
-        /// A record from `credential`, as the service would set it from the connection.
-        fn push_from(&mut self, credential: &str, name: &str, body: Value) {
-            let source = Source {
-                credential: credential.into(),
-                declared_name: Some(name.into()),
-            };
-            // A verifier's record is of the verified kind, as the ledger wants.
-            let kind = match body["change"].as_str() {
-                Some("verify" | "send_back") => Kind::Verified,
-                _ => Kind::Declared,
-            };
-            let record = Record::new(kind, source, 1_000, body).unwrap();
-            let (seq, previous) = self.head();
-            self.hashes
-                .push(chain_hash(&previous, seq + 1, &record.to_json()));
-            self.records.push(record);
-        }
-
-        fn designate(&mut self, private: &Path, key: &OperatorKey, watchman: Option<&str>) {
-            let (seq, hash) = self.head();
-            let statement = designation_statement(watchman, None, seq, &hash);
-            self.push(json!({
-                "change": "designate", "watchman": watchman, "after_seq": seq, "after_hash": hash,
-                "key_fingerprint": key.fingerprint(), "signature": sign(private, &statement),
-            }));
-        }
-
-        /// A v2 designation, bound to `credential` (RAL-53).
-        fn designate_bound(
-            &mut self,
-            private: &Path,
-            key: &OperatorKey,
-            watchman: &str,
-            credential: &str,
-        ) {
-            let (seq, hash) = self.head();
-            let statement = designation_statement(Some(watchman), Some(credential), seq, &hash);
-            self.push(json!({
-                "change": "designate", "watchman": watchman, "credential": credential,
-                "after_seq": seq, "after_hash": hash,
-                "key_fingerprint": key.fingerprint(), "signature": sign(private, &statement),
-            }));
-        }
-
-        fn report(&self, key: Option<&OperatorKey>) -> Value {
-            report(&Ledger::replay(&self.records).unwrap(), &self.hashes, key)
-        }
-    }
 
     /// Submits RAL-1 for review, by team rally, from a1.
     fn submitted_one(chain: &mut Chain) {

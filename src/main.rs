@@ -253,6 +253,11 @@ enum Command {
     /// For a newly designated watchman: every story a peer verified since the designation before
     /// it, merged or not, each awaiting the watchman's re-read until it records its own (RAL-52).
     Handover,
+    /// One brief for a new watchman: each team's state, open claims (with whether the claimant's
+    /// session is still on Muster's roster), submissions waiting, open blockers, questions to the
+    /// operator and who each holds up, and the handover list, each fact with its kind and age
+    /// (RAL-22a). It confers no authority.
+    Brief,
     /// Submissions waiting for a reader, oldest first, with the evidence and any requested reads'
     /// commits to read (RAL-51).
     Waiting,
@@ -2124,6 +2129,29 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 location.as_ref(),
                 &config_path(cli.config)?,
             );
+        }
+        Command::Brief => {
+            let mut report = if let Some(location) = &location {
+                // On the host, without the service's key: designations can't be checked.
+                Store::open_read_only(location)?.brief_report(None, now_ms()?)?
+            } else {
+                let pairing = read_pairing(&config_path(cli.config.clone())?)?;
+                let reply = client::request(&pairing, "GET", "/v1/brief", None, &[])?;
+                reply_value(&reply)?
+            };
+            // Muster is optional: without it, claims say their sessions couldn't be checked.
+            let roster = rally::wake::muster_available()
+                .then(|| {
+                    std::process::Command::new("muster-shim")
+                        .arg("roster")
+                        .output()
+                        .ok()
+                        .filter(|out| out.status.success())
+                        .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
+                })
+                .flatten();
+            rally::brief::mark_sessions(&mut report, roster.as_ref());
+            return Ok(report.to_string());
         }
         Command::Waiting => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
