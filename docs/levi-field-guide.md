@@ -10,8 +10,8 @@ Identities in the output below are shortened to placeholders.
 
 - `cargo build --release` builds `levi` and `levi-hub` in about a minute on Murph, with no changes needed. The
   workspace's default members leave out `levi-dash`.
-- `levi-dash` is a Leptos CSR app built to wasm with `trunk build` in `levi-dash/`. It needs `trunk` and the
-  `wasm32-unknown-unknown` target. See "levi-dash" below for how far that got.
+- `levi-dash` is a Leptos CSR app built to wasm with `trunk build` in `levi-dash/`. It needs `trunk`
+  (`cargo install --locked trunk`) and the `wasm32-unknown-unknown` target. Both installed and built cleanly.
 - The licence is AGPL-3.0-or-later, the same as Rally. It's built on myko 6.5.1. Rally's own myko dependency
   is noted in `design.md`.
 
@@ -171,8 +171,14 @@ It has IDE-like splittable panes ([mullion]). Its views, from `levi-dash/src/pag
 - **browser**: any project's tasks, resolved against any branch from `RefFact`s and `CommitFact`s alone
 - **issues**: the cross-project blocking graph from `IssueGraphReport`, one section per independent web
 
-Pane layout is kept in the browser's `localStorage`. **Not yet run on Murph:** installing `trunk` and the wasm
-target was still under way when this was written.
+Pane layout is kept in the browser's `localStorage`.
+
+**Seen:** `trunk build --release` (trunk 0.22.1) gave a static `dist/` with a 2.8 MB wasm. Served on loopback with
+`?hub=127.0.0.1:17377`, it opened all four views live against the scratch hub with no setup. The overview showed
+`work` with 3 open and 1 closed, at the main head, and an activity feed of CLAIM, TASK, STATUSCHANGE and COMMENT
+events. The project browser listed the open tasks with the branch and status filters. In flight showed the git
+email, then `Murph`, the worktree path and the claimed `lv-4ef4`. The blocking graph said nothing was blocked,
+since `lv-4ef4`'s blocker is closed. Anyone who can load the page and reach the hub sees all of this.
 
 [mullion]: https://github.com/ignition-is-go/mullion
 
