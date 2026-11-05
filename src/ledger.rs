@@ -171,6 +171,10 @@ pub enum Change {
     Designate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         watchman: Option<String>,
+        /// The credential only the watchman's session holds (RAL-53). With it, the statement is
+        /// v2 and a read counts as the watchman's only when made with this credential.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<String>,
         after_seq: u64,
         after_hash: String,
         key_fingerprint: String,
@@ -722,11 +726,24 @@ pub struct Annotation {
 /// The fixed text the operator signs to designate a watchman, or with none to end a designation.
 /// It names the record just before it by number and chain hash, so a signature can't be used
 /// anywhere else in this ledger or in another.
-pub fn designation_statement(watchman: Option<&str>, after_seq: u64, after_hash: &str) -> String {
-    format!(
-        "rally-designation v1\nwatchman: {}\nafter: {after_seq}:{after_hash}\n",
-        watchman.unwrap_or("none")
-    )
+/// With a credential, the statement is v2 and binds the designation to it (RAL-53); without one
+/// it's v1, as every designation before RAL-53 was signed.
+pub fn designation_statement(
+    watchman: Option<&str>,
+    credential: Option<&str>,
+    after_seq: u64,
+    after_hash: &str,
+) -> String {
+    let watchman = watchman.unwrap_or("none");
+    match credential {
+        Some(credential) => format!(
+            "rally-designation v2\nwatchman: {watchman}\ncredential: {credential}\n\
+             after: {after_seq}:{after_hash}\n"
+        ),
+        None => {
+            format!("rally-designation v1\nwatchman: {watchman}\nafter: {after_seq}:{after_hash}\n")
+        }
+    }
 }
 
 /// One designation record as the ledger holds it. Whether it's in force is for
@@ -738,6 +755,9 @@ pub struct Designation {
     pub at_ms: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub watchman: Option<String>,
+    /// The credential the designation is bound to, under v2 (RAL-53).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
     pub after_seq: u64,
     pub after_hash: String,
     pub key_fingerprint: String,
@@ -746,7 +766,12 @@ pub struct Designation {
 
 impl Designation {
     pub fn statement(&self) -> String {
-        designation_statement(self.watchman.as_deref(), self.after_seq, &self.after_hash)
+        designation_statement(
+            self.watchman.as_deref(),
+            self.credential.as_deref(),
+            self.after_seq,
+            &self.after_hash,
+        )
     }
 }
 
@@ -1111,6 +1136,7 @@ impl Ledger {
             }
             Change::Designate {
                 watchman,
+                credential,
                 after_seq,
                 after_hash,
                 key_fingerprint,
@@ -1130,6 +1156,7 @@ impl Ledger {
                     source: record.source().clone(),
                     at_ms: record.at_ms(),
                     watchman,
+                    credential,
                     after_seq,
                     after_hash,
                     key_fingerprint,
@@ -1871,6 +1898,7 @@ const MAX_SIGNATURE_CHARS: usize = 4096;
 fn check_designation_fields(change: &Change) -> Result<(), LedgerError> {
     let Change::Designate {
         watchman,
+        credential,
         after_hash,
         key_fingerprint,
         signature,
@@ -1879,6 +1907,25 @@ fn check_designation_fields(change: &Change) -> Result<(), LedgerError> {
     else {
         return Ok(());
     };
+    // A credential goes in the signed statement, so it's held to the same plain characters as
+    // the watchman's name, and only a designation of a watchman is bound to one.
+    if let Some(credential) = credential {
+        let fits = !credential.is_empty()
+            && credential.chars().count() <= MAX_WATCHMAN_CHARS
+            && credential
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.@".contains(c));
+        if !fits {
+            return Err(LedgerError::InvalidDesignation(
+                "credential: 1 to 64 letters, digits, '-', '_', '.' or '@'",
+            ));
+        }
+        if watchman.is_none() {
+            return Err(LedgerError::InvalidDesignation(
+                "an --end names no watchman, so it binds no credential",
+            ));
+        }
+    }
     if let Some(name) = watchman {
         let fits = !name.is_empty()
             && name.chars().count() <= MAX_WATCHMAN_CHARS

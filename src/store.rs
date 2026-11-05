@@ -1579,6 +1579,7 @@ impl Writer {
     ) -> Result<(), StoreError> {
         let Ok(Change::Designate {
             watchman,
+            credential,
             after_seq,
             after_hash,
             key_fingerprint,
@@ -1603,7 +1604,7 @@ impl Writer {
             &key,
             seq,
             (previous.seq, &previous.hash),
-            watchman.as_deref(),
+            (watchman.as_deref(), credential.as_deref()),
             (after_seq, &after_hash),
             &key_fingerprint,
             &signature,
@@ -2071,7 +2072,7 @@ mod tests {
     ) -> Result<u64, StoreError> {
         let head = scratch.store().verify(None).unwrap().head;
         let (seq, hash) = after.unwrap_or((head.seq, head.hash));
-        let statement = crate::ledger::designation_statement(Some(watchman), seq, &hash);
+        let statement = crate::ledger::designation_statement(Some(watchman), None, seq, &hash);
         let body = json!({
             "change": "designate", "watchman": watchman, "after_seq": seq, "after_hash": hash,
             "key_fingerprint": key.fingerprint(),

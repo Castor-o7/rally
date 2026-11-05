@@ -237,6 +237,11 @@ impl StateDir {
     }
 
     /// Finds who a token belongs to, comparing against every machine's hash.
+    /// Whether `name` is paired, and if so whether it can only read (RAL-53).
+    pub fn paired(&self, name: &str) -> Result<Option<bool>, AccessError> {
+        Ok(self.machines()?.get(name).map(|machine| machine.read_only))
+    }
+
     pub fn identify(&self, token: &str) -> Result<Option<Identity>, AccessError> {
         let hash = sha256_hex(token.as_bytes());
         Ok(self
