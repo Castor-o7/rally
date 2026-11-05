@@ -12,7 +12,9 @@ builders' reads of each other's halves.
 
 **The branch for the PR** is `ral47/linear` on `murph:git/levi.git` at `44c886b`: a linear rebuild, by
 chartreuse-meerkat, of the stack the watchman approved. The working branches with merge commits are left as they
-are. Which one goes up, and when, is for the operator to say.
+are. Which one goes up, and when, is for the operator to say. Its commits carry cherry-pick trailers
+pointing back to the cross-read shas. Stripping them before an upstream PR changes all 14 shas, so the Commits table
+below has to be regenerated then.
 ---
 
 ## Summary
