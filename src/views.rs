@@ -134,7 +134,9 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
         .into_iter()
         .map(|(id, story)| {
             let last = story.history.last().map(|entry| entry.seq);
-            let mut row = json!({"state": story.state, "team": story.team, "last": last});
+            let last_at_ms = story.history.last().map(|entry| entry.at_ms);
+            let mut row = json!({"state": story.state, "team": story.team, "last": last,
+                                 "last_at_ms": last_at_ms});
             if let Some((verified, merged)) = story.commit_mismatch() {
                 row["commit_differs"] = commit_differs(verified, merged);
             }

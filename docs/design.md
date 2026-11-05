@@ -138,7 +138,9 @@ there whatever they use to talk. Muster is one way for sessions to reach each ot
 it's there. Another is a harness's own messaging. Prime Agent's sessions, for example, can message and steer
 each other through Prime Agent's own daemon, on one machine, so a Prime Agent session using Rally is told that
 its built-in messaging is a fine substitute for Muster, which it needs only to reach other harnesses' sessions
-or other machines (RAL-59). The session says it's Prime Agent explicitly, with `--harness prime-agent` or
+or other machines (RAL-59). `rally wake` (RAL-54) sends its digests through Muster when Muster is there, and
+otherwise only reports; its sender is a small trait, so a harness's own messaging can be a sender too. The
+session says it's Prime Agent explicitly, with `--harness prime-agent` or
 `RALLY_HARNESS=prime-agent`. Prime Agent documents no variable or header that identifies it, so Rally doesn't
 guess.
 

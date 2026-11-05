@@ -46,6 +46,8 @@ pub enum TeamStatus {
     Available,
     Working,
     Blocked,
+    /// Resting by choice: `rally wake` leaves it alone (RAL-54).
+    Resting,
 }
 
 /// What a record does to a story or team. This is the `body` of a record.
@@ -3708,7 +3710,7 @@ mod tests {
         for (body, error) in bad {
             assert_eq!(apply_next(&mut ledger, &team_state(body)), Err(error));
         }
-        let unknown = json!({"change": "team_state", "team": "rally", "status": "resting"});
+        let unknown = json!({"change": "team_state", "team": "rally", "status": "asleep"});
         assert!(matches!(
             apply_next(&mut ledger, &team_state(unknown)),
             Err(LedgerError::InvalidChange(_))
