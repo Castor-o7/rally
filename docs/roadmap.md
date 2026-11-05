@@ -195,6 +195,12 @@ The bones. Everything later reads from this.
   have been flagged.
 - [ ] **RAL-8: Tell the watchman.** Done when: the watchman wakes with one batched digest when something
   changes, and hears nothing when nothing has. Agree the format with the Muster team under MUS-43.
+- [ ] **RAL-67: Check a story merged by several pull requests, per pull request.** From fiery-snapper's read of
+  RAL-8's follow-up (#137) on 2026-11-05. RAL-22 landed in #123 and #127, and its one verify names #127's squash
+  commit, not the heads read (7fc4bef and 62d67e2). A second verify on a Verified story is refused, so the digest
+  flags it falsely. Done when: one verify can cover a story's several pull requests, by naming more than one commit
+  read; each merge's landed head is checked against any commit the story's verify names; RAL-22's case no longer
+  flags, and a push after the read still does, each with a test.
 - [x] **RAL-21: Keep each team's track record as plain facts.** Done when: the watchman can read each
   team's stories verified, stories sent back and what was missing, and problems reported, with no points,
   scores, weights or ranking.
@@ -379,6 +385,11 @@ word.
   `rally new-story <PREFIX> --title "..."` records the next free number for that prefix, and returns it in one
   atomic write; two concurrent requests for one prefix get different numbers, with a test; a number that's already
   in the ledger, or already in the prefix's roadmap, is never handed out; and IDs written by hand still work.
+- [ ] **RAL-68: Don't hand out an ID an open pull request already uses.** Proposed by frank-crocodile, filed
+  2026-11-05 at fiery-snapper's request, after MUS-95 was written by hand in an open pull request and then handed
+  out again. Done when: `rally new-story` also reads the prefix's roadmap in each open pull request, read-only
+  through the service's GitHub token, and never hands out a number used there; when GitHub can't be read it says
+  so rather than guessing; with a test for an ID in an open pull request and one for an unreadable GitHub.
 - [x] **RAL-56: A rule for picking the next story that a team can follow alone.** Merged in #106 (6aa5622). From the operator's question of
   2026-11-05. The operator added: "if the operator doesn't respond within a certain reasonable window of time then
   shelve the item. don't just inherently skip operator interaction items please". Done when: `rally next --team
