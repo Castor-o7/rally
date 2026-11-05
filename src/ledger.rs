@@ -229,6 +229,10 @@ pub enum Change {
         corrects: u64,
         team: String,
         note: String,
+        /// Commits the verifier also read, added to their own verification in force (RAL-67), for
+        /// a story merged in several pull requests. Only from the verification's own credential.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        also_read: Vec<String>,
     },
     /// Annotates an earlier record of the same story, which stays in the history. Can also set the
     /// state: a team can only do that for a story it holds, naming itself in `team`, and moving a
@@ -377,6 +381,10 @@ pub struct Story {
     /// The commit the verifier read, while the story is Verified and its record named one (RAL-31).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verified_commit: Option<String>,
+    /// Commits the verifier added as also read to the verification in force (RAL-67), dropped
+    /// with it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_read: Vec<String>,
     /// The commit last recorded as merged (RAL-33), whatever the story's state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub merged_commit: Option<String>,
@@ -1048,6 +1056,60 @@ impl Ledger {
 
     /// Whether earlier record `seq` names `team`: one of its declared states, a blocker it raised
     /// or that waits on it, or a record of a story it ever claimed.
+    /// RAL-67: add commits the verifier also read to the verification at `corrects`, which must
+    /// be the one in force on its story, from that verification's own credential and name.
+    fn add_also_read(
+        &mut self,
+        corrects: u64,
+        record: &Record,
+        commits: &[String],
+    ) -> Result<(), LedgerError> {
+        let refuse = |why: &str| LedgerError::InvalidChange(format!("also-read: {why}"));
+        if !commits.iter().all(|commit| is_commit(commit)) {
+            return Err(refuse("each commit must be a full hash"));
+        }
+        let story = self
+            .stories
+            .values_mut()
+            .find(|story| story.history.iter().any(|entry| entry.seq == corrects))
+            .ok_or_else(|| refuse("the record annotated isn't a story's"))?;
+        if story.state != State::Verified {
+            return Err(refuse("the story isn't Verified"));
+        }
+        // The verification in force is the story's last record that made it Verified.
+        let current = story.history.iter().rev().find(|entry| {
+            matches!(
+                entry.change,
+                Change::Verify { .. }
+                    | Change::Correct {
+                        state: Some(State::Verified),
+                        ..
+                    }
+            )
+        });
+        let Some(verify) = current.filter(|entry| entry.seq == corrects) else {
+            return Err(refuse(
+                "only the verification in force can have commits added",
+            ));
+        };
+        let same_name = match (&verify.source.declared_name, &record.source().declared_name) {
+            (Some(a), Some(b)) => same_name(a, b),
+            _ => false,
+        };
+        if verify.source.credential != record.source().credential || !same_name {
+            return Err(refuse(
+                "only the verifier, with the verification's own credential",
+            ));
+        }
+        for commit in commits {
+            let commit = commit.to_ascii_lowercase();
+            if !story.also_read.contains(&commit) {
+                story.also_read.push(commit);
+            }
+        }
+        Ok(())
+    }
+
     fn names_team(&self, seq: u64, team: &str) -> bool {
         if self
             .teams
@@ -1323,6 +1385,7 @@ impl Ledger {
                 corrects,
                 team,
                 note,
+                also_read,
             } => {
                 require_kind(record, Kind::Declared)?;
                 if backfill.is_some() {
@@ -1333,8 +1396,12 @@ impl Ledger {
                 if self.annotation_seqs.contains(&corrects) {
                     return Err(LedgerError::AnnotationOfAnnotation(corrects));
                 }
-                if corrects >= seq || !self.names_team(corrects, &team) {
-                    return Err(LedgerError::InvalidAnnotationTarget { corrects, team });
+                if also_read.is_empty() {
+                    if corrects >= seq || !self.names_team(corrects, &team) {
+                        return Err(LedgerError::InvalidAnnotationTarget { corrects, team });
+                    }
+                } else {
+                    self.add_also_read(corrects, record, &also_read)?;
                 }
                 self.annotations
                     .entry(corrects)
@@ -1653,6 +1720,7 @@ impl Ledger {
                     team: None,
                     submitted_by: None,
                     verified_commit: None,
+                    also_read: Vec::new(),
                     merged_commit: None,
                     requested_reads: Vec::new(),
                     history: Vec::new(),
@@ -1776,6 +1844,7 @@ fn transition(
             require_verifier(story, id, record.kind(), actor)?;
             story.state = State::Verified;
             story.verified_commit = commit.clone();
+            story.also_read.clear();
             // A read answers every open request for one.
             story.requested_reads.clear();
         }
@@ -1891,6 +1960,7 @@ fn transition(
                 } else {
                     None
                 };
+                story.also_read.clear();
                 // Going back to Ready or Claimed means the work may change, so it needs a new
                 // submission rather than reviving the old evidence.
                 if matches!(new_state, State::Ready | State::Claimed) {
@@ -2592,6 +2662,59 @@ mod tests {
         assert_eq!(story.state, State::Verified);
         assert_eq!(story.team.as_deref(), Some("rally"));
         assert_eq!(story.history.len(), 4);
+    }
+
+    fn also_read(credential: &str, name: &str, corrects: u64, commit: &str) -> Record {
+        let source = Source {
+            credential: credential.into(),
+            declared_name: Some(name.into()),
+        };
+        let body = json!({"change": "annotate", "corrects": corrects, "team": "watchman",
+                          "note": "also read #123's head", "also_read": [commit]});
+        Record::new(Kind::Declared, source, 1_000, body).unwrap()
+    }
+
+    /// RAL-67: the verifier adds a commit read to their own verification in force, and only they
+    /// can; a new verdict drops what was added.
+    #[test]
+    fn a_verifier_adds_commits_read_to_their_own_verification() {
+        let base = [ready(), claim(), submit(), verify()];
+        // The verifier, same credential and name: added, and shown with the story.
+        let mut records = base.to_vec();
+        records.push(also_read("a1", "Watch", 4, OTHER_COMMIT));
+        let ledger = ledger_with(&records);
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.also_read, [OTHER_COMMIT]);
+        assert_eq!(story.verified_commit.as_deref(), Some(COMMIT));
+
+        let refused = |record: Record| {
+            let ledger = ledger_with(&base);
+            ledger.check(5, &record).unwrap_err().to_string()
+        };
+        // Another credential, though it declares the verifier's name.
+        assert!(
+            refused(also_read("murph", "watch", 4, OTHER_COMMIT)).contains("only the verifier")
+        );
+        // The same credential under another name.
+        assert!(refused(also_read("a1", "alice", 4, OTHER_COMMIT)).contains("only the verifier"));
+        // A record that isn't the verification.
+        assert!(refused(also_read("a1", "watch", 3, OTHER_COMMIT)).contains("in force"));
+        // A short hash.
+        assert!(refused(also_read("a1", "watch", 4, "abc1234")).contains("full hash"));
+
+        // Sent back and verified again: the first verification is no longer in force, and what
+        // was added to it is dropped.
+        let mut again = records.clone();
+        let correct = json!({"change": "correct", "story": STORY, "corrects": 4,
+                             "note": "re-read", "state": "sent_back"});
+        again.push(verifier(correct));
+        let ledger = ledger_with(&again);
+        assert!(ledger.story(STORY).unwrap().also_read.is_empty());
+        assert!(
+            ledger
+                .check(7, &also_read("a1", "watch", 4, COMMIT))
+                .is_err()
+        );
     }
 
     #[test]

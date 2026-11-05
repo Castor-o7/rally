@@ -124,7 +124,21 @@ watchman, re-run the `sed` and the two `launchctl` lines.
 - Merges are checked as RAL-31 asks, but against what landed: a merge or squash commit is never the commit
   read, so for a story whose merged commit isn't the one verified, `gh` reads the merged pull request's head
   (read-only) and the digest flags it only when that head isn't the commit verified, or no pull request landed
-  it. When GitHub can't be read, it says so instead of taking it as a match. On Murph's ledger on
+  it. When GitHub can't be read, it says so instead of taking it as a match.
+- A story merged in several pull requests (RAL-67): a merge is covered when the pull request's head at merge time
+  is any commit the verification in force covers, or when its own merge or squash commit is the one verified.
+  The verifier adds commits they also read to their own verification, without a second verify, which a Verified
+  story refuses:
+
+  ```sh
+  rally annotate --corrects <verify record> --team <your team> --note "also read #123's head" \
+    --also-read <full commit>
+  ```
+
+  It's accepted only from the verification's own credential and declared name, only on the verification in force,
+  and only with full hashes; a new verdict drops what was added. `rally show <story>` lists them as `also_read`,
+  and the story list gives `verified_commits`. A service older than RAL-67 gives only the mismatch's verified
+  commit, and the digest uses that. On Murph's ledger on
   2026-11-05 that flagged 4 of 24 merges, not 21; one, RAL-22, landed #123's head 7fc4bef against a
   verification at bee9f46.
 - Records come from `/v1/export` after each watchman's head, at most 20 pages a pass; the waiting list, the
