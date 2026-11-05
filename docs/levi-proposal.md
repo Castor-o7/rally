@@ -99,8 +99,11 @@ shares one git email, so the record is per checkout unless sessions set their ow
 
 ### Order of building (RAL-47)
 
-1, then 3 (they're the point and depend on each other), then 2, 4 and 5. Each is its own conventional commit
-(`feat:`) on a branch of the local checkout, `rally/reviews`, with tests in Levi's style (CLI integration against
+1, then 3 (they're the point and depend on each other), then 2, 4 and 5. Each feature gets its own branch,
+`feat/ral47-<feature>` (starting with `feat/ral47-reviews`), shared through the bare repository on Murph at
+`murph:git/levi.git`, not GitHub. chartreuse-meerkat builds the levi-core and levi-hub half and lands each
+feature's entity types first; giddy-geyser builds the CLI, JSON and levi-dash half; each reads the other's half
+before it counts. Commits are conventional (`feat:` or `fix:`), with tests in Levi's style (CLI integration against
 scripted repos, as `levi/tests/cli_git_state.rs` does), and `cargo test --workspace`, clippy with `-D warnings`
 and fmt clean. Per Levi's `CLAUDE.md`, those commits carry no AI attribution. Nothing is pushed upstream.
 `levi-dash` changes (a review column in the browser) are left for a later story unless the watchman wants them
