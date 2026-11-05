@@ -109,9 +109,45 @@ fn state_of(row: &Value) -> (&str, &'static str) {
 }
 
 /// The block for `team`, from the stories and blockers Rally gave.
+/// The coding-agent harness a session runs in, when it's said explicitly (RAL-59). Rally never
+/// guesses it from names or the environment, since none is documented to identify itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Harness {
+    PrimeAgent,
+    Other,
+}
+
+impl Harness {
+    /// `prime-agent` is Prime Agent; anything else, or nothing, is another harness.
+    pub fn parse(name: Option<&str>) -> Self {
+        match name.map(|name| name.trim().to_ascii_lowercase()) {
+            Some(name) if name == "prime-agent" => Self::PrimeAgent,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// What a Prime Agent session is told, at the operator's request (RAL-59).
+pub const PRIME_AGENT_NOTICE: &str = "You're a Prime Agent session: Prime Agent's built-in \
+messaging is a fine substitute for Muster when you use Rally. Muster is only needed to reach \
+sessions of other harnesses (Claude Code, Codex, opencode, Pi) or on other machines.";
+
 pub fn render(team: &str, stories: &Map<String, Value>, blockers: &[Value]) -> String {
+    render_for(team, stories, blockers, Harness::Other)
+}
+
+/// [`render`], with the notice for the session's harness, if it has one, first.
+pub fn render_for(
+    team: &str,
+    stories: &Map<String, Value>,
+    blockers: &[Value],
+    harness: Harness,
+) -> String {
     let mine = |row: &Value| row["team"].as_str() == Some(team);
     let mut body: Vec<String> = Vec::new();
+    if harness == Harness::PrimeAgent {
+        body.push(PRIME_AGENT_NOTICE.into());
+    }
 
     let own: Vec<String> = stories
         .iter()
@@ -331,6 +367,29 @@ mod tests {
         assert!(
             out.starts_with("<rally_state team=\"a&quot;>&lt;b\">"),
             "{out}"
+        );
+    }
+
+    #[test]
+    fn a_prime_agent_session_is_told_its_own_messaging_will_do() {
+        let none = Map::new();
+        let prime = render_for("rally", &none, &[], Harness::parse(Some("prime-agent")));
+        assert!(prime.contains(PRIME_AGENT_NOTICE), "{prime}");
+        assert!(
+            prime
+                .lines()
+                .nth(1)
+                .unwrap()
+                .starts_with("You're a Prime Agent session")
+        );
+        // Only when said explicitly: any other harness, or none, gets no notice.
+        for name in [None, Some("claude-code"), Some("codex"), Some("prime")] {
+            let other = render_for("rally", &none, &[], Harness::parse(name));
+            assert!(!other.contains("Prime Agent"), "{name:?}: {other}");
+        }
+        assert_eq!(
+            render("rally", &none, &[]),
+            render_for("rally", &none, &[], Harness::Other)
         );
     }
 

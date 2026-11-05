@@ -183,6 +183,10 @@ enum Command {
         /// The repository to write in. Defaults to the one holding the current directory.
         #[arg(long)]
         dir: Option<PathBuf>,
+        /// The agents' harness, said explicitly: `prime-agent` adds a notice that its own
+        /// messaging can stand in for Muster (RAL-59).
+        #[arg(long, env = "RALLY_HARNESS")]
+        harness: Option<String>,
     },
     /// For a Claude Code SessionStart hook: print what the team should know, read-only through the
     /// service, as one <rally_state> block. Prints nothing and succeeds if anything fails, so a
@@ -194,6 +198,10 @@ enum Command {
         /// Say on standard error why nothing was printed.
         #[arg(long)]
         verbose: bool,
+        /// The session's harness, said explicitly: `prime-agent` adds a notice that its own
+        /// messaging can stand in for Muster (RAL-59).
+        #[arg(long, env = "RALLY_HARNESS")]
+        harness: Option<String>,
     },
     /// The operator designates the watchman, or with --end ends the designation (RAL-51). It prints
     /// the statement, then signs it with `ssh-keygen -Y sign` and the key given, which asks for
@@ -549,8 +557,14 @@ fn escape_for_terminal(text: &str) -> String {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Command::SessionStart { team, verbose } = &cli.command {
-        session_start(cli.config.clone(), team.as_deref(), *verbose);
+    if let Command::SessionStart {
+        team,
+        verbose,
+        harness,
+    } = &cli.command
+    {
+        let harness = rally::session::Harness::parse(harness.as_deref());
+        session_start(cli.config.clone(), team.as_deref(), *verbose, harness);
         return ExitCode::SUCCESS;
     }
     match run(cli) {
@@ -566,7 +580,12 @@ fn main() -> ExitCode {
 }
 
 /// `rally session-start`: the block, or nothing at all. Never fails.
-fn session_start(config: Option<PathBuf>, team: Option<&str>, verbose: bool) {
+fn session_start(
+    config: Option<PathBuf>,
+    team: Option<&str>,
+    verbose: bool,
+    harness: rally::session::Harness,
+) {
     let quiet = |why: &str| {
         if verbose {
             eprintln!("rally session-start: {why}");
@@ -587,7 +606,10 @@ fn session_start(config: Option<PathBuf>, team: Option<&str>, verbose: bool) {
     };
     match rally::session::fetch(&pairing, rally::session::DEADLINE) {
         Ok((stories, blockers)) => {
-            println!("{}", rally::session::render(team, &stories, &blockers))
+            println!(
+                "{}",
+                rally::session::render_for(team, &stories, &blockers, harness)
+            )
         }
         Err(error) => quiet(&escape_for_terminal(&error)),
     }
@@ -1015,6 +1037,7 @@ fn run_service(
 fn init(
     files: &[PathBuf],
     dir: Option<&std::path::Path>,
+    harness: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let start = match dir {
         Some(dir) => dir.to_path_buf(),
@@ -1023,7 +1046,8 @@ fn init(
     let hint = if dir.is_some() { "" } else { "; pass --dir" };
     let root = rally::init::repo_root(&start)
         .ok_or_else(|| format!("{} isn't in a git repository{hint}", start.display()))?;
-    let done = rally::init::run(&root, files)?;
+    let harness = rally::session::Harness::parse(harness);
+    let done = rally::init::run_for(&root, files, harness)?;
     let files: Vec<_> = done
         .iter()
         .map(|(path, outcome)| json!({"file": path.display().to_string(), "outcome": outcome.label()}))
@@ -1032,8 +1056,13 @@ fn init(
 }
 
 fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
-    if let Command::Init { files, dir } = &cli.command {
-        return init(files, dir.as_deref());
+    if let Command::Init {
+        files,
+        dir,
+        harness,
+    } = &cli.command
+    {
+        return init(files, dir.as_deref(), harness.as_deref());
     }
     // These never touch the database, so a stray password file setting mustn't block them.
     let uses_database = !matches!(
