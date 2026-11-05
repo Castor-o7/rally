@@ -6,6 +6,16 @@ One service on one machine is the ledger's single writer (RAL-4, RAL-13). Machin
 The ledger lives in Postgres on the same host, as myko entities (RAL-39, `docs/design.md`). The service runs myko
 inside its own process without myko's listener, so its TLS port is the only way in: no client talks to myko.
 
+## Keeping it current
+
+The service and the `rally` CLI run the most recent stable Rally: the newest commit on `main` whose CI is green
+(the operator, 2026-11-05). After each merge, the lamplighter takes that commit through a preflight (a clean release
+build and `rally check` with the unit's environment), then a `rally backup` from a1. It keeps the old binary as
+`~/.local/bin/rally.<sha>`, installs the new one as a new inode, restarts, and checks the certificate fingerprint
+and `rally check`. The watchman updates a1's CLI. Red CI or a failed preflight holds the deploy. A change that an
+older binary can't read back, such as the first `designate --credential`, ends the rollback window, and the report
+says so. The full rule is Muster's `docs/board.md`, "Keeping the services current".
+
 ## Setting it up
 
 On the host, with a Postgres database for the ledger that only this account can reach:
