@@ -339,8 +339,10 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   scope (for example a host or a team); `rally designation` lists every watchman in force with its scope;
   `verifications` labels a read `watchman` when any designated watchman made it with its credential, and says which
   watchman made it; `--end` can end one watchman's designation or all of them; `handover` and `waiting` work with
-  several watchmen, using the scopes so it's clear whose read a merge waits for; and
-  `docs/designation.md` covers the threat model for N credentials.
+  several watchmen, using the scopes so it's clear whose read a merge waits for; `docs/designation.md` covers the
+  threat model for N credentials; and tests show two watchmen in force with each read labelled with its own
+  watchman, a third session declaring one watchman's name labelled `other`, adding or ending a watchman refused from
+  any credential but the operator's, and ending one watchman leaving the other in force.
 
 ### A rally that keeps itself moving
 
