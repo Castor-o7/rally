@@ -10,7 +10,7 @@ use rally::client::{Reply, request};
 use rally::scratch_pg::{self, Cluster, Database};
 use serde_json::{Value, json};
 
-const ROUTES: [(&str, &str); 12] = [
+const ROUTES: [(&str, &str); 13] = [
     ("POST", "/v1/records"),
     ("GET", "/v1/stories"),
     ("GET", "/v1/stories/RAL-13"),
@@ -22,6 +22,7 @@ const ROUTES: [(&str, &str); 12] = [
     ("GET", "/v1/verifications"),
     ("GET", "/v1/waiting"),
     ("GET", "/v1/handover"),
+    ("GET", "/v1/brief"),
     ("GET", "/v1/teams/rally/record"),
 ];
 
@@ -2064,6 +2065,53 @@ fn waiting_suggests_a_reader_from_another_team() {
     let past = call(&pairing, "GET", "/v1/waiting?as_of=1", None);
     assert_eq!(past.status, 400, "{}", past.body);
     assert!(past.body.contains("doesn't take as_of"));
+}
+
+/// RAL-22a: the service gives one brief, at its own clock, with every part labelled and aged.
+#[test]
+fn the_service_gives_a_new_watchman_one_brief() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    for body in [
+        json!({"change": "team_state", "team": "rally", "status": "working"}),
+        json!({"change": "ready", "story": "RAL-60"}),
+        json!({"change": "claim", "story": "RAL-60", "team": "rally"}),
+        json!({"change": "submit", "story": "RAL-60", "team": "rally", "evidence": "rally@a"}),
+        json!({"change": "ready", "story": "RAL-61"}),
+        json!({"change": "claim", "story": "RAL-61", "team": "rally"}),
+        json!({"change": "block", "team": "rally", "story": "RAL-61", "on_team": "operator",
+               "note": "which way?"}),
+    ] {
+        let reply = write(&pairing, "r", "declared", body);
+        assert_eq!(reply.status, 200, "{}", reply.body);
+    }
+    let reply = call(&pairing, "GET", "/v1/brief", None);
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let brief: Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(brief["waiting"][0]["story"], "RAL-60", "{brief}");
+    assert_eq!(brief["claims"][0]["story"], "RAL-61");
+    assert_eq!(brief["claims"][0]["claimed_by"], "r");
+    assert_eq!(brief["teams"][0]["kind"], "declared");
+    assert!(brief["teams"][0]["age_ms"].as_i64().unwrap() >= 0);
+    assert_eq!(
+        brief["operator"]["questions"][0]["holds_up"]["story"],
+        "RAL-61"
+    );
+    assert!(
+        brief["authority"]
+            .as_str()
+            .unwrap()
+            .contains("confers no authority")
+    );
+    assert!(brief["not_recorded"].as_str().unwrap().contains("RAL-64"));
+    // Without the operator's key the service can't check designations.
+    assert!(brief["watchman"].is_null());
+    assert!(
+        brief["handover"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("no operator key")
+    );
 }
 
 /// `rally next` reads every page of blockers at the first page's instant (RAL-56), and the

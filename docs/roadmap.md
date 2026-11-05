@@ -168,7 +168,16 @@ The bones. Everything later reads from this.
   changes. The brief records grants but confers no authority, and proof of who holds a role comes from
   Muster, not the ledger. Each field shows whether it's observed, declared or verified. Machine access
   appears only as that it exists and where its details live. List from the watchman, 2026-11-02. Live
-  daemon commit and backups are for RAL-1 to place.
+  daemon commit and backups are for RAL-1 to place. Split by the a1 watchman on 2026-11-05: `rally brief`
+  (RAL-22a) gives everything the ledger already records, with the test that no submission is lost when the
+  watchman changes; holds, conditions on the order of work and grants wait on RAL-64, and until then the brief
+  says it doesn't have them.
+- [ ] **RAL-64: Record holds, conditions on the order of work, and standing grants.** The rest of RAL-22, split
+  off on 2026-11-05. Done when: a team or the operator can record a hold and what releases it, a condition on the
+  order of work, and a standing grant with its scope and whether it came directly or was relayed, each declared
+  and never more; `rally brief` lists those in force, with their kind and age; a grant's record confers no
+  authority, and the brief and threat model rows 13 and 14 say so; and a test shows a relayed grant labelled
+  relayed and a released hold no longer listed.
 - [x] **RAL-20: Record who is waiting on whom.** Done when: a team can name what it's blocked on,
   including another team's story, the watchman can list open blockers and chains of them, and a blocker
   stays open until someone closes it, with who and why recorded. A blocked story and a blocked team are

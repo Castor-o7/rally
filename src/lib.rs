@@ -2,6 +2,7 @@
 
 pub mod access;
 pub mod backup;
+pub mod brief;
 pub mod client;
 pub mod designation;
 pub mod entity;
