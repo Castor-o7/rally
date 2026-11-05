@@ -7,9 +7,12 @@
 //! A web page in the same browser is the threat here. Requests must name this address in `Host`,
 //! which stops DNS rebinding, and any `Origin` must be this page's own. A request the browser marks
 //! as from another site is refused. Nothing sends CORS headers, and the content security policy
-//! allows no inline script. Only a viewer holding the key is served (RAL-29): it's kept in a
-//! private file, opening `/?key=<key>` once sets it as an HttpOnly, SameSite=Strict cookie, and
-//! every other request needs that cookie. See `docs/web.md`.
+//! allows no inline script. Only a signed-in browser is served (RAL-29). The long-lived key stays
+//! in a private file and never goes in a URL: `rally web --login` sends it in a header to ask the
+//! running viewer for a one-time code, which works once, within a minute, at `/?code=<code>`, and
+//! becomes a random session cookie, HttpOnly and SameSite=Strict. A session holds only while the
+//! key it was made under is the one in the file, so `rally web --new-key` signs every browser
+//! out. See `docs/web.md`.
 
 use std::io::Read;
 use std::net::{SocketAddr, TcpListener};
@@ -818,8 +821,15 @@ struct App {
     local: LocalSummaries,
     snapshot: Mutex<Snapshot>,
     allowed_hosts: Vec<String>,
-    /// The viewer key (RAL-29).
-    key: String,
+    /// The file holding the long-lived viewer key, read on each use, so a new key takes effect at
+    /// once (RAL-29).
+    key_file: std::path::PathBuf,
+    /// One-time codes and when each stops working.
+    codes: Mutex<Vec<(String, Instant)>>,
+    /// Signed-in sessions, each with the key it was made under.
+    sessions: Mutex<Vec<(String, String)>>,
+    /// How long a one-time code works.
+    code_ttl: Duration,
     /// The backup directory on this machine to report on, if any (RAL-15).
     backup: Option<BackupWatch>,
 }
@@ -937,9 +947,18 @@ pub fn backup_status(
 }
 
 /// Runs the viewer until the process ends. Refuses anything but a loopback address.
+/// How browsers sign in to the viewer (RAL-29).
+#[derive(Clone, Debug)]
+pub struct SignIn {
+    /// The private file holding the long-lived viewer key.
+    pub key_file: std::path::PathBuf,
+    /// How long a one-time code works.
+    pub code_ttl: Duration,
+}
+
 pub async fn serve(
     listener: TcpListener,
-    key: String,
+    sign_in: SignIn,
     projects: Vec<Project>,
     ledger: LedgerReader,
     backup: Option<BackupWatch>,
@@ -951,7 +970,10 @@ pub async fn serve(
         local,
         snapshot: Mutex::new(Snapshot::default()),
         allowed_hosts: allowed_hosts(address)?,
-        key,
+        key_file: sign_in.key_file,
+        codes: Mutex::new(Vec::new()),
+        sessions: Mutex::new(Vec::new()),
+        code_ttl: sign_in.code_ttl,
         backup,
     });
     let refresher = app.clone();
@@ -1096,32 +1118,18 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
         || !fetched_from_here(request.headers().get("sec-fetch-site"))
     {
         refused(StatusCode::FORBIDDEN, "other sites can't read this page")
+    } else if *request.method() == Method::POST && request.uri().path() == CODE_PATH {
+        mint_code(&app, request.headers())
     } else if !matches!(*request.method(), Method::GET | Method::HEAD) {
         refused(StatusCode::METHOD_NOT_ALLOWED, "this page is read-only")
     } else if request.uri().path() == "/"
-        && let Some(offered) = query_key(request.uri().query())
+        && let Some(offered) = query_code(request.uri().query())
     {
-        // The key, offered once in the address, becomes a cookie, and the address loses it.
-        if same_key(offered, &app.key) {
-            let cookie = format!("{COOKIE}={}; HttpOnly; SameSite=Strict; Path=/", app.key);
-            match HeaderValue::from_str(&cookie) {
-                Ok(cookie) => (
-                    StatusCode::SEE_OTHER,
-                    [
-                        (header::SET_COOKIE, cookie),
-                        (header::LOCATION, HeaderValue::from_static("/")),
-                    ],
-                )
-                    .into_response(),
-                Err(_) => refused(StatusCode::INTERNAL_SERVER_ERROR, "the key can't be set"),
-            }
-        } else {
-            refused(StatusCode::UNAUTHORIZED, "that isn't this viewer's key")
-        }
-    } else if !cookie_key(request.headers()).is_some_and(|held| same_key(held, &app.key)) {
+        sign_in(&app, offered)
+    } else if !signed_in(&app, request.headers()) {
         refused(
             StatusCode::UNAUTHORIZED,
-            "open the address rally web printed, with the key from its key file",
+            "sign in: run `rally web --login` and open the address it prints",
         )
     } else {
         next.run(request).await
@@ -1144,8 +1152,119 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
     response
 }
 
-/// The cookie that carries the viewer key.
+/// The cookie that carries a session.
 const COOKIE: &str = "rally_view";
+
+/// Where `rally web --login` asks for a one-time code.
+pub const CODE_PATH: &str = "/api/code";
+
+/// The most codes and sessions held at once; the oldest go first.
+const MAX_HELD: usize = 64;
+
+/// The key now in the key file, or `None` if it can't be read.
+fn current_key(app: &App) -> Option<String> {
+    std::fs::read_to_string(&app.key_file)
+        .ok()
+        .map(|text| text.trim().to_owned())
+        .filter(|key| is_key(key))
+}
+
+/// A one-time code, for a client that isn't a browser and shows the key in a header. A browser
+/// always says where a request came from, so a page can't ask for one.
+fn mint_code(app: &App, headers: &axum::http::HeaderMap) -> Response {
+    let refused = |status: StatusCode, message: &'static str| (status, message).into_response();
+    if headers.contains_key(header::ORIGIN) || headers.contains_key("sec-fetch-site") {
+        return refused(
+            StatusCode::FORBIDDEN,
+            "codes are only for rally web --login",
+        );
+    }
+    let offered = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let Some(key) = current_key(app) else {
+        return refused(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the viewer key can't be read",
+        );
+    };
+    if !offered.is_some_and(|offered| same_key(offered, &key)) {
+        return refused(StatusCode::UNAUTHORIZED, "that isn't this viewer's key");
+    }
+    let Ok(code) = new_key() else {
+        return refused(StatusCode::INTERNAL_SERVER_ERROR, "no code could be made");
+    };
+    let now = Instant::now();
+    let mut codes = app.codes.lock().unwrap_or_else(|e| e.into_inner());
+    codes.retain(|(_, until)| *until > now);
+    if codes.len() >= MAX_HELD {
+        codes.remove(0);
+    }
+    codes.push((code.clone(), now + app.code_ttl));
+    Json(json!({"code": code, "expires_in_seconds": app.code_ttl.as_secs()})).into_response()
+}
+
+/// Exchanges a one-time code for a session cookie, once, before it expires.
+fn sign_in(app: &App, offered: &str) -> Response {
+    let refused = |status: StatusCode, message: &'static str| (status, message).into_response();
+    let now = Instant::now();
+    let found = {
+        let mut codes = app.codes.lock().unwrap_or_else(|e| e.into_inner());
+        let index = codes.iter().position(|(code, _)| same_key(offered, code));
+        // Used or not, it's spent: a code works once.
+        index
+            .map(|index| codes.remove(index))
+            .filter(|(_, until)| *until > now)
+    };
+    let (Some(_), Some(key)) = (found, current_key(app)) else {
+        return refused(
+            StatusCode::UNAUTHORIZED,
+            "that code isn't good: it was used, it expired, or it's wrong; run rally web --login",
+        );
+    };
+    let Ok(session) = new_key() else {
+        return refused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "no session could be made",
+        );
+    };
+    {
+        let mut sessions = app.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.retain(|(_, made_under)| *made_under == key);
+        if sessions.len() >= MAX_HELD {
+            sessions.remove(0);
+        }
+        sessions.push((session.clone(), key));
+    }
+    let cookie = format!("{COOKIE}={session}; HttpOnly; SameSite=Strict; Path=/");
+    match HeaderValue::from_str(&cookie) {
+        Ok(cookie) => (
+            StatusCode::SEE_OTHER,
+            [
+                (header::SET_COOKIE, cookie),
+                (header::LOCATION, HeaderValue::from_static("/")),
+            ],
+        )
+            .into_response(),
+        Err(_) => refused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "the session can't be set",
+        ),
+    }
+}
+
+/// Whether the request's cookie is a session made under the key now in the file.
+fn signed_in(app: &App, headers: &axum::http::HeaderMap) -> bool {
+    let (Some(held), Some(key)) = (cookie_key(headers), current_key(app)) else {
+        return false;
+    };
+    app.sessions
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|(session, made_under)| *made_under == key && same_key(held, session))
+}
 
 /// A browser says where a request came from in `Sec-Fetch-Site`: only this page itself, or the
 /// operator typing the address, is served. A client that doesn't send it is judged by the rest.
@@ -1153,8 +1272,10 @@ fn fetched_from_here(site: Option<&HeaderValue>) -> bool {
     site.is_none_or(|site| matches!(site.as_bytes(), b"same-origin" | b"none"))
 }
 
-fn query_key(query: Option<&str>) -> Option<&str> {
-    query?.split('&').find_map(|pair| pair.strip_prefix("key="))
+fn query_code(query: Option<&str>) -> Option<&str> {
+    query?
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("code="))
 }
 
 fn cookie_key(headers: &axum::http::HeaderMap) -> Option<&str> {

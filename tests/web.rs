@@ -10,8 +10,11 @@ use serde_json::Value;
 struct Viewer {
     child: Child,
     address: String,
-    /// The viewer key, from its private file.
+    /// The long-lived viewer key, from its private file.
     key: String,
+    key_file: std::path::PathBuf,
+    /// A signed-in session, as the operator's browser holds after `rally web --login`.
+    session: String,
     _db: Database<'static>,
     _dir: tempfile::TempDir,
 }
@@ -53,6 +56,11 @@ fn start() -> Viewer {
 
 /// Like `start`, with these projects, and `gh` replaced by the script in `fake_gh` when given.
 fn start_with(projects_json: &str, fake_gh: Option<&str>) -> Viewer {
+    start_with_codes(projects_json, fake_gh, 60)
+}
+
+/// Like `start_with`, with codes that last `code_seconds`.
+fn start_with_codes(projects_json: &str, fake_gh: Option<&str>, code_seconds: u64) -> Viewer {
     let dir = tempfile::tempdir().unwrap();
     let db = scratch_pg::shared().database();
     let projects = dir.path().join("projects.json");
@@ -77,6 +85,7 @@ fn start_with(projects_json: &str, fake_gh: Option<&str>) -> Viewer {
         .arg(&projects)
         .arg("--key-file")
         .arg(&key_file)
+        .args(["--code-seconds", &code_seconds.to_string()])
         .stdout(Stdio::piped());
     if fake_gh.is_some() {
         let path = std::env::var("PATH").unwrap_or_default();
@@ -96,20 +105,60 @@ fn start_with(projects_json: &str, fake_gh: Option<&str>) -> Viewer {
         let mode = std::fs::metadata(&key_file).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "the key file isn't private");
     }
-    Viewer {
+    let mut viewer = Viewer {
         child,
         address: started["listening"].as_str().unwrap().to_owned(),
         key,
+        key_file,
+        session: String::new(),
         _db: db,
         _dir: dir,
-    }
+    };
+    viewer.session = sign_in(&viewer);
+    viewer
+}
+
+/// `rally web --login`'s address to open, with its one-time code.
+fn login(viewer: &Viewer) -> String {
+    let out = rally()
+        .args(["web", "--bind", &viewer.address, "--login", "--key-file"])
+        .arg(&viewer.key_file)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed = String::from_utf8(out.stdout).unwrap();
+    assert!(!printed.contains(&viewer.key), "the key was printed");
+    let value: Value = serde_json::from_str(&printed).unwrap();
+    let open = value["open"].as_str().unwrap();
+    open.split_once(&viewer.address).unwrap().1.to_owned()
+}
+
+/// Signs in as a browser would: opens the code's address and keeps the session cookie.
+fn sign_in(viewer: &Viewer) -> String {
+    let path = login(viewer);
+    let (status, text) = bare(viewer, "GET", &path, &viewer.address, "");
+    assert_eq!(status, 303, "{text}");
+    session_from(&text)
+}
+
+fn session_from(text: &str) -> String {
+    let line = text
+        .lines()
+        .find(|line| line.to_lowercase().starts_with("set-cookie:"))
+        .expect("a cookie");
+    let value = line.split_once("rally_view=").unwrap().1;
+    value.split(';').next().unwrap().to_owned()
 }
 
 const ATTACK: &str = "<script>alert(1)</script>";
 
 /// A request carrying the viewer's cookie, as the operator's browser would once it has the key.
 fn raw(viewer: &Viewer, method: &str, path: &str, host: &str, extra: &str) -> (u16, String) {
-    let extra = format!("Cookie: rally_view={}\r\n{extra}", viewer.key);
+    let extra = format!("Cookie: rally_view={}\r\n{extra}", viewer.session);
     bare(viewer, method, path, host, &extra)
 }
 
@@ -247,9 +296,13 @@ fn a_broken_chain_is_reported_as_a_failed_check() {
         child,
         address: started["listening"].as_str().unwrap().to_owned(),
         key: std::fs::read_to_string(&key_file).unwrap(),
+        key_file: key_file.clone(),
+        session: String::new(),
         _db: db,
         _dir: dir,
     };
+    let mut viewer = viewer;
+    viewer.session = sign_in(&viewer);
     let text = wait_for_ledger(&viewer).1;
     let body = text.split_once("\r\n\r\n").unwrap().1;
     let value: Value = serde_json::from_str(body).unwrap();
@@ -379,24 +432,35 @@ fn a_project_page_s_summary_stories_and_pr_titles_arrive_only_as_json_data() {
 }
 
 #[test]
-fn a_viewer_without_the_key_is_refused() {
+fn a_viewer_that_isnt_signed_in_is_refused() {
     let viewer = start();
     let host = viewer.address.clone();
     for path in ["/", "/api/status", "/app.js"] {
         let (status, text) = bare(&viewer, "GET", path, &host, "");
         assert_eq!(status, 401, "{path}");
         assert!(!text.contains("untrusted_text"), "{path}");
-        let wrong = format!("Cookie: rally_view={}\r\n", "0".repeat(64));
-        assert_eq!(bare(&viewer, "GET", path, &host, &wrong).0, 401, "{path}");
+        let lower = text.to_lowercase();
+        assert!(lower.contains("referrer-policy: no-referrer"), "{path}");
+        assert!(lower.contains("cache-control: no-store"), "{path}");
+        // Neither a made-up session nor the long-lived key itself is a session.
+        for cookie in ["0".repeat(64), viewer.key.clone()] {
+            let extra = format!("Cookie: rally_view={cookie}\r\n");
+            assert_eq!(bare(&viewer, "GET", path, &host, &extra).0, 401, "{path}");
+        }
     }
-    assert_eq!(bare(&viewer, "GET", "/?key=nope", &host, "").0, 401);
+    // The key in the address is no longer a way in.
+    assert_eq!(
+        bare(&viewer, "GET", &format!("/?key={}", viewer.key), &host, "").0,
+        401
+    );
 }
 
 #[test]
-fn the_key_in_the_address_becomes_a_strict_cookie_once() {
+fn a_one_time_code_becomes_a_strict_session_cookie_once() {
     let viewer = start();
     let host = viewer.address.clone();
-    let (status, text) = bare(&viewer, "GET", &format!("/?key={}", viewer.key), &host, "");
+    let path = login(&viewer);
+    let (status, text) = bare(&viewer, "GET", &path, &host, "");
     assert_eq!(status, 303);
     let lower = text.to_lowercase();
     assert!(lower.contains("location: /\r\n"), "{text}");
@@ -409,7 +473,78 @@ fn the_key_in_the_address_becomes_a_strict_cookie_once() {
         cookie.contains("httponly") && cookie.contains("samesite=strict"),
         "{cookie}"
     );
+    // The cookie is a session, not the long-lived key, and no response carries the key.
+    assert!(!text.contains(&viewer.key));
+    let session = session_from(&text);
+    assert_ne!(session, viewer.key.trim());
+    let extra = format!("Cookie: rally_view={session}\r\n");
+    let (status, page) = bare(&viewer, "GET", "/api/status", &host, &extra);
+    assert_eq!(status, 200);
+    assert!(!page.contains(&viewer.key));
+    // A code works once.
+    assert_eq!(bare(&viewer, "GET", &path, &host, "").0, 401);
+}
+
+#[test]
+fn an_expired_code_is_refused() {
+    let viewer = start_with_codes("[]", None, 1);
+    let path = login(&viewer);
+    std::thread::sleep(std::time::Duration::from_millis(1_200));
+    assert_eq!(bare(&viewer, "GET", &path, &viewer.address, "").0, 401);
+}
+
+#[test]
+fn only_rally_web_login_can_ask_for_a_code() {
+    let viewer = start();
+    let host = viewer.address.clone();
+    let key = format!(
+        "Authorization: Bearer {}\r\nContent-Length: 0\r\n",
+        viewer.key
+    );
+    // A browser always says where a request came from, so a page can't ask for one.
+    for from in [
+        format!("Origin: http://{host}\r\n"),
+        "Sec-Fetch-Site: same-origin\r\n".to_owned(),
+    ] {
+        let (status, text) = bare(&viewer, "POST", "/api/code", &host, &format!("{key}{from}"));
+        assert_eq!(status, 403, "{from}");
+        assert!(!text.contains("\"code\""));
+    }
+    let wrong = format!(
+        "Authorization: Bearer {}\r\nContent-Length: 0\r\n",
+        "0".repeat(64)
+    );
+    assert_eq!(bare(&viewer, "POST", "/api/code", &host, &wrong).0, 401);
+    assert_eq!(
+        bare(&viewer, "POST", "/api/code", &host, "Content-Length: 0\r\n").0,
+        401
+    );
+}
+
+#[test]
+fn a_new_key_signs_every_browser_out() {
+    let viewer = start();
     assert_eq!(get(&viewer, "/api/status").0, 200);
+    let out = rally()
+        .args(["web", "--new-key", "--key-file"])
+        .arg(&viewer.key_file)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        !String::from_utf8_lossy(&out.stdout)
+            .contains(&std::fs::read_to_string(&viewer.key_file).unwrap())
+    );
+    assert_eq!(get(&viewer, "/api/status").0, 401);
+    // The old key can't ask for a code either.
+    let old = format!(
+        "Authorization: Bearer {}\r\nContent-Length: 0\r\n",
+        viewer.key
+    );
+    assert_eq!(
+        bare(&viewer, "POST", "/api/code", &viewer.address, &old).0,
+        401
+    );
 }
 
 #[test]
