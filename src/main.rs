@@ -322,6 +322,18 @@ enum Command {
         #[arg(long)]
         prefix: Option<String>,
     },
+    /// Take the next free story number for a prefix, as a new ready story with a title (RAL-55).
+    /// Prints the story's ID. Two teams asking at once get different numbers. IDs written by hand
+    /// with `ready` still work.
+    NewStory {
+        /// The prefix, such as RAL.
+        prefix: String,
+        #[arg(long)]
+        title: String,
+        /// The prefix's roadmap, so a number already written there isn't handed out.
+        #[arg(long, default_value = "docs/roadmap.md")]
+        roadmap: PathBuf,
+    },
     /// Wake idle teams with their next story (RAL-54): for each team in the projects list with
     /// sessions mapped to it, idle (or its claim quiet) with a ready story, send one digest through
     /// Muster, at most once per interval. Without `muster-shim`, or with --report-only, it only
@@ -898,6 +910,105 @@ impl PickRead {
         }
         result
     }
+}
+
+/// The most times `new-story` tries the next number when another team takes it first.
+const NEW_STORY_TRIES: usize = 20;
+
+/// `rally new-story`: the next free number for `prefix`, above every one in the ledger and in the
+/// roadmap, written in one append. If another team takes it first, the ledger refuses and this
+/// tries the next (RAL-55).
+fn new_story(
+    prefix: &str,
+    title: &str,
+    roadmap: &Path,
+    location: Option<&Location>,
+    config: &Path,
+    name: Option<&str>,
+    credential: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_uppercase()) {
+        return Err(format!("{prefix:?} isn't a prefix: capital letters, such as RAL").into());
+    }
+    let name = name.ok_or("--as or RALLY_NAME is needed to write")?;
+    // A roadmap that isn't there has no numbers to avoid.
+    let written = std::fs::read_to_string(roadmap)
+        .map(|text| {
+            rally::next::items(&text, prefix)
+                .iter()
+                .filter_map(|item| item.id.split_once('-')?.1.parse::<u64>().ok())
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    let lead = format!("{prefix}-");
+    let backend = Backend::choose(location, config, true)?;
+    let (stories, _) = backend.read_all("/v1/stories", "stories", NEXT_PAGES, |ledger, page| {
+        views::stories(ledger, None, page)
+    })?;
+    let mut highest = stories["stories"]
+        .as_object()
+        .map(|rows| {
+            rows.keys()
+                .filter_map(|id| id.strip_prefix(&lead)?.parse::<u64>().ok())
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+        .max(written);
+    for _ in 0..NEW_STORY_TRIES {
+        let story = format!("{prefix}-{}", highest + 1);
+        let body = json!({"change": "new_story", "story": story, "title": title});
+        let outcome: Result<Value, String> = match &backend {
+            Backend::File(store) => {
+                let credential = credential
+                    .ok_or("--credential or RALLY_CREDENTIAL is needed to write with --db")?;
+                let source = Source {
+                    credential: credential.to_owned(),
+                    declared_name: Some(name.to_owned()),
+                };
+                let record = Record::new(Kind::Declared, source, now_ms()?, body)?;
+                store
+                    .append(&record)
+                    .map(|seq| json!({"recorded": seq}))
+                    .map_err(|e| e.to_string())
+            }
+            Backend::Service(pairing) => {
+                let request = json!({"kind": Kind::Declared, "declared_name": name, "body": body})
+                    .to_string();
+                let reply = client::request(pairing, "POST", "/v1/records", Some(&request), &[])?;
+                reply_value(&reply).map_err(|e| e.to_string())
+            }
+        };
+        match outcome {
+            Ok(mut recorded) => {
+                recorded["story"] = json!(story);
+                return Ok(recorded.to_string());
+            }
+            // Someone took it first: the refusal says how high the prefix now reaches, so take
+            // the next after a short, uneven pause, so that racing writers spread out.
+            Err(error) if error.contains("isn't the next free number") => {
+                highest = error
+                    .rsplit("already reaches ")
+                    .next()
+                    .and_then(|rest| {
+                        rest.trim()
+                            .trim_end_matches(|c: char| !c.is_ascii_digit())
+                            .parse()
+                            .ok()
+                    })
+                    .unwrap_or(highest + 1)
+                    .max(highest + 1);
+                let mut jitter = [0u8; 1];
+                let _ = getrandom::fill(&mut jitter);
+                std::thread::sleep(std::time::Duration::from_millis(
+                    5 + u64::from(jitter[0] % 40),
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(format!("other teams kept taking {prefix} numbers first; try again").into())
 }
 
 /// One pass of `rally wake` (RAL-54).
@@ -1817,6 +1928,22 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 println!("{}", escape_for_terminal(&report));
                 std::thread::sleep(std::time::Duration::from_millis(every));
             }
+        }
+        Command::NewStory {
+            prefix,
+            title,
+            roadmap,
+        } => {
+            let config = config_path(cli.config)?;
+            return new_story(
+                &prefix,
+                &title,
+                &roadmap,
+                location.as_ref(),
+                &config,
+                cli.name.as_deref(),
+                cli.credential.as_deref(),
+            );
         }
         Command::Next {
             team,
