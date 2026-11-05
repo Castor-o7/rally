@@ -3710,7 +3710,7 @@ mod tests {
         for (body, error) in bad {
             assert_eq!(apply_next(&mut ledger, &team_state(body)), Err(error));
         }
-        let unknown = json!({"change": "team_state", "team": "rally", "status": "resting"});
+        let unknown = json!({"change": "team_state", "team": "rally", "status": "asleep"});
         assert!(matches!(
             apply_next(&mut ledger, &team_state(unknown)),
             Err(LedgerError::InvalidChange(_))
