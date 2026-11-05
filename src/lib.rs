@@ -16,4 +16,5 @@ pub mod server;
 pub mod session;
 pub mod store;
 pub mod views;
+pub mod wake;
 pub mod web;

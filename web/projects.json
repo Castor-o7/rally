@@ -4,14 +4,18 @@
     "prefix": "RAL",
     "repo": "Castor-o7/rally",
     "path": "docs/roadmap.md",
-    "tick_meaning": "Verified by the watchman"
+    "tick_meaning": "Verified by the watchman",
+    "team": "rally",
+    "sessions": ["rally"]
   },
   {
     "name": "Muster",
     "prefix": "MUS",
     "repo": "Castor-o7/muster",
     "path": "docs/roadmap.md",
-    "tick_meaning": "Verified under the board process"
+    "tick_meaning": "Verified under the board process",
+    "team": "muster",
+    "sessions": ["muster"]
   },
   {
     "name": "catapp",
