@@ -635,7 +635,51 @@ fn verifiers(ledger: &Ledger) -> Value {
 
 /// Submissions waiting for a reader, oldest submission first, each with what to read: the
 /// evidence it was submitted with and the commits of any open requested reads (RAL-51).
+/// What `waiting` knows about the watchman, for suggesting readers (RAL-57).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Readers {
+    /// No watchman is designated, by the operator's key: suggest a reader for each submission.
+    Suggest,
+    /// No operator key to check designations with: suggest, and say so.
+    Unchecked,
+    /// The watchman reads, so no suggestions.
+    Watchman(String),
+}
+
+/// Teams that could read, by name as the ledger compares them, each with the record number of its
+/// last read, 0 for none: every team with a declared state, a claim or a read, but `operator`.
+fn reader_teams(ledger: &Ledger) -> BTreeMap<String, u64> {
+    let key = |name: &str| name.trim().to_lowercase();
+    let mut teams: BTreeMap<String, u64> = ledger.teams().keys().map(|t| (key(t), 0)).collect();
+    for story in ledger.stories().values() {
+        if let Some(team) = &story.team {
+            teams.entry(key(team)).or_insert(0);
+        }
+        for entry in &story.history {
+            if let Change::Verify {
+                team: Some(team), ..
+            }
+            | Change::SendBack {
+                team: Some(team), ..
+            } = &entry.change
+            {
+                let last = teams.entry(key(team)).or_insert(0);
+                *last = (*last).max(entry.seq);
+            }
+        }
+    }
+    teams.remove(crate::ledger::OPERATOR);
+    teams
+}
+
 pub fn waiting(ledger: &Ledger) -> Value {
+    waiting_with(ledger, &Readers::Unchecked)
+}
+
+/// Submissions waiting for a reader, oldest first, each with a suggested reader while no watchman
+/// is designated: a team other than the author's, the one whose last read, recorded or suggested
+/// here, is oldest (RAL-57).
+pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
     let mut rows: Vec<(u64, Value)> = ledger
         .stories()
         .iter()
@@ -668,15 +712,55 @@ pub fn waiting(ledger: &Ledger) -> Value {
         .collect();
     rows.sort_by_key(|(seq, _)| *seq);
     let total = rows.len();
-    let shown: Vec<Value> = rows
+    let mut shown: Vec<Value> = rows
         .into_iter()
         .take(LIST_LIMIT)
         .map(|(_, row)| row)
         .collect();
+    let suggesting = !matches!(readers, Readers::Watchman(_));
+    if suggesting {
+        let mut last = reader_teams(ledger);
+        // A suggestion counts as the team's latest read, after every recorded one, so the next
+        // submission goes to another team.
+        let mut suggested = ledger.last_seq();
+        for row in &mut shown {
+            let author = row["team"].as_str().map(|team| team.trim().to_lowercase());
+            let reader = last
+                .iter()
+                .filter(|(team, _)| author.as_ref() != Some(*team))
+                .min_by_key(|(team, seq)| (**seq, (*team).clone()))
+                .map(|(team, _)| team.clone());
+            row["suggested_reader"] = match reader {
+                Some(team) => {
+                    suggested += 1;
+                    last.insert(team.clone(), suggested);
+                    json!({"team": team, "kind": "declared"})
+                }
+                None => Value::Null,
+            };
+        }
+    }
+    let readers_note = match readers {
+        Readers::Suggest => json!(
+            "No watchman is designated, so each submission names a suggested reader: a team other \
+             than the author's, the one whose last read is oldest. Following it is optional, and a \
+             read counts by the usual rules. Teams' names on reads are declared."
+        ),
+        Readers::Unchecked => json!(
+            "Suggested readers rotate across teams other than the author's. Rally can't check \
+             whether a watchman is designated here, without the operator's key: while one is, \
+             the watchman reads."
+        ),
+        Readers::Watchman(name) => json!(format!(
+            "{name} is the designated watchman and reads every submission, so no readers are \
+             suggested."
+        )),
+    };
     json!({
         "untrusted_text": UNTRUSTED_TEXT, "as_of": ledger.last_seq(), "waiting": shown,
         "total": total,
         "rule": "While a watchman is designated, merges still wait for the watchman's read.",
+        "readers": readers_note,
     })
 }
 
@@ -1087,6 +1171,75 @@ mod tests {
         assert_eq!(rows[0]["evidence"], "r@2");
         assert_eq!(rows[1]["requested_reads"][0]["commit"], "d".repeat(40));
         assert!(out["rule"].as_str().unwrap().contains("watchman"));
+    }
+
+    /// `team` readies, claims and submits `story`, by `name`.
+    fn submitted(story: &str, team: &str, name: &str) -> Vec<Record> {
+        vec![
+            rec(name, json!({"change": "ready", "story": story})),
+            rec(
+                name,
+                json!({"change": "claim", "story": story, "team": team}),
+            ),
+            rec(
+                name,
+                json!({"change": "submit", "story": story, "team": team, "evidence": "r@1"}),
+            ),
+        ]
+    }
+
+    fn suggested(out: &Value) -> Vec<String> {
+        out["waiting"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                row["suggested_reader"]["team"]
+                    .as_str()
+                    .unwrap_or("-")
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn waiting_rotates_suggested_readers_across_other_teams() {
+        let mut records = Vec::new();
+        for team in ["rally", "muster", "catapp"] {
+            records.push(rec(
+                "x",
+                json!({"change": "team_state", "team": team, "status": "available"}),
+            ));
+        }
+        records.extend(submitted("RAL-1", "rally", "r"));
+        records.extend(submitted("RAL-2", "rally", "r"));
+        records.extend(submitted("MUS-1", "muster", "m"));
+        records.extend(submitted("RAL-3", "rally", "r"));
+        let ledger = Ledger::replay(&records).unwrap();
+        let out = waiting_with(&ledger, &Readers::Suggest);
+        // Never the author's team, and each suggestion moves that team to the back.
+        assert_eq!(suggested(&out), ["catapp", "muster", "rally", "catapp"]);
+        assert_eq!(out["waiting"][0]["suggested_reader"]["kind"], "declared");
+        assert!(out["readers"].as_str().unwrap().contains("optional"));
+
+        // A recorded read puts its team at the back too: catapp reads one of muster's.
+        let mut read = records.clone();
+        read.extend(submitted("MUS-2", "muster", "m"));
+        read.push(as_kind(
+            Kind::Verified,
+            "c",
+            json!({"change": "verify", "story": "MUS-2", "note": "n", "commit": "a".repeat(40),
+                   "team": "catapp"}),
+        ));
+        let ledger = Ledger::replay(&read).unwrap();
+        let out = waiting_with(&ledger, &Readers::Suggest);
+        assert_eq!(suggested(&out), ["muster", "catapp", "rally", "muster"]);
+
+        // While a watchman is designated, the watchman reads.
+        let ledger = Ledger::replay(&records).unwrap();
+        let out = waiting_with(&ledger, &Readers::Watchman("grand-photon".into()));
+        assert_eq!(suggested(&out), ["-", "-", "-", "-"]);
+        assert!(out["readers"].as_str().unwrap().contains("grand-photon"));
     }
 
     #[test]

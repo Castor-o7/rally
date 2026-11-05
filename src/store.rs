@@ -951,6 +951,27 @@ impl Store {
         self.with_chain(|ledger, hashes| crate::designation::verifications(ledger, hashes, key))
     }
 
+    /// Submissions waiting for a reader, with suggested readers while no watchman is designated,
+    /// by designations checked against `key` (RAL-57). Without a key, it can't say.
+    pub fn waiting_report(
+        &self,
+        key: Option<&crate::designation::OperatorKey>,
+    ) -> Result<serde_json::Value, StoreError> {
+        self.with_chain(|ledger, hashes| {
+            let readers = match key {
+                None => crate::views::Readers::Unchecked,
+                Some(key) => {
+                    let report = crate::designation::report(ledger, hashes, Some(key));
+                    match report["watchman"]["name"].as_str() {
+                        Some(name) => crate::views::Readers::Watchman(name.to_owned()),
+                        None => crate::views::Readers::Suggest,
+                    }
+                }
+            };
+            crate::views::waiting_with(ledger, &readers)
+        })
+    }
+
     /// What a newly designated watchman re-reads: the peer-verified stories since the designation
     /// before it (RAL-52).
     pub fn handover_report(
