@@ -1,6 +1,6 @@
 # Levi PR L3: the description
 
-The description for the third pull request to ignition-is-go/levi, from `l3/session-start` at `20d7b3d` on the
+The description for the third pull request to ignition-is-go/levi, from `l3/session-start` at `174115e` on the
 Rally team's Levi remote, on Levi main `aed6027` (v0.9.5). It's the "session-start summary" row of
 [rally-vs-levi.md](rally-vs-levi.md), taken from `rally session-start` (RAL-50). It doesn't depend on L1 or L2.
 Showing L1's sent-back tasks, requested reads and blockers in it is a later change, once L1 is in. Everything below
@@ -49,12 +49,14 @@ every other command are unchanged.
 - **It's silent on failure.** Outside a repository, with no events, with no git `user.email`, on timeout, or on
   any error, it prints nothing and exits 0, so a session never fails to start because of levi. `--verbose` says
   why on stderr. It runs before the usual load, so that load's errors can't reach the hook.
-- **It's bounded.** The block is at most 40 lines and 4 KB. Claims that don't fit are counted, and the next tasks
-  always keep their room.
+- **It's bounded.** The text block is at most 40 lines and 4 KB, and no line is over 512 bytes, since escaping can
+  grow text sixfold. Claims that don't fit are counted, and the next tasks always keep their room. A panic is
+  silent too, unless `--verbose`.
 - **Task text can't pose as anything else.** Control and invisible characters (zero-width, bidi overrides, tag
   characters) become spaces; `&`, `<`, `>` and `"` are escaped; and each piece is cut to 120 characters. So a
   title can't break a line, close the block or look like a tag. The block ends by saying task text is untrusted.
-- **`--json`** gives `levi.session-start/1`, with `claims` and `next`.
+- **`--json`** gives `levi.session-start/1`, with `claims` and `next`, for programs: its text isn't escaped or cut,
+  and it lists every claim.
 
 ### Where it differs from `levi next`
 
@@ -64,9 +66,9 @@ it may list fewer tasks than `levi next`, never more. `next` itself is unchanged
 
 ### How it was tested
 
-- `cargo test --workspace` passes all 135 tests: Levi's 125 and 10 new.
+- `cargo test --workspace` passes all 136 tests: Levi's 125 and 11 new.
   - **Unit tests** in `session_start.rs` cover escaping, cutting, the bounds with 100 long claims (the next tasks
-    still shown), and an escaped project name.
+    still shown), the bounds with every field at worst-case escaping, and an escaped project name.
   - **CLI tests** in `levi/tests/cli_session_start.rs`:
     - it's silent with exit 0 outside a repository, with no events and with an empty `user.email`, and
       `--verbose` writes to stderr only;
@@ -85,3 +87,4 @@ it may list fewer tasks than `levi next`, never more. `next` itself is unchanged
 | Commit | Change |
 |---|---|
 | `20d7b3d` | feat: levi session-start, what an agent should know when its session starts |
+| `174115e` | fix: session-start's block stays within 4 KB whatever the task text |
