@@ -109,6 +109,11 @@ itself doesn't show what you're signing. If another record lands in between, the
   the designated watchman's declared name wrote it, `peer` if no watchman was designated, `other` if one was
   designated but someone else wrote it, or `unknown` if the service has no operator key to check designations
   with. Names are declared.
+- `rally handover` is for a newly designated watchman. It lists every story a peer verified since the designation
+  before it, merged or not, with the commit read, who verified it and where it merged. Each stays "awaiting the
+  watchman's re-read" until the watchman records its own verification, send-back or correction of that story. A
+  correction that annotates the peer's verification is enough, and the peer's record is never changed. With no
+  watchman designated, it shows what the next one would get. Nothing stands on a peer's verification alone.
 - `rally waiting` lists submissions waiting for a reader, oldest first, with the evidence and the commit of any
   requested read.
 - `rally track-record` now also counts what each verifier gave, by declared name, since a record names its
