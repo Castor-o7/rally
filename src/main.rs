@@ -229,6 +229,29 @@ enum Command {
         #[arg(long, env = "RALLY_HARNESS")]
         harness: Option<String>,
     },
+    /// Send each designated watchman one batched digest when the ledger changes, and nothing when
+    /// it hasn't (RAL-8). See docs/digest.md. Reads only; sends through `muster-shim tell`.
+    Digest {
+        /// Q: a digest goes once no new record has come for this long, such as 2m.
+        #[arg(long = "quiet", env = "RALLY_DIGEST_QUIET", value_parser = parse_window)]
+        quiet: u64,
+        /// M: or once this long has passed since the first new record was seen, such as 10m.
+        #[arg(long = "max", env = "RALLY_DIGEST_MAX", value_parser = parse_window)]
+        max: u64,
+        /// Repeat every this long until stopped, such as 30s. Without it, one pass.
+        #[arg(long, value_parser = parse_window)]
+        every: Option<u64>,
+        /// Send to this watchman when none can be checked as designated (the service has no
+        /// operator key). Declared: matched by name, not credential.
+        #[arg(long)]
+        watchman: Option<String>,
+        /// Where each watchman's last digest is kept. Defaults to digest.json beside the pairing.
+        #[arg(long)]
+        state_file: Option<PathBuf>,
+        /// Print the digest instead of sending it, and keep nothing.
+        #[arg(long)]
+        report_only: bool,
+    },
     /// For the operator: show the service's GitHub token can't merge (RAL-18). Reads pull request
     /// --pull, which must be already merged or closed, then tries to merge it naming a head no
     /// commit has, so nothing can merge even if the token could write. Succeeds only when GitHub
@@ -1358,6 +1381,181 @@ fn stalls_pass(
         report["errors"] = json!(errors);
     }
     Ok(serde_json::to_string_pretty(&report)?)
+}
+
+/// The most pages of records one digest pass reads.
+const DIGEST_PAGES: usize = 20;
+
+/// One pass of `rally digest` (RAL-8): for each watchman, read the records after its last digest,
+/// decide, and send a digest when one is due.
+fn digest_pass(
+    location: Option<&Location>,
+    config: &Path,
+    state_file: &Path,
+    times: rally::digest::Times,
+    named: Option<&str>,
+    report_only: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use rally::digest::{Decision, Kept, Watchman};
+    use rally::wake::Sender;
+    let backend = Backend::choose(location, config, false)?;
+    let get = |path: &str| -> Result<Value, Box<dyn std::error::Error>> {
+        match &backend {
+            Backend::Service(pairing) => Ok(reply_value(&client::request(
+                pairing,
+                "GET",
+                path,
+                None,
+                &[],
+            )?)?),
+            Backend::File(store) => Ok(match path {
+                "/v1/handover" => store.handover_report(None)?,
+                _ => return Err(format!("{path} isn't read from the database here").into()),
+            }),
+        }
+    };
+    let export = |after: u64| -> Result<Value, Box<dyn std::error::Error>> {
+        match &backend {
+            Backend::Service(_) => get(&format!("/v1/export?after={after}")),
+            Backend::File(store) => {
+                let (records, head) = store.export(after)?;
+                Ok(json!({"records": records, "head": head}))
+            }
+        }
+    };
+    // Every page of the story list, for RAL-31's comparison of merges.
+    let all_stories = || -> Result<Value, Box<dyn std::error::Error>> {
+        let mut merged = serde_json::Map::new();
+        let mut path = "/v1/stories".to_owned();
+        for _ in 0..DIGEST_PAGES {
+            let page = get(&path)?;
+            if let Some(rows) = page["stories"].as_object() {
+                merged.extend(rows.clone());
+            }
+            match page["next"].as_str() {
+                Some(next) => path = format!("/v1/stories?after={}", encode(next)),
+                None => break,
+            }
+        }
+        Ok(json!({"stories": merged}))
+    };
+    let handover = get("/v1/handover")?;
+    let mut watchmen: Vec<Watchman> = handover["watchmen"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|w| {
+            Some(Watchman {
+                name: w["name"].as_str()?.to_owned(),
+                credential: w["credential"].as_str().map(str::to_owned),
+            })
+        })
+        .collect();
+    let mut how = "designated";
+    if watchmen.is_empty()
+        && let Some(name) = named
+    {
+        watchmen.push(Watchman {
+            name: name.to_owned(),
+            credential: None,
+        });
+        how = "named with --watchman (declared)";
+    }
+    if watchmen.is_empty() {
+        return Ok(
+            json!({"sent": [], "note": "no watchman is designated or named, so nothing is sent"})
+                .to_string(),
+        );
+    }
+    let mut state: std::collections::BTreeMap<String, Kept> = std::fs::read_to_string(state_file)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64);
+    let muster = rally::wake::muster_available();
+    let mut rows = Vec::new();
+    for watch in &watchmen {
+        let key = watch.name.trim().to_lowercase();
+        let mut kept = match state.get(&key) {
+            Some(kept) => kept.clone(),
+            // A first run starts at the current head, so it doesn't send the whole history.
+            None => rally::digest::start_at(export(u64::MAX)?["head"]["seq"].as_u64().unwrap_or(0)),
+        };
+        let mut recs = Vec::new();
+        let mut after = kept.head;
+        for _ in 0..DIGEST_PAGES {
+            let page = export(after)?;
+            let got = rally::digest::records(&page);
+            let Some(last) = got.last().map(|r| r.seq) else {
+                break;
+            };
+            recs.extend(got);
+            after = last;
+            if page.get("next").is_none() {
+                break;
+            }
+        }
+        let mut row = json!({"watchman": watch.name, "how": how});
+        match rally::digest::step(&mut kept, &recs, watch, times, now_ms) {
+            Decision::Nothing => row["decision"] = json!("nothing new"),
+            Decision::Batching { due_in_ms } => {
+                row["decision"] = json!("batching");
+                row["due_in_s"] = json!(due_in_ms / 1000);
+                if report_only {
+                    // Nothing is kept, so show what the digest would say now.
+                    let to = recs.last().map_or(kept.head, |r| r.seq);
+                    let waiting = get("/v1/waiting")?;
+                    let stories = all_stories()?;
+                    let reads = rally::digest::Reads {
+                        waiting: &waiting,
+                        handover: &handover,
+                        stories: &stories,
+                        landed: &web::pr_head,
+                    };
+                    row["preview"] = json!(rally::digest::render(
+                        kept.head, to, &recs, watch, &reads, now_ms
+                    ));
+                }
+            }
+            Decision::Send { from, to } => {
+                let waiting = get("/v1/waiting")?;
+                let stories = all_stories()?;
+                let reads = rally::digest::Reads {
+                    waiting: &waiting,
+                    handover: &handover,
+                    stories: &stories,
+                    landed: &web::pr_head,
+                };
+                let digest = rally::digest::render(from, to, &recs, watch, &reads, now_ms);
+                if report_only {
+                    row["decision"] = json!("due (report only: not sent)");
+                    row["digest"] = json!(digest);
+                } else if !muster {
+                    row["decision"] = json!("due, but muster-shim isn't on this machine");
+                } else {
+                    match rally::wake::MusterShim.send(&watch.name, &digest) {
+                        Ok(()) => {
+                            rally::digest::sent(&mut kept, to);
+                            row["decision"] = json!("sent");
+                            row["covered"] = json!(format!("{}–{to}", from + 1));
+                        }
+                        Err(error) => {
+                            row["decision"] = json!("due, but sending failed");
+                            row["error"] = json!(error);
+                        }
+                    }
+                }
+            }
+        }
+        state.insert(key, kept);
+        rows.push(row);
+    }
+    if !report_only {
+        write_private(state_file, serde_json::to_string_pretty(&state)?.as_bytes())?;
+    }
+    Ok(json!({"at_ms": now_ms, "watchmen": rows}).to_string())
 }
 
 fn wake_pass(
@@ -2534,6 +2732,36 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     &config,
                     &state_file,
                     times,
+                    report_only,
+                )?;
+                let Some(every) = every else {
+                    return Ok(report);
+                };
+                println!("{}", escape_for_terminal(&report));
+                std::thread::sleep(std::time::Duration::from_millis(every));
+            }
+        }
+        Command::Digest {
+            quiet,
+            max,
+            every,
+            watchman,
+            state_file,
+            report_only,
+        } => {
+            let config = config_path(cli.config)?;
+            let state_file = state_file.unwrap_or_else(|| config.with_file_name("digest.json"));
+            let times = rally::digest::Times {
+                quiet_ms: quiet,
+                max_ms: max,
+            };
+            loop {
+                let report = digest_pass(
+                    location.as_ref(),
+                    &config,
+                    &state_file,
+                    times,
+                    watchman.as_deref(),
                     report_only,
                 )?;
                 let Some(every) = every else {

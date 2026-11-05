@@ -5,6 +5,7 @@ pub mod backup;
 pub mod brief;
 pub mod client;
 pub mod designation;
+pub mod digest;
 pub mod entity;
 pub mod evidence;
 pub mod init;

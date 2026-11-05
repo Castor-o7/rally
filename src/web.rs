@@ -571,6 +571,29 @@ fn run_gh(args: &[&str]) -> Result<String, String> {
     String::from_utf8(output).map_err(|_| "gh returned something unreadable".to_owned())
 }
 
+/// The head of the merged pull request that contains `commit` in `repo` (RAL-8, for RAL-31's
+/// comparison), read-only through `gh`. `None` when no merged pull request contains it. `repo` must
+/// already be checked as `owner/repo` (`evidence::parse`); `commit` must be hex.
+pub fn pr_head(repo: &str, commit: &str) -> Result<Option<String>, String> {
+    if commit.is_empty() || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("the merged commit isn't a hash".into());
+    }
+    let out = run_gh(&[
+        "api",
+        &format!("repos/{repo}/commits/{commit}/pulls"),
+        "--jq",
+        "[.[] | select(.merged_at != null)][0].head.sha // empty",
+    ])?;
+    let head = out.trim();
+    if head.is_empty() {
+        Ok(None)
+    } else if head.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(Some(head.to_owned()))
+    } else {
+        Err("gh returned something that isn't a commit".into())
+    }
+}
+
 /// A project's roadmap from GitHub, as `(commit, text)`.
 pub fn read_roadmap(project: &Project) -> Result<(String, String), String> {
     let commit = run_gh(&[
