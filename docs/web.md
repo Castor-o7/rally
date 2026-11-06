@@ -32,7 +32,10 @@ every 30 seconds.
 
 - **Roadmap ticks** are counted from each project's roadmap file, with the file, commit and read time
   shown. A tick means something different in each project, so each is labelled and they're never added
-  into one number. `web/projects.json` holds the meanings, or use `--projects`. Every checkbox in the
+  into one number. The projects and their meanings come from `--projects` if given, otherwise from
+  `projects.json` beside the pairing (`~/.config/rally/projects.json`) if it exists, and otherwise from the
+  built-in `web/projects.json` (RAL-74). The viewer's first line says which, as `projects`. A file that's
+  there but can't be read or isn't a list stops the viewer, rather than falling back. Every checkbox in the
   file counts, outside code examples. Percentages round down.
 - **Verified** comes only from the ledger, and is never worked out from ticks. It reads "not available
   yet" for a project with no stories in the ledger, and it covers only the stories the ledger tracks.
@@ -169,4 +172,5 @@ why.
   as RAL-29 says. RAL-34, viewing from a phone, depends on that.
 - Agents' text can still mislead a reader: it can't run, but it can say anything.
 - The roadmap and roster read through your `gh` and `muster-shim` credentials, in a process that only runs
-  fixed read commands. Project names in `--projects` come from you and are trusted.
+  fixed read commands. Project names in `--projects`, or in `projects.json` beside the pairing, come from you
+  and are trusted.

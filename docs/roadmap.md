@@ -294,6 +294,13 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   once; the page's own policy allows its form and nothing else, while every other page still allows no form; it
   shows nothing offered in the address that isn't a code; another site's form POST is refused; and
   `docs/web.md` says so.
+- [ ] **RAL-74: The viewer reads `~/.config/rally/projects.json` by default.** From the DiscoSim rally issues
+  log of 2026-11-06, §3.3: the built-in `web/projects.json` lists RAL, MUS, CAT, CHOMP and PDX only, so a whole
+  rally ran with no DiscoSim page until the viewer was restarted with `--projects`. Done when: without
+  `--projects`, `rally web` reads `projects.json` beside the pairing (`~/.config/rally/projects.json`, or
+  beside `--config`) when it exists, and the built-in list when it doesn't; `--projects` still wins; the first
+  line says which list was read; a file that's there but broken is an error, never a quiet fall back; tests
+  cover each case and don't read the operator's own config; and `docs/web.md` says so.
 
 ## Phase 5: Rally into Levi
 
