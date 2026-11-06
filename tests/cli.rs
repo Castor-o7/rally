@@ -117,6 +117,36 @@ fn a_team_claims_and_submits_and_the_history_is_kept() {
     assert_eq!(earlier["detail"]["state"], "in_review");
 }
 
+/// RAL-72: `show --brief` and `--field`, and the errors for a refused ID and a lapsed claim.
+#[test]
+fn show_brief_and_field_and_the_errors_say_what_to_do() {
+    let db = Ledger::new();
+    ok(&db, "t", &["ready", "RAL-3"]);
+    ok(&db, "t", &["claim", "RAL-3", "--team", "rally"]);
+    ok(
+        &db,
+        "t",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", "e"],
+    );
+    ok(&db, "w", &["send-back", "RAL-3", "--note", "no test"]);
+
+    let brief = ok(&db, "t", &["show", "RAL-3", "--brief"]);
+    assert_eq!(brief["state"], "sent_back");
+    assert!(brief.get("history").is_none());
+    let field = rally(&db, "t", &["show", "RAL-3", "--field", "state"]);
+    assert!(field.status.success());
+    assert_eq!(String::from_utf8(field.stdout).unwrap().trim(), "sent_back");
+
+    let error = refused(
+        &db,
+        "t",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", "e"],
+    );
+    assert!(error.contains("re-claim first"), "{error}");
+    let error = refused(&db, "t", &["ready", "DSM-45b"]);
+    assert!(error.contains("ABC-123"), "{error}");
+}
+
 #[test]
 fn the_submitter_cannot_verify_but_someone_else_can() {
     let db = Ledger::new();

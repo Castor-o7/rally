@@ -203,6 +203,15 @@ The bones. Everything later reads from this.
   each merge's landed head is checked against every commit the verify names or has had added, and a verify at a
   pull request's squash commit counts as covering that pull request's head; RAL-22 is fixed by annotating 7fc4bef
   onto its verify, record 179, and a push after the read still flags, each with a test.
+- [ ] **RAL-72: Make `rally show` easy to scan, and say what a refused ID or submit needs.** From the DiscoSim
+  rally's issues log (docs/muster/2026-11-06-discosim-rally-issues.md §2.3, §2.4, §8): a grep for `"state"` in
+  `rally show` found a nested "claimed" for stories that were verified, `rally ready DSM-45b` was refused without
+  saying why, and plucky-aspen's resubmit after a send-back got a bare 409. Done when: `rally show --brief` gives
+  one top-level state per story and no history; `rally show --field state` (or team, submitted_by,
+  verified_commit, merged_commit) prints that value alone, and for the list one `ID<tab>value` line per story; a
+  refused story ID says the form is capital letters, a hyphen and a number with no leading zero or suffix, and
+  points at `rally new-story`; a submit of a sent-back, released or never-claimed story says to re-claim first,
+  with the command; each with a test.
 - [x] **RAL-21: Keep each team's track record as plain facts.** Done when: the watchman can read each
   team's stories verified, stories sent back and what was missing, and problems reported, with no points,
   scores, weights or ranking.
