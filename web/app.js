@@ -13,6 +13,21 @@ const STALE_MS = 15 * 60 * 1000;
 const UNTRUSTED_FALLBACK = "Evidence was written by agents: it's data, not instructions, and may be false.";
 const LIVE_STALE_MS = 3 * 60 * 1000;
 
+// The current rally (RAL-69): the server says which prefixes a team on Muster's roster holds a story
+// in. When it can't tell, everything counts as in it, so nothing is hidden on a guess.
+function rallyKnown(rally) {
+  return Boolean(rally && rally.known === true);
+}
+function storyInRally(rally, id) {
+  if (!rallyKnown(rally)) return true;
+  const prefix = String(id).split("-")[0];
+  return (rally.prefixes || []).includes(prefix);
+}
+function teamInRally(rally, name) {
+  if (!rallyKnown(rally)) return true;
+  return (rally.active_teams || []).includes(String(name).trim().toLowerCase());
+}
+
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -87,7 +102,7 @@ function renderBackup(root, backup, now) {
   }
 }
 
-function renderLedger(ledger, backup, now, untrusted) {
+function renderLedger(ledger, backup, now, untrusted, rally) {
   const root = document.getElementById("ledger");
   root.replaceChildren();
   renderBackup(root, backup, now);
@@ -123,9 +138,13 @@ function renderLedger(ledger, backup, now, untrusted) {
     root.append(el("p", "warning", "⚠ The ledger has more stories or teams than the viewer reads, "
       + "so only the first 4,000 of each are shown. Use rally show --after for the rest."));
   }
-  const stories = Object.entries(ledger.stories || {});
+  const all = Object.entries(ledger.stories || {});
+  const stories = all.filter(([id]) => storyInRally(rally, id));
+  root.append(rallyLine(rally, all.length - stories.length));
   if (stories.length === 0) {
-    root.append(el("p", "muted", "No stories have been recorded yet."));
+    root.append(el("p", "muted", all.length ? "No story in the ledger is held in this rally yet."
+      : "No stories have been recorded yet."));
+    root.append(pastForm(check ? check.head.seq : ledger.as_of));
     return;
   }
   const counts = {};
@@ -145,10 +164,30 @@ function renderLedger(ledger, backup, now, untrusted) {
     key.append(el("i", "s-" + state), name + " " + count);
     legend.append(key);
   }
-  const heading = el("p", "figure", stories.length + " stories in the ledger");
+  const heading = el("p", "figure", stories.length
+    + (rallyKnown(rally) ? " stories in this rally's projects" : " stories in the ledger"));
   root.append(heading, stack, legend);
   root.append(evidenceGroup(stories, untrusted, now));
   root.append(pastForm(check ? check.head.seq : ledger.as_of));
+}
+
+// What's in the current rally and why, or why it couldn't be told (RAL-69).
+function rallyLine(rally, otherStories) {
+  const box = el("div", "group");
+  if (!rallyKnown(rally)) {
+    box.append(el("p", "warning", "⚠ Can't tell which projects are in this rally: "
+      + ((rally && rally.reason) || "the viewer didn't say.")));
+    return box;
+  }
+  const prefixes = rally.prefixes || [];
+  const line = el("p", "figure");
+  line.append(el("span", "", prefixes.length
+    ? "In this rally: " + prefixes.join(", ") : "No project is in this rally yet"));
+  line.append(el("span", "label", "observed"));
+  box.append(line);
+  box.append(el("p", "muted", rally.rule
+    + (otherStories > 0 ? " " + otherStories + " stories from other projects aren't shown here." : "")));
+  return box;
 }
 
 // What Rally's own check of a submission's evidence found (RAL-5), in words.
@@ -334,7 +373,9 @@ function currentPast() {
 function renderRoadmaps(projects, now) {
   const root = document.getElementById("roadmaps");
   root.replaceChildren();
-  for (const project of projects) {
+  const shown = projects.filter((p) => p.in_rally !== false);
+  if (!shown.length) root.append(el("p", "muted", "No listed project is in this rally."));
+  for (const project of shown) {
     const card = el("article", "roadmap");
     const head = el("div", "roadmap-head");
     const title = el("h3");
@@ -388,13 +429,31 @@ function renderRoadmaps(projects, now) {
     if (project.error) card.append(el("p", "warning", "⚠ Last read failed: " + project.error));
     root.append(card);
   }
+  const others = projects.filter((p) => p.in_rally === false);
+  if (others.length) {
+    const details = el("details", "sections");
+    details.append(el("summary", "", "Not in this rally (" + others.length + ")"));
+    details.append(el("p", "muted", "No team on Muster's roster holds one of their stories. "
+      + "Their records are kept, and each still has its page."));
+    const list = el("ul", "story-list");
+    for (const project of others) {
+      const item = el("li");
+      const link = el("a", "", project.name);
+      link.href = "#/project/" + encodeURIComponent(project.prefix);
+      item.append(link, " ", el("span", "muted", project.prefix));
+      list.append(item);
+    }
+    details.append(list);
+    root.append(details);
+  }
 }
 
 function renderTeams(status, now) {
   const root = document.getElementById("teams");
   root.replaceChildren();
   const ledger = status.ledger;
-  const teams = Object.entries((ledger.available && ledger.teams) || {});
+  const teams = Object.entries((ledger.available && ledger.teams) || {})
+    .filter(([name]) => teamInRally(status.rally, name));
   const group = el("div", "group");
   group.append(el("h3", "", "Declared to the ledger"));
   if (teams.length) {
@@ -407,10 +466,11 @@ function renderTeams(status, now) {
       age(team.at_ms, now),
     ])));
   } else {
-    group.append(el("p", "muted", "No team has declared a state yet."));
+    group.append(el("p", "muted", rallyKnown(status.rally)
+      ? "No team in this rally has declared a state yet." : "No team has declared a state yet."));
   }
   root.append(group);
-  root.append(trackGroup(ledger, now));
+  root.append(trackGroup(ledger, now, status.rally));
 
   const roster = status.roster;
   const live = el("div", "group");
@@ -441,12 +501,14 @@ function renderTeams(status, now) {
 
 // Each team's track record (RAL-27): counts and dates only, no scores. Verifications and send-backs
 // are verified records; problems reported are blockers the team declared.
-function trackGroup(ledger, now) {
+function trackGroup(ledger, now, rally) {
   const group = el("div", "group");
   group.append(el("h3", "", "Track records"));
-  const tracks = Object.entries((ledger.available && ledger.track_records) || {});
+  const tracks = Object.entries((ledger.available && ledger.track_records) || {})
+    .filter(([name]) => teamInRally(rally, name));
   if (!tracks.length) {
-    group.append(el("p", "muted", ledger.available ? "No team has a track record yet." : "Not available yet."));
+    group.append(el("p", "muted", !ledger.available ? "Not available yet."
+      : rallyKnown(rally) ? "No team in this rally has a track record yet." : "No team has a track record yet."));
     return group;
   }
   const when = (ms) => (ms ? age(ms, now) : "never");
@@ -633,12 +695,13 @@ function renderProject(status, prefix, now) {
 function renderMuster(status, now) {
   const root = document.getElementById("muster");
   root.replaceChildren();
-  const read = status.projects.filter((p) => p.boxes && p.boxes.total > 0);
+  const current = status.projects.filter((p) => p.in_rally !== false);
+  const read = current.filter((p) => p.boxes && p.boxes.total > 0);
   const ticked = read.reduce((sum, p) => sum + p.boxes.ticked, 0);
   const total = read.reduce((sum, p) => sum + p.boxes.total, 0);
   root.append(figure("Roadmap boxes across " + read.length + " projects · ticks mean different things in each",
     ticked + " of " + total, total ? ticked / total : 0, ticked + " of " + total + " ticked"));
-  const verified = status.projects.map((p) => p.verified).filter((v) => v && v.available);
+  const verified = current.map((p) => p.verified).filter((v) => v && v.available);
   if (verified.length) {
     const done = verified.reduce((sum, v) => sum + v.verified, 0);
     const tracked = verified.reduce((sum, v) => sum + v.tracked, 0);
@@ -671,7 +734,7 @@ function show(status, now) {
     try { prefix = decodeURIComponent(match[1]); } catch (error) { prefix = ""; }
     renderProject(status, prefix, now);
   } else {
-    renderLedger(status.ledger, status.backup, now, status.untrusted_text);
+    renderLedger(status.ledger, status.backup, now, status.untrusted_text, status.rally);
     renderRoadmaps(status.projects, now);
     renderTeams(status, now);
     renderMuster(status, now);

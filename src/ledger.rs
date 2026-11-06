@@ -600,6 +600,12 @@ pub struct Team {
 pub enum LedgerError {
     /// The record's body isn't a valid change. Holds the reason.
     InvalidChange(String),
+    /// A submit of a story nobody holds a claim on: it was sent back, released or never claimed,
+    /// so it needs a claim first (RAL-72).
+    ClaimLapsed {
+        story: String,
+        from: State,
+    },
     /// A story ID isn't in the `ABC-1` form.
     InvalidStoryId(String),
     /// A required text field is empty. Holds the field's name.
@@ -715,7 +721,12 @@ impl fmt::Display for LedgerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidChange(reason) => write!(f, "invalid change: {reason}"),
-            Self::InvalidStoryId(id) => write!(f, "story ID {id:?} isn't in the form ABC-1"),
+            Self::InvalidStoryId(id) => write!(
+                f,
+                "story ID {id:?} isn't in the form ABC-123: capital letters, a hyphen, then a \
+                 number with no leading zero and nothing after it, so DSM-45b and DSM-045 are \
+                 refused; for a new story, take the next number with rally new-story <PREFIX>"
+            ),
             Self::EmptyField(field) => write!(f, "{field} is empty"),
             Self::TooLong(field, limit) => write!(f, "{field} is over {limit} characters"),
             Self::ControlCharacter(field) => write!(f, "{field} has a control character"),
@@ -732,6 +743,18 @@ impl fmt::Display for LedgerError {
             Self::InvalidTransition { story, from } => {
                 write!(f, "{story} can't make this change from {from:?}")
             }
+            Self::ClaimLapsed { story, from } => match from {
+                State::SentBack => write!(
+                    f,
+                    "{story} was sent back, so its claim has lapsed: re-claim first with \
+                     rally claim {story} --team <team>, then submit"
+                ),
+                _ => write!(
+                    f,
+                    "{story} isn't claimed (it's {from:?}): claim it first with \
+                     rally claim {story} --team <team>, then submit"
+                ),
+            },
             Self::WrongTeam { story, holder } => write!(f, "{story} is held by {holder}"),
             Self::WrongKind { expected, found } => {
                 write!(f, "this change needs a {expected:?} record, not {found:?}")
@@ -1830,8 +1853,16 @@ fn transition(
         }
         Change::Submit { team, .. } => {
             require_kind(record, Kind::Declared)?;
-            if story.state != State::Claimed {
-                return Err(refuse(story.state));
+            match story.state {
+                State::Claimed => {}
+                // A send-back or release ends the claim, so a resubmit needs a new one (RAL-72).
+                from @ (State::SentBack | State::Ready) => {
+                    return Err(LedgerError::ClaimLapsed {
+                        story: id.to_owned(),
+                        from,
+                    });
+                }
+                from => return Err(refuse(from)),
             }
             require_holder(story, id, team)?;
             story.state = State::InReview;
@@ -2595,6 +2626,63 @@ mod tests {
 
     fn state(ledger: &Ledger) -> State {
         ledger.story(STORY).unwrap().state
+    }
+
+    /// RAL-72: a submit with no claim in force says to claim first, with the command; a submit
+    /// from review is still the plain refusal.
+    #[test]
+    fn a_submit_without_a_claim_says_to_claim_first() {
+        let mut ledger = ledger_with(&[ready(), claim(), submit()]);
+        assert!(matches!(
+            apply_next(&mut ledger, &submit()),
+            Err(LedgerError::InvalidTransition {
+                from: State::InReview,
+                ..
+            })
+        ));
+        apply_next(&mut ledger, &send_back()).unwrap();
+        let lapsed = apply_next(&mut ledger, &submit()).unwrap_err();
+        assert_eq!(
+            lapsed,
+            LedgerError::ClaimLapsed {
+                story: STORY.into(),
+                from: State::SentBack
+            }
+        );
+        let text = lapsed.to_string();
+        assert!(text.contains("re-claim first"), "{text}");
+        assert!(
+            text.contains(&format!("rally claim {STORY} --team")),
+            "{text}"
+        );
+        // Re-claiming lets it be submitted again.
+        apply_next(&mut ledger, &claim()).unwrap();
+        apply_next(&mut ledger, &submit()).unwrap();
+
+        let mut released = ledger_with(&[ready(), claim(), release()]);
+        let text = apply_next(&mut released, &submit())
+            .unwrap_err()
+            .to_string();
+        assert!(text.contains("claim it first"), "{text}");
+    }
+
+    /// RAL-72: a refused story ID says what the form is and how to get a new number.
+    #[test]
+    fn a_refused_story_id_explains_the_form() {
+        let ledger = Ledger::default();
+        for id in ["DSM-45b", "DSM-045", "dsm-45", "DSM"] {
+            // A leading zero is refused for new records only, by check.
+            let refused = ledger
+                .check(1, &team(json!({"change": "ready", "story": id})))
+                .unwrap_err();
+            assert_eq!(refused, LedgerError::InvalidStoryId(id.into()));
+            let text = refused.to_string();
+            assert!(
+                text.contains("capital letters, a hyphen, then a number"),
+                "{text}"
+            );
+            assert!(text.contains("rally new-story"), "{text}");
+        }
     }
 
     #[test]
@@ -3772,7 +3860,10 @@ mod tests {
                 let before = ledger.clone();
                 let result = apply_next(&mut ledger, &change);
                 assert!(
-                    matches!(result, Err(LedgerError::InvalidTransition { .. })),
+                    matches!(
+                        result,
+                        Err(LedgerError::InvalidTransition { .. } | LedgerError::ClaimLapsed { .. })
+                    ),
                     "{change:?} from {:?} gave {result:?}",
                     before.story(STORY).unwrap().state
                 );

@@ -203,6 +203,15 @@ The bones. Everything later reads from this.
   each merge's landed head is checked against every commit the verify names or has had added, and a verify at a
   pull request's squash commit counts as covering that pull request's head; RAL-22 is fixed by annotating 7fc4bef
   onto its verify, record 179, and a push after the read still flags, each with a test.
+- [ ] **RAL-72: Make `rally show` easy to scan, and say what a refused ID or submit needs.** From the DiscoSim
+  rally's issues log (docs/muster/2026-11-06-discosim-rally-issues.md §2.3, §2.4, §8): a grep for `"state"` in
+  `rally show` found a nested "claimed" for stories that were verified, `rally ready DSM-45b` was refused without
+  saying why, and plucky-aspen's resubmit after a send-back got a bare 409. Done when: `rally show --brief` gives
+  one top-level state per story and no history; `rally show --field state` (or team, submitted_by,
+  verified_commit, merged_commit) prints that value alone, and for the list one `ID<tab>value` line per story; a
+  refused story ID says the form is capital letters, a hyphen and a number with no leading zero or suffix, and
+  points at `rally new-story`; a submit of a sent-back, released or never-claimed story says to re-claim first,
+  with the command; each with a test.
 - [ ] **RAL-70: Gate a branch move on the stories it carries.** From the DiscoSim rally's issues log, §2.5: on
   2026-11-06 `main` was moved to f979331 while DSM-42 had been sent back by a peer. Assigned by frank-crocodile.
   Done when: `rally gate <range>` lists every story the range's commits name (subject, a merge's pull request title,
@@ -273,9 +282,25 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   that markup in recorded text doesn't run, and that an unauthorized viewer is refused; it isn't exposed
   to the open internet; and someone other than its author has reviewed it adversarially, before it's
   reachable beyond the machine it runs on.
+- [ ] **RAL-69: Show only the projects in the current rally.** Requested by the operator on 2026-11-06: a
+  project that hasn't been worked on for several rallies shouldn't be in the viewer "unless an active muster team
+  has claimed that project", but its progress is kept. Done when: the overview's roadmaps, ledger figures,
+  evidence, declared teams, track records and muster totals cover only the projects in which a team on Muster's
+  roster holds a story (claimed, in review or sent back), and say so; the other projects keep their records and
+  their pages and are listed, collapsed, as not in this rally; when the roster or the ledger can't be read,
+  everything is shown with a warning rather than hidden on a guess; and a test covers the rule. Adding a
+  project the ledger knows but `projects.json` doesn't (DiscoSim) is RAL-74's.
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.
+- [ ] **RAL-73: A one-time login code survives the browser's preload.** From the DiscoSim rally issues log of
+  2026-11-06, §3.1: Josh's pasted login links kept reporting the code as bad, most likely because Chrome
+  preloaded the address and spent the single-use code before the visit. Done when: opening a code's address
+  shows a "Sign in" button and spends nothing, and only the button's same-origin POST spends the code; a test
+  shows a prefetched GET (`Sec-Purpose: prefetch`, `Purpose: prefetch`) and a plain one leave the code working,
+  once; the page's own policy allows its form and nothing else, while every other page still allows no form; it
+  shows nothing offered in the address that isn't a code; another site's form POST is refused; and
+  `docs/web.md` says so.
 
 ## Phase 5: Rally into Levi
 
