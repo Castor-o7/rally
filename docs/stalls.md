@@ -38,7 +38,8 @@ minutes while it held the one-heavy-run lock, so no sweep ran and the queue behi
 
 `--lock <path>` (repeatable) names a lock file taken with `flock <path> <command>`. For each one, `rally stalls`
 reads the holder and the waiters from `/proc/locks`, matching the file's device and inode, and walks the holder's
-process tree. It adds a prompt if anything in that tree is stopped (`T` or `t`) or the holder is a zombie (`Z`):
+process tree. It adds a prompt if anything in that tree is stopped (`T`), traced (`t`, maybe a debugger), or the holder is
+a zombie (`Z`):
 
 | Row | When it holds | Prompt |
 |---|---|---|
@@ -48,7 +49,11 @@ Each process is listed with its pid, state, command and working directory. Its s
 ID in that directory, such as a scratchpad path, and named from Muster's roster when the roster has it. The guess is
 labelled as one. The process states are the kernel's account (observed). A lock that isn't held, or whose holder is
 running or asleep, gives no prompt. Every lock read is listed under `locks`, with its holders and the number
-waiting, or why it couldn't be read. Linux only, and only processes this user can see. The lock row needs no
+waiting, or why it couldn't be read. A lock nobody holds says "no holder found in /proc/locks", rather than showing
+an empty list. `/proc/locks` prints the superblock's device, which on btrfs subvolumes and overlayfs isn't the one
+`stat` gives, so when no line has the file's device and inode, lines with its inode alone are taken, and
+`matched_by` says so: a file on another device with the same inode would match too. Open file description locks
+have no owning process (pid -1) and are skipped. Linux only, and only processes this user can see. The lock row needs no
 roster, so it's shown even when the roster can't be read.
 
 The issues log also suggests asking a run not to start the next one, rather than to "hold", since a hold may have

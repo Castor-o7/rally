@@ -43,12 +43,33 @@ pub fn parse_stat(text: &str) -> Option<Proc> {
     })
 }
 
+/// How a lock's lines in `/proc/locks` were matched to the file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Matched {
+    /// No line names the file.
+    #[default]
+    Nothing,
+    /// By device and inode.
+    DeviceAndInode,
+    /// By inode alone: no line had the file's device, as on btrfs subvolumes and overlayfs, where
+    /// `stat` gives a different device from the superblock's that `/proc/locks` prints. Another
+    /// file on another device with the same inode would match too.
+    InodeOnly,
+}
+
 /// The pids holding, and waiting for, a lock on the file with this device and inode, from
 /// `/proc/locks`. Its lines read `1: FLOCK  ADVISORY  WRITE 4242 00:2b:1234 0 EOF`, with `->`
-/// after the number for a waiter; the device is `major:minor` in hex.
-pub fn parse_locks(text: &str, major: u32, minor: u32, inode: u64) -> (Vec<u32>, Vec<u32>) {
-    let mut holders = Vec::new();
-    let mut waiters = Vec::new();
+/// after the number for a waiter; the device is `major:minor` in hex. Open file description
+/// locks have no owning process (pid -1) and are skipped. If no line has the file's device and
+/// inode, lines with its inode alone are taken, and the match says so.
+pub fn parse_locks(
+    text: &str,
+    major: u32,
+    minor: u32,
+    inode: u64,
+) -> (Vec<u32>, Vec<u32>, Matched) {
+    // (pid, waiting, same device)
+    let mut found: Vec<(u32, bool, bool)> = Vec::new();
     for line in text.lines() {
         let mut fields: Vec<&str> = line.split_whitespace().collect();
         if fields.is_empty() {
@@ -67,21 +88,27 @@ pub fn parse_locks(text: &str, major: u32, minor: u32, inode: u64) -> (Vec<u32>,
         let [maj, min, ino] = parts[..] else {
             continue;
         };
-        let same = u32::from_str_radix(maj, 16).ok() == Some(major)
-            && u32::from_str_radix(min, 16).ok() == Some(minor)
-            && ino.parse::<u64>().ok() == Some(inode);
+        if ino.parse::<u64>().ok() != Some(inode) {
+            continue;
+        }
         let Ok(pid) = pid.parse::<u32>() else {
             continue;
         };
-        if same {
-            if waiting {
-                waiters.push(pid);
-            } else {
-                holders.push(pid);
-            }
-        }
+        let same = u32::from_str_radix(maj, 16).ok() == Some(major)
+            && u32::from_str_radix(min, 16).ok() == Some(minor);
+        found.push((pid, waiting, same));
     }
-    (holders, waiters)
+    let matched = if found.iter().any(|f| f.2) {
+        found.retain(|f| f.2);
+        Matched::DeviceAndInode
+    } else if found.is_empty() {
+        Matched::Nothing
+    } else {
+        Matched::InodeOnly
+    };
+    let holders = found.iter().filter(|f| !f.1).map(|f| f.0).collect();
+    let waiters = found.iter().filter(|f| f.1).map(|f| f.0).collect();
+    (holders, waiters, matched)
 }
 
 /// The first path component shaped like a session ID (a UUID), such as a scratchpad's.
@@ -124,6 +151,7 @@ fn tree(root: u32, procs: &BTreeMap<u32, Proc>) -> Vec<u32> {
 /// What was read for one lock.
 #[derive(Clone, Debug, Default)]
 pub struct Seen {
+    pub matched: Matched,
     pub holders: Vec<u32>,
     pub waiters: Vec<u32>,
     pub procs: BTreeMap<u32, Proc>,
@@ -141,17 +169,18 @@ pub fn judge(lock: &str, seen: &Seen, roster: &BTreeMap<String, String>) -> Opti
         };
         for pid in tree(holder, &seen.procs) {
             let proc = &seen.procs[&pid];
-            let stopped = matches!(proc.state, 'T' | 't');
-            let dead = pid == top.pid && proc.state == 'Z';
-            if !(stopped || dead) {
-                continue;
-            }
+            let means = match proc.state {
+                'T' => "stopped",
+                't' => "traced (maybe a debugger)",
+                'Z' if pid == top.pid => "zombie",
+                _ => continue,
+            };
             let cwd = seen.cwds.get(&pid);
             let session = cwd.and_then(|cwd| session_in(cwd));
             let nickname = session.as_ref().and_then(|id| roster.get(id));
             stuck.push(json!({
                 "pid": pid, "holder": holder, "state": proc.state.to_string(),
-                "state_means": if stopped { "stopped" } else { "zombie" },
+                "state_means": means,
                 "comm": proc.comm, "cwd": cwd,
                 "session": session, "nickname": nickname,
                 "session_kind": "guessed from the working directory",
@@ -182,13 +211,14 @@ pub fn read(lock: &Path) -> Result<Seen, String> {
     let dev = meta.dev();
     let locks = std::fs::read_to_string("/proc/locks")
         .map_err(|e| format!("can't read /proc/locks: {e}"))?;
-    let (holders, waiters) = parse_locks(
+    let (holders, waiters, matched) = parse_locks(
         &locks,
         rustix::fs::major(dev),
         rustix::fs::minor(dev),
         meta.ino(),
     );
     let mut seen = Seen {
+        matched,
         holders,
         waiters,
         ..Seen::default()
@@ -254,10 +284,25 @@ pub fn check(locks: &[std::path::PathBuf], roster: Option<&Value>) -> (Vec<Value
         let shown = lock.display().to_string();
         match read(lock) {
             Ok(seen) => {
-                seen_all.push(json!({
+                let mut row = json!({
                     "lock": shown, "checked": true, "holders": seen.holders,
                     "waiters": seen.waiters.len(), "kind": "observed",
-                }));
+                    "note": "Open file description locks (pid -1) are skipped.",
+                });
+                match seen.matched {
+                    Matched::Nothing => {
+                        row["holder"] = json!("no holder found in /proc/locks");
+                    }
+                    Matched::DeviceAndInode => row["matched_by"] = json!("device and inode"),
+                    Matched::InodeOnly => {
+                        row["matched_by"] = json!(
+                            "inode only: no line had the file's device (btrfs subvolumes and \
+                             overlayfs show another), so a file elsewhere with the same inode \
+                             would match too"
+                        );
+                    }
+                }
+                seen_all.push(row);
                 prompts.extend(judge(&shown, &seen, &names));
             }
             Err(reason) => {
@@ -285,6 +330,7 @@ mod tests {
 
     fn seen(procs: &[Proc]) -> Seen {
         Seen {
+            matched: Matched::DeviceAndInode,
             holders: vec![100],
             waiters: vec![300, 301],
             procs: procs.iter().map(|p| (p.pid, p.clone())).collect(),
@@ -309,8 +355,30 @@ mod tests {
                     1: -> FLOCK  ADVISORY  WRITE 301 00:2b:777 0 EOF\n\
                     2: POSIX  ADVISORY  WRITE 200 00:2b:778 0 EOF\n\
                     3: FLOCK  ADVISORY  WRITE 201 fd:01:777 0 EOF\n";
-        assert_eq!(parse_locks(text, 0, 0x2b, 777), (vec![100], vec![300, 301]));
-        assert_eq!(parse_locks(text, 0xfd, 1, 777), (vec![201], vec![]));
+        assert_eq!(
+            parse_locks(text, 0, 0x2b, 777),
+            (vec![100], vec![300, 301], Matched::DeviceAndInode)
+        );
+        assert_eq!(
+            parse_locks(text, 0xfd, 1, 777),
+            (vec![201], vec![], Matched::DeviceAndInode)
+        );
+        assert_eq!(
+            parse_locks(text, 0, 0x2b, 999),
+            (vec![], vec![], Matched::Nothing)
+        );
+    }
+
+    #[test]
+    fn with_no_line_on_the_files_device_the_inode_alone_is_matched_and_said() {
+        // A btrfs subvolume: stat says 0:48, /proc/locks prints the superblock's 0:2b.
+        let text = "1: FLOCK  ADVISORY  WRITE 100 00:2b:777 0 EOF\n\
+                    1: -> FLOCK  ADVISORY  WRITE 300 00:2b:777 0 EOF\n\
+                    2: OFDLCK ADVISORY  WRITE -1 00:2b:777 0 EOF\n";
+        assert_eq!(
+            parse_locks(text, 0, 0x30, 777),
+            (vec![100], vec![300], Matched::InodeOnly)
+        );
     }
 
     #[test]
@@ -335,6 +403,16 @@ mod tests {
         assert_eq!(row["processes"][0]["nickname"], "silken-birch");
         assert_eq!(row["processes"][0]["session"], SESSION);
         assert_eq!(row["processes"][0]["state_means"], "stopped");
+    }
+
+    #[test]
+    fn a_traced_process_is_labelled_as_maybe_a_debugger() {
+        let procs = [proc(100, 1, 'S', "flock"), proc(101, 100, 't', "godot")];
+        let row = judge("l", &seen(&procs), &BTreeMap::new()).unwrap();
+        assert_eq!(
+            row["processes"][0]["state_means"],
+            "traced (maybe a debugger)"
+        );
     }
 
     #[test]
@@ -365,23 +443,46 @@ mod tests {
         assert_eq!(session_in("/home/joshd/src/rally"), None);
     }
 
+    /// Resumes and ends the test's process group however the test ends, so a failed assert
+    /// never leaves a stopped shell, or a `wait` that blocks forever.
+    #[cfg(target_os = "linux")]
+    struct Group(std::process::Child);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for Group {
+        fn drop(&mut self) {
+            let group = format!("-{}", self.0.id());
+            for signal in ["-CONT", "-KILL"] {
+                let _ = std::process::Command::new("kill")
+                    .args([signal, "--", &group])
+                    .status();
+            }
+            let _ = self.0.wait();
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn a_real_stopped_holder_is_found_through_proc() {
+        use std::os::unix::process::CommandExt;
         use std::process::Command;
         let dir = tempfile::tempdir().unwrap();
         let lock = dir.path().join("heavy.lock");
         std::fs::write(&lock, "").unwrap();
-        let Ok(mut child) = Command::new("flock")
+        // Its own process group, so the guard can resume and end all of it.
+        let Ok(child) = Command::new("flock")
             .arg(&lock)
             .args(["sh", "-c", "kill -STOP $$; true"])
+            .process_group(0)
             .spawn()
         else {
             eprintln!("no flock(1) here; skipped");
             return;
         };
+        let mut group = Group(child);
+        let holder = group.0.id();
         let mut row = None;
-        for _ in 0..100 {
+        for _ in 0..200 {
             let (prompts, seen) = check(std::slice::from_ref(&lock), None);
             assert_eq!(seen[0]["checked"], true, "{seen:?}");
             if let Some(found) = prompts.into_iter().next() {
@@ -390,26 +491,19 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        let pids: Vec<u32> = row
-            .as_ref()
-            .and_then(|row| row["processes"].as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|p| p["pid"].as_u64().map(|p| p as u32))
-            .collect();
-        for pid in &pids {
-            let _ = Command::new("kill")
-                .args(["-CONT", &pid.to_string()])
-                .status();
-        }
-        let _ = child.wait();
         let row = row.expect("the stopped holder wasn't flagged");
         assert_eq!(row["processes"][0]["state_means"], "stopped");
-        assert_eq!(row["processes"][0]["holder"], child.id());
-        let (prompts, _) = check(std::slice::from_ref(&lock), None);
+        assert_eq!(row["processes"][0]["holder"], holder);
+        // Resumed, the shell finishes and flock lets go of the lock.
+        let _ = Command::new("kill")
+            .args(["-CONT", "--", &format!("-{holder}")])
+            .status();
+        assert!(group.0.wait().unwrap().success());
+        let (prompts, seen) = check(std::slice::from_ref(&lock), None);
         assert!(
             prompts.is_empty(),
             "the lock is released and nothing is flagged"
         );
+        assert_eq!(seen[0]["holder"], "no holder found in /proc/locks");
     }
 }
