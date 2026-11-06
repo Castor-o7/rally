@@ -417,6 +417,14 @@ word.
   out again. Done when: `rally new-story` also reads the prefix's roadmap in each open pull request, read-only
   through the service's GitHub token, and never hands out a number used there; when GitHub can't be read it says
   so rather than guessing; with a test for an ID in an open pull request and one for an unreadable GitHub.
+- [ ] **RAL-71: Evidence can be corrected.** From the DiscoSim rally's issues log (§2.2, 2026-11-06): DSM-41's
+  evidence named `Castor-o7/DiscoteSim`, a typo, and DSM-54's wasn't `owner/repo@<full commit>`, and the only fix
+  for either was a send-back, since a resubmit in review is refused. Done when: `rally submit` refuses evidence
+  that isn't `owner/repo@<full commit>`, or whose repository isn't the one the projects list gives the story's
+  prefix, saying what to write, unless `--not-checkable` is given; `rally amend <STORY> --team <team> --evidence
+  ...` lets the submitter, and only the submitter, replace the evidence of a story in review without a send-back,
+  checked the same way, recorded in the story's history as an amendment beside the original, and checked by
+  Rally as the latest submission; a resubmit in review says to amend; with a test for each.
 - [x] **RAL-56: A rule for picking the next story that a team can follow alone.** Merged in #106 (6aa5622). From the operator's question of
   2026-11-05. The operator added: "if the operator doesn't respond within a certain reasonable window of time then
   shelve the item. don't just inherently skip operator interaction items please". Done when: `rally next --team

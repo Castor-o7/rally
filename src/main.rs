@@ -356,6 +356,34 @@ enum Command {
         /// What you didn't test, in its own field.
         #[arg(long)]
         untested: Option<String>,
+        /// The projects, whose `repo` the evidence must name for a story of that prefix (RAL-71),
+        /// instead of the defaults.
+        #[arg(long, env = "RALLY_PROJECTS")]
+        projects: Option<PathBuf>,
+        /// Record evidence that isn't owner/repo@<full commit> in the project's repository, such
+        /// as work outside GitHub. Rally then records it as not checkable.
+        #[arg(long)]
+        not_checkable: bool,
+    },
+    /// Correct the evidence of a story you submitted that's still in review (RAL-71), without a
+    /// send-back. Checked as `submit` is, and recorded in the story's history as an amendment.
+    Amend {
+        story: String,
+        #[arg(long)]
+        team: String,
+        /// A repository and full commit, as owner/repo@<full commit>, which Rally checks (RAL-5).
+        #[arg(long)]
+        evidence: String,
+        /// What you didn't test, in its own field.
+        #[arg(long)]
+        untested: Option<String>,
+        /// The projects, whose `repo` the evidence must name for a story of that prefix, instead
+        /// of the defaults.
+        #[arg(long, env = "RALLY_PROJECTS")]
+        projects: Option<PathBuf>,
+        /// Record evidence that isn't owner/repo@<full commit> in the project's repository.
+        #[arg(long)]
+        not_checkable: bool,
     },
     /// Confirm someone else's submitted story, naming the commit you read.
     Verify {
@@ -1187,6 +1215,66 @@ const NEW_STORY_TRIES: usize = 20;
 /// `rally new-story`: the next free number for `prefix`, above every one in the ledger and in the
 /// roadmap, written in one append. If another team takes it first, the ledger refuses and this
 /// tries the next (RAL-55).
+/// A submit or amend record (RAL-71).
+fn submission(
+    story: &str,
+    team: &str,
+    evidence: &str,
+    untested: Option<String>,
+    amend: bool,
+) -> (Kind, Value) {
+    let mut body = json!({"change": "submit", "story": story, "team": team, "evidence": evidence});
+    if let Some(untested) = untested {
+        body["untested"] = json!(untested);
+    }
+    if amend {
+        body["amend"] = json!(true);
+    }
+    (Kind::Declared, body)
+}
+
+/// Checks evidence at submit (RAL-71): it must be `owner/repo@<full commit>`, and for a story whose
+/// prefix the projects list, name that project's repository. Caught here, a typo costs a retry
+/// rather than a send-back.
+fn check_evidence(
+    story: &str,
+    evidence: &str,
+    projects: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let text = match projects {
+        Some(path) => std::fs::read_to_string(path)?,
+        None => DEFAULT_PROJECTS.to_owned(),
+    };
+    let projects: Vec<Project> = serde_json::from_str(&text)?;
+    match evidence_problem(story, evidence, &projects) {
+        Some(problem) => Err(problem.into()),
+        None => Ok(()),
+    }
+}
+
+/// Why `evidence` won't do for `story`, if it won't (RAL-71).
+fn evidence_problem(story: &str, evidence: &str, projects: &[Project]) -> Option<String> {
+    const FORM: &str = "write it as owner/repo@<full commit>, such as \
+                        Castor-o7/rally@<40 hex digits from git rev-parse HEAD>";
+    let (repo, _) = match rally::evidence::parse(evidence) {
+        Ok(parsed) => parsed,
+        Err(why) => return Some(format!("{why}: {FORM}, or give --not-checkable")),
+    };
+    let prefix = story.split_once('-').map_or(story, |(prefix, _)| prefix);
+    if let Some(project) = projects
+        .iter()
+        .find(|project| project.prefix.eq_ignore_ascii_case(prefix))
+        && !project.repo.eq_ignore_ascii_case(&repo)
+    {
+        return Some(format!(
+            "the evidence names {repo}, but {prefix} stories are in {}: check the repository's \
+             spelling, or give --projects with the right repo for {prefix}",
+            project.repo
+        ));
+    }
+    None
+}
+
 /// `owner/repo` from a github.com remote URL, in https or ssh form.
 fn github_repo(url: &str) -> Option<String> {
     let rest = url
@@ -2708,13 +2796,26 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             team,
             evidence,
             untested,
+            projects,
+            not_checkable,
         } => {
-            let mut body =
-                json!({"change": "submit", "story": story, "team": team, "evidence": evidence});
-            if let Some(untested) = untested {
-                body["untested"] = json!(untested);
+            if !not_checkable {
+                check_evidence(&story, &evidence, projects.as_deref())?;
             }
-            (Kind::Declared, body)
+            submission(&story, &team, &evidence, untested, false)
+        }
+        Command::Amend {
+            story,
+            team,
+            evidence,
+            untested,
+            projects,
+            not_checkable,
+        } => {
+            if !not_checkable {
+                check_evidence(&story, &evidence, projects.as_deref())?;
+            }
+            submission(&story, &team, &evidence, untested, true)
         }
         Command::Verify {
             story,

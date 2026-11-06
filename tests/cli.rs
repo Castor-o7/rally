@@ -8,6 +8,7 @@ use serde_json::Value;
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const OTHER_COMMIT: &str = "fedcba9876543210fedcba9876543210fedcba98";
+const EVIDENCE: &str = "Castor-o7/rally@0123456789abcdef0123456789abcdef01234567";
 
 /// A scratch database of its own, and a directory for the head file.
 struct Ledger {
@@ -41,6 +42,7 @@ fn rally(db: &Ledger, name: &str, args: &[&str]) -> Output {
         .env_remove("RALLY_NAME")
         .env_remove("RALLY_TEAM")
         .env_remove("RALLY_HARNESS")
+        .env_remove("RALLY_PROJECTS")
         .output()
         .unwrap()
 }
@@ -61,6 +63,121 @@ fn refused(db: &Ledger, name: &str, args: &[&str]) -> String {
     String::from_utf8(output.stderr).unwrap()
 }
 
+/// RAL-71: a typo in the repository or a short commit is refused at submit, saying what to write,
+/// and the submitter corrects evidence in review with `amend`, without a send-back.
+#[test]
+fn evidence_is_checked_at_submit_and_amended_in_review() {
+    let db = Ledger::new();
+    ok(&db, "silken-tanager", &["ready", "RAL-3"]);
+    ok(
+        &db,
+        "silken-tanager",
+        &["claim", "RAL-3", "--team", "rally"],
+    );
+    let submit = |evidence: &str| {
+        refused(
+            &db,
+            "silken-tanager",
+            &["submit", "RAL-3", "--team", "rally", "--evidence", evidence],
+        )
+    };
+    let typo = submit(&format!("Castor-o7/ralyl@{COMMIT}"));
+    assert!(
+        typo.contains("names Castor-o7/ralyl, but RAL stories are in Castor-o7/rally"),
+        "{typo}"
+    );
+    let short = submit("Castor-o7/rally@0123456");
+    assert!(short.contains("isn't a full hash"), "{short}");
+    assert!(short.contains("owner/repo@<full commit>"), "{short}");
+    let bare = submit("abc");
+    assert!(bare.contains("isn't owner/repo@<full commit>"), "{bare}");
+    // Another project's prefix is checked against its own repository, from --projects.
+    let projects = db.dir.path().join("projects.json");
+    std::fs::write(
+        &projects,
+        r#"[{"name": "Rally", "prefix": "RAL", "repo": "someone/fork", "path": "docs/roadmap.md",
+             "tick_meaning": "x"}]"#,
+    )
+    .unwrap();
+    let elsewhere = refused(
+        &db,
+        "silken-tanager",
+        &[
+            "submit",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            EVIDENCE,
+            "--projects",
+            projects.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        elsewhere.contains("RAL stories are in someone/fork"),
+        "{elsewhere}"
+    );
+    // Nothing refused was recorded.
+    assert_eq!(
+        ok(&db, "silken-tanager", &["show", "RAL-3"])["detail"]["state"],
+        "claimed"
+    );
+
+    ok(
+        &db,
+        "silken-tanager",
+        &[
+            "submit",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            &format!("Castor-o7/rally@{OTHER_COMMIT}"),
+        ],
+    );
+    // A resubmit in review is refused, saying to amend.
+    let again = refused(
+        &db,
+        "silken-tanager",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    assert!(again.contains("rally amend RAL-3"), "{again}");
+    // Amending is checked the same way, and only the submitter can.
+    let typo = refused(
+        &db,
+        "silken-tanager",
+        &[
+            "amend",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            "Castor-o7/rally@abc",
+        ],
+    );
+    assert!(typo.contains("isn't a full hash"), "{typo}");
+    let other = refused(
+        &db,
+        "plucky-aspen",
+        &["amend", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    assert!(other.contains("only silken-tanager can amend"), "{other}");
+    ok(
+        &db,
+        "silken-tanager",
+        &["amend", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    let shown = ok(&db, "silken-tanager", &["show", "RAL-3"]);
+    assert_eq!(shown["detail"]["state"], "in_review");
+    let history = shown["detail"]["history"].as_array().unwrap();
+    assert_eq!(history[3]["change"]["evidence"], EVIDENCE);
+    assert_eq!(history[3]["change"]["amend"], true);
+    assert_eq!(
+        history[2]["change"]["evidence"],
+        format!("Castor-o7/rally@{OTHER_COMMIT}")
+    );
+}
+
 #[test]
 fn a_team_claims_and_submits_and_the_history_is_kept() {
     let db = Ledger::new();
@@ -71,7 +188,7 @@ fn a_team_claims_and_submits_and_the_history_is_kept() {
         "silken-tanager",
         &["claim", "RAL-3", "--team", "rally"],
     );
-    let evidence = "Castor-o7/rally abc123";
+    let evidence = EVIDENCE;
     let submitted = ok(
         &db,
         "silken-tanager",
@@ -156,7 +273,7 @@ fn the_submitter_cannot_verify_but_someone_else_can() {
     ok(
         &db,
         "author",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
     );
 
     let error = refused(
@@ -206,7 +323,7 @@ fn a_merge_is_a_commit_in_any_state_and_is_compared_with_the_verified_one() {
     ok(
         &db,
         "author",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
     );
     let error = refused(&db, "reader", &["verify", "RAL-3", "--note", "fine"]);
     assert!(error.contains("--commit"), "{error}");
@@ -289,7 +406,7 @@ fn a_requested_read_is_shown_until_answered_and_a_merge_meanwhile_is_marked() {
     ok(
         &db,
         "author",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
     );
     ok(
         &db,
@@ -440,7 +557,7 @@ fn a_track_record_reads_back_as_plain_facts() {
     ok(
         &db,
         "author",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
     );
     ok(&db, "watch", &["send-back", "RAL-3", "--note", "no test"]);
     ok(
@@ -513,7 +630,15 @@ fn recorded_text_is_marked_untrusted_and_shown_only_as_text() {
     ok(
         &db,
         "author",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", attack],
+        &[
+            "submit",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            attack,
+            "--not-checkable",
+        ],
     );
     ok(
         &db,
@@ -685,7 +810,15 @@ fn control_characters_in_recorded_text_are_escaped() {
     let output = rally(
         &db,
         "author",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", escape],
+        &[
+            "submit",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            escape,
+            "--not-checkable",
+        ],
     );
     assert!(output.status.success());
     let shown = rally(&db, "author", &["show", "RAL-3"]);

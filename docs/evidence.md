@@ -17,6 +17,20 @@ Evidence written as `owner/repo@<full commit>` (40 or 64 hex digits) is checked 
 Evidence in any other form is recorded as `checkable: false`, with the reason. What a team didn't test goes in
 its own field, `rally submit --untested "..."`, not in the evidence.
 
+## At submit, and correcting it (RAL-71)
+
+`rally submit` and `rally amend` check the evidence before anything is written: it must be
+`owner/repo@<full commit>`, and when the projects list (`--projects`, or `RALLY_PROJECTS`, or the defaults)
+has the story's prefix, the repository must be that project's, compared without case. A refusal says what to
+write. Evidence that really can't take that form, such as work outside GitHub, is recorded with
+`--not-checkable`, and the service's check then records it as not checkable.
+
+A typo found while the story is in review is fixed by its submitter with
+`rally amend <STORY> --team <team> --evidence "owner/repo@<full commit>"`, without a send-back. The amendment is a
+submit record marked `"amend": true`: the state stays In review, the earlier submission stays in the history, and
+the amendment is the latest submission, so it's the one this check reads and the one `rally waiting` shows. Only
+the submitter can amend, and only in review; a plain resubmit in review is refused, saying to amend.
+
 The record is evidence, not a verdict. `ci: passed` is GitHub's word on that one commit. A reader still reads
 the work, and RAL-31 still compares the commit that's merged with the one that was read.
 
