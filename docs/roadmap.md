@@ -203,6 +203,13 @@ The bones. Everything later reads from this.
   each merge's landed head is checked against every commit the verify names or has had added, and a verify at a
   pull request's squash commit counts as covering that pull request's head; RAL-22 is fixed by annotating 7fc4bef
   onto its verify, record 179, and a push after the read still flags, each with a test.
+- [ ] **RAL-75: Flag a heavy-run lock held by a stopped process.** From the DiscoSim rally's issues log, §4.4: on
+  2026-11-06 a runner shell sat stopped (state T) for about 57 minutes while it held the one-heavy-run lock.
+  Assigned by frank-crocodile. Done when: `rally stalls --lock <path>` reads the lock's holder and waiters from
+  `/proc/locks`, and gives a `stopped_lock_holder` prompt if the holder, or anything under it, is stopped, or the
+  holder is a zombie, naming each process's pid, state, working directory and the session guessed from it; a held
+  lock with a running holder gives none; documented in `docs/stalls.md`; with a test that stops a real
+  `flock`-held shell and finds it.
 - [x] **RAL-21: Keep each team's track record as plain facts.** Done when: the watchman can read each
   team's stories verified, stories sent back and what was missing, and problems reported, with no points,
   scores, weights or ranking.
