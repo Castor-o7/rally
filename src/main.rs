@@ -698,6 +698,20 @@ enum Command {
         #[arg(long = "also-read")]
         also_read: Vec<String>,
     },
+    /// Before moving a branch: every story the commits in a range name must be verified (RAL-70).
+    /// Lists each story named with its state, and fails if any is sent back, unverified, or not
+    /// in the ledger under a prefix the ledger uses. Reads only commit messages.
+    Gate {
+        /// The commits to check, as git takes them, such as 19cc9d1..origin/main.
+        range: String,
+        /// The checkout to read the commits from.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// A story the range only mentions, such as one a commit files on the roadmap: listed,
+        /// and not refused. Repeatable.
+        #[arg(long)]
+        allow: Vec<String>,
+    },
     /// Show the state of every story, or one story with its history.
     Show {
         story: Option<String>,
@@ -1066,6 +1080,9 @@ impl Backend {
         Ok((finish(first, merged, listed, is_list), true))
     }
 }
+
+/// The most pages of stories that `rally gate` reads.
+const GATE_PAGES: usize = 50;
 
 /// The most pages of stories, and of blockers, that `rally next` reads.
 const NEXT_PAGES: usize = 20;
@@ -2501,6 +2518,25 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 return Ok(text);
             }
             return Err(format!("the ledger failed its check:\n{text}").into());
+        }
+        Command::Gate { range, repo, allow } => {
+            let commits = rally::gate::commits(&repo, &range)?;
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
+            let (read, more) =
+                backend.read_all("/v1/stories", "stories", GATE_PAGES, |ledger, page| {
+                    views::stories(ledger, None, page)
+                })?;
+            if more {
+                return Err("the ledger has more stories than the gate reads: refused".into());
+            }
+            let stories = read["stories"].as_object().cloned().unwrap_or_default();
+            let found =
+                rally::gate::judge(&range, &commits, &stories, &allow.into_iter().collect());
+            let text = serde_json::to_string_pretty(&found)?;
+            if found["ok"] == json!(true) {
+                return Ok(text);
+            }
+            return Err(format!("the gate refused {range}:\n{text}").into());
         }
         Command::Show {
             story,

@@ -752,3 +752,115 @@ fn session_start_is_silent_and_quick_when_the_service_cant_be_reached() {
     let out = session_start(home.path(), &["--team", "rally"]);
     assert!(out.status.success() && out.stdout.is_empty());
 }
+
+fn git(repo: &std::path::Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn the_gate_refuses_a_range_naming_a_sent_back_story_and_passes_once_it_is_verified() {
+    let db = Ledger::new();
+    let repo = db.dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "start"]);
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    git(
+        &repo,
+        &["commit", "-q", "--allow-empty", "-m", "feat: one (RAL-1)"],
+    );
+    git(
+        &repo,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "fix: two (RAL-2)\n\nAfter RAL-9, which isn't this.",
+        ],
+    );
+    let range = format!("{base}..HEAD");
+    let repo_arg = repo.to_str().unwrap();
+
+    for story in ["RAL-1", "RAL-2"] {
+        ok(&db, "author", &["ready", story]);
+        ok(&db, "author", &["claim", story, "--team", "rally"]);
+        ok(
+            &db,
+            "author",
+            &["submit", story, "--team", "rally", "--evidence", "abc"],
+        );
+    }
+    ok(
+        &db,
+        "reader",
+        &["verify", "RAL-1", "--note", "read", "--commit", COMMIT],
+    );
+    ok(
+        &db,
+        "reader",
+        &["send-back", "RAL-2", "--note", "tick 0 bug"],
+    );
+
+    let error = refused(&db, "watchman", &["gate", &range, "--repo", repo_arg]);
+    assert!(error.contains("the gate refused"), "{error}");
+    let found: Value = serde_json::from_str(&error[error.find('{').unwrap()..]).unwrap();
+    assert_eq!(found["commits"], 2);
+    assert_eq!(found["refused"][0]["story"], "RAL-2");
+    assert_eq!(found["refused"][0]["why"], "sent back");
+    assert_eq!(found["stories"]["RAL-1"]["state"], "verified");
+    // RAL-9 is only cited in a body, so it isn't named.
+    assert!(found["stories"].get("RAL-9").is_none());
+
+    let allowed = ok(
+        &db,
+        "watchman",
+        &["gate", &range, "--repo", repo_arg, "--allow", "RAL-2"],
+    );
+    assert_eq!(allowed["ok"], true);
+    assert_eq!(allowed["allowed"], serde_json::json!(["RAL-2"]));
+
+    ok(&db, "author", &["claim", "RAL-2", "--team", "rally"]);
+    ok(
+        &db,
+        "author",
+        &["submit", "RAL-2", "--team", "rally", "--evidence", "abc"],
+    );
+    ok(
+        &db,
+        "reader",
+        &[
+            "verify",
+            "RAL-2",
+            "--note",
+            "fixed",
+            "--commit",
+            OTHER_COMMIT,
+        ],
+    );
+    let passed = ok(&db, "watchman", &["gate", &range, "--repo", repo_arg]);
+    assert_eq!(passed["ok"], true);
+
+    let error = refused(
+        &db,
+        "watchman",
+        &["gate", "--repo", repo_arg, "--", "--output=x"],
+    );
+    assert!(error.contains("isn't a commit range"), "{error}");
+}
