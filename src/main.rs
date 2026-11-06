@@ -710,6 +710,13 @@ enum Command {
         /// For a history: the entries before this record, as the last page's `earlier` gave it.
         #[arg(long)]
         before: Option<u64>,
+        /// One top-level state per story and no history (RAL-72).
+        #[arg(long, conflicts_with = "before")]
+        brief: bool,
+        /// Print one field alone as plain text: state, team, submitted_by, verified_commit or
+        /// merged_commit. For the list, one `ID<tab>value` line per story (RAL-72).
+        #[arg(long, conflicts_with_all = ["brief", "before"])]
+        field: Option<String>,
     },
 }
 
@@ -2507,6 +2514,8 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             as_of,
             after,
             before,
+            brief,
+            field,
         } => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             let path = match &story {
@@ -2514,9 +2523,14 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 None => "/v1/stories".to_owned(),
             };
             let page = Page { after, before };
-            return backend.read(&path, as_of, &page, |ledger, page| {
+            let value = backend.read_value(&path, as_of, &page, |ledger, page| {
                 views::stories(ledger, story.as_deref(), page)
-            });
+            })?;
+            if let Some(name) = field {
+                return Ok(views::field(&value, &name)?);
+            }
+            let value = if brief { views::brief(&value) } else { value };
+            return Ok(serde_json::to_string_pretty(&value)?);
         }
         Command::Teams {
             team,
