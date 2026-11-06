@@ -150,7 +150,8 @@ enum Command {
     Web {
         #[arg(long, default_value = "127.0.0.1:7300")]
         bind: String,
-        /// The projects to show, instead of the defaults.
+        /// The projects to show. Defaults to projects.json beside the pairing
+        /// (~/.config/rally/projects.json) when that exists, and otherwise the built-in list.
         #[arg(long)]
         projects: Option<PathBuf>,
         /// This machine's backup directory, to show how old the last backup is and whether that's
@@ -1876,6 +1877,19 @@ fn config_path(config: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::E
     }
 }
 
+/// The viewer's projects file when `--projects` isn't given (RAL-74): `projects.json` beside the
+/// pairing (`~/.config/rally/projects.json` by default), or `None` for the built-in list when there
+/// isn't one. A file that's there but can't be read is an error, never a quiet fall back to the
+/// built-in list.
+fn default_projects_file(config: &Path) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    let path = config.with_file_name("projects.json");
+    match std::fs::metadata(&path) {
+        Ok(_) => Ok(Some(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("can't read {}: {error}", path.display()).into()),
+    }
+}
+
 /// The most pages of each list the viewer reads, each of up to [`views::LIST_LIMIT`] entries.
 const VIEWER_PAGES: usize = 20;
 
@@ -2057,11 +2071,18 @@ fn run_viewer(
     sign_in: web::SignIn,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let key_file = sign_in.key_file.as_path();
-    let text = match projects {
-        Some(path) => std::fs::read_to_string(path)?,
+    let projects_from = projects
+        .as_ref()
+        .map_or_else(|| json!("built-in"), |path| json!(path));
+    let text = match &projects {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|e| format!("can't read {}: {e}", path.display()))?,
         None => DEFAULT_PROJECTS.to_owned(),
     };
-    let projects: Vec<Project> = serde_json::from_str(&text)?;
+    let projects: Vec<Project> = serde_json::from_str(&text).map_err(|e| {
+        let from = projects_from.as_str().unwrap_or("built-in");
+        format!("{from} isn't a projects list: {e}")
+    })?;
     // A prefix the viewer doesn't list would be silently ignored, so refuse it.
     if let Some(prefix) = local
         .by_prefix
@@ -2103,6 +2124,7 @@ fn run_viewer(
     println!(
         "{}",
         json!({"listening": listening.to_string(), "key_file": key_file,
+               "projects": projects_from,
                "sign_in": format!("rally web --bind {listening} --login")})
     );
     std::io::Write::flush(&mut std::io::stdout())?;
@@ -2401,6 +2423,11 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     .by_prefix
                     .insert(prefix.to_owned(), expand_home(std::path::Path::new(folder)));
             }
+            // RAL-74: the operator's own list beside the pairing, if there is one, then the built-in.
+            let projects = match projects {
+                Some(path) => Some(path),
+                None => default_projects_file(&config)?,
+            };
             return run_viewer(
                 &bind,
                 projects,

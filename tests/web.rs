@@ -5,7 +5,7 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 
 use rally::scratch_pg::{self, Database};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 struct Viewer {
     child: Child,
@@ -40,11 +40,13 @@ fn rally() -> Command {
     command
 }
 
-/// `rally` on this test's own scratch ledger.
+/// `rally` on this test's own scratch ledger, with its pairing in the test's folder, so nothing
+/// beside the operator's own pairing (such as `~/.config/rally/projects.json`) is read.
 fn on(db: &Database, dir: &std::path::Path) -> Command {
     let mut command = rally();
     command.arg("--db").arg(&db.url);
     command.arg("--head-file").arg(dir.join("ledger.head"));
+    command.env("RALLY_CONFIG", dir.join("client.json"));
     command
 }
 
@@ -688,4 +690,69 @@ fn a_request_the_browser_marks_as_from_another_site_is_refused_even_with_the_key
             "{site}"
         );
     }
+}
+
+/// The viewer's first line, from `rally web` started on `dir` with `args`, and the child to stop.
+fn first_line(db: &Database, dir: &std::path::Path, args: &[&str]) -> (std::process::Child, Value) {
+    let mut child = on(db, dir)
+        .args(["web", "--bind", "127.0.0.1:0", "--key-file"])
+        .arg(dir.join("web-key"))
+        .args(args)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    (child, serde_json::from_str(&line).unwrap())
+}
+
+/// RAL-74: a whole rally ran with no DiscoSim page, because the viewer only read its built-in list
+/// unless `--projects` was given. Now `projects.json` beside the pairing is read by default.
+#[test]
+fn the_projects_beside_the_pairing_are_read_by_default() {
+    let db = scratch_pg::shared().database();
+    // With none there, the built-in list.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut child, started) = first_line(&db, dir.path(), &[]);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(started["projects"], "built-in", "{started}");
+
+    // With one there, that one.
+    let dir = tempfile::tempdir().unwrap();
+    let own = dir.path().join("projects.json");
+    std::fs::write(&own, "[]").unwrap();
+    let (mut child, started) = first_line(&db, dir.path(), &[]);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(started["projects"], json!(own), "{started}");
+
+    // --projects still wins over it.
+    let other = dir.path().join("other.json");
+    std::fs::write(&other, "[]").unwrap();
+    let (mut child, started) =
+        first_line(&db, dir.path(), &["--projects", other.to_str().unwrap()]);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(started["projects"], json!(other), "{started}");
+}
+
+#[test]
+fn a_broken_default_projects_file_is_an_error_not_the_built_in_list() {
+    let db = scratch_pg::shared().database();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("projects.json"), "{not a list").unwrap();
+    let output = on(&db, dir.path())
+        .args(["web", "--bind", "127.0.0.1:0", "--key-file"])
+        .arg(dir.path().join("web-key"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("projects.json") && stderr.contains("isn't a projects list"),
+        "{stderr}"
+    );
 }
