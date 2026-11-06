@@ -9,10 +9,11 @@
 //! as from another site is refused. Nothing sends CORS headers, and the content security policy
 //! allows no inline script. Only a signed-in browser is served (RAL-29). The long-lived key stays
 //! in a private file and never goes in a URL: `rally web --login` sends it in a header to ask the
-//! running viewer for a one-time code, which works once, within a minute, at `/?code=<code>`, and
-//! becomes a random session cookie, HttpOnly and SameSite=Strict. A session holds only while the
-//! key it was made under is the one in the file, so `rally web --new-key` signs every browser
-//! out. See `docs/web.md`.
+//! running viewer for a one-time code. Opening `/?code=<code>` shows a "Sign in" button, and only
+//! the button's POST spends the code, which works once, within a minute (RAL-73). It becomes a
+//! random session cookie, HttpOnly and SameSite=Strict. A session holds only while the key it was
+//! made under is the one in the file, so `rally web --new-key` signs every browser out. See
+//! `docs/web.md`.
 
 use std::io::Read;
 use std::net::{SocketAddr, TcpListener};
@@ -34,12 +35,16 @@ use crate::views::UNTRUSTED_TEXT;
 const INDEX: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
 const APP_CSS: &str = include_str!("../web/app.css");
+const SIGN_IN: &str = include_str!("../web/sign-in.html");
 
 /// The projects shown by default.
 pub const DEFAULT_PROJECTS: &str = include_str!("../web/projects.json");
 
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; \
                    base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+/// The sign-in page's policy: the same, except that its one form may post back here.
+const SIGN_IN_CSP: &str =
+    "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 const LIVE_EVERY: Duration = Duration::from_secs(30);
 const ROADMAPS_EVERY: Duration = Duration::from_secs(300);
 const COMMAND_LIMIT: Duration = Duration::from_secs(20);
@@ -1224,12 +1229,14 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
         refused(StatusCode::FORBIDDEN, "other sites can't read this page")
     } else if *request.method() == Method::POST && request.uri().path() == CODE_PATH {
         mint_code(&app, request.headers())
+    } else if *request.method() == Method::POST && request.uri().path() == "/" {
+        sign_in_posted(&app, request).await
     } else if !matches!(*request.method(), Method::GET | Method::HEAD) {
         refused(StatusCode::METHOD_NOT_ALLOWED, "this page is read-only")
     } else if request.uri().path() == "/"
         && let Some(offered) = query_code(request.uri().query())
     {
-        sign_in(&app, offered)
+        sign_in_page(offered)
     } else if !signed_in(&app, request.headers()) {
         refused(
             StatusCode::UNAUTHORIZED,
@@ -1238,10 +1245,16 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
     } else {
         next.run(request).await
     };
+    // Only the sign-in page has a form; every other answer gets the policy that allows none.
+    let policy = if response.extensions().get::<SignInPage>().is_some() {
+        SIGN_IN_CSP
+    } else {
+        CSP
+    };
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(CSP),
+        HeaderValue::from_static(policy),
     );
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -1307,6 +1320,54 @@ fn mint_code(app: &App, headers: &axum::http::HeaderMap) -> Response {
     }
     codes.push((code.clone(), now + app.code_ttl));
     Json(json!({"code": code, "expires_in_seconds": app.code_ttl.as_secs()})).into_response()
+}
+
+/// Marks the sign-in page's response, so `guard` gives it its own policy.
+#[derive(Clone, Copy)]
+struct SignInPage;
+
+/// The most a sign-in form's body can be: `code=` and a code, with room to spare.
+const SIGN_IN_BODY_LIMIT: usize = 1024;
+
+/// Opening a code's address shows a "Sign in" button and spends nothing (RAL-73). Browsers fetch
+/// addresses ahead of a visit (Chrome preloads what's typed or pasted into the address bar), and
+/// such a fetch used to spend the code before the operator's own visit arrived. Only the button's
+/// POST spends it. The code is shown again only if it has a code's form, so nothing else offered
+/// in the address can reach the page's markup.
+fn sign_in_page(offered: &str) -> Response {
+    if !is_key(offered) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "that code isn't good: it was used, it expired, or it's wrong; run rally web --login",
+        )
+            .into_response();
+    }
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )],
+        axum::Extension(SignInPage),
+        SIGN_IN.replace("{{CODE}}", offered),
+    )
+        .into_response()
+}
+
+/// The sign-in button's POST: a form body of `code=<code>`.
+async fn sign_in_posted(app: &App, request: Request) -> Response {
+    let Ok(body) = axum::body::to_bytes(request.into_body(), SIGN_IN_BODY_LIMIT).await else {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "that isn't a sign-in form").into_response();
+    };
+    let body = String::from_utf8_lossy(&body);
+    // A POST with no code in it isn't a sign-in, and nothing else here takes a write.
+    let Some(offered) = body
+        .split('&')
+        .find_map(|pair| pair.trim().strip_prefix("code="))
+    else {
+        return (StatusCode::METHOD_NOT_ALLOWED, "this page is read-only").into_response();
+    };
+    sign_in(app, offered)
 }
 
 /// Exchanges a one-time code for a session cookie, once, before it expires.
@@ -1928,6 +1989,12 @@ mod tests {
         assert!(!INDEX.contains("<script>"), "no inline script");
         assert!(!INDEX.contains("style="), "no inline style");
         assert!(!INDEX.contains("http://") && !INDEX.contains("https://"));
+        for banned in ["<script", "style=", "http://", "https://"] {
+            assert!(!SIGN_IN.contains(banned), "sign-in page: {banned}");
+        }
+        // The code is the only thing put into it, once, as a form value.
+        assert_eq!(SIGN_IN.matches("{{CODE}}").count(), 1);
+        assert!(SIGN_IN.contains(r#"method="post" action="/""#));
     }
 
     #[test]

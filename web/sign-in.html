@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Rally: sign in</title>
+</head>
+<body>
+<h1>Rally</h1>
+<p>This one-time code signs this browser in to the viewer. It works once, within a minute.</p>
+<form method="post" action="/">
+<input type="hidden" name="code" value="{{CODE}}">
+<button type="submit" autofocus>Sign in</button>
+</form>
+<p>Opening this page doesn't use the code; only the button does, so a browser fetching the address ahead of you
+can't spend it.</p>
+</body>
+</html>

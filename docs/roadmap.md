@@ -269,6 +269,14 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.
+- [ ] **RAL-73: A one-time login code survives the browser's preload.** From the DiscoSim rally issues log of
+  2026-11-06, §3.1: Josh's pasted login links kept reporting the code as bad, most likely because Chrome
+  preloaded the address and spent the single-use code before the visit. Done when: opening a code's address
+  shows a "Sign in" button and spends nothing, and only the button's same-origin POST spends the code; a test
+  shows a prefetched GET (`Sec-Purpose: prefetch`, `Purpose: prefetch`) and a plain one leave the code working,
+  once; the page's own policy allows its form and nothing else, while every other page still allows no form; it
+  shows nothing offered in the address that isn't a code; another site's form POST is refused; and
+  `docs/web.md` says so.
 
 ## Phase 5: Rally into Levi
 
