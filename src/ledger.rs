@@ -600,13 +600,13 @@ pub struct Team {
 pub enum LedgerError {
     /// The record's body isn't a valid change. Holds the reason.
     InvalidChange(String),
-    /// A story ID isn't in the `ABC-1` form.
     /// A submit of a story nobody holds a claim on: it was sent back, released or never claimed,
     /// so it needs a claim first (RAL-72).
     ClaimLapsed {
         story: String,
         from: State,
     },
+    /// A story ID isn't in the `ABC-1` form.
     InvalidStoryId(String),
     /// A required text field is empty. Holds the field's name.
     EmptyField(&'static str),
