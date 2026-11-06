@@ -137,12 +137,32 @@ fn login(viewer: &Viewer) -> String {
     open.split_once(&viewer.address).unwrap().1.to_owned()
 }
 
-/// Signs in as a browser would: opens the code's address and keeps the session cookie.
+/// Signs in as a browser would: opens the code's address, presses "Sign in", and keeps the
+/// session cookie.
 fn sign_in(viewer: &Viewer) -> String {
     let path = login(viewer);
     let (status, text) = bare(viewer, "GET", &path, &viewer.address, "");
+    assert_eq!(status, 200, "{text}");
+    let (status, text) = press_sign_in(viewer, &path, "");
     assert_eq!(status, 303, "{text}");
     session_from(&text)
+}
+
+/// The code in a `/?code=` path.
+fn code_of(path: &str) -> &str {
+    path.split_once("code=").unwrap().1
+}
+
+/// The sign-in page's button: a same-origin form POST of the path's code, with any extra headers.
+fn press_sign_in(viewer: &Viewer, path: &str, extra: &str) -> (u16, String) {
+    let body = format!("code={}", code_of(path));
+    let headers = format!(
+        "Origin: http://{}\r\nSec-Fetch-Site: same-origin\r\n\
+         Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n{extra}",
+        viewer.address,
+        body.len()
+    );
+    bare_with_body(viewer, "POST", "/", &viewer.address, &headers, &body)
 }
 
 fn session_from(text: &str) -> String {
@@ -164,10 +184,22 @@ fn raw(viewer: &Viewer, method: &str, path: &str, host: &str, extra: &str) -> (u
 
 /// A request with only the headers given.
 fn bare(viewer: &Viewer, method: &str, path: &str, host: &str, extra: &str) -> (u16, String) {
+    bare_with_body(viewer, method, path, host, extra, "")
+}
+
+/// Like `bare`, with a body after the headers.
+fn bare_with_body(
+    viewer: &Viewer,
+    method: &str,
+    path: &str,
+    host: &str,
+    extra: &str,
+    body: &str,
+) -> (u16, String) {
     let mut stream = TcpStream::connect(&viewer.address).unwrap();
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n{extra}\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n{extra}\r\n{body}"
     )
     .unwrap();
     let mut text = String::new();
@@ -460,7 +492,7 @@ fn a_one_time_code_becomes_a_strict_session_cookie_once() {
     let viewer = start();
     let host = viewer.address.clone();
     let path = login(&viewer);
-    let (status, text) = bare(&viewer, "GET", &path, &host, "");
+    let (status, text) = press_sign_in(&viewer, &path, "");
     assert_eq!(status, 303);
     let lower = text.to_lowercase();
     assert!(lower.contains("location: /\r\n"), "{text}");
@@ -482,7 +514,7 @@ fn a_one_time_code_becomes_a_strict_session_cookie_once() {
     assert_eq!(status, 200);
     assert!(!page.contains(&viewer.key));
     // A code works once.
-    assert_eq!(bare(&viewer, "GET", &path, &host, "").0, 401);
+    assert_eq!(press_sign_in(&viewer, &path, "").0, 401);
 }
 
 #[test]
@@ -490,7 +522,99 @@ fn an_expired_code_is_refused() {
     let viewer = start_with_codes("[]", None, 1);
     let path = login(&viewer);
     std::thread::sleep(std::time::Duration::from_millis(1_200));
-    assert_eq!(bare(&viewer, "GET", &path, &viewer.address, "").0, 401);
+    assert_eq!(press_sign_in(&viewer, &path, "").0, 401);
+}
+
+/// RAL-73: Chrome fetched the code's address while it was pasted, and that spent the code before
+/// the operator's visit. Opening the address, prefetched or not, now only shows the button.
+#[test]
+fn opening_a_codes_address_spends_nothing_and_only_the_button_signs_in() {
+    let viewer = start();
+    let path = login(&viewer);
+    for extra in [
+        "Sec-Purpose: prefetch\r\nSec-Fetch-Site: none\r\n",
+        "Purpose: prefetch\r\n",
+        "Sec-Purpose: prefetch;prerender\r\nSec-Fetch-Site: none\r\n",
+        "Sec-Fetch-Site: none\r\n",
+        "",
+    ] {
+        let (status, text) = bare(&viewer, "GET", &path, &viewer.address, extra);
+        assert_eq!(status, 200, "{extra}: {text}");
+        let lower = text.to_lowercase();
+        assert!(!lower.contains("set-cookie"), "{extra}: {text}");
+        assert!(lower.contains("text/html"), "{text}");
+        assert!(
+            text.contains(r#"<form method="post" action="/">"#),
+            "{text}"
+        );
+        assert!(text.contains(code_of(&path)), "{text}");
+        // Its policy lets only its own form post, back to this page.
+        assert!(lower.contains("form-action 'self'"), "{text}");
+        assert!(lower.contains("default-src 'none'"), "{text}");
+        assert!(lower.contains("frame-ancestors 'none'"), "{text}");
+        assert!(!lower.contains("script-src"), "{text}");
+    }
+    // After all that, the code still works, once.
+    let (status, text) = press_sign_in(&viewer, &path, "");
+    assert_eq!(status, 303, "{text}");
+    assert_eq!(press_sign_in(&viewer, &path, "").0, 401);
+    // Every other page still allows no form at all.
+    let (_, page) = get(&viewer, "/");
+    assert!(page.to_lowercase().contains("form-action 'none'"), "{page}");
+}
+
+#[test]
+fn the_sign_in_page_shows_nothing_but_a_code() {
+    let viewer = start();
+    // A request line can't hold a raw `<`, so attacks arrive percent-encoded; none is decoded.
+    for offered in [
+        "%3Cscript%3Ealert(1)%3C/script%3E".to_owned(),
+        format!("{}%22%3E%3Cb%3E", "a".repeat(64)),
+        "a".repeat(63),
+        "g".repeat(64),
+    ] {
+        let path = format!("/?code={offered}");
+        let (status, text) = bare(&viewer, "GET", &path, &viewer.address, "");
+        assert_eq!(status, 401, "{offered}: {text}");
+        assert!(
+            !text.contains("<form") && !text.contains(&offered),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn another_site_cant_press_the_button() {
+    let viewer = start();
+    let path = login(&viewer);
+    let body = format!("code={}", code_of(&path));
+    for from in [
+        "Origin: http://evil.example\r\nSec-Fetch-Site: cross-site\r\n",
+        "Origin: null\r\n",
+        "Sec-Fetch-Site: same-site\r\n",
+    ] {
+        let extra = format!(
+            "{from}Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n",
+            body.len()
+        );
+        let (status, text) = bare_with_body(&viewer, "POST", "/", &viewer.address, &extra, &body);
+        assert_eq!(status, 403, "{from}: {text}");
+        assert!(!text.to_lowercase().contains("set-cookie"), "{text}");
+    }
+    // Refused before it was looked at, the code still works.
+    assert_eq!(press_sign_in(&viewer, &path, "").0, 303);
+}
+
+#[test]
+fn a_huge_sign_in_body_is_refused() {
+    let viewer = start();
+    let body = format!("code={}", "a".repeat(4096));
+    let extra = format!(
+        "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    let (status, text) = bare_with_body(&viewer, "POST", "/", &viewer.address, &extra, &body);
+    assert_eq!(status, 413, "{text}");
 }
 
 #[test]
