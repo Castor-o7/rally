@@ -360,8 +360,8 @@ enum Command {
         /// instead of the defaults.
         #[arg(long, env = "RALLY_PROJECTS")]
         projects: Option<PathBuf>,
-        /// Record evidence that isn't owner/repo@<full commit> in the project's repository, such
-        /// as work outside GitHub. Rally then records it as not checkable.
+        /// Skip this command's check of the evidence's form and repository, for evidence such as
+        /// work outside GitHub. The service still checks what it can, and records what it couldn't.
         #[arg(long)]
         not_checkable: bool,
     },
@@ -381,7 +381,7 @@ enum Command {
         /// of the defaults.
         #[arg(long, env = "RALLY_PROJECTS")]
         projects: Option<PathBuf>,
-        /// Record evidence that isn't owner/repo@<full commit> in the project's repository.
+        /// Skip this command's check of the evidence's form and repository.
         #[arg(long)]
         not_checkable: bool,
     },
@@ -1212,9 +1212,6 @@ impl PickRead {
 /// The most times `new-story` tries the next number when another team takes it first.
 const NEW_STORY_TRIES: usize = 20;
 
-/// `rally new-story`: the next free number for `prefix`, above every one in the ledger and in the
-/// roadmap, written in one append. If another team takes it first, the ledger refuses and this
-/// tries the next (RAL-55).
 /// A submit or amend record (RAL-71).
 fn submission(
     story: &str,
@@ -1242,10 +1239,16 @@ fn check_evidence(
     projects: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let text = match projects {
-        Some(path) => std::fs::read_to_string(path)?,
+        Some(path) => std::fs::read_to_string(path).map_err(|error| {
+            format!(
+                "couldn't read the projects list {}: {error}",
+                path.display()
+            )
+        })?,
         None => DEFAULT_PROJECTS.to_owned(),
     };
-    let projects: Vec<Project> = serde_json::from_str(&text)?;
+    let projects: Vec<Project> = serde_json::from_str(&text)
+        .map_err(|error| format!("the projects list isn't a list of projects: {error}"))?;
     match evidence_problem(story, evidence, &projects) {
         Some(problem) => Err(problem.into()),
         None => Ok(()),
@@ -1321,6 +1324,10 @@ fn open_pull_ids(backend: &Backend, repo: Option<&str>, roadmap: &Path, prefix: 
     }
 }
 
+/// `rally new-story`: the next free number for `prefix`, above every one in the ledger and in the
+/// roadmap, written in one append. If another team takes it first, the ledger refuses and this
+/// tries the next (RAL-55).
+///
 /// `roadmap` is the local roadmap and the GitHub repository whose open pull requests' roadmaps are
 /// read too, if given.
 fn new_story(

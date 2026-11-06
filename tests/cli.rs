@@ -176,6 +176,49 @@ fn evidence_is_checked_at_submit_and_amended_in_review() {
         history[2]["change"]["evidence"],
         format!("Castor-o7/rally@{OTHER_COMMIT}")
     );
+    // The same evidence again is refused: nothing changed.
+    let same = refused(
+        &db,
+        "silken-tanager",
+        &["amend", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    assert!(same.contains("nothing to amend"), "{same}");
+    // A missing projects list is named.
+    let missing = refused(
+        &db,
+        "silken-tanager",
+        &[
+            "amend",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            EVIDENCE,
+            "--projects",
+            "/nonexistent/projects.json",
+        ],
+    );
+    assert!(missing.contains("/nonexistent/projects.json"), "{missing}");
+    // A read of the commit from before the amendment is refused, saying which to read.
+    let stale = refused(
+        &db,
+        "watch",
+        &[
+            "verify",
+            "RAL-3",
+            "--note",
+            "read it",
+            "--commit",
+            OTHER_COMMIT,
+        ],
+    );
+    assert!(stale.contains("amended at record 4 to commit"), "{stale}");
+    assert!(stale.contains(COMMIT), "{stale}");
+    ok(
+        &db,
+        "watch",
+        &["verify", "RAL-3", "--note", "read it", "--commit", COMMIT],
+    );
 }
 
 #[test]
@@ -243,7 +286,7 @@ fn show_brief_and_field_and_the_errors_say_what_to_do() {
     ok(
         &db,
         "t",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", "e"],
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
     );
     ok(&db, "w", &["send-back", "RAL-3", "--note", "no test"]);
 
@@ -257,7 +300,7 @@ fn show_brief_and_field_and_the_errors_say_what_to_do() {
     let error = refused(
         &db,
         "t",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", "e"],
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
     );
     assert!(error.contains("re-claim first"), "{error}");
     let error = refused(&db, "t", &["ready", "DSM-45b"]);

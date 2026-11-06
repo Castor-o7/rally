@@ -424,7 +424,9 @@ word.
   prefix, saying what to write, unless `--not-checkable` is given; `rally amend <STORY> --team <team> --evidence
   ...` lets the submitter, and only the submitter, replace the evidence of a story in review without a send-back,
   checked the same way, recorded in the story's history as an amendment beside the original, and checked by
-  Rally as the latest submission; a resubmit in review says to amend; with a test for each.
+  Rally as the latest submission; once amended, a verify or send-back naming another commit than the amended
+  evidence's is refused, saying which record amended it; an amendment that changes nothing is refused; a resubmit
+  in review says to amend; with a test for each.
 - [x] **RAL-56: A rule for picking the next story that a team can follow alone.** Merged in #106 (6aa5622). From the operator's question of
   2026-11-05. The operator added: "if the operator doesn't respond within a certain reasonable window of time then
   shelve the item. don't just inherently skip operator interaction items please". Done when: `rally next --team

@@ -692,6 +692,14 @@ pub enum LedgerError {
         story: String,
         from: State,
     },
+    /// An amendment that changes neither the evidence nor what wasn't tested (RAL-71).
+    NothingAmended(String),
+    /// A read names a commit other than the amended evidence's (RAL-71).
+    ReadBeforeAmendment {
+        story: String,
+        amended_at: u64,
+        commit: String,
+    },
     /// Someone other than the submitter tried to amend a submission (RAL-71).
     NotTheSubmitter {
         story: String,
@@ -816,6 +824,19 @@ impl fmt::Display for LedgerError {
             Self::NotInReview { story, from } => write!(
                 f,
                 "{story} is {from:?}, and only a submission still in review can be amended"
+            ),
+            Self::NothingAmended(story) => write!(
+                f,
+                "that's {story}'s evidence already, so there's nothing to amend"
+            ),
+            Self::ReadBeforeAmendment {
+                story,
+                amended_at,
+                commit,
+            } => write!(
+                f,
+                "{story}'s evidence was amended at record {amended_at} to commit {commit}: read \
+                 that commit, then name it with --commit"
             ),
             Self::NotTheSubmitter { story, submitter } => write!(
                 f,
@@ -1883,7 +1904,11 @@ fn transition(
             }
         }
         Change::Submit {
-            team, amend: true, ..
+            team,
+            evidence,
+            untested,
+            amend: true,
+            ..
         } => {
             require_kind(record, Kind::Declared)?;
             if story.state != State::InReview {
@@ -1893,6 +1918,16 @@ fn transition(
                 });
             }
             require_holder(story, id, team)?;
+            if let Some(Change::Submit {
+                evidence: before,
+                untested: untested_before,
+                ..
+            }) = latest_submission(story).map(|entry| &entry.change)
+                && before.trim() == evidence.trim()
+                && untested_before == untested
+            {
+                return Err(LedgerError::NothingAmended(id.to_owned()));
+            }
             // Only whoever submitted it amends it: the evidence is theirs to correct.
             if let (Some(submitter), Some(name)) = (&story.submitted_by, actor)
                 && !same_name(submitter, name)
@@ -1926,6 +1961,7 @@ fn transition(
             if story.state != State::InReview {
                 return Err(refuse(story.state));
             }
+            require_amended_read(story, id, commit.as_deref())?;
             require_verifier(story, id, record.kind(), actor)?;
             story.state = State::Verified;
             story.verified_commit = commit.clone();
@@ -1933,10 +1969,11 @@ fn transition(
             // A read answers every open request for one.
             story.requested_reads.clear();
         }
-        Change::SendBack { .. } => {
+        Change::SendBack { commit, .. } => {
             if story.state != State::InReview {
                 return Err(refuse(story.state));
             }
+            require_amended_read(story, id, commit.as_deref())?;
             require_verifier(story, id, record.kind(), actor)?;
             story.state = State::SentBack;
             story.requested_reads.clear();
@@ -2079,6 +2116,44 @@ fn require_holder(story: &Story, id: &str, team: &str) -> Result<(), LedgerError
             holder: holder.clone(),
         }),
         _ => Ok(()),
+    }
+}
+
+/// The story's latest submission, amended or not.
+fn latest_submission(story: &Story) -> Option<&HistoryEntry> {
+    story
+        .history
+        .iter()
+        .rev()
+        .find(|entry| matches!(entry.change, Change::Submit { .. }))
+}
+
+/// Once a submission is amended (RAL-71), a read that names a commit must name the amended
+/// evidence's, so a verify of the commit read before the amendment can't stand for the evidence
+/// after it. Evidence Rally can't parse has no commit to compare, and a send-back may name none.
+fn require_amended_read(story: &Story, id: &str, commit: Option<&str>) -> Result<(), LedgerError> {
+    let Some(entry) = latest_submission(story) else {
+        return Ok(());
+    };
+    let Change::Submit {
+        evidence,
+        amend: true,
+        ..
+    } = &entry.change
+    else {
+        return Ok(());
+    };
+    let (Some(read), Ok((_, amended))) = (commit, crate::evidence::parse(evidence)) else {
+        return Ok(());
+    };
+    if read.eq_ignore_ascii_case(&amended) {
+        Ok(())
+    } else {
+        Err(LedgerError::ReadBeforeAmendment {
+            story: id.to_owned(),
+            amended_at: entry.seq,
+            commit: amended,
+        })
     }
 }
 
@@ -3682,7 +3757,7 @@ mod tests {
                 Kind::Declared,
                 name,
                 json!({"change": "submit", "story": STORY, "team": team,
-                       "evidence": "o/r@fixed", "amend": true}),
+                       "evidence": format!("o/r@{COMMIT}"), "amend": true}),
             )
         };
         // Not before a submission: there's nothing to amend.
@@ -3739,20 +3814,47 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(evidence, [("abc123", false), ("o/r@fixed", true)]);
-        // The amendment is the submission Rally checks next, and it can be amended again.
+        let fixed = format!("o/r@{COMMIT}");
+        assert_eq!(evidence, [("abc123", false), (fixed.as_str(), true)]);
+        // The amendment is the submission Rally checks next.
         let jobs = crate::evidence::unchecked(&ledger);
         assert_eq!(jobs.len(), 1);
         assert_eq!(
             (jobs[0].submit, jobs[0].evidence.as_str()),
-            (4, "o/r@fixed")
+            (4, fixed.as_str())
         );
-        push(&mut ledger, &amend("alice", "rally"));
-        // Its author still can't verify it, and a reader can.
+        // The same evidence again changes nothing, so it's refused.
+        assert_eq!(
+            ledger.check(5, &amend("alice", "rally")),
+            Err(LedgerError::NothingAmended(STORY.into()))
+        );
+        // A read of another commit than the amended evidence's is refused, verify or send-back,
+        // saying which record amended it; a send-back naming no commit still stands.
+        let stale = |change: &str| {
+            verifier(json!({"change": change, "story": STORY, "note": "read it",
+                            "commit": OTHER_COMMIT}))
+        };
+        for change in ["verify", "send_back"] {
+            assert_eq!(
+                ledger.check(5, &stale(change)),
+                Err(LedgerError::ReadBeforeAmendment {
+                    story: STORY.into(),
+                    amended_at: 4,
+                    commit: COMMIT.into()
+                })
+            );
+        }
+        assert!(ledger.check(5, &send_back()).is_ok());
+        // The amended commit, in any case, is read.
+        let upper = verifier(
+            json!({"change": "verify", "story": STORY, "note": "read it",
+                                    "commit": COMMIT.to_ascii_uppercase()}),
+        );
+        assert!(ledger.check(5, &upper).is_ok());
         push(&mut ledger, &verify());
         assert_eq!(state(&ledger), State::Verified);
         assert!(matches!(
-            ledger.check(7, &amend("alice", "rally")),
+            ledger.check(6, &amend("alice", "rally")),
             Err(LedgerError::NotInReview { .. })
         ));
         // A plain submit leaves `amend` out of the record, so older readers see no change.

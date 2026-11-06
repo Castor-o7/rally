@@ -29,7 +29,10 @@ A typo found while the story is in review is fixed by its submitter with
 `rally amend <STORY> --team <team> --evidence "owner/repo@<full commit>"`, without a send-back. The amendment is a
 submit record marked `"amend": true`: the state stays In review, the earlier submission stays in the history, and
 the amendment is the latest submission, so it's the one this check reads and the one `rally waiting` shows. Only
-the submitter can amend, and only in review; a plain resubmit in review is refused, saying to amend.
+the submitter can amend, and only in review, and an amendment that changes nothing is refused; a plain resubmit
+in review is refused, saying to amend. Once a submission is amended, a verify or send-back that names a commit
+must name the amended evidence's commit, so a read of the work as it was before the amendment can't verify it;
+the refusal says which record amended it and which commit to read. A send-back naming no commit still stands.
 
 The record is evidence, not a verdict. `ci: passed` is GitHub's word on that one commit. A reader still reads
 the work, and RAL-31 still compares the commit that's merged with the one that was read.
