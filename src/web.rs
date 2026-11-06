@@ -14,6 +14,7 @@
 //! key it was made under is the one in the file, so `rally web --new-key` signs every browser
 //! out. See `docs/web.md`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::net::{SocketAddr, TcpListener};
 use std::process::{Command, Stdio};
@@ -450,6 +451,87 @@ pub fn verified_for(prefix: &str, ledger: &Value) -> Value {
         .filter(|story| story["state"] == "verified")
         .count();
     json!({"available": true, "verified": verified, "tracked": matching.len()})
+}
+
+/// The story states in which a team still holds a story: it claimed it and hasn't been verified.
+const HELD_STATES: [&str; 3] = ["claimed", "in_review", "sent_back"];
+
+/// Which projects are in the current rally (RAL-69): those with a story held by a team that's on
+/// Muster's roster now. A team is on the roster when a session's nickname is the team's name, or a
+/// session matches the team's `sessions` in the project list, as `rally wake` matches them; a team's
+/// name is never guessed from a session's project. Nothing is hidden from the ledger itself: this
+/// only decides what the overview shows. Without a roster or a ledger it can't tell, and says so,
+/// and then the viewer shows everything.
+pub fn current_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Value {
+    if roster["available"] != json!(true) {
+        return json!({"known": false, "reason": "Muster's roster couldn't be read, so every project is shown."});
+    }
+    let Some(stories) = ledger["stories"]
+        .as_object()
+        .filter(|_| ledger["available"] == json!(true))
+    else {
+        return json!({"known": false, "reason": "the ledger couldn't be read, so every project is shown."});
+    };
+    let fold = |name: &str| name.trim().to_lowercase();
+    let sessions = roster["sessions"].as_array().cloned().unwrap_or_default();
+    let on_roster = |team: &str| {
+        let team = fold(team);
+        sessions.iter().any(|session| {
+            let nickname = session["nickname"].as_str().map(fold);
+            let project = session["project"].as_str().map(fold);
+            nickname.as_deref() == Some(team.as_str())
+                || projects
+                    .iter()
+                    .filter(|p| p.team.as_deref().map(fold).as_deref() == Some(team.as_str()))
+                    .flat_map(|p| p.sessions.iter().map(|name| fold(name)))
+                    .any(|name| Some(&name) == nickname.as_ref() || Some(&name) == project.as_ref())
+        })
+    };
+    let mut active: BTreeSet<String> = BTreeSet::new();
+    let mut prefixes: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    let teams = ledger["teams"]
+        .as_object()
+        .into_iter()
+        .flat_map(|t| t.keys());
+    let holders = stories.values().filter_map(|story| story["team"].as_str());
+    for team in teams.map(String::as_str).chain(holders) {
+        if on_roster(team) {
+            active.insert(fold(team));
+        }
+    }
+    for (id, story) in stories {
+        let held = HELD_STATES.contains(&story["state"].as_str().unwrap_or(""));
+        let Some(team) = story["team"].as_str().filter(|_| held) else {
+            continue;
+        };
+        let Some((prefix, _)) = id.split_once('-') else {
+            continue;
+        };
+        if active.contains(&fold(team)) {
+            prefixes
+                .entry(prefix.to_owned())
+                .or_default()
+                .push(json!({"story": id, "team": team, "state": story["state"]}));
+        }
+    }
+    json!({
+        "known": true,
+        "kind": "observed",
+        "prefixes": prefixes.keys().collect::<Vec<_>>(),
+        "held": prefixes,
+        "active_teams": active,
+        "rule": "A project is in this rally when a team on Muster's roster now holds one of its stories \
+                 (claimed, in review or sent back). Other projects keep their records and pages.",
+    })
+}
+
+/// Whether the project with `prefix` is in the current rally, by [`current_rally`]'s reading. When
+/// that couldn't be told, every project is.
+pub fn in_rally(rally: &Value, prefix: &str) -> bool {
+    rally["known"] != json!(true)
+        || rally["prefixes"]
+            .as_array()
+            .is_some_and(|list| list.iter().any(|p| p == prefix))
 }
 
 /// Where the viewer reads the ledger.
@@ -1140,6 +1222,7 @@ async fn status(State(app): State<Arc<App>>) -> Response {
         .roster
         .clone()
         .unwrap_or_else(|| json!({"available": false, "reason": "still reading it."}));
+    let rally = current_rally(&app.projects, &ledger, &roster);
     let projects: Vec<Value> = app
         .projects
         .iter()
@@ -1157,6 +1240,7 @@ async fn status(State(app): State<Arc<App>>) -> Response {
             row["tick_meaning"] = json!(project.tick_meaning);
             row["verified"] = verified_for(&project.prefix, &ledger);
             row["progress"] = progress(&project.prefix, &row, &ledger);
+            row["in_rally"] = json!(in_rally(&rally, &project.prefix));
             row
         })
         .collect();
@@ -1174,6 +1258,7 @@ async fn status(State(app): State<Arc<App>>) -> Response {
         "roster": roster,
         "backup": backup,
         "projects": projects,
+        "rally": rally,
         "muster_summary": muster_summary,
     }))
     .into_response()
@@ -1753,6 +1838,88 @@ mod tests {
             muster_summary(&projects, &roadmaps)["text"],
             "the muster's day"
         );
+    }
+
+    fn rally_projects() -> Vec<Project> {
+        serde_json::from_value(json!([
+            {"name": "Rally", "prefix": "RAL", "repo": "o/rally", "path": "r.md", "tick_meaning": "m",
+             "team": "rally", "sessions": ["rally"]},
+            {"name": "Paradox", "prefix": "PDX", "repo": "o/pdx", "path": "r.md", "tick_meaning": "m"},
+            {"name": "catapp", "prefix": "CAT", "repo": "o/cat", "path": "r.md", "tick_meaning": "m"},
+        ]))
+        .unwrap()
+    }
+
+    fn rally_roster(sessions: Value) -> Value {
+        json!({"available": true, "sessions": sessions, "read_at_ms": 1})
+    }
+
+    #[test]
+    fn only_projects_held_by_a_team_on_the_roster_are_in_the_rally() {
+        let ledger = json!({"available": true, "teams": {"catapp": {"status": "resting"}}, "stories": {
+            "RAL-1": {"state": "claimed", "team": "rally"},
+            "DSM-2": {"state": "in_review", "team": "crafty-wolverine"},
+            "DSM-3": {"state": "verified", "team": "gone-otter"},
+            "CAT-4": {"state": "claimed", "team": "catapp"},
+            "PDX-5": {"state": "verified", "team": "pdx"},
+            "PDX-6": {"state": "ready"},
+        }});
+        let roster = rally_roster(json!([
+            // The rally team by its listed session project; DiscoSim's team by its nickname.
+            {"nickname": "plush-tortoise", "project": "rally"},
+            {"nickname": "Crafty-Wolverine ", "project": "Discoteque"},
+            // A session whose project happens to be "catapp" isn't the catapp team: nothing lists it.
+            {"nickname": "someone", "project": "catapp"},
+        ]));
+        let rally = current_rally(&rally_projects(), &ledger, &roster);
+        assert_eq!(rally["known"], true);
+        assert_eq!(rally["prefixes"], json!(["DSM", "RAL"]));
+        assert_eq!(rally["active_teams"], json!(["crafty-wolverine", "rally"]));
+        assert_eq!(rally["held"]["DSM"][0]["story"], "DSM-2");
+        assert!(in_rally(&rally, "RAL"));
+        assert!(
+            !in_rally(&rally, "PDX"),
+            "verified and ready stories hold nothing"
+        );
+        assert!(
+            !in_rally(&rally, "CAT"),
+            "a claim by a team not on the roster is left over"
+        );
+    }
+
+    #[test]
+    fn a_verified_story_or_an_empty_roster_puts_nothing_in_the_rally() {
+        let ledger = json!({"available": true, "stories": {"RAL-1": {"state": "verified", "team": "rally"}}});
+        let on = rally_roster(json!([{"nickname": "x", "project": "rally"}]));
+        let rally = current_rally(&rally_projects(), &ledger, &on);
+        assert_eq!(rally["prefixes"], json!([]));
+        assert!(!in_rally(&rally, "RAL"));
+        let held = json!({"available": true, "stories": {"RAL-1": {"state": "sent_back", "team": "rally"}}});
+        let empty = current_rally(&rally_projects(), &held, &rally_roster(json!([])));
+        assert!(!in_rally(&empty, "RAL"), "no one on the roster holds it");
+        assert!(in_rally(
+            &current_rally(&rally_projects(), &held, &on),
+            "RAL"
+        ));
+    }
+
+    #[test]
+    fn without_a_roster_or_a_ledger_every_project_is_shown() {
+        let ledger = json!({"available": true, "stories": {}});
+        let unread = json!({"available": false, "reason": "still reading it."});
+        for rally in [
+            current_rally(&rally_projects(), &ledger, &unread),
+            current_rally(&rally_projects(), &unread, &rally_roster(json!([]))),
+        ] {
+            assert_eq!(rally["known"], false);
+            assert!(
+                rally["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("every project is shown")
+            );
+            assert!(in_rally(&rally, "PDX") && in_rally(&rally, "RAL"));
+        }
     }
 
     #[test]

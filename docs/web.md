@@ -47,6 +47,19 @@ every 30 seconds.
   when the last one was. Counts and dates only: no scores or ranking.
 - **Ledger check** repeats `rally check`. It can't show a rewrite of the whole host without a saved head.
 
+## The current rally (RAL-69)
+
+The overview shows only the projects in the current rally: those where a team on Muster's roster now holds a story
+(claimed, in review or sent back). A team is on the roster when a session's nickname is the team's name, or a session
+matches the team's `sessions` in `projects.json`, as `rally wake` matches them. A team's name is never guessed from a
+session's project. The roadmap cards, the ledger's figures and evidence, the declared teams, the track records and the
+totals across projects all follow it. The ledger status panel says which prefixes are in, labelled observed.
+
+Nothing is removed. Other projects are listed, collapsed, under "Not in this rally", and each keeps its page and
+its records; `rally show` and past moments still show everything. If the roster or the ledger can't be read, the
+viewer can't tell, so it shows every project with a warning instead of hiding any. `/api/status` carries the reading
+as `rally` (`known`, `prefixes`, `held`, `active_teams`) and each project's `in_rally`.
+
 ## Project pages (RAL-43)
 
 Each project's name in the roadmap list opens its own page (`#/project/<prefix>`), built only from

@@ -258,6 +258,14 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   that markup in recorded text doesn't run, and that an unauthorized viewer is refused; it isn't exposed
   to the open internet; and someone other than its author has reviewed it adversarially, before it's
   reachable beyond the machine it runs on.
+- [ ] **RAL-69: Show only the projects in the current rally.** Requested by the operator on 2026-11-06: a
+  project that hasn't been worked on for several rallies shouldn't be in the viewer "unless an active muster team
+  has claimed that project", but its progress is kept. Done when: the overview's roadmaps, ledger figures,
+  evidence, declared teams, track records and muster totals cover only the projects in which a team on Muster's
+  roster holds a story (claimed, in review or sent back), and say so; the other projects keep their records and
+  their pages and are listed, collapsed, as not in this rally; when the roster or the ledger can't be read,
+  everything is shown with a warning rather than hidden on a guess; and a test covers the rule. Adding a
+  project the ledger knows but `projects.json` doesn't (DiscoSim) is RAL-74's.
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.
