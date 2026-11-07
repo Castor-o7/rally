@@ -357,6 +357,11 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   on 2026-11-06 and confirmed in headless Chrome. Done when: the sign-in page's referrer policy is `same-origin`
   in its header and its `<meta>`, every other page stays `no-referrer`, `Origin: null` is still refused, a test
   asserts both, and `docs/web.md` says why.
+- [ ] **RAL-97: A browser test leaves nothing behind, and checks it.** From 2026-11-06, when every flatpak run of
+  RAL-84's script left a headless Chrome and a 170 MB profile in $XDG_RUNTIME_DIR until it filled. robust-warbler
+  fixed the leak in #167 (RAL-96); this guards it. Done when: the script names every profile it used, on the host
+  and in a flatpak sandbox, and every browser test checks after its run that none is left and no process still runs
+  on one; the check fails when the sandbox's profile isn't removed.
 - [x] **RAL-84: CI signs in to the viewer through a real headless browser.** Merged in #158 (de33916). From the watchman's finding of
   RAL-83 on 2026-11-06: every sign-in test was curl-driven and sent a real `Origin`, so none caught Chrome's own
   `Origin: null` under a no-referrer page, and the button failed for the operator every time. Done when: a viewer
