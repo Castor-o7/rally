@@ -427,7 +427,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   have ended the value or added a parameter. Done when: the path is percent-encoded as one query value (RFC 3986
   unreserved characters and `/` kept), the commit is checked as hex before the call, and a unit test covers
   names with those characters.
-- [ ] **RAL-104: The rally report belongs to the open rally and carries its major events.** Asked for by Josh
+- [x] **RAL-104: The rally report belongs to the open rally and carries its major events.** Merged in #177 (9f1271e). Asked for by Josh
   on 2026-11-06. When "rally 0x5" opened (record 914), the report box still showed the writeup from the rally
   before it. The overview matches the watchman's writeup to a rally by its day file's date, so a rally opened
   later the same day inherits the earlier one's writeup. Josh also wants the report to be more than an end-of-day
