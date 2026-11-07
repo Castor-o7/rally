@@ -445,6 +445,14 @@ word.
   out again. Done when: `rally new-story` also reads the prefix's roadmap in each open pull request, read-only
   through the service's GitHub token, and never hands out a number used there; when GitHub can't be read it says
   so rather than guessing; with a test for an ID in an open pull request and one for an unreadable GitHub.
+- [ ] **RAL-80: Viewer sign-ins survive a restart.** From the DiscoSim rally's issues log (§3.4, 2026-11-06):
+  sessions were held only in memory, so adding `--summaries`, or any restart or deploy, signed the operator out.
+  Chosen over a SIGHUP reload of the projects and summaries, which would spare only config changes, not a deploy or
+  a crash. Done when: a session made by signing in holds across a restart of the viewer; the sessions are kept in
+  a file beside the key, readable only by the account, holding only hashes of the sessions and the key; a session
+  lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
+  still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
+  the viewer; with a test.
 - [ ] **RAL-71: Evidence can be corrected.** From the DiscoSim rally's issues log (§2.2, 2026-11-06): DSM-41's
   evidence named `Castor-o7/DiscoteSim`, a typo, and DSM-54's wasn't `owner/repo@<full commit>`, and the only fix
   for either was a send-back, since a resubmit in review is refused. Done when: `rally submit` refuses evidence
