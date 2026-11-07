@@ -190,12 +190,12 @@ The bones. Everything later reads from this.
 - [x] **RAL-30: Reconcile an outage.** Done when: entries made on the fallback board during an outage can
   be backfilled with their real time and who entered them, the gap itself stays visible, and a test
   shows that backfilled records can't pass for live ones.
-- [ ] **RAL-7: Detect a stall.** Depends on MUS-4 and MUS-44. Done when: each row of the stall table in
+- [x] **RAL-7: Detect a stall.** Merged in #132 (f953afb). Depends on MUS-4 and MUS-44. Done when: each row of the stall table in
   the design has a test, a team resting after a story isn't flagged, and the stall of 2026-10-30 would
   have been flagged.
-- [ ] **RAL-8: Tell the watchman.** Done when: the watchman wakes with one batched digest when something
+- [x] **RAL-8: Tell the watchman.** Merged in #136 and #137 (2d311b9). Done when: the watchman wakes with one batched digest when something
   changes, and hears nothing when nothing has. Agree the format with the Muster team under MUS-43.
-- [ ] **RAL-67: Check a story merged by several pull requests, per pull request.** From fiery-snapper's read of
+- [x] **RAL-67: Check a story merged by several pull requests, per pull request.** Merged in #140 (2c45e8f). From fiery-snapper's read of
   RAL-8's follow-up (#137) on 2026-11-05. RAL-22 landed in #123 and #127, and its one verify names #127's squash
   commit, not the heads read (7fc4bef and 62d67e2). A second verify on a Verified story is refused, so the digest
   flags it falsely. Done when: a verifier can add commits read to their own verify of an already Verified story with
@@ -203,7 +203,7 @@ The bones. Everything later reads from this.
   each merge's landed head is checked against every commit the verify names or has had added, and a verify at a
   pull request's squash commit counts as covering that pull request's head; RAL-22 is fixed by annotating 7fc4bef
   onto its verify, record 179, and a push after the read still flags, each with a test.
-- [ ] **RAL-72: Make `rally show` easy to scan, and say what a refused ID or submit needs.** From the DiscoSim
+- [x] **RAL-72: Make `rally show` easy to scan, and say what a refused ID or submit needs.** Merged in #143 (8bbd817). From the DiscoSim
   rally's issues log (docs/muster/2026-11-06-discosim-rally-issues.md §2.3, §2.4, §8): a grep for `"state"` in
   `rally show` found a nested "claimed" for stories that were verified, `rally ready DSM-45b` was refused without
   saying why, and plucky-aspen's resubmit after a send-back got a bare 409. Done when: `rally show --brief` gives
@@ -212,21 +212,21 @@ The bones. Everything later reads from this.
   refused story ID says the form is capital letters, a hyphen and a number with no leading zero or suffix, and
   points at `rally new-story`; a submit of a sent-back, released or never-claimed story says to re-claim first,
   with the command; each with a test.
-- [ ] **RAL-70: Gate a branch move on the stories it carries.** From the DiscoSim rally's issues log, §2.5: on
+- [x] **RAL-70: Gate a branch move on the stories it carries.** Merged in #144 and #148 (11c0579, 6dc4ddd). From the DiscoSim rally's issues log, §2.5: on
   2026-11-06 `main` was moved to f979331 while DSM-42 had been sent back by a peer. Assigned by frank-crocodile.
   Done when: `rally gate <range>` lists every story the range's commits name (subject, a merge's pull request title,
   or a trailer) with its ledger state, and exits non-zero if any is sent back, unverified or claimed, or isn't in
   the ledger under a prefix the ledger uses; `--allow <STORY>` lets one the range only mentions pass, listed; it
   reads only commit messages and runs nothing from the checkout; documented in `docs/gate.md`; with a test of a
   range refused for a sent-back story and passed once it's verified.
-- [ ] **RAL-75: Flag a heavy-run lock held by a stopped process.** From the DiscoSim rally's issues log, §4.4: on
+- [x] **RAL-75: Flag a heavy-run lock held by a stopped process.** Merged in #147 (eaf2443). From the DiscoSim rally's issues log, §4.4: on
   2026-11-06 a runner shell sat stopped (state T) for about 57 minutes while it held the one-heavy-run lock.
   Assigned by frank-crocodile. Done when: `rally stalls --lock <path>` reads the lock's holder and waiters from
   `/proc/locks`, and gives a `stopped_lock_holder` prompt if the holder, or anything under it, is stopped, or the
   holder is a zombie, naming each process's pid, state, working directory and the session guessed from it; a held
   lock with a running holder gives none; documented in `docs/stalls.md`; with a test that stops a real
   `flock`-held shell and finds it.
-- [ ] **RAL-79: Multi-part stories.** From the DiscoSim rally's issues log, §2.1: DSM-37 was verified at part 1
+- [x] **RAL-79: Multi-part stories.** Merged in #153 (27330ce). From the DiscoSim rally's issues log, §2.1: DSM-37 was verified at part 1
   and Rally had no way to record parts 2–4, so rule 11 (submit once, at the last part) hid long stories for hours.
   Assigned by frank-crocodile. Done when: `rally submit <ID> --part k [--of n]` records each part as it lands
   while the story stays claimed; a watchman or peer verifies or sends back each part, and a part is amended alone
@@ -242,7 +242,7 @@ The bones. Everything later reads from this.
   roadmap, the watchman can see how many stories are in each state, which ready stories have nothing
   blocking them, which blockers hold up the most stories, and which roadmap ticks have no Verified
   behind them, with no comparison or ranking of teams.
-- [ ] **RAL-24: Bring in other projects.** Open question 4 in the design. Done when: the decision is
+- [x] **RAL-24: Bring in other projects.** Merged in #165 (4e7e8c4). Open question 4 in the design. Done when: the decision is
   recorded, and Muster, catapp, ParadoxDetector and any other team on the board can be tracked by it.
   Decided by the operator on 2026-11-06: Rally is the source of truth for every project in `web/projects.json`,
   and the hand-kept board retires (design, open question 4). The ledger already tracks MUS, MAR, CAT and DSM
@@ -297,14 +297,14 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   with them set, the overview shows the watchman's writeup and each project page its team's newest local summary,
   each saying it was read from a local file and naming it; without them, nothing changes; and a test covers the
   local read and a missing folder, with nothing in `docs/muster/` committed.
-- [ ] **RAL-28: Show past ledgers.** Depends on RAL-12. Done when: a viewer can pick a past moment and
+- [x] **RAL-28: Show past ledgers.** Merged in #125 (6f55a6a). Depends on RAL-12. Done when: a viewer can pick a past moment and
   see the ledger as it stood then, with corrections made since shown as later, and a test shows that the
   view matches a replay to that moment.
 - [x] **RAL-29: Secure the web app.** Merged in #114 (1490e83). Done when: a test shows that a cross-origin page can't read it,
   that markup in recorded text doesn't run, and that an unauthorized viewer is refused; it isn't exposed
   to the open internet; and someone other than its author has reviewed it adversarially, before it's
   reachable beyond the machine it runs on.
-- [ ] **RAL-69: Show only the projects in the current rally.** Requested by the operator on 2026-11-06: a
+- [x] **RAL-69: Show only the projects in the current rally.** Merged in #141 (b88ec91). Requested by the operator on 2026-11-06: a
   project that hasn't been worked on for several rallies shouldn't be in the viewer "unless an active muster team
   has claimed that project", but its progress is kept. Done when: the overview's roadmaps, ledger figures,
   evidence, declared teams, track records and muster totals cover only the projects in which a team on Muster's
@@ -312,19 +312,19 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   their pages and are listed, collapsed, as not in this rally; when the roster or the ledger can't be read,
   everything is shown with a warning rather than hidden on a guess; and a test covers the rule. Adding a
   project the ledger knows but `projects.json` doesn't (DiscoSim) is RAL-74's.
-- [ ] **RAL-76: Open and close rallies, with a clean board for each.** Requested by the operator on 2026-11-06:
+- [x] **RAL-76: Open and close rallies, with a clean board for each.** Merged in #149 (b6c223e). Requested by the operator on 2026-11-06:
   "When the rally closes from the previous session, the board should be cleared ... we log the old rally, store it,
   and CLEAN the board so we can get a fresh start." Done when: `rally open-rally` records a rally's name, projects
   and teams, and `rally close-rally` ends it, declared, one open at a time; the viewer's overview shows only the open
   rally's projects, teams and what was recorded since it opened; past rallies are listed, each viewable as the ledger
   stood when it closed; nothing is removed from the ledger; and tests cover the records, the service route and the
   board.
-- [ ] **RAL-82: One command starts, restarts and opens the viewer.** Requested by the operator on 2026-11-06:
+- [x] **RAL-82: One command starts, restarts and opens the viewer.** Merged in #154 (69f5768). Requested by the operator on 2026-11-06:
   "I should be able to run one command and just have it open." Done when: `rally view` starts the viewer if it
   isn't running, restarts it when it runs another build or other settings, or on `--restart`, including one started
   by hand; waits until it answers; and opens it signed in. Its settings are remembered, `--stop` stops it, and tests
   cover the settings, the restart rule and finding a viewer by its command line.
-- [ ] **RAL-77: Rallies, after RAL-76: who may open one, past rallies as their own board, dates, and errors.** From
+- [x] **RAL-77: Rallies, after RAL-76: who may open one, past rallies as their own board, dates, and errors.** Merged in #152 (2e9f3c7). From
   the watchman's read of #149 (RAL-76), filed by plush-tortoise. Done when: with the service's `--rally-openers`
   set, only the credentials it lists, or the credential bound to a signed watchman designation, can open or close
   a rally, and others get a 403 naming the rule; unset, any paired credential may, and each answer and
@@ -334,7 +334,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   local one with a UTC one; a `/v1/rallies` read that fails for any reason but an older service (a refused token,
   a network error) shows as a warning, not as "an older service"; `docs/service.md` says what `--rally-openers`
   does and can't do; and tests cover each.
-- [ ] **RAL-78: A watchman's rally starts from the roster.** Requested by the operator on 2026-11-06: the watchman
+- [x] **RAL-78: A watchman's rally starts from the roster.** Merged in #156 (6d59baf). Requested by the operator on 2026-11-06: the watchman
   is told which projects the rally works on, determined by the teams' directories, and sessions in no project (`src`)
   assist the project teams. Done when: `rally brief` shows the open rally with each roster session marked in it or
   not, or with none open, suggests one: the projects whose `sessions` in the project list match a roster session,
@@ -343,7 +343,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.
-- [ ] **RAL-73: A one-time login code survives the browser's preload.** From the DiscoSim rally issues log of
+- [x] **RAL-73: A one-time login code survives the browser's preload.** Merged in #142 (cc20189). From the DiscoSim rally issues log of
   2026-11-06, §3.1: Josh's pasted login links kept reporting the code as bad, most likely because Chrome
   preloaded the address and spent the single-use code before the visit. Done when: opening a code's address
   shows a "Sign in" button and spends nothing, and only the button's same-origin POST spends the code; a test
@@ -351,19 +351,19 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   once; the page's own policy allows its form and nothing else, while every other page still allows no form; it
   shows nothing offered in the address that isn't a code; another site's form POST is refused; and
   `docs/web.md` says so.
-- [ ] **RAL-83: The Sign in button works in Chrome.** RAL-73's sign-in page set `<meta name="referrer"
+- [x] **RAL-83: The Sign in button works in Chrome.** Merged in #155 (3138066). RAL-73's sign-in page set `<meta name="referrer"
   content="no-referrer">`, under which Chrome sends `Origin: null` with the form's POST; the guard refuses
   `Origin: null`, so the button always answered "other sites can't read this page". Found live by the watchman
   on 2026-11-06 and confirmed in headless Chrome. Done when: the sign-in page's referrer policy is `same-origin`
   in its header and its `<meta>`, every other page stays `no-referrer`, `Origin: null` is still refused, a test
   asserts both, and `docs/web.md` says why.
-- [ ] **RAL-84: CI signs in to the viewer through a real headless browser.** From the watchman's finding of
+- [x] **RAL-84: CI signs in to the viewer through a real headless browser.** Merged in #158 (de33916). From the watchman's finding of
   RAL-83 on 2026-11-06: every sign-in test was curl-driven and sent a real `Origin`, so none caught Chrome's own
   `Origin: null` under a no-referrer page, and the button failed for the operator every time. Done when: a viewer
   test opens a one-time code's address in headless Chrome, presses Sign in, and sees the board and `/api/status`
   served; it fails on a viewer with RAL-83's bug; it runs when `RALLY_TEST_CHROME` names a browser and is skipped
   otherwise; CI installs what it needs and can't skip it; and the README says how to run it.
-- [ ] **RAL-74: The viewer reads `~/.config/rally/projects.json` by default.** From the DiscoSim rally issues
+- [x] **RAL-74: The viewer reads `~/.config/rally/projects.json` by default.** Merged in #146 (15f985d). From the DiscoSim rally issues
   log of 2026-11-06, §3.3: the built-in `web/projects.json` lists RAL, MUS, CAT, CHOMP and PDX only, so a whole
   rally ran with no DiscoSim page until the viewer was restarted with `--projects`. Done when: without
   `--projects`, `rally web` reads `projects.json` beside the pairing (`~/.config/rally/projects.json`, or
@@ -441,7 +441,7 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   read; `track-record` counts verifications each verifier gave as well as each team received, the gave counts by
   declared name, since a record doesn't name the verifier's team; and the board process in Muster's
   `docs/board.md` says the same, through a draft PR the watchman reads as the board's keeper.
-- [ ] **RAL-52: Hand a new watchman the peer-verified work.** Depends on RAL-51. Built in #99 (`rally
+- [x] **RAL-52: Hand a new watchman the peer-verified work.** Merged in #164 (07a6a59). Depends on RAL-51. Built in #99 (`rally
   handover`) and approved by the watchman, apart from the digest, which RAL-8 then built (#136, #137): its
   "Peer-verified, awaiting your re-read (RAL-52)" section lists each story still awaiting the re-read and is left
   out once none is, which a test now shows. Closed out on 2026-11-06 (RAL-52's own record). Done when: when a watchman is
@@ -456,7 +456,7 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   credential that only the watchman's session holds, issued without passing through other sessions; a
   verification is labelled `watchman` only when made with it; a test shows another session declaring the
   watchman's name is labelled `other`; and the threat model says what the credential protects and what it doesn't.
-- [ ] **RAL-63: Designate more than one watchman at once.** Requested by the operator during the two-watchman
+- [x] **RAL-63: Designate more than one watchman at once.** Merged in #129 (cd27484). Requested by the operator during the two-watchman
   rally of 2026-11-05 (one watchman on Murph, one on a1), relayed by the Murph watchman. Today only the newest
   designation is in force, so a second watchman's reads are labelled `other`. Done when: an operator-signed
   designation can name a set of watchmen in force at once, each bound to its own credential (RAL-53) and given a
@@ -489,12 +489,12 @@ word.
   `rally new-story <PREFIX> --title "..."` records the next free number for that prefix, and returns it in one
   atomic write; two concurrent requests for one prefix get different numbers, with a test; a number that's already
   in the ledger, or already in the prefix's roadmap, is never handed out; and IDs written by hand still work.
-- [ ] **RAL-68: Don't hand out an ID an open pull request already uses.** Proposed by frank-crocodile, filed
+- [x] **RAL-68: Don't hand out an ID an open pull request already uses.** Merged in #139 (ecb715e). Proposed by frank-crocodile, filed
   2026-11-05 at fiery-snapper's request, after MUS-95 was written by hand in an open pull request and then handed
   out again. Done when: `rally new-story` also reads the prefix's roadmap in each open pull request, read-only
   through the service's GitHub token, and never hands out a number used there; when GitHub can't be read it says
   so rather than guessing; with a test for an ID in an open pull request and one for an unreadable GitHub.
-- [ ] **RAL-85: Record a read of the merged commit.** From mellow-weevil's re-read of RAL-81 on 2026-11-06: the
+- [x] **RAL-85: Record a read of the merged commit.** Merged in #157 (c79a2c5). From mellow-weevil's re-read of RAL-81 on 2026-11-06: the
   merged head a4e6f90 took a merge of main after the verify at 6949b93, and `annotate --also-read` takes only the
   original verifier's credential and name, so the successor watchman couldn't record its read and `commit_differs`
   stayed. Done when: `rally read-merged <STORY> --commit <latest merged commit> --note ...` records a verified-kind
@@ -503,13 +503,13 @@ word.
   `commit_differs` counts it and RAL-67's also-reads; `verified_commits` lists it; it's dropped with the
   verification; `rally verifications` labels it by the designation, gated by nothing; with tests and
   docs/evidence.md.
-- [ ] **RAL-87: Say when a watchman's digest has stopped.** From the DiscoSim rally's issues log (§2.7) and
+- [x] **RAL-87: Say when a watchman's digest has stopped.** Merged in #163 (a64baa3). From the DiscoSim rally's issues log (§2.7) and
   mellow-weevil's digest dying on a 429 on 2026-11-06 with nothing noticing. Done when: each `rally digest` pass
   records when it ran and when a digest last went; `rally brief` and `rally stalls` with `--digest-quiet-after
   <window>` flag each designated watchman, or one named with `--digest-watchman`, whose digest has no pass recorded,
   no pass within the window, or records waiting longer than the window with none sent, and not one whose ledger is
   merely quiet; the window has no default, since it's the operator's to agree; with tests.
-- [ ] **RAL-80: Viewer sign-ins survive a restart.** From the DiscoSim rally's issues log (§3.4, 2026-11-06):
+- [x] **RAL-80: Viewer sign-ins survive a restart.** Merged in #150 (28bb214). From the DiscoSim rally's issues log (§3.4, 2026-11-06):
   sessions were held only in memory, so adding `--summaries`, or any restart or deploy, signed the operator out.
   Chosen over a SIGHUP reload of the projects and summaries, which would spare only config changes, not a deploy or
   a crash. Done when: a session made by signing in holds across a restart of the viewer; the sessions are kept in
@@ -517,12 +517,12 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
-- [ ] **RAL-88: The viewer's cross-site refusal says how to sign in instead.** From the DiscoSim rally's issues
+- [x] **RAL-88: The viewer's cross-site refusal says how to sign in instead.** Merged in #162 (0ab6344). From the DiscoSim rally's issues
   log, §3.2: the Claude-in-Chrome extension's navigation is marked cross-site, so the viewer answered "other sites
   can't read this page", which is right but says nothing about what to do. Assigned by mellow-weevil. Done when:
   the refusal is unchanged (403, same rule) and its text adds: run `rally web --login` in a terminal and open the
   address from there or the address bar, not from another page or an extension; with a test of the text.
-- [ ] **RAL-86: Long-running digest and wake log a failed pass, back off, and keep going.** From the watchman
+- [x] **RAL-86: Long-running digest and wake log a failed pass, back off, and keep going.** Merged in #159 (72d3c8e). From the watchman
   (mellow-weevil), 2026-11-06: `rally digest --every` exited with `refused (429): too many checks and past-state
   reads` right after a successful send. Reserved by silken-beetle, built by eager-cobra. Done when: with `--every`,
   a failed pass that can clear with time (429, 408, 5xx, the service or Muster unreachable) is logged as one JSON
@@ -530,13 +530,13 @@ word.
   only on bad configuration, no pairing, or a refusal that won't clear; the digest keeps each watchman's head as
   its turn ends, so a pass failing part-way neither sends a digest twice nor skips one; `docs/digest.md` and
   `docs/wake.md` say so; with a test of a fake service answering 429 then 200.
-- [ ] **RAL-81: Progress from the ledger when a roadmap has no checkboxes.** From the DiscoSim rally's issues log
+- [x] **RAL-81: Progress from the ledger when a roadmap has no checkboxes.** Merged in #151 (8571623). From the DiscoSim rally's issues log
   (§3.5, 2026-11-06): DiscoSim's roadmap is a table, so the overview read 0 ticks all rally. Done when: a roadmap
   that's read and has no checkboxes shows its progress from the ledger's states, Verified of the stories the ledger
   tracks under its prefix, labelled as the ledger's, on its card and its project page; a roadmap with boxes, one not
   yet read, or a prefix the ledger doesn't track, doesn't; it's kept out of the boxes across projects, which say
   which projects were left out; with a test.
-- [ ] **RAL-71: Evidence can be corrected.** From the DiscoSim rally's issues log (§2.2, 2026-11-06): DSM-41's
+- [x] **RAL-71: Evidence can be corrected.** Merged in #145 (6b7227f). From the DiscoSim rally's issues log (§2.2, 2026-11-06): DSM-41's
   evidence named `Castor-o7/DiscoteSim`, a typo, and DSM-54's wasn't `owner/repo@<full commit>`, and the only fix
   for either was a send-back, since a resubmit in review is refused. Done when: `rally submit` refuses evidence
   that isn't `owner/repo@<full commit>`, or whose repository isn't the one the projects list gives the story's
