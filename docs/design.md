@@ -89,9 +89,12 @@ clears it.
 catapp#78 merged before a requested read arrived. So anyone can ask for a read of a story at a commit
 (`request_read`, RAL-32), in any state, since the ask can come before the submission. The request stays
 on the story, visible to whoever merges, until a verify or send-back answers it, a verifier's correction
-into Verified or Sent back answers it, or the requester or a verifier withdraws it. A merge recorded while
+into Verified or Sent back answers it, or the requester or a verifier withdraws it. On a story already
+Verified, which can't be verified again, the verifier's also-read or read of the merged commit answers
+every open request whose commit the verification then covers (RAL-106). A merge recorded while
 a request is open doesn't close it: the request then shows the commit that was merged before its read,
-so the story carries what happened.
+so the story carries what happened, unless the verification in force already covers the commit it asked
+about.
 
 An open request blocks a merge, and the read must cover the head being merged: the muster's rule in
 Muster's `docs/board.md`, which the operator told Rally to record on 2026-11-04. Rally can't stop a
@@ -299,7 +302,7 @@ it:
 
 1. **No listener: chosen, because it held up.** Rally builds a `MykoServer` with Postgres and never calls `run()`, so
    myko binds nothing. The service's test `nothing_listens_but_the_door` reads the running service's sockets with
-   `lsof`: one listening socket, the TLS door, and otherwise only connections out to Postgres. So there's no loopback
+   `lsof` and `/proc` (RAL-107): one listening socket, the TLS door, and otherwise only connections out to Postgres. So there's no loopback
    port to state beside MUS-7. What `run()` would have done, and what skipping it costs:
    - *Replay from Postgres:* needed, and Rally runs it: `init_postgres_and_wait`, the same catch-up `run()` waits for.
    - *Persister health check:* it only checks that the table and channel names are valid identifiers. Rally's names

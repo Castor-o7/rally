@@ -561,6 +561,23 @@ impl Story {
             .collect()
     }
 
+    /// Close every open read request whose commit the verification in force covers (RAL-106):
+    /// a story already Verified can't be verified again, so a verifier who adds a commit as also
+    /// read, or reads a merged commit beside the verification, has answered a request for it.
+    fn answer_covered_requests(&mut self) {
+        if self.state != State::Verified {
+            return;
+        }
+        let covered: Vec<bool> = self
+            .requested_reads
+            .iter()
+            .map(|read| self.covers(&read.commit))
+            .collect();
+        let mut covered = covered.into_iter();
+        self.requested_reads
+            .retain(|_| !covered.next().unwrap_or(false));
+    }
+
     /// Whether the verification in force covers `commit`.
     pub fn covers(&self, commit: &str) -> bool {
         self.verified_commits()
@@ -1425,6 +1442,7 @@ impl Ledger {
                 story.also_read.push(commit);
             }
         }
+        story.answer_covered_requests();
         Ok(())
     }
 
@@ -2459,9 +2477,17 @@ fn transition(
             // judgement of the work.
             require_kind(record, Kind::Declared)?;
             story.merged_commit = Some(commit.clone());
-            // The request stays open, and now shows the merge got there first.
-            for read in &mut story.requested_reads {
-                read.merged_before_read = Some(commit.clone());
+            // A request still open now shows the merge got there first, unless the verification in
+            // force already covers the commit it asked about (RAL-106).
+            let covered: Vec<bool> = story
+                .requested_reads
+                .iter()
+                .map(|read| story.state == State::Verified && story.covers(&read.commit))
+                .collect();
+            for (read, covered) in story.requested_reads.iter_mut().zip(covered) {
+                if !covered {
+                    read.merged_before_read = Some(commit.clone());
+                }
             }
         }
         Change::ReadMerged { commit, note, .. } => {
@@ -2493,6 +2519,7 @@ fn transition(
                 commit: commit.to_ascii_lowercase(),
                 note: note.clone(),
             });
+            story.answer_covered_requests();
         }
         Change::RequestRead { commit, note, .. } => {
             require_kind(record, Kind::Declared)?;
@@ -4107,6 +4134,69 @@ mod tests {
         let story = ledger.story(STORY).unwrap();
         assert!(story.requested_reads.is_empty());
         assert_eq!(story.commit_mismatch(), Some((COMMIT, OTHER_COMMIT)));
+    }
+
+    /// RAL-106: a story already Verified can't be verified again, so an also-read, or a read of
+    /// the merged commit, answers an open request for a commit it now covers; a merge doesn't
+    /// flag a request the verification already covers.
+    #[test]
+    fn an_also_read_answers_the_request_it_covers() {
+        const THIRD: &str = "1111111111111111111111111111111111111111";
+        let ask = |commit: &str| {
+            team(json!({"change": "request_read", "story": STORY, "commit": commit, "note": "fmt"}))
+        };
+        let merge =
+            |commit: &str| team(json!({"change": "merge", "story": STORY, "commit": commit}));
+        // Requests at 5 (OTHER_COMMIT) and 6 (THIRD); the also-read covers only the first.
+        let mut ledger = ledger_with(&[
+            ready(),
+            claim(),
+            submit(),
+            verify(),
+            ask(OTHER_COMMIT),
+            ask(THIRD),
+        ]);
+        apply_next(&mut ledger, &also_read("a1", "Watch", 4, OTHER_COMMIT)).unwrap();
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.requested_reads.len(), 1);
+        assert_eq!(story.requested_reads[0].commit, THIRD);
+        // A merge flags what's still unread, and nothing the verification covers.
+        let ledger = ledger_with(&[
+            ready(),
+            claim(),
+            submit(),
+            verify(),
+            ask(COMMIT),
+            ask(THIRD),
+            merge(COMMIT),
+        ]);
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.requested_reads.len(), 2);
+        assert_eq!(story.requested_reads[0].merged_before_read, None);
+        assert_eq!(
+            story.requested_reads[1].merged_before_read.as_deref(),
+            Some(COMMIT)
+        );
+        // A read of the merged commit beside the verification answers a request for it.
+        let mut ledger = ledger_with(&[
+            ready(),
+            claim(),
+            submit(),
+            verify(),
+            ask(OTHER_COMMIT),
+            merge(OTHER_COMMIT),
+        ]);
+        let read = record(
+            Kind::Verified,
+            "watch",
+            json!({"change": "read_merged", "story": STORY, "commit": OTHER_COMMIT,
+                   "note": "only a merge of main since", "team": "watchman"}),
+        );
+        apply_next(&mut ledger, &read).unwrap();
+        assert!(ledger.story(STORY).unwrap().requested_reads.is_empty());
+        // Before a verdict, an open request is untouched: an also-read needs one in force.
+        let ledger = ledger_with(&[ready(), claim(), submit(), request_read()]);
+        assert_eq!(ledger.story(STORY).unwrap().requested_reads.len(), 1);
     }
 
     #[test]
