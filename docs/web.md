@@ -3,6 +3,27 @@
 A read-only page showing the rally's status, each roadmap's progress, and each team's status and work.
 It runs on your own machine, on a loopback address only.
 
+## One command: `rally view` (RAL-82)
+
+```bash
+rally view                 # start it if it isn't running, and open it in your browser, signed in
+rally view --restart       # restart it, even a viewer started by hand with `rally web`
+rally view --stop          # stop it
+```
+
+The first time, give it the settings `rally web` takes, for example
+`rally view --summaries DSM=~/Documents/GitHub/Discoteque/docs/muster --watchman-summaries ~/src/rally/docs/muster/watchman`.
+They're saved in `view-settings.json` beside the pairing (`~/.config/rally/`), so after that `rally view` alone is
+enough, and a setting given again replaces the saved one. `rally view` restarts the viewer by itself when it runs
+another build of Rally than the one you ran, so an update shows up the next time you open it, or when it runs
+other settings. The viewer keeps running after the command ends. Its output is in `view.log`, and what's
+running is in `view-run.json`, both in the same folder. The viewer reads with the read-only pairing,
+`viewer.json` there, when it exists, and none of these files ever takes that name. A viewer started by hand is opened as it is until
+`--restart` replaces it. With `--no-open`, it prints the one-time address instead of opening a browser, and `--browser "flatpak run
+com.google.Chrome"` opens it in a browser other than the desktop's default.
+
+## By hand
+
 ```bash
 # Pair with a read-only credential first (see service.md), then:
 rally web --bind 127.0.0.1:7300
@@ -197,7 +218,10 @@ why.
   which a browser always sends, and with the key.
 - **Other sites can't read it.** Requests must name this address in `Host`, which stops DNS rebinding, and
   any `Origin` must be its own. A request the browser marks as from another site (`Sec-Fetch-Site` other than
-  `same-origin` or `none`) is refused, even with the cookie. There are no CORS headers.
+  `same-origin` or `none`) is refused, even with the cookie. There are no CORS headers. The refusal says how to
+  get in instead (RAL-88): run `rally web --login` in a terminal and open the address from there or the address
+  bar, since a link opened from another page or a browser extension (such as Claude in Chrome) is marked as from
+  another site, and correctly refused.
 - **Recorded text can't run.** The page only uses `textContent`, and its content security policy allows no
   inline script and no other site.
 - **No write path.** It has no way to change anything. With `--db` its Postgres connection is read-only, and it should use a

@@ -221,6 +221,151 @@ fn evidence_is_checked_at_submit_and_amended_in_review() {
     );
 }
 
+/// RAL-85: a successor records its read of the merged commit beside the verification, which
+/// clears `commit_differs`; an author can't.
+#[test]
+fn a_successor_records_its_read_of_the_merged_commit() {
+    let db = Ledger::new();
+    ok(&db, "silken-tanager", &["ready", "RAL-3"]);
+    ok(
+        &db,
+        "silken-tanager",
+        &["claim", "RAL-3", "--team", "rally"],
+    );
+    ok(
+        &db,
+        "silken-tanager",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    ok(
+        &db,
+        "frank-crocodile",
+        &["verify", "RAL-3", "--note", "read it", "--commit", COMMIT],
+    );
+    ok(
+        &db,
+        "silken-tanager",
+        &["merge", "RAL-3", "--commit", OTHER_COMMIT],
+    );
+    let shown = ok(&db, "silken-tanager", &["show", "RAL-3"]);
+    assert!(shown["detail"]["commit_differs"].is_object(), "{shown}");
+
+    let author = refused(
+        &db,
+        "silken-tanager",
+        &[
+            "read-merged",
+            "RAL-3",
+            "--commit",
+            OTHER_COMMIT,
+            "--note",
+            "fine",
+        ],
+    );
+    assert!(author.contains("can't verify"), "{author}");
+    let wrong = refused(
+        &db,
+        "mellow-weevil",
+        &["read-merged", "RAL-3", "--commit", COMMIT, "--note", "fine"],
+    );
+    assert!(wrong.contains("latest recorded merge is"), "{wrong}");
+    ok(
+        &db,
+        "mellow-weevil",
+        &[
+            "read-merged",
+            "RAL-3",
+            "--commit",
+            OTHER_COMMIT,
+            "--note",
+            "only a merge of main since",
+            "--team",
+            "watchman",
+        ],
+    );
+    let shown = ok(&db, "silken-tanager", &["show", "RAL-3"]);
+    let detail = &shown["detail"];
+    assert!(detail["commit_differs"].is_null(), "{shown}");
+    assert_eq!(detail["verified_commit"], COMMIT);
+    assert_eq!(detail["merged_reads"][0]["commit"], OTHER_COMMIT);
+    assert_eq!(
+        detail["merged_reads"][0]["source"]["declared_name"],
+        "mellow-weevil"
+    );
+    let listed = ok(&db, "silken-tanager", &["show"]);
+    assert_eq!(
+        listed["stories"]["RAL-3"]["verified_commits"],
+        serde_json::json!([COMMIT, OTHER_COMMIT])
+    );
+}
+
+/// RAL-87: `brief` and `stalls` say when a watchman's digest has no pass on record, and stop
+/// saying it once `rally digest` has run. Without a window, nothing is checked.
+#[test]
+fn brief_and_stalls_flag_a_watchman_whose_digest_isnt_running() {
+    let db = Ledger::new();
+    ok(&db, "silken-tanager", &["ready", "RAL-3"]);
+    let state = db.dir.path().join("digest.json");
+    let state = state.to_str().unwrap();
+    let check = [
+        "--digest-quiet-after",
+        "15m",
+        "--digest-state-file",
+        state,
+        "--digest-watchman",
+        "Watch-Keeper",
+    ];
+    let unchecked = ok(&db, "silken-tanager", &["brief"]);
+    assert_eq!(unchecked["digest"]["checked"], false);
+    let brief = ok(&db, "silken-tanager", &[&["brief"][..], &check].concat());
+    let warnings = brief["digest"]["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{brief}");
+    assert_eq!(warnings[0]["watchman"], "Watch-Keeper");
+    assert!(
+        warnings[0]["warning"]
+            .as_str()
+            .unwrap()
+            .contains("no digest pass")
+    );
+    let stalls = ok(&db, "silken-tanager", &[&["stalls"][..], &check].concat());
+    let prompts = stalls["prompts"].as_array().unwrap();
+    assert!(
+        prompts
+            .iter()
+            .any(|row| row["row"] == "digest_quiet" && row["watchman"] == "Watch-Keeper"),
+        "{stalls}"
+    );
+
+    // One pass of the digest, which has nothing new to send on its first run, records that it ran.
+    ok(
+        &db,
+        "silken-tanager",
+        &[
+            "digest",
+            "--quiet",
+            "1m",
+            "--max",
+            "1m",
+            "--watchman",
+            "watch-keeper",
+            "--state-file",
+            state,
+        ],
+    );
+    let kept: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(state).unwrap()).unwrap();
+    assert!(
+        kept["watch-keeper"]["last_pass_ms"].as_i64().is_some(),
+        "{kept}"
+    );
+    let brief = ok(&db, "silken-tanager", &[&["brief"][..], &check].concat());
+    assert_eq!(
+        brief["digest"]["warnings"],
+        serde_json::json!([]),
+        "{brief}"
+    );
+}
+
 #[test]
 fn a_team_claims_and_submits_and_the_history_is_kept() {
     let db = Ledger::new();
@@ -1085,6 +1230,55 @@ fn the_gate_refuses_a_range_naming_a_sent_back_story_and_passes_once_it_is_verif
         &["gate", "--repo", repo_arg, "--", "--output=x"],
     );
     assert!(error.contains("isn't a commit range"), "{error}");
+}
+
+/// `rally view` (RAL-82) keeps its own files, and never touches the pairings beside them: the
+/// read-only `viewer.json` above all, which an earlier draft would have overwritten.
+#[test]
+fn rally_view_never_touches_the_pairings_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = dir.path().join("client.json");
+    let viewer = dir.path().join("viewer.json");
+    std::fs::write(
+        &client,
+        br#"{"address":"a","fingerprint":"f","token":"t1"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &viewer,
+        br#"{"address":"a","fingerprint":"f","token":"t2"}"#,
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rally"))
+        .arg("--config")
+        .arg(&client)
+        .args([
+            "view",
+            "--stop",
+            "--bind",
+            "127.0.0.1:7398",
+            "--projects",
+            "/p.json",
+        ])
+        .env_remove("RALLY_DB")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("no viewer was running"));
+    assert_eq!(
+        std::fs::read(&viewer).unwrap(),
+        br#"{"address":"a","fingerprint":"f","token":"t2"}"#
+    );
+    assert_eq!(
+        std::fs::read(&client).unwrap(),
+        br#"{"address":"a","fingerprint":"f","token":"t1"}"#
+    );
+    let saved = std::fs::read_to_string(dir.path().join("view-settings.json")).unwrap();
+    assert!(saved.contains("127.0.0.1:7398") && saved.contains("/p.json"));
 }
 
 /// RAL-79, modelled on DSM-37: parts are submitted and read as they land, the gate passes what a

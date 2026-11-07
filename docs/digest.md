@@ -88,7 +88,34 @@ Teams
 
 Beside `rally wake`, as `rally digest --every <time>`: one pass reads the ledger through the paired service,
 decides from the kept head and the two clocks whether a digest is due, and sends it. Reads only. It writes
-nothing to the ledger.
+nothing to the ledger. Each pass records, per watchman, when it ran and when a digest last went (`last_pass_ms`,
+`last_sent_ms`), so `rally brief` and `rally stalls --digest-quiet-after <window>` can say when it has stopped
+(RAL-87; see docs/stalls.md).
+
+## When a pass fails (RAL-86)
+
+With `--every`, a pass that fails doesn't end the loop when the failure can clear with time: the service refusing
+with 429 ("too many requests", "too many checks and past-state reads"), 408 or 5xx; the service being unreachable or
+restarting; Muster being down. The failed pass is logged on stdout as one JSON line, and the loop waits and tries
+again:
+
+```json
+{"pass":"failed","error":"refused (429): too many checks and past-state reads","failures_in_a_row":1,"retry_in_ms":30000}
+```
+
+- The wait is `--every` after the first failure in a row, doubling with each one after, up to 16 times `--every`. If
+  the service sends `Retry-After` (whole seconds), the loop waits at least that long, and the line shows it as
+  `retry_after_ms`. Nothing waits longer than an hour. A pass that succeeds starts the count again.
+- It **exits** (status 1, the reason on stderr) only on what waiting won't clear: a pairing or `--config` that
+  can't be read, no `--db` database, or any other refusal, such as 401 (a token that isn't valid) or 403 (read-only).
+  These are checked before every pass. It also exits if its state file can't be written (below). Bad flags are refused before the loop starts.
+- Without `--every`, one pass, and a failure exits as before.
+
+**The kept heads stay consistent.** Each watchman's head is kept as soon as its own turn in the pass ends, and
+written even when a later watchman's turn fails. So a digest that was sent is never sent again after a failure part
+way through, and one that wasn't sent is still due next pass. If the state file can't be written (a full disk,
+permissions), the loop **exits** rather than retrying: the next pass would reload the old heads and send the same
+digest again, on every retry. Fix the file and start it again.
 
 ## Running it on a1
 
@@ -138,7 +165,10 @@ watchman, re-run the `sed` and the two `launchctl` lines.
   It's accepted only from the verification's own credential and declared name, only on the verification in force,
   and only with full hashes; a new verdict drops what was added. `rally show <story>` lists them as `also_read`,
   and the story list gives `verified_commits`. A service older than RAL-67 gives only the mismatch's verified
-  commit, and the digest uses that. On Murph's ledger on
+  commit, and the digest uses that. When the head that landed is a commit someone other than the verifier read,
+  such as a watchman after the one who verified, that reader records it as its own read instead (RAL-85):
+  `rally read-merged <story> --commit <latest merged commit> --note "..."`, listed in `merged_reads` and in
+  `verified_commits`. On Murph's ledger on
   2026-11-05 that flagged 4 of 24 merges, not 21; one, RAL-22, landed #123's head 7fc4bef against a
   verification at bee9f46.
 - Records come from `/v1/export` after each watchman's head, at most 20 pages a pass; the waiting list, the

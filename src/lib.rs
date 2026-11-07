@@ -15,6 +15,7 @@ pub mod levi;
 pub mod lock_holder;
 pub mod next;
 pub mod record;
+pub mod retry;
 #[doc(hidden)]
 pub mod scratch_pg;
 pub mod secrets;
@@ -22,6 +23,7 @@ pub mod server;
 pub mod session;
 pub mod stall;
 pub mod store;
+pub mod view;
 pub mod views;
 pub mod wake;
 pub mod web;

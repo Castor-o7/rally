@@ -9,7 +9,7 @@
 //! Everything here is pure, so it can be tested without the service or Muster.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::session::clean;
 
@@ -36,6 +36,13 @@ pub struct Kept {
     pub first_seen_ms: Option<i64>,
     /// When a pass last saw a new one.
     pub last_change_ms: Option<i64>,
+    /// When a pass last ran for this watchman, by this machine's clock (RAL-87), so `rally brief`
+    /// and `rally stalls` can tell a digest that stopped running from one with nothing to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pass_ms: Option<i64>,
+    /// When a digest last went to this watchman (RAL-87).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sent_ms: Option<i64>,
 }
 
 /// One ledger record, as the export gives it.
@@ -168,6 +175,27 @@ pub fn step(
     }
 }
 
+/// Runs `turn` for each watchman in order, given what was kept for it, and keeps what each turn
+/// returns as soon as it ends (RAL-86). On the first failure it stops and returns the error, with
+/// every earlier watchman's progress already kept, so a pass that fails part-way neither loses a
+/// digest that was sent, which would send it twice, nor skips one.
+pub fn keep_each<E>(
+    watchmen: &[Watchman],
+    state: &mut std::collections::BTreeMap<String, Kept>,
+    mut turn: impl FnMut(&Watchman, Option<&Kept>) -> Result<Kept, E>,
+) -> Option<E> {
+    for watch in watchmen {
+        let key = watch.name.trim().to_lowercase();
+        match turn(watch, state.get(&key)) {
+            Ok(kept) => {
+                state.insert(key, kept);
+            }
+            Err(error) => return Some(error),
+        }
+    }
+    None
+}
+
 /// After a digest up to `to` has gone: the next one starts after it.
 pub fn sent(kept: &mut Kept, to: u64) {
     *kept = Kept {
@@ -175,6 +203,53 @@ pub fn sent(kept: &mut Kept, to: u64) {
         seen_to: to,
         ..Kept::default()
     };
+}
+
+/// RAL-87: why each watchman's digest looks stopped, given what `rally digest` kept on this machine
+/// (`state`, absent when there's no file) and the window the operator agreed. A quiet ledger sends
+/// nothing and isn't flagged: only no pass in the window, or records that have waited longer than
+/// the window with no digest sent, are. `watchmen` are names, each with how it came to be checked.
+pub fn quiet_warnings(
+    watchmen: &[(String, &str)],
+    state: Option<&std::collections::BTreeMap<String, Kept>>,
+    window_ms: u64,
+    now_ms: i64,
+) -> Vec<Value> {
+    let window = i64::try_from(window_ms).unwrap_or(i64::MAX);
+    let older = |at: i64| now_ms.saturating_sub(at) >= window;
+    watchmen
+        .iter()
+        .filter_map(|(name, how)| {
+            let kept = state.and_then(|state| state.get(&name.trim().to_lowercase()));
+            let why = match kept {
+                None => "no digest pass has been recorded for this watchman on this machine".into(),
+                Some(Kept {
+                    last_pass_ms: None, ..
+                }) => {
+                    "no digest pass has recorded when it ran (a digest older than RAL-87 kept it)"
+                        .into()
+                }
+                Some(Kept {
+                    last_pass_ms: Some(at),
+                    ..
+                }) if older(*at) => format!("the last digest pass was {}", age(*at, now_ms)),
+                Some(Kept {
+                    first_seen_ms: Some(at),
+                    ..
+                }) if older(*at) => format!(
+                    "records first seen {} are still waiting for a digest",
+                    age(*at, now_ms)
+                ),
+                Some(_) => return None,
+            };
+            let mut row = json!({"watchman": name, "how": how, "warning": why});
+            if let Some(kept) = kept {
+                row["last_pass_ms"] = json!(kept.last_pass_ms);
+                row["last_sent_ms"] = json!(kept.last_sent_ms);
+            }
+            Some(row)
+        })
+        .collect()
 }
 
 /// How long ago `at_ms` was, in a few characters.
@@ -561,6 +636,72 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RAL-87: a digest that stopped running, or that has records waiting past the window with
+    /// none sent, is flagged; a quiet ledger isn't, and names compare without case.
+    #[test]
+    fn a_stopped_digest_is_flagged_and_a_quiet_one_isnt() {
+        let minute = 60_000;
+        let now = 100 * minute;
+        let kept = |pass: Option<i64>, first_seen: Option<i64>| Kept {
+            last_pass_ms: pass,
+            first_seen_ms: first_seen,
+            last_sent_ms: Some(now - 50 * minute),
+            ..Kept::default()
+        };
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("running".to_owned(), kept(Some(now - minute), None));
+        state.insert(
+            "waiting".to_owned(),
+            kept(Some(now - minute), Some(now - 20 * minute)),
+        );
+        state.insert("stopped".to_owned(), kept(Some(now - 30 * minute), None));
+        state.insert("old-format".to_owned(), kept(None, None));
+        let names: Vec<(String, &str)> = ["Running", "waiting", "stopped", "old-format", "absent"]
+            .iter()
+            .map(|name| (name.to_string(), "designated"))
+            .collect();
+        let warnings = quiet_warnings(&names, Some(&state), 15 * 60_000, now);
+        let flagged: Vec<(&str, &str)> = warnings
+            .iter()
+            .map(|w| {
+                (
+                    w["watchman"].as_str().unwrap(),
+                    w["warning"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            flagged,
+            [
+                (
+                    "waiting",
+                    "records first seen 20m ago are still waiting for a digest"
+                ),
+                ("stopped", "the last digest pass was 30m ago"),
+                (
+                    "old-format",
+                    "no digest pass has recorded when it ran (a digest older than RAL-87 kept it)"
+                ),
+                (
+                    "absent",
+                    "no digest pass has been recorded for this watchman on this machine"
+                ),
+            ]
+        );
+        assert_eq!(warnings[1]["last_pass_ms"], now - 30 * minute);
+        assert_eq!(warnings[1]["how"], "designated");
+        // Within the window, nothing; and with no state file at all, every watchman is flagged.
+        assert!(quiet_warnings(&names[..1], Some(&state), 15 * 60_000, now).is_empty());
+        assert_eq!(quiet_warnings(&names, None, 15 * 60_000, now).len(), 5);
+        // What's kept still reads back from a file written before RAL-87.
+        let before: Kept = serde_json::from_str(
+            r#"{"head": 3, "seen_to": 3, "first_seen_ms": null,
+                                     "last_change_ms": null}"#,
+        )
+        .unwrap();
+        assert_eq!(before.last_pass_ms, None);
+    }
     use serde_json::json;
 
     const TIMES: Times = Times {
@@ -604,6 +745,43 @@ mod tests {
             Decision::Nothing
         );
         assert_eq!(kept.head, 203);
+    }
+
+    /// RAL-86: when a pass fails at the second watchman, the first's send is already kept, so the
+    /// next pass doesn't send it again; the second's is left as it was.
+    #[test]
+    fn a_pass_failing_part_way_keeps_what_the_earlier_watchmen_were_sent() {
+        let two = [
+            Watchman {
+                name: "Alpha".into(),
+                credential: None,
+            },
+            Watchman {
+                name: "beta".into(),
+                credential: None,
+            },
+        ];
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("beta".to_owned(), start_at(5));
+        let failed = keep_each(&two, &mut state, |watch, before| {
+            if watch.name == "beta" {
+                return Err("refused (429): too many checks and past-state reads");
+            }
+            assert!(before.is_none());
+            let mut kept = start_at(5);
+            sent(&mut kept, 9);
+            Ok(kept)
+        });
+        assert_eq!(
+            failed,
+            Some("refused (429): too many checks and past-state reads")
+        );
+        assert_eq!(state["alpha"].head, 9, "alpha's digest is kept as sent");
+        assert_eq!(
+            state["beta"],
+            start_at(5),
+            "beta's is untouched, so nothing is skipped"
+        );
     }
 
     #[test]
@@ -694,6 +872,8 @@ mod tests {
             seen_to: 12,
             first_seen_ms: Some(5),
             last_change_ms: Some(7),
+            last_pass_ms: Some(8),
+            last_sent_ms: Some(6),
         };
         let text = serde_json::to_string(&kept).unwrap();
         assert_eq!(serde_json::from_str::<Kept>(&text).unwrap(), kept);
@@ -953,6 +1133,16 @@ mod tests {
         assert!(digest.contains("Waiting for you (0)"), "{digest}");
         assert!(!digest.contains("Merged"), "{digest}");
         assert!(!digest.contains("Blockers"), "{digest}");
+        // RAL-52: the handover list is carried only until it's empty.
+        assert!(!digest.contains("Peer-verified"), "{digest}");
+        let reread = json!({"stories": [{"story": "CAT-1", "verified_by": "x", "commit": "c",
+                                         "status": "re-read by the watchman at record 5"}]});
+        let reads = Reads {
+            handover: &reread,
+            ..reads
+        };
+        let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
+        assert!(!digest.contains("Peer-verified"), "{digest}");
     }
 
     #[test]

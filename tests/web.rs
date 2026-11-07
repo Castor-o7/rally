@@ -817,6 +817,13 @@ fn a_request_the_browser_marks_as_from_another_site_is_refused_even_with_the_key
         let (status, text) = raw(&viewer, "GET", "/api/status", &viewer.address, &extra);
         assert_eq!(status, 403, "{site}");
         assert!(!text.contains("untrusted_text"));
+        // The refusal says how to sign in instead (RAL-88).
+        assert!(text.contains("other sites can't read this page"), "{text}");
+        assert!(
+            text.contains("run `rally web --login` in a terminal"),
+            "{text}"
+        );
+        assert!(text.contains("address bar, not from another page or a browser extension"));
     }
     for site in ["same-origin", "none"] {
         let extra = format!("Sec-Fetch-Site: {site}\r\n");

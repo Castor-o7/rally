@@ -26,6 +26,8 @@ Records that end the rollback window, because a binary older than the one named 
 | `annotate --also-read` | not yet | RAL-67 |
 | `open-rally` or `close-rally` | not yet | RAL-76 |
 | `submit`, `verify` or `send-back` with `--part` (a `part` field) | not yet | RAL-79 |
+| `amend` (a submit with `"amend": true`) | `6b7227f` | RAL-71 |
+| `read-merged` | not yet | RAL-85 |
 
 Before rolling back to a binary older than the story that added one, check that none has been written.
 
