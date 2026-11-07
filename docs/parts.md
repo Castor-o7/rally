@@ -27,9 +27,13 @@ rally verify DSM-37 --commit <last> --note "all parts read"                 # re
   of it that names a commit must name the amended evidence's. A story-level `amend` still covers only the story's
   own submission.
 - **The close** is today's submit and verify. The final verify is refused while any part is in review or sent
-  back, and says which.
-- `--of n` declares how many parts there are. The total shown is the latest `--of`, else the highest part
-  submitted.
+  back, or any declared part was never submitted, and says which.
+- `--of n` declares how many parts there are, at most 64, and never below a part already submitted. Parts are
+  numbered 1 to 64. The total shown is the latest `--of`, else the highest part submitted. `--of` is refused on a
+  story with no parts.
+- **The close waits for every declared part.** If `--of 4` was declared and part 4 was never submitted, the final
+  verify is refused and says so. A story that ended early says how many parts it ended with by amending the close:
+  `rally amend <ID> --team <team> --evidence ... --of 3`.
 - **A story with no parts** behaves exactly as before, and its records are written as before.
 
 ## Where parts show

@@ -368,8 +368,9 @@ enum Command {
         /// For a multi-part story (RAL-79): the part this is, numbered from 1.
         #[arg(long)]
         part: Option<u32>,
-        /// With --part: how many parts the story has, declared.
-        #[arg(long, requires = "part")]
+        /// How many parts the story has, declared (RAL-79): with --part, or on the closing submit
+        /// of a story in parts, to say how many it ended with.
+        #[arg(long)]
         of: Option<u32>,
     },
     /// Correct the evidence of a story you submitted that's still in review (RAL-71), without a
@@ -394,6 +395,9 @@ enum Command {
         /// For a multi-part story (RAL-79): the part this is, numbered from 1.
         #[arg(long)]
         part: Option<u32>,
+        /// On the close of a story in parts, how many parts it ended with (RAL-79).
+        #[arg(long)]
+        of: Option<u32>,
     },
     /// Confirm someone else's submitted story, naming the commit you read.
     Verify {
@@ -2973,11 +2977,12 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             projects,
             not_checkable,
             part,
+            of,
         } => {
             if !not_checkable {
                 check_evidence(&story, &evidence, projects.as_deref())?;
             }
-            submission(&story, &team, &evidence, untested, true, part, None)
+            submission(&story, &team, &evidence, untested, true, part, of)
         }
         Command::Verify {
             story,

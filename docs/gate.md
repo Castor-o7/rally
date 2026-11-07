@@ -46,14 +46,17 @@ part's read, the `--commit` of `rally verify <ID> --part k`, covers:
 - that commit;
 - **its ancestors.** A read of part k is taken to cover the commits before it on that branch, such as part k's own
   earlier commits and the parts before it. The check is `git merge-base --is-ancestor` in `--repo`.
-- **a merge commit whose merged-in parents** (all but the first) are covered, as a pull request's merge of the
-  branch read is.
+
+Nothing after the read is covered, **merge commits included**. A merge's parents say nothing about its own tree, and
+anyone can write a merge of any tree with any parents, the repository's root among them, under a message naming the
+story. So a pull request's merge of a part read after the read needs `--allow`, or a read of the merge commit
+itself, which then covers it.
 
 The story is refused if any commit naming it isn't covered: work pushed after the last part's read still needs
 that part read, or `--allow`. Covered commits are listed under `covered_by_parts`, with the story's `parts`.
 Coverage is per story. An ancestor that names a *different* story doesn't pass because of this one's part: that
 story is still judged on its own state and parts. A part merged by squash isn't an ancestor of the commit read, so it
-still needs `--allow`.
+still needs `--allow` too.
 
 ## What it doesn't check
 

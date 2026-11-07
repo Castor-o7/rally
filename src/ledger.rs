@@ -22,6 +22,8 @@ const MAX_EVIDENCE_CHARS: usize = 1_000;
 /// A new story's title (RAL-55), which a roadmap line repeats.
 const MAX_TITLE_CHARS: usize = 200;
 const MAX_STORY_ID_BYTES: usize = 32;
+/// The most parts a story can have (RAL-79).
+pub const MAX_PARTS: u32 = 64;
 
 /// A story's state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -477,6 +479,13 @@ impl Story {
             .count()
     }
 
+    /// Parts up to the declared total that were never submitted (RAL-79).
+    fn missing_parts(&self) -> Vec<u32> {
+        (1..=self.parts_total())
+            .filter(|k| !self.parts.contains_key(k))
+            .collect()
+    }
+
     /// The parts still open: in review or sent back.
     fn open_parts(&self) -> Vec<u32> {
         self.parts
@@ -798,6 +807,8 @@ pub enum LedgerError {
     PartsOpen {
         story: String,
         parts: Vec<u32>,
+        /// Declared with `--of` and never submitted.
+        missing: Vec<u32>,
     },
     /// An amendment of a story that isn't in review (RAL-71).
     NotInReview {
@@ -944,14 +955,33 @@ impl fmt::Display for LedgerError {
                  rally amend {story} --team <team> --evidence <owner/repo@full commit>"
             ),
             Self::Part { story, part, why } => write!(f, "{story} part {part}: {why}"),
-            Self::PartsOpen { story, parts } => {
-                let parts: Vec<String> = parts.iter().map(u32::to_string).collect();
-                write!(
-                    f,
-                    "{story} still has parts in review or sent back ({}): read those first, \
-                     then verify the story",
-                    parts.join(", ")
-                )
+            Self::PartsOpen {
+                story,
+                parts,
+                missing,
+            } => {
+                let list = |parts: &[u32]| {
+                    parts
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let mut why = Vec::new();
+                if !parts.is_empty() {
+                    why.push(format!(
+                        "parts in review or sent back ({}): read those first",
+                        list(parts)
+                    ));
+                }
+                if !missing.is_empty() {
+                    why.push(format!(
+                        "parts declared with --of and never submitted ({}): submit them, or \
+                         the team amends the close with a lower --of",
+                        list(missing)
+                    ));
+                }
+                write!(f, "{story} can't be verified yet: {}", why.join("; "))
             }
             Self::NotInReview { story, from } => write!(
                 f,
@@ -2108,10 +2138,18 @@ fn transition(
                 part: *k,
                 why,
             };
-            if *k == 0 || of.is_some_and(|n| n < *k) {
-                return Err(part_error(
-                    "parts are numbered from 1, and no higher than --of".into(),
-                ));
+            if *k == 0 || *k > MAX_PARTS || of.is_some_and(|n| n < *k || n > MAX_PARTS) {
+                return Err(part_error(format!(
+                    "parts are numbered from 1 to {MAX_PARTS}, and no higher than --of"
+                )));
+            }
+            let highest = story.parts.keys().next_back().copied().unwrap_or(0);
+            if let Some(n) = of
+                && *n < highest
+            {
+                return Err(part_error(format!(
+                    "--of {n} is below part {highest}, which is already submitted"
+                )));
             }
             // A part is the holding team's work in progress: the story stays claimed.
             if story.state != State::Claimed {
@@ -2210,9 +2248,11 @@ fn transition(
             evidence,
             untested,
             amend: true,
+            of,
             ..
         } => {
             require_kind(record, Kind::Declared)?;
+            check_closing_of(story, *of)?;
             if story.state != State::InReview {
                 return Err(LedgerError::NotInReview {
                     story: id.to_owned(),
@@ -2227,6 +2267,7 @@ fn transition(
             }) = latest_submission(story).map(|entry| &entry.change)
                 && before.trim() == evidence.trim()
                 && untested_before == untested
+                && of.is_none_or(|n| story.parts_of == Some(n))
             {
                 return Err(LedgerError::NothingAmended(id.to_owned()));
             }
@@ -2239,9 +2280,13 @@ fn transition(
                     submitter: submitter.clone(),
                 });
             }
+            if let Some(n) = of {
+                story.parts_of = Some(*n);
+            }
         }
-        Change::Submit { team, .. } => {
+        Change::Submit { team, of, .. } => {
             require_kind(record, Kind::Declared)?;
+            check_closing_of(story, *of)?;
             match story.state {
                 State::Claimed => {}
                 // A send-back or release ends the claim, so a resubmit needs a new one (RAL-72).
@@ -2258,6 +2303,9 @@ fn transition(
             require_holder(story, id, team)?;
             story.state = State::InReview;
             story.submitted_by = actor.map(str::to_owned);
+            if let Some(n) = of {
+                story.parts_of = Some(*n);
+            }
         }
         Change::Verify { commit, .. } => {
             if story.state != State::InReview {
@@ -2265,10 +2313,12 @@ fn transition(
             }
             // The final close of a multi-part story waits for every part's read (RAL-79).
             let open = story.open_parts();
-            if !open.is_empty() {
+            let missing = story.missing_parts();
+            if !open.is_empty() || !missing.is_empty() {
                 return Err(LedgerError::PartsOpen {
                     story: id.to_owned(),
                     parts: open,
+                    missing,
                 });
             }
             require_amended_read(story, id, commit.as_deref())?;
@@ -2426,6 +2476,23 @@ fn require_holder(story: &Story, id: &str, team: &str) -> Result<(), LedgerError
             holder: holder.clone(),
         }),
         _ => Ok(()),
+    }
+}
+
+/// `--of` without a part (RAL-79): the close re-declaring how many parts the story ended with. A
+/// story with no parts can't give one, and it can't drop a part already submitted.
+fn check_closing_of(story: &Story, of: Option<u32>) -> Result<(), LedgerError> {
+    let Some(n) = of else {
+        return Ok(());
+    };
+    match story.parts.keys().next_back().copied() {
+        None => Err(LedgerError::InvalidChange(
+            "--of is for a story in parts: give --part with it".into(),
+        )),
+        Some(highest) if n < highest || n > MAX_PARTS => Err(LedgerError::InvalidChange(format!(
+            "--of {n} must be from part {highest}, the highest submitted, to {MAX_PARTS}"
+        ))),
+        Some(_) => Ok(()),
     }
 }
 
@@ -3200,6 +3267,7 @@ mod tests {
             Err(LedgerError::PartsOpen {
                 story: STORY.into(),
                 parts: vec![2],
+                missing: vec![3],
             })
         );
         // A part can't be submitted once the story is in review.
@@ -3208,9 +3276,29 @@ mod tests {
                 .contains("InReview")
         );
         push(&mut ledger, &part_read("verify", 2, OTHER_COMMIT));
+        // Part 3 was declared and never submitted, so the close still waits.
+        assert_eq!(
+            ledger.check(ledger.last_seq() + 1, &verify()),
+            Err(LedgerError::PartsOpen {
+                story: STORY.into(),
+                parts: vec![],
+                missing: vec![3],
+            })
+        );
+        // The team says the story ended at two parts, by amending the close; it can't say one.
+        let close_of = |n: u32| {
+            team(json!({"change": "submit", "story": STORY, "team": "rally",
+                        "evidence": "abc123", "amend": true, "of": n}))
+        };
+        assert!(matches!(
+            ledger.check(ledger.last_seq() + 1, &close_of(1)),
+            Err(LedgerError::InvalidChange(why)) if why.contains("highest submitted")
+        ));
+        push(&mut ledger, &close_of(2));
         push(&mut ledger, &verify());
         assert_eq!(state(&ledger), State::Verified);
         assert_eq!(ledger.story(STORY).unwrap().parts_verified(), 2);
+        assert_eq!(ledger.story(STORY).unwrap().parts_total(), 2);
         // Replay gives the same parts.
         let again = ledger_with(&[
             ready(),
@@ -3222,6 +3310,8 @@ mod tests {
             part_submit(2, &ev(OTHER_COMMIT)),
             submit(),
             part_read("verify", 2, OTHER_COMMIT),
+            team(json!({"change": "submit", "story": STORY, "team": "rally",
+                        "evidence": "abc123", "amend": true, "of": 2})),
             verify(),
         ]);
         assert_eq!(
@@ -3288,6 +3378,38 @@ mod tests {
             json!({"change": "submit", "story": STORY, "team": "rally", "evidence": "x",
                     "amend": true}),
         )
+    }
+
+    #[test]
+    fn parts_and_their_total_are_capped_and_the_total_never_drops_a_part() {
+        let mut ledger = ledger_with(&[ready(), claim()]);
+        let with = |k: u32, of: Option<u32>| {
+            let mut body = json!({"change": "submit", "story": STORY, "team": "rally",
+                                  "evidence": "e", "part": k});
+            if let Some(n) = of {
+                body["of"] = json!(n);
+            }
+            team(body)
+        };
+        let next = ledger.last_seq() + 1;
+        assert!(part_error(ledger.check(next, &with(MAX_PARTS + 1, None))).contains("1 to 64"));
+        assert!(part_error(ledger.check(next, &with(1, Some(MAX_PARTS + 1)))).contains("1 to 64"));
+        push(&mut ledger, &with(3, None));
+        // A later part can't declare a total below a part already submitted.
+        assert!(
+            part_error(ledger.check(ledger.last_seq() + 1, &with(1, Some(2))))
+                .contains("below part 3")
+        );
+        // `of` on a story with no parts is refused: there's nothing for it to count.
+        let mut plain = ledger_with(&[ready(), claim()]);
+        let of = team(json!({"change": "submit", "story": STORY, "team": "rally",
+                             "evidence": "e", "of": 2}));
+        assert!(matches!(
+            plain.check(plain.last_seq() + 1, &of),
+            Err(LedgerError::InvalidChange(why)) if why.contains("give --part")
+        ));
+        push(&mut plain, &submit());
+        assert_eq!(state(&plain), State::InReview);
     }
 
     #[test]

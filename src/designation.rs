@@ -399,7 +399,12 @@ fn coverage(story: &crate::ledger::Story) -> (Option<&str>, Option<&str>) {
         .history
         .iter()
         .rev()
-        .find(|entry| matches!(entry.change, crate::ledger::Change::Submit { .. }))
+        .find(|entry| {
+            matches!(
+                entry.change,
+                crate::ledger::Change::Submit { part: None, .. }
+            )
+        })
         .map(|entry| entry.source.credential.as_str());
     (story.team.as_deref(), submitted)
 }
@@ -592,10 +597,11 @@ pub fn handover(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -
                             &entry.source.credential,
                             entry.source.declared_name.as_deref(),
                         )
+                        // A part's read isn't a re-read of the verified story (RAL-79).
                         && matches!(
                             entry.change,
-                            Change::Verify { .. }
-                                | Change::SendBack { .. }
+                            Change::Verify { part: None, .. }
+                                | Change::SendBack { part: None, .. }
                                 | Change::Correct { .. }
                         )
                 })

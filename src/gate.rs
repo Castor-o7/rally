@@ -22,8 +22,6 @@ const MAX_ID_BYTES: usize = 32;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     pub sha: String,
-    /// Its parents' full hashes, first parent first.
-    pub parents: Vec<String>,
     pub message: String,
 }
 
@@ -48,7 +46,7 @@ pub fn commits(repo: &Path, range: &str) -> Result<Vec<Commit>, String> {
             "--no-pager",
             "log",
             "--no-color",
-            "--format=%H%x00%P%x00%B%x00",
+            "--format=%H%x00%B%x00",
             &limit,
             "--end-of-options",
             range,
@@ -66,16 +64,13 @@ pub fn commits(repo: &Path, range: &str) -> Result<Vec<Commit>, String> {
     let text = String::from_utf8_lossy(&out.stdout);
     let mut fields = text.split('\0');
     let mut found = Vec::new();
-    while let (Some(sha), Some(parents), Some(message)) =
-        (fields.next(), fields.next(), fields.next())
-    {
+    while let (Some(sha), Some(message)) = (fields.next(), fields.next()) {
         let sha = sha.trim();
         if sha.is_empty() {
             break;
         }
         found.push(Commit {
             sha: sha.to_owned(),
-            parents: parents.split_whitespace().map(str::to_owned).collect(),
             message: message.to_owned(),
         });
     }
@@ -204,12 +199,12 @@ pub fn judge(
     })
 }
 
-/// Whether `commit` is covered by a read of `read`, given whether one commit is the other or an
-/// ancestor of it: a verified part's read covers the commits before it on its branch, and a merge
-/// whose merged-in parents are covered (RAL-79).
+/// Whether `commit` is covered by a read of `read`: it's the commit read or an ancestor of it, so
+/// part of what was read (RAL-79). A merge commit after the read isn't, even of a branch that was
+/// read: any parent can be named, even the repository's root, so its parents say nothing about
+/// what's in its own tree, which nobody read.
 fn covered(commit: &Commit, read: &str, ancestor: &dyn Fn(&str, &str) -> bool) -> bool {
     ancestor(&commit.sha, read)
-        || (commit.parents.len() > 1 && commit.parents[1..].iter().all(|p| ancestor(p, read)))
 }
 
 /// [`judge`], where `ancestor(a, b)` says whether commit `a` is `b` or an ancestor of it, as
@@ -315,13 +310,12 @@ mod tests {
     fn commit(sha: &str, message: &str) -> Commit {
         Commit {
             sha: sha.into(),
-            parents: Vec::new(),
             message: message.into(),
         }
     }
 
-    /// RAL-79: a claimed story's commits pass when a verified part's read covers them, as itself,
-    /// an ancestor, or a merge of a covered branch; one it doesn't cover still refuses.
+    /// RAL-79: a claimed story's commits pass when a verified part's read covers them, as itself
+    /// or an ancestor; one it doesn't cover still refuses, and so does a merge after the read.
     #[test]
     fn a_verified_parts_read_covers_its_commits_and_its_ancestors() {
         let stories: Map<String, Value> = [(
@@ -330,23 +324,17 @@ mod tests {
         )]
         .into_iter()
         .collect();
-        // a0 is before p1 on its branch; m merges p1's branch; late came after the read.
+        // a0 is before p1 on its branch; late came after the read.
         let ancestor = |a: &str, b: &str| a == b || (a == "a0" && b == "p1");
-        let merge = Commit {
-            sha: "m".into(),
-            parents: vec!["main".into(), "p1".into()],
-            message: "Merge pull request #9\n\nDSM-37 part 1".into(),
-        };
         let covered = [
             commit("p1", "DSM-37 part 1: bar"),
             commit("a0", "DSM-37: start"),
-            merge,
         ];
         let found = judge_with("x..y", &covered, &stories, &BTreeSet::new(), &ancestor);
         assert_eq!(found["ok"], true, "{found}");
         assert_eq!(
             found["stories"]["DSM-37"]["covered_by_parts"],
-            json!(["p1", "a0", "m"])
+            json!(["p1", "a0"])
         );
         assert_eq!(found["stories"]["DSM-37"]["parts"], "1/4 verified");
 
@@ -357,6 +345,11 @@ mod tests {
         let found = judge_with("x..y", &late, &stories, &BTreeSet::new(), &ancestor);
         assert_eq!(found["ok"], false);
         assert_eq!(found["refused"][0]["story"], "DSM-37");
+
+        // A merge of the branch read isn't covered: its own tree was never read.
+        let merge = commit("m", "Merge pull request #9\n\nDSM-37 part 1");
+        let found = judge_with("x..y", &[merge], &stories, &BTreeSet::new(), &ancestor);
+        assert_eq!(found["ok"], false, "{found}");
     }
 
     fn none() -> BTreeSet<String> {

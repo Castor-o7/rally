@@ -1164,6 +1164,28 @@ fn a_multi_part_story_is_read_part_by_part_and_gated_by_its_reads() {
         String::from_utf8_lossy(&passed.stderr)
     );
 
+    // A forged merge: any tree, the root as a parent, a message naming the story. Its parents are
+    // ancestors of the read, but its own tree wasn't read, so the gate refuses it.
+    let root = git(&repo, &["rev-list", "--max-parents=0", "HEAD"]);
+    let tree = git(&repo, &["write-tree"]);
+    let message = "Merge pull request #9\n\nDSM-37 part 1: the long bar";
+    let forged = git(
+        &repo,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            "HEAD",
+            "-p",
+            &root,
+            "-m",
+            message,
+        ],
+    );
+    let forged_range = format!("{base}..{forged}");
+    let error = refused(&db, "watch", &["gate", &forged_range, "--repo", repo_arg]);
+    assert!(error.contains("DSM-37"), "{error}");
+
     git(
         &repo,
         &[
@@ -1203,7 +1225,7 @@ fn a_multi_part_story_is_read_part_by_part_and_gated_by_its_reads() {
     );
     assert!(gate(&db).status.success());
 
-    // The close: a plain submit, whose verify waits for no open part, and the story is Verified.
+    // The close: a plain submit; its verify marks the story Verified.
     ok(
         &db,
         "author",
@@ -1217,6 +1239,26 @@ fn a_multi_part_story_is_read_part_by_part_and_gated_by_its_reads() {
             "--not-checkable",
         ],
     );
+    // Part 3 was declared and never submitted, so the verify waits until the team amends the
+    // close to say the story ended at two parts.
+    let error = refused(
+        &db,
+        "watch",
+        &["verify", "DSM-37", "--commit", &p2, "--note", "x"],
+    );
+    assert!(error.contains("never submitted (3)"), "{error}");
+    let close = [
+        "amend",
+        "DSM-37",
+        "--team",
+        "discosim",
+        "--evidence",
+        &e2,
+        "--not-checkable",
+        "--of",
+        "2",
+    ];
+    ok(&db, "author", &close);
     ok(
         &db,
         "watch",
@@ -1231,5 +1273,5 @@ fn a_multi_part_story_is_read_part_by_part_and_gated_by_its_reads() {
     );
     let brief = ok(&db, "watch", &["show", "DSM-37", "--brief"]);
     assert_eq!(brief["state"], "verified");
-    assert_eq!(brief["parts"], "2/3 verified");
+    assert_eq!(brief["parts"], "2/2 verified");
 }

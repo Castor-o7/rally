@@ -359,11 +359,12 @@ pub fn field(value: &Value, name: &str) -> Result<String, String> {
 /// A story's latest submission's evidence, declared and clipped, with Rally's own check of it,
 /// observed, when there is one (RAL-27).
 fn latest_evidence(story: &crate::ledger::Story) -> Option<Value> {
+    // The story's own submission, not a part's (RAL-79).
     let submit = story
         .history
         .iter()
         .rev()
-        .find(|entry| matches!(entry.change, Change::Submit { .. }))?;
+        .find(|entry| matches!(entry.change, Change::Submit { part: None, .. }))?;
     let Change::Submit { evidence, .. } = &submit.change else {
         return None;
     };

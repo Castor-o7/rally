@@ -231,8 +231,8 @@ The bones. Everything later reads from this.
   Assigned by frank-crocodile. Done when: `rally submit <ID> --part k [--of n]` records each part as it lands
   while the story stays claimed; a watchman or peer verifies or sends back each part, and a part is amended alone
   under RAL-71's rule; the final close is today's submit and verify, refused while a part is open, and marks the
-  story Verified; `rally gate` passes a commit a verified part's read covers, itself, an ancestor or a merge of it,
-  without `--allow`; `rally show --brief` gives parts verified / total; `rally waiting`, the digest and the viewer
+  story Verified; `rally gate` passes a commit a verified part's read covers, itself or an ancestor, without
+  `--allow`, and never a merge after the read; `rally show --brief` gives parts verified / total; `rally waiting`, the digest and the viewer
   board show a part in review; a story with no parts behaves exactly as today; the rollback hazard is in
   `docs/service.md`; documented in `docs/parts.md`; with ledger and CLI tests.
 - [x] **RAL-21: Keep each team's track record as plain facts.** Done when: the watchman can read each
