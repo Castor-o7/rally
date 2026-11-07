@@ -92,6 +92,29 @@ nothing to the ledger. Each pass records, per watchman, when it ran and when a d
 `last_sent_ms`), so `rally brief` and `rally stalls --digest-quiet-after <window>` can say when it has stopped
 (RAL-87; see docs/stalls.md).
 
+## When a merge leaves the base red (RAL-102)
+
+From the DiscoSim rally's issues log (§10.3, §10.4): Muster's main was red for about a day, and Rally's for a
+while, before anyone saw. So after each merge recorded in the ledger, the watchman's own merges included, each
+pass checks the base's CI on what landed, until it can say how it went:
+
+- What landed is found as RAL-31 finds it: the merged pull request's merge or squash commit when the recorded
+  commit was its head, or the commit itself. Then `gh run list --repo <owner/repo> --commit <it>` reads its runs,
+  read-only, with the repository taken from the story's evidence. Only runs on a push count.
+- **A failed run** (failure, cancelled, timed out, startup failure, action required) is told at once in a
+  "Base CI after merges (RAL-102)" section, with the workflow, the commit and the run's address, and the digest
+  goes now rather than after the quiet period.
+- **Still running**: listed in a digest that's going anyway, and checked again each pass. After 2 hours it's told
+  as not finished, and no longer checked.
+- **No run**: given 10 minutes, since GitHub starts one a little after a push, then told.
+- **Couldn't be checked** (`gh` failed, or the story's evidence names no repository): told at once, never left
+  silent, and tried again each pass; after 2 hours it's told as still uncheckable, and no longer checked.
+- **Passed**: nothing is said.
+
+What's pending is kept in the state file beside each watchman's head (`ci`, `ci_checked_to`), so each merge is
+taken in once. Something urgent that couldn't be sent is told again on the next pass. It needs `gh` signed in on
+the machine running the digest, as the viewer does.
+
 ## When a pass fails (RAL-86)
 
 With `--every`, a pass that fails doesn't end the loop when the failure can clear with time: the service refusing

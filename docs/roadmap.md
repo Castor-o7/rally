@@ -528,6 +528,19 @@ word.
   `commit_differs` counts it and RAL-67's also-reads; `verified_commits` lists it; it's dropped with the
   verification; `rally verifications` labels it by the designation, gated by nothing; with tests and
   docs/evidence.md.
+- [ ] **RAL-102: The digest says when a merge leaves the base red.** From the DiscoSim rally's issues log (§10.3,
+  §10.4): Muster's main was red for about a day and Rally's 11c0579 until a team noticed. Picked by mellow-weevil.
+  Done when: for each merge the ledger records, the watchman's own included, a digest pass reads the base's CI on
+  what landed (RAL-31's lookup, then `gh run list --commit`, read-only) and tells a failed run at once with its
+  address, without waiting for the quiet period; a run still going is listed and checked again each pass, and given
+  up on, said, after 2 hours; no run is told after 10 minutes; a check that can't be made says so rather than staying
+  silent, and is tried again; a pass says nothing; what's pending is kept with the head; with unit tests, a test of
+  the digest with a fake `gh`, and docs/digest.md.
+- [ ] **RAL-103: `rally gate` refuses a head that doesn't contain its base's tip.** From the DiscoSim rally's issues
+  log (§10.4): #144 merged at a head without #145, and main went red; #152 merged on 2026-11-06 without #151. Filed
+  by mellow-weevil's pick. Done when: `rally gate <base>..<new>` also refuses when `<new>` doesn't contain the
+  current tip of `<base>` (after a fetch of `origin/<base>`), saying to merge the base in first; it works without
+  GitHub branch protection, which is the operator's setting; with a CLI test on two branches.
 - [x] **RAL-87: Say when a watchman's digest has stopped.** Merged in #163 (a64baa3). From the DiscoSim rally's issues log (§2.7) and
   mellow-weevil's digest dying on a 429 on 2026-11-06 with nothing noticing. Done when: each `rally digest` pass
   records when it ran and when a digest last went; `rally brief` and `rally stalls` with `--digest-quiet-after
