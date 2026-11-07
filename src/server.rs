@@ -97,6 +97,10 @@ struct Service {
     roadmaps: std::sync::OnceLock<Arc<dyn crate::evidence::Roadmaps + Send + Sync>>,
     /// The owners `roadmaps` may read for (RAL-68).
     github_owners: std::sync::OnceLock<Vec<String>>,
+    /// The credentials that may open or close a rally (RAL-77), besides a designated watchman's.
+    /// `None` until the operator sets `--rally-openers`: then any paired credential may, and
+    /// every answer says so.
+    rally_openers: Option<Vec<String>>,
     state_dir: StateDir,
     limit: RateLimit,
     buckets: Mutex<HashMap<(String, Bucket), (f64, Instant)>>,
@@ -197,14 +201,24 @@ fn start_evidence_checks(service: &Arc<Service>, settings: crate::evidence::Sett
     let _ = service.evidence.set(checker);
 }
 
+/// What the operator sets on the service host for who may do what.
+#[derive(Default)]
+pub struct Rules {
+    /// The operator's key, under `serve --secure` only (RAL-51).
+    pub operator_key: Option<crate::designation::OperatorKey>,
+    /// The times agreed with the operator for shelving and away hours (RAL-56).
+    pub operator_times: Option<crate::store::OperatorTimes>,
+    /// The credentials that may open or close a rally (RAL-77); `None` lets any.
+    pub rally_openers: Option<Vec<String>>,
+}
+
 /// Runs the service on `listener` until the process ends.
 pub async fn serve(
     listener: TcpListener,
     location: &Location,
     state_dir: StateDir,
     limit: RateLimit,
-    operator_key: Option<crate::designation::OperatorKey>,
-    operator_times: Option<crate::store::OperatorTimes>,
+    rules: Rules,
     evidence: Option<crate::evidence::Settings>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Both ring and any other provider could be linked; the choice has to be explicit.
@@ -218,20 +232,13 @@ pub async fn serve(
         max_ledger_bytes: limit.max_ledger_bytes,
         min_free_bytes: limit.min_free_bytes,
     });
-    if let Some(key) = &operator_key {
+    if let Some(key) = &rules.operator_key {
         store.accept_designations(key.clone());
     }
-    if let Some(times) = operator_times {
+    if let Some(times) = rules.operator_times {
         store.accept_shelves(times.window_ms);
     }
-    let app = router(
-        store,
-        state_dir,
-        limit,
-        operator_key,
-        operator_times,
-        evidence,
-    );
+    let app = router(store, state_dir, limit, rules, evidence);
     listener.set_nonblocking(true)?;
     let lifetime = Duration::from_secs_f64(limit.connection_seconds);
     let acceptor = Limited {
@@ -262,10 +269,14 @@ fn router(
     store: Store,
     state_dir: StateDir,
     limit: RateLimit,
-    operator_key: Option<crate::designation::OperatorKey>,
-    operator_times: Option<crate::store::OperatorTimes>,
+    rules: Rules,
     evidence: Option<crate::evidence::Settings>,
 ) -> Router {
+    let Rules {
+        operator_key,
+        operator_times,
+        rally_openers,
+    } = rules;
     let service = Arc::new(Service {
         store,
         operator_key,
@@ -273,6 +284,7 @@ fn router(
         evidence: std::sync::OnceLock::new(),
         roadmaps: std::sync::OnceLock::new(),
         github_owners: std::sync::OnceLock::new(),
+        rally_openers,
         state_dir,
         limit,
         buckets: Mutex::new(HashMap::new()),
@@ -706,6 +718,11 @@ async fn write_record(
             Err(error) => return failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         }
     }
+    // Only the operator or the watchman opens or closes a rally (RAL-77).
+    let rally_change = body["change"] == "open_rally" || body["change"] == "close_rally";
+    if rally_change && let Err(refused) = may_open_rallies(&service, &identity.credential).await {
+        return *refused;
+    }
     let submitted = (body["change"] == "submit")
         .then(|| {
             Some((
@@ -759,7 +776,11 @@ async fn write_record(
                     "rally: the evidence queue is full; record {seq} is checked after a restart"
                 );
             }
-            Json(json!({"recorded": seq})).into_response()
+            let mut answer = json!({"recorded": seq});
+            if rally_change && service.rally_openers.is_none() {
+                answer["warning"] = json!(ANYONE_MAY_OPEN);
+            }
+            Json(answer).into_response()
         }
         Err(StoreError::Refused(error)) => failure(StatusCode::CONFLICT, error.to_string()),
         Err(error @ StoreError::Database(_)) => {
@@ -1256,13 +1277,66 @@ async fn list_teams(
     .await
 }
 
-/// Every rally, and the open one (RAL-76).
+/// Every rally, and the open one (RAL-76), with who may open or close one (RAL-77).
 async fn list_rallies(
     State(service): State<Arc<Service>>,
     Extension(identity): Extension<Identity>,
     Query(query): Query<ReadQuery>,
 ) -> Response {
-    view(service, identity, query, views::rallies).await
+    let who = who_may_open_rallies(&service);
+    view(service, identity, query, move |ledger, page| {
+        views::rallies(ledger, page).map(|mut value| {
+            value["who_may_open"] = who;
+            value
+        })
+    })
+    .await
+}
+
+/// What every answer says while `--rally-openers` isn't set (RAL-77).
+const ANYONE_MAY_OPEN: &str =
+    "any paired credential may open or close a rally: set --rally-openers on the service";
+
+/// Who may open or close a rally, as `rally rallies` shows it (RAL-77).
+fn who_may_open_rallies(service: &Service) -> Value {
+    match &service.rally_openers {
+        None => json!({"anyone": true, "warning": ANYONE_MAY_OPEN}),
+        Some(openers) => json!({
+            "anyone": false,
+            "credentials": openers,
+            "designated_watchman": service.operator_key.is_some(),
+        }),
+    }
+}
+
+/// Whether `credential` may open or close a rally (RAL-77): any credential while the operator
+/// hasn't set `--rally-openers`; then only those listed, or the credential a watchman in force is
+/// bound to by a signed designation (RAL-53). `Err` is the refusal to send.
+async fn may_open_rallies(service: &Arc<Service>, credential: &str) -> Result<(), Box<Response>> {
+    let Some(openers) = &service.rally_openers else {
+        return Ok(());
+    };
+    if openers.iter().any(|opener| opener == credential) {
+        return Ok(());
+    }
+    if let Some(key) = service.operator_key.clone() {
+        let watchmen = service
+            .run(Work::Read, move |store| store.watchman_credentials(&key))
+            .await;
+        match watchmen {
+            Ok(Ok(bound)) if bound.iter().any(|bound| bound == credential) => return Ok(()),
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => return Err(Box::new(internal(&error))),
+            Err(not_run) => return Err(Box::new(not_run.into_response())),
+        }
+    }
+    Err(Box::new(failure(
+        StatusCode::FORBIDDEN,
+        format!(
+            "only the operator or the watchman opens or closes a rally: {credential} isn't in \
+             the service's --rally-openers, nor bound to a designated watchman"
+        ),
+    )))
 }
 
 /// Everything recorded about one team, with annotations beside each record (RAL-19).
