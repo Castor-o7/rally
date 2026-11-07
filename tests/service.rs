@@ -832,25 +832,141 @@ fn the_saved_pairing_is_private() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
-/// Every TCP and UDP socket the process has open, as `lsof` lists them.
-fn sockets(pid: u32, listening_only: bool) -> Vec<String> {
-    let mut command = Command::new("lsof");
-    command.args(["-nP", "-a", "-p", &pid.to_string()]);
-    if listening_only {
-        command.args(["-iTCP", "-sTCP:LISTEN"]);
+/// An internet socket a process has open: its protocol ("TCP", "UDP" or "RAW"), its local
+/// address, its peer's if connected, and whether it listens.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Socket {
+    proto: String,
+    local: String,
+    remote: Option<String>,
+    listening: bool,
+}
+
+/// Every internet socket `pid` has open, as `lsof` lists them; `None` when there's no `lsof`.
+fn sockets_by_lsof(pid: u32) -> Option<Vec<Socket>> {
+    let output = match Command::new("lsof")
+        .args(["-nP", "-a", "-p", &pid.to_string(), "-i"])
+        .output()
+    {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        other => other.expect("lsof couldn't be run"),
+    };
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .skip(1)
+            .map(|line| {
+                // NODE then NAME: "TCP 127.0.0.1:1->127.0.0.1:2 (ESTABLISHED)".
+                let fields: Vec<&str> = line.split_whitespace().skip(7).collect();
+                let (local, remote) = match fields.get(1).and_then(|n| n.split_once("->")) {
+                    Some((l, r)) => (l.to_owned(), Some(r.to_owned())),
+                    None => (fields.get(1).unwrap_or(&"").to_string(), None),
+                };
+                Socket {
+                    proto: fields.first().unwrap_or(&"").to_string(),
+                    local,
+                    remote,
+                    listening: fields.get(2) == Some(&"(LISTEN)"),
+                }
+            })
+            .collect(),
+    )
+}
+
+/// An address from /proc/net/{tcp,udp,raw}{,6}: hex address words in host order, then a hex
+/// port, as "0100007F:1F90". IPv6 is printed as lsof prints it, "[::1]:8080".
+fn proc_address(text: &str) -> String {
+    let (addr, port) = text.split_once(':').expect("an address with a port");
+    let port = u16::from_str_radix(port, 16).expect("a hex port");
+    let words: Vec<u32> = (0..addr.len() / 8)
+        .map(|i| u32::from_str_radix(&addr[i * 8..i * 8 + 8], 16).expect("hex address"))
+        .collect();
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
+    if let Ok(v4) = <[u8; 4]>::try_from(bytes.as_slice()) {
+        format!("{}:{port}", std::net::Ipv4Addr::from(v4))
     } else {
-        command.arg("-i");
+        let v6 = <[u8; 16]>::try_from(bytes.as_slice()).expect("a 4- or 16-byte address");
+        format!("[{}]:{port}", std::net::Ipv6Addr::from(v6))
     }
-    let output = command.output().expect("lsof is needed to inspect sockets");
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .skip(1)
-        .map(|line| {
-            line.split_whitespace()
-                .skip(7)
-                .collect::<Vec<_>>()
-                .join(" ")
+}
+
+/// Every internet socket `pid` has open, from /proc (RAL-107): its fds' socket inodes, matched in
+/// its /proc/<pid>/net tables. `None` when there's no /proc, as on macOS.
+fn sockets_by_proc(pid: u32) -> Option<Vec<Socket>> {
+    let dir = PathBuf::from(format!("/proc/{pid}"));
+    if !Path::new("/proc/self/net/tcp").exists() {
+        return None;
+    }
+    let inodes: std::collections::HashSet<String> = std::fs::read_dir(dir.join("fd"))
+        .expect("the service's fds can be listed")
+        .filter_map(|fd| std::fs::read_link(fd.ok()?.path()).ok())
+        .filter_map(|link| {
+            let link = link.to_string_lossy().into_owned();
+            Some(link.strip_prefix("socket:[")?.strip_suffix(']')?.to_owned())
         })
+        .collect();
+    let mut found = Vec::new();
+    for (table, proto) in [
+        ("tcp", "TCP"),
+        ("tcp6", "TCP"),
+        ("udp", "UDP"),
+        ("udp6", "UDP"),
+        ("raw", "RAW"),
+        ("raw6", "RAW"),
+    ] {
+        let Ok(text) = std::fs::read_to_string(dir.join("net").join(table)) else {
+            continue;
+        };
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 10 || !inodes.contains(f[9]) {
+                continue;
+            }
+            // TCP state 0A is LISTEN; a remote of all zeros is no peer.
+            let listening = proto == "TCP" && f[3] == "0A";
+            let unconnected = f[2]
+                .split_once(':')
+                .is_some_and(|(addr, port)| addr.bytes().all(|b| b == b'0') && port == "0000");
+            found.push(Socket {
+                proto: proto.into(),
+                local: proc_address(f[1]),
+                remote: (!listening && !unconnected).then(|| proc_address(f[2])),
+                listening,
+            });
+        }
+    }
+    Some(found)
+}
+
+#[test]
+fn proc_addresses_read_as_lsof_prints_them() {
+    let v4 = if cfg!(target_endian = "little") {
+        "0100007F:1F90"
+    } else {
+        "7F000001:1F90"
+    };
+    assert_eq!(proc_address(v4), "127.0.0.1:8080");
+    let one = if cfg!(target_endian = "little") {
+        "01000000"
+    } else {
+        "00000001"
+    };
+    assert_eq!(
+        proc_address(&format!("000000000000000000000000{one}:0050")),
+        "[::1]:80"
+    );
+}
+
+/// Each way of listing `pid`'s sockets that this machine has (RAL-107): lsof, and /proc. With
+/// RALLY_TEST_LSOF_REQUIRED set (CI), lsof must be one of them.
+fn socket_readers(pid: u32) -> Vec<(&'static str, Vec<Socket>)> {
+    let lsof = sockets_by_lsof(pid);
+    if lsof.is_none() && std::env::var_os("RALLY_TEST_LSOF_REQUIRED").is_some() {
+        panic!("RALLY_TEST_LSOF_REQUIRED is set, but there's no lsof");
+    }
+    [("lsof", lsof), ("/proc", sockets_by_proc(pid))]
+        .into_iter()
+        .filter_map(|(name, read)| Some((name, read?)))
         .collect()
 }
 
@@ -860,13 +976,11 @@ fn nothing_listens_but_the_door() {
     let a1 = service.add("a1", false);
     // Wait until it has replayed and served, so every socket it will open is open.
     assert_eq!(ready(&a1).status, 200);
-    let listening = sockets(service.child.id(), true);
-    assert_eq!(listening.len(), 1, "{listening:?}");
-    assert!(
-        listening[0].contains(&format!("TCP {} (LISTEN)", service.address)),
-        "{listening:?}"
-    );
-    // Every other socket is a connection out to Postgres; none is UDP.
+    let readers = socket_readers(service.child.id());
+    if readers.is_empty() {
+        eprintln!("skipped: neither lsof nor /proc is here to list the service's sockets");
+        return;
+    }
     let port = service
         .db
         .url
@@ -876,13 +990,22 @@ fn nothing_listens_but_the_door() {
         .split('/')
         .next()
         .unwrap();
-    for socket in sockets(service.child.id(), false) {
-        let to_postgres =
-            socket.starts_with("TCP ") && socket.contains(&format!("->127.0.0.1:{port} "));
-        assert!(
-            socket.contains("(LISTEN)") || to_postgres,
-            "unexpected socket: {socket}"
+    for (reader, sockets) in readers {
+        let listening: Vec<&Socket> = sockets.iter().filter(|s| s.listening).collect();
+        assert_eq!(listening.len(), 1, "{reader}: {listening:?}");
+        assert_eq!(listening[0].proto, "TCP", "{reader}: {listening:?}");
+        assert_eq!(
+            listening[0].local, service.address,
+            "{reader}: {listening:?}"
         );
+        // Every other socket is a connection out to Postgres; none is UDP.
+        let postgres = format!("127.0.0.1:{port}");
+        for socket in sockets.iter().filter(|s| !s.listening) {
+            assert!(
+                socket.proto == "TCP" && socket.remote.as_deref() == Some(postgres.as_str()),
+                "{reader}: unexpected socket: {socket:?}"
+            );
+        }
     }
 }
 

@@ -299,7 +299,7 @@ it:
 
 1. **No listener: chosen, because it held up.** Rally builds a `MykoServer` with Postgres and never calls `run()`, so
    myko binds nothing. The service's test `nothing_listens_but_the_door` reads the running service's sockets with
-   `lsof`: one listening socket, the TLS door, and otherwise only connections out to Postgres. So there's no loopback
+   `lsof` and `/proc` (RAL-107): one listening socket, the TLS door, and otherwise only connections out to Postgres. So there's no loopback
    port to state beside MUS-7. What `run()` would have done, and what skipping it costs:
    - *Replay from Postgres:* needed, and Rally runs it: `init_postgres_and_wait`, the same catch-up `run()` waits for.
    - *Persister health check:* it only checks that the table and channel names are valid identifiers. Rally's names

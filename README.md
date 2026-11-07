@@ -161,6 +161,12 @@ RALLY_TEST_CHROME=google-chrome cargo test --test web a_real_browser
 RALLY_TEST_CHROME="flatpak run com.google.Chrome" cargo test --test web a_real_browser   # on Murph
 ```
 
+The service's socket test, `nothing_listens_but_the_door`, lists the service's sockets with `lsof` and, on Linux,
+from `/proc` too, checking each. Without `lsof` it uses `/proc` alone, so it still runs on a machine like Murph;
+with neither, as on macOS without `lsof`, it's skipped with a printed reason (RAL-107). CI sets
+`RALLY_TEST_LSOF_REQUIRED` so a missing `lsof` fails rather than falls back. A test that fails stops `cargo test`
+before the later test files, so pass `--no-fail-fast` to see them all.
+
 ## Status
 
 Rally runs on the operator's machines and isn't deployed yet. Work follows the [roadmap](docs/roadmap.md). Next:
