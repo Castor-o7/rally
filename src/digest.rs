@@ -314,9 +314,18 @@ pub fn render(
         lines: rows
             .iter()
             .map(|w| {
+                // A part in review reads "RAL-79 part 2/4" (RAL-79).
+                let story = match w["part_of"].as_str() {
+                    Some(part) => format!(
+                        "{} {}",
+                        clean(w["story"].as_str().unwrap_or("?")),
+                        clean(part)
+                    ),
+                    None => clean(w["story"].as_str().unwrap_or("?")),
+                };
                 let mut line = format!(
                     "- {} {}: submitted {} [declared] {}",
-                    clean(w["story"].as_str().unwrap_or("?")),
+                    story,
                     clean(w["team"].as_str().unwrap_or("?")),
                     age(w["submitted_at_ms"].as_i64().unwrap_or(now_ms), now_ms),
                     clean(w["evidence"].as_str().unwrap_or("")),
@@ -904,6 +913,30 @@ mod tests {
         );
         let after = json!({"verified_commits": ["bee9f46", "7fc4bef"], "evidence": evidence});
         assert_eq!(landed_note(&after, "fef242d", &lookup), None);
+    }
+
+    /// RAL-79: a part in review is listed as "<story> part k/n", so readers see it while the
+    /// story stays claimed.
+    #[test]
+    fn a_part_in_review_is_listed_with_its_number() {
+        let waiting = json!({"waiting": [{
+            "story": "DSM-37", "team": "discosim", "submitted_at_ms": 0, "part": 2,
+            "part_of": "part 2/4", "evidence": "Castor-o7/discosim@bb9c159",
+            "requested_reads": [],
+        }]});
+        let empty = json!({});
+        let landed = |_: &str, _: &str| -> Result<Option<(String, String)>, String> { Ok(None) };
+        let reads = Reads {
+            waiting: &waiting,
+            handover: &empty,
+            stories: &empty,
+            landed: &landed,
+        };
+        let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
+        assert!(
+            digest.contains("- DSM-37 part 2/4 discosim: submitted"),
+            "{digest}"
+        );
     }
 
     #[test]

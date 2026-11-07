@@ -475,6 +475,15 @@ pub fn verified_for(prefix: &str, ledger: &Value) -> Value {
 /// The story states in which a team still holds a story: it claimed it and hasn't been verified.
 const HELD_STATES: [&str; 3] = ["claimed", "in_review", "sent_back"];
 
+/// Whether a story row counts as held on the board: its state, or a part still in review (RAL-79),
+/// which keeps a multi-part story visible while its parts are read.
+fn held(story: &Value) -> bool {
+    HELD_STATES.contains(&story["state"].as_str().unwrap_or(""))
+        || story["parts_in_review"]
+            .as_array()
+            .is_some_and(|parts| !parts.is_empty())
+}
+
 /// Which projects are in the current rally (RAL-69): those with a story held by a team that's on
 /// Muster's roster now. A team is on the roster when a session's nickname is the team's name, or a
 /// session matches the team's `sessions` in the project list, as `rally wake` matches them; a team's
@@ -569,7 +578,7 @@ pub fn board(rally: &Value, ledger: &Value) -> Value {
                 .iter()
                 .filter(|(id, story)| {
                     let prefix = id.split_once('-').map(|(p, _)| p).unwrap_or("");
-                    let held = HELD_STATES.contains(&story["state"].as_str().unwrap_or(""));
+                    let held = held(story);
                     prefixes.contains(&prefix)
                         && (held || story["last"].as_u64().is_some_and(|last| last > since))
                 })
@@ -636,7 +645,7 @@ fn derived_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Value 
         }
     }
     for (id, story) in stories {
-        let held = HELD_STATES.contains(&story["state"].as_str().unwrap_or(""));
+        let held = held(story);
         let Some(team) = story["team"].as_str().filter(|_| held) else {
             continue;
         };
@@ -1552,11 +1561,13 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
     } else {
         next.run(request).await
     };
-    // Only the sign-in page has a form; every other answer gets the policy that allows none.
-    let policy = if response.extensions().get::<SignInPage>().is_some() {
-        SIGN_IN_CSP
+    // Only the sign-in page has a form; every other answer gets the policy that allows none. Its
+    // referrer policy is same-origin, not no-referrer: under no-referrer a browser sends
+    // `Origin: null` with the form's POST, which `origin_allowed` rightly refuses (RAL-83).
+    let (policy, referrer) = if response.extensions().get::<SignInPage>().is_some() {
+        (SIGN_IN_CSP, SIGN_IN_REFERRER)
     } else {
-        CSP
+        (CSP, "no-referrer")
     };
     let headers = response.headers_mut();
     headers.insert(
@@ -1569,12 +1580,14 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
     );
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
+    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static(referrer));
     response
 }
+
+/// The sign-in page's referrer policy, in its header and its `<meta>`. A form POST under
+/// `no-referrer` carries `Origin: null`, which is refused, so the button never worked in Chrome
+/// (RAL-83). `same-origin` sends the real origin to this page only, and nothing to other sites.
+const SIGN_IN_REFERRER: &str = "same-origin";
 
 /// The cookie that carries a session.
 const COOKIE: &str = "rally_view";
@@ -2488,6 +2501,17 @@ mod tests {
     }
 
     #[test]
+    fn a_story_with_a_part_in_review_stays_on_the_board() {
+        // Released while part 2 waits for its read: the part keeps it held (RAL-79).
+        let ledger = json!({"stories": {
+            "RAL-79": {"state": "ready", "team": "rally", "last": 10, "parts_in_review": [2]},
+            "RAL-5": {"state": "verified", "team": "rally", "last": 50, "parts": "2/2 verified"},
+        }, "teams": {"rally": {"seq": 3}}});
+        let rally = json!({"since_seq": 105, "prefixes": ["RAL"], "active_teams": ["rally"]});
+        assert_eq!(board(&rally, &ledger)["stories"], json!(["RAL-79"]));
+    }
+
+    #[test]
     fn work_in_flight_when_a_rally_opens_stays_on_its_board() {
         let ledger = json!({"stories": {
             "RAL-80": {"state": "claimed", "team": "rally", "last": 100},
@@ -2675,6 +2699,15 @@ mod tests {
         for banned in ["<script", "style=", "http://", "https://"] {
             assert!(!SIGN_IN.contains(banned), "sign-in page: {banned}");
         }
+        // Its referrer policy lets the form's POST carry its real origin (RAL-73): under
+        // no-referrer Chrome sends `Origin: null`, which the guard refuses (RAL-83).
+        assert!(
+            SIGN_IN.contains(&format!(
+                r#"<meta name="referrer" content="{SIGN_IN_REFERRER}">"#
+            )),
+            "the sign-in page's referrer policy"
+        );
+        assert!(!SIGN_IN.contains("no-referrer"));
         // The code is the only thing put into it, once, as a form value.
         assert_eq!(SIGN_IN.matches("{{CODE}}").count(), 1);
         assert!(SIGN_IN.contains(r#"method="post" action="/""#));
