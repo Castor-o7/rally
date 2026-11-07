@@ -3146,6 +3146,14 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
         }
         Command::Gate { range, repo, allow } => {
             let commits = rally::gate::commits(&repo, &range)?;
+            // RAL-103: the base's tip and the head, to check the head contains it.
+            let tips = match rally::gate::ends(&range) {
+                Some((base, head)) => Some((
+                    rally::gate::resolve(&repo, base)?,
+                    rally::gate::resolve(&repo, head)?,
+                )),
+                None => None,
+            };
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             let (read, more) =
                 backend.read_all("/v1/stories", "stories", GATE_PAGES, |ledger, page| {
@@ -3155,16 +3163,28 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 return Err("the ledger has more stories than the gate reads: refused".into());
             }
             let stories = read["stories"].as_object().cloned().unwrap_or_default();
-            let found = rally::gate::judge_with(
+            let ancestor = |a: &str, b: &str| rally::gate::is_ancestor(&repo, a, b);
+            let mut found = rally::gate::judge_with(
                 &range,
                 &commits,
                 &stories,
                 &allow.into_iter().collect(),
-                &|a, b| rally::gate::is_ancestor(&repo, a, b),
+                &ancestor,
             );
+            if let Some((base, head)) = &tips {
+                rally::gate::refuse_stale(&mut found, base, head, &ancestor);
+            }
             let text = serde_json::to_string_pretty(&found)?;
             if found["ok"] == json!(true) {
                 return Ok(text);
+            }
+            if let Some((base, head)) = tips.filter(|_| found.get("stale").is_some()) {
+                return Err(format!(
+                    "the gate refused {range}: its head {head} doesn't contain the base's tip \
+                     {base}, so moving or merging it would drop the base's newer commits. Bring the \
+                     branch up to date with its base first.\n{text}"
+                )
+                .into());
             }
             return Err(format!("the gate refused {range}:\n{text}").into());
         }

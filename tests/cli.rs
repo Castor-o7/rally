@@ -1232,6 +1232,94 @@ fn the_gate_refuses_a_range_naming_a_sent_back_story_and_passes_once_it_is_verif
     assert!(error.contains("isn't a commit range"), "{error}");
 }
 
+/// RAL-103: a head that doesn't contain its base's tip is a stale branch, and the gate refuses it,
+/// naming both commits, even when every story it names is verified. Brought up to date, it passes.
+#[test]
+fn the_gate_refuses_a_head_that_doesnt_contain_its_bases_tip() {
+    let db = Ledger::new();
+    let repo = db.dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "start"]);
+    git(&repo, &["checkout", "-q", "-b", "feature"]);
+    git(
+        &repo,
+        &["commit", "-q", "--allow-empty", "-m", "feat: one (RAL-1)"],
+    );
+    git(&repo, &["checkout", "-q", "main"]);
+    git(
+        &repo,
+        &["commit", "-q", "--allow-empty", "-m", "landed meanwhile"],
+    );
+    let base = git(&repo, &["rev-parse", "main"]);
+    let stale = git(&repo, &["rev-parse", "feature"]);
+    let repo_arg = repo.to_str().unwrap();
+
+    ok(&db, "author", &["ready", "RAL-1"]);
+    ok(&db, "author", &["claim", "RAL-1", "--team", "rally"]);
+    ok(
+        &db,
+        "author",
+        &[
+            "submit",
+            "RAL-1",
+            "--team",
+            "rally",
+            "--evidence",
+            "abc",
+            "--not-checkable",
+        ],
+    );
+    ok(
+        &db,
+        "reader",
+        &["verify", "RAL-1", "--note", "read", "--commit", COMMIT],
+    );
+
+    let error = refused(
+        &db,
+        "watchman",
+        &["gate", "main..feature", "--repo", repo_arg],
+    );
+    assert!(
+        error.contains(&format!(
+            "its head {stale} doesn't contain the base's tip {base}"
+        )),
+        "{error}"
+    );
+    let found: Value = serde_json::from_str(&error[error.find('{').unwrap()..]).unwrap();
+    assert_eq!(found["ok"], false);
+    assert_eq!(found["stale"]["base"], base.as_str());
+    assert_eq!(found["stale"]["head"], stale.as_str());
+    assert_eq!(found["stories"]["RAL-1"]["state"], "verified");
+    // The three-dot form, and a base written as the empty side, are held to the same.
+    refused(
+        &db,
+        "watchman",
+        &["gate", "main...feature", "--repo", repo_arg],
+    );
+    git(&repo, &["checkout", "-q", "feature"]);
+    refused(&db, "watchman", &["gate", "main..", "--repo", repo_arg]);
+
+    // Brought up to date with main, the head contains its tip, and the gate passes.
+    git(&repo, &["merge", "-q", "--no-edit", "main"]);
+    let passed = ok(
+        &db,
+        "watchman",
+        &["gate", "main..feature", "--repo", repo_arg],
+    );
+    assert_eq!(passed["ok"], true, "{passed}");
+    assert!(passed.get("stale").is_none());
+
+    // An end the checkout doesn't have is refused, not taken as up to date.
+    let error = refused(
+        &db,
+        "watchman",
+        &["gate", "main..nowhere", "--repo", repo_arg],
+    );
+    assert!(error.contains("couldn't"), "{error}");
+}
+
 /// `rally view` (RAL-82) keeps its own files, and never touches the pairings beside them: the
 /// read-only `viewer.json` above all, which an earlier draft would have overwritten.
 #[test]
