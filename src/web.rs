@@ -849,6 +849,59 @@ pub fn ci_state(repo: &str, commit: &str) -> Result<crate::digest::Ci, String> {
     Ok(crate::digest::ci_from_runs(&runs))
 }
 
+/// The open pull requests in `repo` (RAL-105), read-only through `gh pr list`. `repo` must already
+/// be checked as `owner/repo`.
+pub fn open_prs(repo: &str) -> Result<Vec<crate::digest::OpenPr>, String> {
+    let out = run_gh(&[
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--limit",
+        "100",
+        "--json",
+        "number,headRefOid,baseRefName,url",
+    ])?;
+    let prs: Value = serde_json::from_str(out.trim())
+        .map_err(|_| "gh returned pull requests that can't be read")?;
+    Ok(prs
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|pr| {
+            Some(crate::digest::OpenPr {
+                number: pr["number"].as_u64()?,
+                head: pr["headRefOid"].as_str()?.to_owned(),
+                base: pr["baseRefName"].as_str()?.to_owned(),
+                url: pr["url"].as_str().unwrap_or("").to_owned(),
+            })
+        })
+        .collect())
+}
+
+/// How many commits of branch `base` commit `head` lacks in `repo` (RAL-105), read-only through
+/// GitHub's compare API. `head` must be hex, and `base` a plain branch name.
+pub fn behind_by(repo: &str, base: &str, head: &str) -> Result<u64, String> {
+    if head.is_empty() || !head.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("the head isn't a hash".into());
+    }
+    let plain = |b: u8| b.is_ascii_alphanumeric() || b"._/-".contains(&b);
+    if base.is_empty() || base.starts_with('-') || !base.bytes().all(plain) {
+        return Err("the base isn't a plain branch name".into());
+    }
+    let out = run_gh(&[
+        "api",
+        &format!("repos/{repo}/compare/{base}...{head}"),
+        "--jq",
+        ".behind_by",
+    ])?;
+    out.trim()
+        .parse()
+        .map_err(|_| "gh returned a count that can't be read".into())
+}
+
 /// A project's roadmap from GitHub, as `(commit, text)`.
 pub fn read_roadmap(project: &Project) -> Result<(String, String), String> {
     let commit = run_gh(&[

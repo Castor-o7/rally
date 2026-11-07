@@ -541,6 +541,14 @@ word.
   by mellow-weevil's pick. Done when: `rally gate <base>..<new>` also refuses when `<new>` doesn't contain the
   current tip of `<base>` (after a fetch of `origin/<base>`), saying to merge the base in first; it works without
   GitHub branch protection, which is the operator's setting; with a CLI test on two branches.
+- [ ] **RAL-105: The digest names verified stories whose open PR has fallen behind its base.** Found in RAL-102's
+  work and filed at mellow-weevil's suggestion: a story verified at a head that no longer contains its base's tip
+  can't merge until the base is merged in and the new head read, and nothing told its author. Done when: when a
+  digest is rendered, each Verified story not yet merged whose open pull request's head is a commit verified, in
+  the repository its evidence names, is compared with the pull request's base through GitHub (read-only), and one
+  behind is listed with the count, the pull request and what to do; one up to date is not; a read that fails is said;
+  at most 10 repositories are read per digest, and the rest counted; with unit tests, a test of the digest with a
+  fake `gh`, and docs/digest.md.
 - [x] **RAL-87: Say when a watchman's digest has stopped.** Merged in #163 (a64baa3). From the DiscoSim rally's issues log (§2.7) and
   mellow-weevil's digest dying on a 429 on 2026-11-06 with nothing noticing. Done when: each `rally digest` pass
   records when it ran and when a digest last went; `rally brief` and `rally stalls` with `--digest-quiet-after
