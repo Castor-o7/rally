@@ -140,6 +140,21 @@ So when the watchman restarts as mellow-weevil, it rejoins with its first record
 session is still open doesn't join. With no roster to read, only the listed nicknames count. The names and the
 roster are declared, so a succession is a reading, not proof. The rally's own list doesn't change.
 
+The operator specifies the rest (RAL-110):
+
+```bash
+rally rally-session add cobalt-glen --note "helping on MAR"           # add a session to the open rally
+rally rally-session add mellow-weevil --succeeds frank-crocodile --note "restarted"   # confirm a restart
+rally rally-session remove late-lark --note "not a restart; started later"            # take a session out
+```
+
+An added session is in, and a removed one is out, whatever would otherwise take it in, whether it was listed, added
+or detected as a restart. The latest record for a nickname decides. A detected restart counts straight away, and the
+page shows it as an "unconfirmed restart" until it's confirmed with `--succeeds` or removed. A confirmed restart stops
+another nickname being detected for the same session. The page lists what was added and removed since the rally
+opened. Like opening and closing a rally, only the operator or the watchman may do it once `--rally-openers` is
+set. It's one record kind, `rally_session`, and the first one ends the rollback window (see `docs/service.md`).
+
 Nothing is removed. The ledger is append-only and hash-chained, and deleting records would fail its check, so a
 closed rally is kept whole. The page lists past rallies, and each opens as its own board (`#/rally/<record that
 opened it>`, RAL-77): the ledger as it stood when it closed (RAL-28), showing only its projects' stories recorded
