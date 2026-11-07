@@ -538,6 +538,10 @@ enum Command {
         /// same setting as `rally wake --quiet-after`.
         #[arg(long, env = "RALLY_WAKE_QUIET_AFTER", value_parser = parse_window)]
         quiet_after: Option<u64>,
+        /// A heavy-run lock file, as `flock <lock> <command>` takes it: flag it if its holder, or
+        /// anything under it, is stopped or a zombie (RAL-75). Repeatable. Linux only.
+        #[arg(long)]
+        lock: Vec<PathBuf>,
     },
     /// Wake idle teams with their next story (RAL-54): for each team in the projects list with
     /// sessions mapped to it, idle (or its claim quiet) with a ready story, send one digest through
@@ -1455,6 +1459,7 @@ fn stalls_pass(
     location: Option<&Location>,
     config: &Path,
     quiet_after: Option<u64>,
+    locks: &[PathBuf],
 ) -> Result<String, Box<dyn std::error::Error>> {
     let text = match projects {
         Some(path) => std::fs::read_to_string(path)?,
@@ -1562,6 +1567,14 @@ fn stalls_pass(
             read, so only declared blockers are shown"});
     } else {
         report["roster"] = json!({"available": true});
+    }
+    if !locks.is_empty() {
+        // The kernel's account of each lock, which needs no roster: shown with or without it.
+        let (held, seen) = rally::lock_holder::check(locks, roster.as_ref());
+        if let Some(prompts) = report["prompts"].as_array_mut() {
+            prompts.extend(held);
+        }
+        report["locks"] = json!(seen);
     }
     report["last_record_ms"] = json!(last_record_ms);
     if !errors.is_empty() {
@@ -2962,9 +2975,16 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
         Command::Stalls {
             projects,
             quiet_after,
+            lock,
         } => {
             let config = config_path(cli.config)?;
-            return stalls_pass(projects.as_deref(), location.as_ref(), &config, quiet_after);
+            return stalls_pass(
+                projects.as_deref(),
+                location.as_ref(),
+                &config,
+                quiet_after,
+                &lock,
+            );
         }
         Command::Wake {
             projects,

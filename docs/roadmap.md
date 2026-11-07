@@ -219,6 +219,13 @@ The bones. Everything later reads from this.
   the ledger under a prefix the ledger uses; `--allow <STORY>` lets one the range only mentions pass, listed; it
   reads only commit messages and runs nothing from the checkout; documented in `docs/gate.md`; with a test of a
   range refused for a sent-back story and passed once it's verified.
+- [ ] **RAL-75: Flag a heavy-run lock held by a stopped process.** From the DiscoSim rally's issues log, §4.4: on
+  2026-11-06 a runner shell sat stopped (state T) for about 57 minutes while it held the one-heavy-run lock.
+  Assigned by frank-crocodile. Done when: `rally stalls --lock <path>` reads the lock's holder and waiters from
+  `/proc/locks`, and gives a `stopped_lock_holder` prompt if the holder, or anything under it, is stopped, or the
+  holder is a zombie, naming each process's pid, state, working directory and the session guessed from it; a held
+  lock with a running holder gives none; documented in `docs/stalls.md`; with a test that stops a real
+  `flock`-held shell and finds it.
 - [x] **RAL-21: Keep each team's track record as plain facts.** Done when: the watchman can read each
   team's stories verified, stories sent back and what was missing, and problems reported, with no points,
   scores, weights or ranking.

@@ -12,6 +12,7 @@ pub mod gate;
 pub mod init;
 pub mod ledger;
 pub mod levi;
+pub mod lock_holder;
 pub mod next;
 pub mod record;
 #[doc(hidden)]
