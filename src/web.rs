@@ -1561,11 +1561,13 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
     } else {
         next.run(request).await
     };
-    // Only the sign-in page has a form; every other answer gets the policy that allows none.
-    let policy = if response.extensions().get::<SignInPage>().is_some() {
-        SIGN_IN_CSP
+    // Only the sign-in page has a form; every other answer gets the policy that allows none. Its
+    // referrer policy is same-origin, not no-referrer: under no-referrer a browser sends
+    // `Origin: null` with the form's POST, which `origin_allowed` rightly refuses (RAL-83).
+    let (policy, referrer) = if response.extensions().get::<SignInPage>().is_some() {
+        (SIGN_IN_CSP, SIGN_IN_REFERRER)
     } else {
-        CSP
+        (CSP, "no-referrer")
     };
     let headers = response.headers_mut();
     headers.insert(
@@ -1578,12 +1580,14 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
     );
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
+    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static(referrer));
     response
 }
+
+/// The sign-in page's referrer policy, in its header and its `<meta>`. A form POST under
+/// `no-referrer` carries `Origin: null`, which is refused, so the button never worked in Chrome
+/// (RAL-83). `same-origin` sends the real origin to this page only, and nothing to other sites.
+const SIGN_IN_REFERRER: &str = "same-origin";
 
 /// The cookie that carries a session.
 const COOKIE: &str = "rally_view";
@@ -2695,6 +2699,15 @@ mod tests {
         for banned in ["<script", "style=", "http://", "https://"] {
             assert!(!SIGN_IN.contains(banned), "sign-in page: {banned}");
         }
+        // Its referrer policy lets the form's POST carry its real origin (RAL-73): under
+        // no-referrer Chrome sends `Origin: null`, which the guard refuses (RAL-83).
+        assert!(
+            SIGN_IN.contains(&format!(
+                r#"<meta name="referrer" content="{SIGN_IN_REFERRER}">"#
+            )),
+            "the sign-in page's referrer policy"
+        );
+        assert!(!SIGN_IN.contains("no-referrer"));
         // The code is the only thing put into it, once, as a form value.
         assert_eq!(SIGN_IN.matches("{{CODE}}").count(), 1);
         assert!(SIGN_IN.contains(r#"method="post" action="/""#));

@@ -334,6 +334,12 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   once; the page's own policy allows its form and nothing else, while every other page still allows no form; it
   shows nothing offered in the address that isn't a code; another site's form POST is refused; and
   `docs/web.md` says so.
+- [ ] **RAL-83: The Sign in button works in Chrome.** RAL-73's sign-in page set `<meta name="referrer"
+  content="no-referrer">`, under which Chrome sends `Origin: null` with the form's POST; the guard refuses
+  `Origin: null`, so the button always answered "other sites can't read this page". Found live by the watchman
+  on 2026-11-06 and confirmed in headless Chrome. Done when: the sign-in page's referrer policy is `same-origin`
+  in its header and its `<meta>`, every other page stays `no-referrer`, `Origin: null` is still refused, a test
+  asserts both, and `docs/web.md` says why.
 - [ ] **RAL-74: The viewer reads `~/.config/rally/projects.json` by default.** From the DiscoSim rally issues
   log of 2026-11-06, §3.3: the built-in `web/projects.json` lists RAL, MUS, CAT, CHOMP and PDX only, so a whole
   rally ran with no DiscoSim page until the viewer was restarted with `--projects`. Done when: without
