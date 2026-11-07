@@ -28,6 +28,7 @@ Records that end the rollback window, because a binary older than the one named 
 | `submit`, `verify` or `send-back` with `--part` (a `part` field) | not yet | RAL-79 |
 | `amend` (a submit with `"amend": true`) | `6b7227f` | RAL-71 |
 | `read-merged` | not yet | RAL-85 |
+| `rally-session` | not yet | RAL-110 |
 | `event` | not yet | RAL-104 |
 
 Before rolling back to a binary older than the story that added one, check that none has been written.
@@ -41,7 +42,7 @@ Only the operator or the watchman opens or closes a rally. The service enforces 
 rally serve ... --rally-openers watchman
 ```
 
-With it set, `open-rally` and `close-rally` are accepted only from a listed credential, or from the credential a
+With it set, `open-rally`, `close-rally` and `rally-session` (RAL-110) are accepted only from a listed credential, or from the credential a
 watchman in force is bound to by a signed designation (RAL-53, under `--secure`); any other gets a 403 naming the
 rule. The declared name doesn't count, only the connection's credential. A list naming no credential is refused at
 start, and a listed credential that isn't paired is reported on standard error. Writes straight to the database

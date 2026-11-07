@@ -590,6 +590,19 @@ enum Command {
         #[arg(long)]
         note: String,
     },
+    /// Add a session to the open rally by its Muster nickname, or remove one (RAL-110). Only those
+    /// who may open a rally may do it. `--succeeds` confirms a session as a restart of a listed one.
+    RallySession {
+        /// `add` or `remove`.
+        action: String,
+        /// The session's Muster nickname, such as mellow-weevil.
+        nickname: String,
+        /// With `add`: the session this one is a restart of, which confirms the succession.
+        #[arg(long)]
+        succeeds: Option<String>,
+        #[arg(long)]
+        note: String,
+    },
     /// Record a major event of the open rally (RAL-104), such as an incident that took the muster's
     /// time: a one-line headline, how serious it was, and what backs it. Declared, and shown in the
     /// viewer's report box, newest first.
@@ -3397,6 +3410,28 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             let mut body = json!({"change": "open_rally", "name": name, "projects": projects});
             if !teams.is_empty() {
                 body["teams"] = json!(teams);
+            }
+            (Kind::Declared, body)
+        }
+        Command::RallySession {
+            action,
+            nickname,
+            succeeds,
+            note,
+        } => {
+            let remove = match action.trim() {
+                "add" => false,
+                "remove" => true,
+                other => {
+                    return Err(format!("rally-session takes add or remove, not {other:?}").into());
+                }
+            };
+            let mut body = json!({"change": "rally_session", "session": nickname, "note": note});
+            if remove {
+                body["remove"] = json!(true);
+            }
+            if let Some(succeeds) = succeeds {
+                body["succeeds"] = json!(succeeds);
             }
             (Kind::Declared, body)
         }

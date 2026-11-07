@@ -345,7 +345,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   builds of the same commit, which aren't byte-identical. Done when: a build from a clean checkout embeds its commit
   and `rally view` compares commits, falling back to the binary's SHA-256 without one; the restart note names both
   builds; and a test covers a rebuild of the same commit not restarting.
-- [ ] **RAL-108: A restarted session stays in the rally under its new nickname.** Requested by the operator on
+- [x] **RAL-108: A restarted session stays in the rally under its new nickname.** Merged in #176 (6d6ed46). Requested by the operator on
   2026-11-06, keeping the nicknames: the watchman restarted as mellow-weevil and dropped off rally 0x5's board until
   the rally was closed and reopened (913, 914). The operator ruled who is in a rally: "all the agents started by me,
   the current operator, that are open and available at the start of the rally; unless otherwise specified". Done
@@ -355,6 +355,15 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   the page names each successor beside the one it succeeds. The listed nicknames are unchanged, and there's no new
   record kind. Tests show the restarted watchman rejoining, and a later unrelated session recording for `rally` not
   joining.
+- [ ] **RAL-110: The operator adds or removes a session in an open rally.** Requested by the operator on 2026-11-06,
+  completing RAL-108's "unless otherwise specified" and settling its shared-credential limit: the ledger can't tell a
+  restart from a new agent on the same machine, so the operator decides. Done when: `rally rally-session add|remove
+  <nickname> --note` records a declared `rally_session`, only while a rally is open, and the service takes it only
+  from those who may open one. An add with `--succeeds <nickname>` confirms a restart. A removal can't confirm one,
+  and nobody succeeds themselves. An added session is in and a removed one out, whatever else would take it in, and
+  the latest record decides. A detected restart counts at once but shows as unconfirmed until confirmed or removed. A
+  confirmed restart stops another being detected for the same session. The page lists what was added and removed.
+  `docs/service.md` lists the record as ending the rollback window, and tests cover each.
 - [x] **RAL-106: An also-read answers the open read request it covers.** Merged in #173 (56f425f). From RAL-100 on 2026-11-06: the request
   for a read at 4e145b1 (961) stayed open after the watchman added 4e145b1 as also read to the verification in force,
   since a story already Verified can't be verified again, and the merge then flagged it `merged_before_read`, saying
