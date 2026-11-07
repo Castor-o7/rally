@@ -201,6 +201,14 @@ While a rally is open, the report box at the end of the overview shows only what
   page says so, and doesn't show the writeup as this rally's. A commit's time is the committer's clock, so a
   writeup committed from a machine whose clock is far off can land on the wrong side of the opening.
 
+## Labels, once per column (RAL-93)
+
+Every fact on the page is labelled with how it's known. A table column whose cells are all known the same way
+says so once, in its header: Evidence's "declared", for instance, or Rally's check's "observed". A column that
+mixes kinds keeps a label on each cell that has one. The State column is the usual case: a story in review carries
+"declared", and a verified one carries none, since its state says so. A legend at the foot of the page says what observed, declared,
+verified and attested mean.
+
 ## Project pages (RAL-43)
 
 Each project's name in the roadmap list opens its own page (`#/project/<prefix>`), built only from

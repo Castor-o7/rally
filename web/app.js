@@ -151,25 +151,49 @@ function tickLegend() {
   return legend;
 }
 
+// A cell given as { text, label, className }, rather than plain text or a node.
+function isCellObject(cell) {
+  return typeof cell === "object" && cell !== null && !(cell instanceof Node) && !Array.isArray(cell);
+}
+
+// How a column's cells are known (RAL-93): the label every one of them carries, which then goes in
+// the column's header once, or undefined when they differ or carry none, so each keeps its own.
+function sharedLabel(rows, column) {
+  let shared = null;
+  for (const row of rows) {
+    const cell = row[column];
+    const label = isCellObject(cell) ? cell.label : undefined;
+    if (shared === null) shared = label;
+    else if (shared !== label) return undefined;
+  }
+  return shared || undefined;
+}
+
 function table(headers, rows) {
   const wrap = el("div", "table-wrap");
   const tbl = el("table");
   const head = el("tr");
-  for (const header of headers) head.append(el("th", "", header));
+  const shared = headers.map((_, column) => sharedLabel(rows, column));
+  headers.forEach((header, column) => {
+    const th = el("th", "", header);
+    if (shared[column]) th.append(" ", el("span", "label", shared[column]));
+    head.append(th);
+  });
   const thead = el("thead");
   thead.append(head);
   const tbody = el("tbody");
   for (const row of rows) {
     const tr = el("tr");
-    for (const cell of row) {
-      const plain = typeof cell !== "object" || cell === null || cell instanceof Node || Array.isArray(cell);
+    row.forEach((cell, column) => {
+      const plain = !isCellObject(cell);
       const td = el("td", plain ? "" : cell.className || "");
-      if (!plain && cell.label) td.append(el("span", "label", cell.label), " ");
+      // Said once in the header when the whole column shares it; on the cell where it differs.
+      if (!plain && cell.label && !shared[column]) td.append(el("span", "label", cell.label), " ");
       const content = plain ? cell : cell.text;
       if (Array.isArray(content)) td.append(...content);
       else td.append(content instanceof Node ? content : String(content));
       tr.append(td);
-    }
+    });
     tbody.append(tr);
   }
   tbl.append(thead, tbody);

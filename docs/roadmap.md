@@ -615,7 +615,14 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
-- [ ] **RAL-90: The viewer's ages tick, with a live indicator; Verified green; short commits; no wrapped IDs.**
+- [ ] **RAL-93: The viewer shows each state once, with provenance in a legend.** From robust-warbler's visual
+  review of the viewer on 2026-11-06, item 5: declared, observed and attested chips sat on almost every cell.
+  RAL-96 (#167) already shows a state once, as a dot and its name. Done when: a table column whose cells all carry
+  the same label shows it once, in its header, and on none of its cells; a column that mixes kinds (or has cells
+  with none) keeps each cell's own label, so every fact stays labelled; a legend on the page says what observed,
+  declared, verified and attested mean; and a headless Chrome test shows both kinds of column and the legend,
+  failing on the page before it.
+- [x] **RAL-90: The viewer's ages tick, with a live indicator; Verified green; short commits; no wrapped IDs.** Merged in #167 (d081399).
   From robust-warbler's visual review of the viewer on 2026-11-06 (items 2, 4, 6 and 7), assigned by mellow-weevil.
   Done when: every age on the page counts on between polls without anything being redrawn; a "Live · updated Ns
   ago" line replaces "Updated hh:mm:ss", amber when a poll is late and red when stale or unreachable, announcing
