@@ -370,6 +370,15 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   beside `--config`) when it exists, and the built-in list when it doesn't; `--projects` still wins; the first
   line says which list was read; a file that's there but broken is an error, never a quiet fall back; tests
   cover each case and don't read the operator's own config; and `docs/web.md` says so.
+- [x] **RAL-96: The viewer keeps what the reader opened, and shows a state once.** From Josh's review of the
+  viewer in Chrome on 2026-11-06 (robust-warbler, watched over several refreshes): every 30-second poll rebuilt
+  each section, so every open section closed each time (4 of 4, three cycles running), and a verified story's
+  state read "verified verified". Done, on RAL-90's ticking ages: the refresh keeps open sections open; it skips
+  its redraw while someone types in a field or has text selected, and "updated" moves only when the page is
+  drawn; a state shows once, as a dot in its bar colour and its name, labelled declared while in review; and
+  `sign-in.mjs` closes Chrome over DevTools and removes its profile even under flatpak, where each run had left a
+  headless Chrome and a 173 MB profile in the runtime directory until it filled. A headless test shows an open
+  section surviving a refresh, and fails without the fix.
 - [x] **RAL-99: The roster says where each team is.** Asked for by Josh on 2026-11-06: the roster no longer
   said which Muster session was in which directory, because the viewer dropped `cwd`, keeping the page to what it
   showed since #24. Done: `shape_roster` passes each session's `cwd`, `git_branch`, `last_tool` and
