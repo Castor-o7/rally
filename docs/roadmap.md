@@ -345,7 +345,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   builds of the same commit, which aren't byte-identical. Done when: a build from a clean checkout embeds its commit
   and `rally view` compares commits, falling back to the binary's SHA-256 without one; the restart note names both
   builds; and a test covers a rebuild of the same commit not restarting.
-- [ ] **RAL-108: A restarted session stays in the rally under its new nickname.** Requested by the operator on
+- [x] **RAL-108: A restarted session stays in the rally under its new nickname.** Merged in #176 (6d6ed46). Requested by the operator on
   2026-11-06, keeping the nicknames: the watchman restarted as mellow-weevil and dropped off rally 0x5's board until
   the rally was closed and reopened (913, 914). The operator ruled who is in a rally: "all the agents started by me,
   the current operator, that are open and available at the start of the rally; unless otherwise specified". Done
@@ -355,7 +355,16 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   the page names each successor beside the one it succeeds. The listed nicknames are unchanged, and there's no new
   record kind. Tests show the restarted watchman rejoining, and a later unrelated session recording for `rally` not
   joining.
-- [ ] **RAL-106: An also-read answers the open read request it covers.** From RAL-100 on 2026-11-06: the request
+- [ ] **RAL-110: The operator adds or removes a session in an open rally.** Requested by the operator on 2026-11-06,
+  completing RAL-108's "unless otherwise specified" and settling its shared-credential limit: the ledger can't tell a
+  restart from a new agent on the same machine, so the operator decides. Done when: `rally rally-session add|remove
+  <nickname> --note` records a declared `rally_session`, only while a rally is open, and the service takes it only
+  from those who may open one. An add with `--succeeds <nickname>` confirms a restart. A removal can't confirm one,
+  and nobody succeeds themselves. An added session is in and a removed one out, whatever else would take it in, and
+  the latest record decides. A detected restart counts at once but shows as unconfirmed until confirmed or removed. A
+  confirmed restart stops another being detected for the same session. The page lists what was added and removed.
+  `docs/service.md` lists the record as ending the rollback window, and tests cover each.
+- [x] **RAL-106: An also-read answers the open read request it covers.** Merged in #173 (56f425f). From RAL-100 on 2026-11-06: the request
   for a read at 4e145b1 (961) stayed open after the watchman added 4e145b1 as also read to the verification in force,
   since a story already Verified can't be verified again, and the merge then flagged it `merged_before_read`, saying
   a merge went past a read that had in fact been done. Done when: adding a commit as also read, or reading a merged
@@ -379,7 +388,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   on 2026-11-06 and confirmed in headless Chrome. Done when: the sign-in page's referrer policy is `same-origin`
   in its header and its `<meta>`, every other page stays `no-referrer`, `Origin: null` is still refused, a test
   asserts both, and `docs/web.md` says why.
-- [ ] **RAL-97: A browser test leaves nothing behind, and checks it.** From 2026-11-06, when every flatpak run of
+- [x] **RAL-97: A browser test leaves nothing behind, and checks it.** Merged in #170 (a388f03). From 2026-11-06, when every flatpak run of
   RAL-84's script left a headless Chrome and a 170 MB profile in $XDG_RUNTIME_DIR until it filled. robust-warbler
   fixed the leak in #167 (RAL-96); this guards it. Done when: the script names every profile it used, on the host
   and in a flatpak sandbox, and every browser test checks after its run that none is left and no process still runs
@@ -564,14 +573,14 @@ word.
   `commit_differs` counts it and RAL-67's also-reads; `verified_commits` lists it; it's dropped with the
   verification; `rally verifications` labels it by the designation, gated by nothing; with tests and
   docs/evidence.md.
-- [ ] **RAL-107: The service's socket test runs without `lsof`.** From §15.1 of the DiscoSim rally's issues log:
+- [x] **RAL-107: The service's socket test runs without `lsof`.** Merged in #175 (1e16ed6). From §15.1 of the DiscoSim rally's issues log:
   `nothing_listens_but_the_door` failed outright on Murph, which has no `lsof`, and a plain `cargo test` then stopped
   before tests/web.rs, so local runs skipped the browser tests unnoticed. Agreed with mellow-weevil. Done when: the
   test lists the service's internet sockets with `lsof` and, where there's `/proc`, from `/proc/<pid>/fd` and
   `/proc/<pid>/net/{tcp,udp,raw}{,6}`, and checks each reader's list; without `lsof` it uses `/proc` alone; with
   neither it's skipped with a printed reason; `RALLY_TEST_LSOF_REQUIRED`, set in CI, fails it when `lsof` is
   missing; with a test of the `/proc` address parsing, and README.md.
-- [ ] **RAL-102: The digest says when a merge leaves the base red.** From the DiscoSim rally's issues log (§10.3,
+- [x] **RAL-102: The digest says when a merge leaves the base red.** Merged in #169 (87cfe08). From the DiscoSim rally's issues log (§10.3,
   §10.4): Muster's main was red for about a day and Rally's 11c0579 until a team noticed. Picked by mellow-weevil.
   Done when: for each merge the ledger records, the watchman's own included, a digest pass reads the base's CI on
   what landed (RAL-31's lookup, then `gh run list --commit`, read-only) and tells a failed run at once with its
@@ -579,7 +588,7 @@ word.
   up on, said, after 2 hours; no run is told after 10 minutes; a check that can't be made says so rather than staying
   silent, and is tried again; a pass says nothing; what's pending is kept with the head; with unit tests, a test of
   the digest with a fake `gh`, and docs/digest.md.
-- [ ] **RAL-103: `rally gate` refuses a head that doesn't contain its base's tip.** From the DiscoSim rally's issues
+- [x] **RAL-103: `rally gate` refuses a head that doesn't contain its base's tip.** Merged in #172 (e1bdc69). From the DiscoSim rally's issues
   log (§10.4): #144 merged at a head without #145, and main went red; #152 merged on 2026-11-06 without #151. Filed
   by mellow-weevil's pick. Done when: `rally gate <base>..<new>` also refuses when `<new>` doesn't contain the
   current tip of `<base>` (after a fetch of `origin/<base>`), saying to merge the base in first; it works without
@@ -612,7 +621,14 @@ word.
   `max-width: 960px` about 40% of a 1500-pixel screen sat empty while the tables wrapped heavily. Done when: the
   page uses up to 1200 pixels, never runs wider than the window, and a headless Chrome test on a 1500-pixel window
   shows it, failing at 960.
-- [ ] **RAL-90: The viewer's ages tick, with a live indicator; Verified green; short commits; no wrapped IDs.**
+- [ ] **RAL-93: The viewer shows each state once, with provenance in a legend.** From robust-warbler's visual
+  review of the viewer on 2026-11-06, item 5: declared, observed and attested chips sat on almost every cell.
+  RAL-96 (#167) already shows a state once, as a dot and its name. Done when: a table column whose cells all carry
+  the same label shows it once, in its header, and on none of its cells; a column that mixes kinds (or has cells
+  with none) keeps each cell's own label, so every fact stays labelled; a legend on the page says what observed,
+  declared, verified and attested mean; and a headless Chrome test shows both kinds of column and the legend,
+  failing on the page before it.
+- [x] **RAL-90: The viewer's ages tick, with a live indicator; Verified green; short commits; no wrapped IDs.** Merged in #167 (d081399).
   From robust-warbler's visual review of the viewer on 2026-11-06 (items 2, 4, 6 and 7), assigned by mellow-weevil.
   Done when: every age on the page counts on between polls without anything being redrawn; a "Live · updated Ns
   ago" line replaces "Updated hh:mm:ss", amber when a poll is late and red when stale or unreachable, announcing

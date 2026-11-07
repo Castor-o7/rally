@@ -1175,7 +1175,9 @@ fn the_board_keeps_its_ages_current_and_shows_commits_short() {
         stateCell: (() => {
           const pill = document.querySelector("#ledger .state-pill");
           const cell = pill?.closest("td");
-          return pill && { text: cell.textContent.trim(), dot: Boolean(pill.querySelector(".dot.s-in_review")) };
+          const header = cell && cell.closest("table").querySelectorAll("th")[cell.cellIndex];
+          return pill && { text: cell.textContent.trim(), dot: Boolean(pill.querySelector(".dot.s-in_review")),
+            header: header?.querySelector(".label")?.textContent || null };
         })(),
       };
     })()"##;
@@ -1213,7 +1215,10 @@ fn the_board_keeps_its_ages_current_and_shows_commits_short() {
     assert_eq!(probe["firstCellWraps"], "nowrap", "{probe}");
     assert_eq!(probe["ageCellWraps"], "nowrap", "{probe}");
     // RAL-96: the state shows once, as its coloured dot and name, labelled declared while in review.
-    assert_eq!(probe["stateCell"]["text"], "declared in review", "{probe}");
+    // With only in-review stories, the State column is all declared, so it says so in its header
+    // and not on the cell (RAL-93).
+    assert_eq!(probe["stateCell"]["text"], "in review", "{probe}");
+    assert_eq!(probe["stateCell"]["header"], "declared", "{probe}");
     assert_eq!(probe["stateCell"]["dot"], true, "{probe}");
 }
 
@@ -1421,6 +1426,117 @@ fn the_report_box_belongs_to_the_open_rally_and_lists_its_events() {
     assert!(text.contains("nothing named as backing it"), "{seen}");
     assert!(text.contains("backed by Castor-o7/marshal#11"), "{seen}");
     assert_ne!(seen["probe"]["incident"], seen["probe"]["notice"], "{seen}");
+}
+
+/// RAL-93, in the browser: a column whose cells are all known the same way says so once, in its
+/// header, and a column that mixes kinds keeps a label on each cell that has one; a legend says what
+/// each kind means.
+#[test]
+fn provenance_goes_in_the_header_unless_a_column_mixes_kinds() {
+    let Some(chrome) = browser() else { return };
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let viewer = start_after("[]", None, 60, |db, dir| {
+        let write = |name: &str, args: &[&str]| {
+            let out = on(db, dir)
+                .args(["--credential", "a1", "--as", name])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        write(
+            "author",
+            &[
+                "open-rally",
+                "--name",
+                "test",
+                "--project",
+                "RAL",
+                "--team",
+                "rally",
+            ],
+        );
+        let evidence = format!("Castor-o7/rally@{commit}");
+        for story in ["RAL-1", "RAL-2"] {
+            write("author", &["ready", story]);
+            write("author", &["claim", story, "--team", "rally"]);
+            write(
+                "author",
+                &[
+                    "submit",
+                    story,
+                    "--team",
+                    "rally",
+                    "--evidence",
+                    &evidence,
+                    "--not-checkable",
+                ],
+            );
+        }
+        // RAL-2 is verified, so the State column mixes kinds; RAL-1 stays in review.
+        write(
+            "reader",
+            &["verify", "RAL-2", "--note", "read it", "--commit", commit],
+        );
+    });
+    let probe = r##"(async () => {
+      for (let i = 0; i < 100 && document.querySelectorAll("#ledger tbody tr").length < 2; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const table = [...document.querySelectorAll("#ledger table")]
+        .find((t) => [...t.querySelectorAll("th")].some((th) => th.textContent.startsWith("Evidence")));
+      const headers = [...table.querySelectorAll("th")].map((th) => ({
+        name: th.firstChild.textContent, label: th.querySelector(".label")?.textContent || null,
+      }));
+      const column = (name) => {
+        const i = headers.findIndex((h) => h.name === name);
+        return [...table.querySelectorAll("tbody tr")].map((tr) => ({
+          story: tr.children[0].textContent,
+          labels: [...tr.children[i].querySelectorAll(".label")].map((l) => l.textContent),
+        }));
+      };
+      const legend = [...document.querySelectorAll("#provenance dt")].map((dt) => dt.textContent);
+      return { headers, state: column("State"), evidence: column("Evidence"), legend };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    let header = |name: &str| {
+        probe["headers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["name"] == name)
+            .unwrap_or_else(|| panic!("no {name} column: {probe}"))["label"]
+            .clone()
+    };
+    // Every evidence cell is declared: said once, in the header, and on no cell.
+    assert_eq!(header("Evidence"), "declared", "{probe}");
+    for row in probe["evidence"].as_array().unwrap() {
+        assert_eq!(row["labels"], json!([]), "{probe}");
+    }
+    // The State column mixes a declared state with a verified one: no header label, and the
+    // in-review story's cell keeps its own.
+    assert_eq!(header("State"), Value::Null, "{probe}");
+    let state = |story: &str| {
+        probe["state"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["story"] == story)
+            .unwrap_or_else(|| panic!("no {story}: {probe}"))["labels"]
+            .clone()
+    };
+    assert_eq!(state("RAL-1"), json!(["declared"]), "{probe}");
+    assert_eq!(state("RAL-2"), json!([]), "{probe}");
+    assert_eq!(
+        probe["legend"],
+        json!(["observed", "declared", "verified", "attested"]),
+        "{probe}"
+    );
 }
 
 /// RAL-92, in the browser: on a 1500-pixel window the page uses up to 1200 of it, rather than 960

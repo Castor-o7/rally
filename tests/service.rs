@@ -721,6 +721,25 @@ fn with_rally_openers_only_those_credentials_open_or_close_a_rally() {
     let opened = write(&watchman, "anyone", "declared", open);
     assert_eq!(opened.status, 200, "{}", opened.body);
     assert!(!opened.body.contains("warning"), "{}", opened.body);
+    // RAL-110: adding or removing a session is held to the same rule, backfilled or not.
+    let add = json!({"change": "rally_session", "session": "mellow-weevil",
+                     "succeeds": "frank-crocodile", "note": "frank-crocodile restarted"});
+    assert_eq!(write(&a1, "w", "declared", add.clone()).status, 403);
+    let wrapped =
+        json!({"change": "backfill", "entered_at_ms": 1, "entered_by": "w", "entry": add});
+    assert_eq!(write(&a1, "w", "declared", wrapped).status, 403);
+    let added = write(&watchman, "w", "declared", add.clone());
+    assert_eq!(added.status, 200, "{}", added.body);
+    let rallies: Value = serde_json::from_str(&call(&a1, "GET", "/v1/rallies", None).body).unwrap();
+    assert_eq!(
+        rallies["open"]["sessions"][0]["session"], "mellow-weevil",
+        "{rallies}"
+    );
+    assert_eq!(
+        rallies["open"]["sessions"][0]["succeeds"],
+        "frank-crocodile"
+    );
+    assert_eq!(rallies["open"]["sessions"].as_array().unwrap().len(), 1);
     let close = json!({"change": "close_rally", "note": "stood down"});
     assert_eq!(write(&a1, "w", "declared", close.clone()).status, 403);
     let rallies: Value = serde_json::from_str(&call(&a1, "GET", "/v1/rallies", None).body).unwrap();

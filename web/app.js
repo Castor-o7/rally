@@ -34,10 +34,11 @@ function teamInRally(rally, name) {
 function sessionInRally(rally, session) {
   if (!(rally && rally.opened && rally.teams_listed)) return true;
   const teams = rally.active_teams || [];
-  // A restarted session's new nickname is a member once it records for its team (RAL-108).
-  const members = rally.members || [];
+  // The rally's members by nickname: listed, specified or a restart of one (RAL-108, RAL-110),
+  // and a session removed is out whatever else would take it in.
   const nickname = String(session.nickname || "").trim().toLowerCase();
-  if (nickname && members.includes(nickname)) return true;
+  if (nickname && (rally.removed || []).includes(nickname)) return false;
+  if (nickname && (rally.members || []).includes(nickname)) return true;
   return [session.nickname, session.project].some((n) => n && teams.includes(String(n).trim().toLowerCase()));
 }
 
@@ -102,25 +103,49 @@ function figure(label, value, fraction, title) {
   return wrap;
 }
 
+// A cell given as { text, label, className }, rather than plain text or a node.
+function isCellObject(cell) {
+  return typeof cell === "object" && cell !== null && !(cell instanceof Node) && !Array.isArray(cell);
+}
+
+// How a column's cells are known (RAL-93): the label every one of them carries, which then goes in
+// the column's header once, or undefined when they differ or carry none, so each keeps its own.
+function sharedLabel(rows, column) {
+  let shared = null;
+  for (const row of rows) {
+    const cell = row[column];
+    const label = isCellObject(cell) ? cell.label : undefined;
+    if (shared === null) shared = label;
+    else if (shared !== label) return undefined;
+  }
+  return shared || undefined;
+}
+
 function table(headers, rows) {
   const wrap = el("div", "table-wrap");
   const tbl = el("table");
   const head = el("tr");
-  for (const header of headers) head.append(el("th", "", header));
+  const shared = headers.map((_, column) => sharedLabel(rows, column));
+  headers.forEach((header, column) => {
+    const th = el("th", "", header);
+    if (shared[column]) th.append(" ", el("span", "label", shared[column]));
+    head.append(th);
+  });
   const thead = el("thead");
   thead.append(head);
   const tbody = el("tbody");
   for (const row of rows) {
     const tr = el("tr");
-    for (const cell of row) {
-      const plain = typeof cell !== "object" || cell === null || cell instanceof Node || Array.isArray(cell);
+    row.forEach((cell, column) => {
+      const plain = !isCellObject(cell);
       const td = el("td", plain ? "" : cell.className || "");
-      if (!plain && cell.label) td.append(el("span", "label", cell.label), " ");
+      // Said once in the header when the whole column shares it; on the cell where it differs.
+      if (!plain && cell.label && !shared[column]) td.append(el("span", "label", cell.label), " ");
       const content = plain ? cell : cell.text;
       if (Array.isArray(content)) td.append(...content);
       else td.append(content instanceof Node ? content : String(content));
       tr.append(td);
-    }
+    });
     tbody.append(tr);
   }
   tbl.append(thead, tbody);
@@ -237,11 +262,25 @@ function rallyLine(rally, otherStories) {
     box.append(head);
     box.append(el("p", "figure", "Projects: " + prefixes.join(", ")
       + ((rally.teams || []).length ? " · Teams: " + rally.teams.join(", ") : "")));
-    // A listed session restarted under a new nickname, shown beside the one it succeeds (RAL-108).
+    // A session restarted under a new nickname, beside the one it succeeds (RAL-108): confirmed
+    // by `rally rally-session add --succeeds`, or read from the ledger and roster (RAL-110).
     const successors = rally.successors || [];
     if (successors.length) {
       box.append(el("p", "muted", "Restarted since it opened (declared): "
-        + successors.map((s) => s.name + " after " + s.succeeds + " (" + s.team + ")").join(", ")));
+        + successors.map((s) => s.name + " after " + s.succeeds
+          + (s.team ? " (" + s.team + ")" : "")
+          + (s.confirmed ? ", confirmed" : ", unconfirmed restart")).join("; ")));
+    }
+    // Sessions the operator or watchman added or removed since it opened (RAL-110).
+    const latest = new Map();
+    for (const entry of rally.sessions_changed || []) latest.set(entry.session, entry);
+    const added = [...latest.values()].filter((e) => !e.remove).map((e) => e.session);
+    const removed = [...latest.values()].filter((e) => e.remove).map((e) => e.session);
+    if (added.length || removed.length) {
+      box.append(el("p", "muted", "Specified since it opened (declared):"
+        + (added.length ? " added " + added.join(", ") : "")
+        + (added.length && removed.length ? ";" : "")
+        + (removed.length ? " removed " + removed.join(", ") : "")));
     }
     box.append(el("p", "muted", "Opened " + when(rally.opened_at_ms) + ", at record " + rally.since_seq
       + (rally.opened_by ? ", by " + rally.opened_by : "") + ". " + rally.rule));

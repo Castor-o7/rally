@@ -334,6 +334,17 @@ pub enum Change {
     },
     /// Someone closes the open rally, saying why (RAL-76). It becomes a past rally, kept whole.
     CloseRally { note: String },
+    /// Someone adds a session to the open rally by its Muster nickname, or removes one (RAL-110).
+    /// An add with `succeeds` confirms the session as a restart of that one. Declared; the service
+    /// takes it only from those who may open a rally.
+    RallySession {
+        session: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        remove: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        succeeds: Option<String>,
+        note: String,
+    },
     /// Anyone records a major event of the open rally (RAL-104): a one-line headline, how serious
     /// it is, and what backs it (record numbers, pull requests, commits or files), if anything.
     /// Declared, like any other claim. It belongs to the open rally, and stays with it once closed.
@@ -368,6 +379,7 @@ impl Change {
             | Self::EndStanding { .. }
             | Self::OpenRally { .. }
             | Self::CloseRally { .. }
+            | Self::RallySession { .. }
             | Self::Event { .. }
             | Self::Shelve { .. }
             | Self::OperatorAway { .. }
@@ -770,6 +782,23 @@ pub struct Rally {
     /// succeeds. Declared, like the names themselves.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub recorded_as: BTreeMap<String, BTreeMap<String, RecordedSpan>>,
+    /// Sessions added to or removed from the rally since it opened, oldest first (RAL-110).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<RallySessionEntry>,
+}
+
+/// One session added to or removed from an open rally (RAL-110). Names are folded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RallySessionEntry {
+    pub seq: u64,
+    pub kind: Kind,
+    pub source: Source,
+    pub at_ms: i64,
+    pub session: String,
+    pub remove: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub succeeds: Option<String>,
+    pub note: String,
 }
 
 /// A major event of a rally, as someone declared it (RAL-104).
@@ -903,6 +932,8 @@ pub enum LedgerError {
     InvalidRallyProjects,
     /// A rally names a team twice (RAL-76).
     InvalidRallyTeams,
+    /// A rally session record's `succeeds` is blank, itself, or on a removal (RAL-110).
+    InvalidRallySession,
     /// A shelve names a blocker that isn't an open question to the operator about a story, held
     /// by the shelving team, or that's already shelved (RAL-56).
     InvalidShelf(u64, &'static str),
@@ -1064,6 +1095,10 @@ impl fmt::Display for LedgerError {
                 "a rally names at least one project, each once and a story prefix such as RAL"
             ),
             Self::InvalidRallyTeams => write!(f, "a rally names each team once"),
+            Self::InvalidRallySession => write!(
+                f,
+                "a session succeeds another session, and only when it's added"
+            ),
             Self::InvalidShelf(seq, why) => write!(f, "can't shelve on record {seq}: {why}"),
             Self::ReservedTeam => write!(
                 f,
@@ -1953,6 +1988,7 @@ impl Ledger {
                     closed: None,
                     events: Vec::new(),
                     recorded_as: BTreeMap::new(),
+                    sessions: Vec::new(),
                 });
                 self.last_seq = seq;
                 return Ok(());
@@ -1972,6 +2008,31 @@ impl Ledger {
                     backfilled: backfill,
                     note,
                     answer: None,
+                });
+                self.last_seq = seq;
+                return Ok(());
+            }
+            Change::RallySession {
+                session,
+                remove,
+                succeeds,
+                note,
+            } => {
+                require_kind(record, Kind::Declared)?;
+                let open = self
+                    .rallies
+                    .last_mut()
+                    .filter(|rally| rally.closed.is_none())
+                    .ok_or(LedgerError::NoRallyOpen)?;
+                open.sessions.push(RallySessionEntry {
+                    seq,
+                    kind: record.kind(),
+                    source: record.source().clone(),
+                    at_ms: record.at_ms(),
+                    session: name_key(&session),
+                    remove,
+                    succeeds: succeeds.as_deref().map(name_key),
+                    note,
                 });
                 self.last_seq = seq;
                 return Ok(());
@@ -2272,6 +2333,7 @@ fn transition(
         | Change::EndStanding { .. }
         | Change::OpenRally { .. }
         | Change::CloseRally { .. }
+        | Change::RallySession { .. }
         | Change::Event { .. }
         | Change::Shelve { .. }
         | Change::OperatorAway { .. }
@@ -2874,6 +2936,7 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
             | Change::EndStanding { .. }
             | Change::OpenRally { .. }
             | Change::CloseRally { .. }
+            | Change::RallySession { .. }
             | Change::Event { .. }
             | Change::Shelve { .. }
             | Change::OperatorAway { .. }
@@ -2975,6 +3038,20 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::Unblock { note, .. }
         | Change::EndStanding { note, .. }
         | Change::CloseRally { note } => &[("note", note)],
+        Change::RallySession {
+            session,
+            remove,
+            succeeds,
+            note,
+        } => {
+            if let Some(succeeds) = succeeds {
+                // A removal confirms nothing, and a session doesn't succeed itself.
+                if *remove || succeeds.trim().is_empty() || same_name(succeeds, session) {
+                    return Err(LedgerError::InvalidRallySession);
+                }
+            }
+            &[("session", session), ("note", note)]
+        }
         Change::Event {
             headline, backing, ..
         } => {
@@ -3179,6 +3256,16 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
         Change::OpenRally { name, teams, .. } => {
             text.push(("note", name));
             text.extend(teams.iter().map(|team| ("team", team.as_str())));
+        }
+        // Session nicknames are held to a team name's limits (RAL-110).
+        Change::RallySession {
+            session,
+            succeeds,
+            note,
+            ..
+        } => {
+            text.extend([("team", session.as_str()), ("note", note)]);
+            text.extend(succeeds.as_deref().map(|s| ("team", s)));
         }
     }
     text
@@ -3858,6 +3945,56 @@ mod tests {
         let mellow = &rally.recorded_as["watchman"]["mellow-weevil"];
         assert_eq!((mellow.first, mellow.last), (4, 5));
         assert_eq!(mellow.credentials.iter().collect::<Vec<_>>(), ["a1"]);
+    }
+
+    /// RAL-110: a session is added to or removed from the open rally, and only an open one; an
+    /// add may confirm a restart, a removal can't, and nobody succeeds themselves.
+    #[test]
+    fn a_session_is_added_to_or_removed_from_the_open_rally() {
+        let session = |body: serde_json::Value| record(Kind::Declared, "josh", body);
+        let add = json!({"change": "rally_session", "session": " Mellow-Weevil ",
+                         "succeeds": "Frank-Crocodile", "note": "restarted"});
+        let mut ledger = Ledger::default();
+        assert_eq!(
+            ledger.check(1, &session(add.clone())),
+            Err(LedgerError::NoRallyOpen)
+        );
+        let open = json!({"change": "open_rally", "name": "x", "projects": ["RAL"],
+                          "teams": ["frank-crocodile"]});
+        ledger.apply(1, &session(open)).unwrap();
+        for body in [
+            json!({"change": "rally_session", "session": "a", "remove": true, "succeeds": "b",
+                   "note": "x"}),
+            json!({"change": "rally_session", "session": "a", "succeeds": " A ", "note": "x"}),
+            json!({"change": "rally_session", "session": "a", "succeeds": " ", "note": "x"}),
+            json!({"change": "rally_session", "session": " ", "note": "x"}),
+            json!({"change": "rally_session", "session": "a", "note": " "}),
+        ] {
+            assert!(ledger.check(2, &session(body.clone())).is_err(), "{body}");
+        }
+        assert!(
+            ledger
+                .check(2, &record(Kind::Verified, "josh", add.clone()))
+                .is_err(),
+            "declared only"
+        );
+        ledger.apply(2, &session(add)).unwrap();
+        let remove = json!({"change": "rally_session", "session": "cobalt-glen", "remove": true,
+                            "note": "not in this rally"});
+        ledger.apply(3, &session(remove)).unwrap();
+        let rally = ledger.open_rally().unwrap();
+        assert_eq!(rally.sessions.len(), 2);
+        assert_eq!(rally.sessions[0].session, "mellow-weevil");
+        assert_eq!(
+            rally.sessions[0].succeeds.as_deref(),
+            Some("frank-crocodile")
+        );
+        assert!(!rally.sessions[0].remove);
+        assert!(rally.sessions[1].remove);
+        // Kept with the rally when it closes.
+        let close = json!({"change": "close_rally", "note": "done"});
+        ledger.apply(4, &session(close)).unwrap();
+        assert_eq!(ledger.rallies()[0].sessions.len(), 2);
     }
 
     #[test]

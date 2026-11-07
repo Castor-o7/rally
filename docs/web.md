@@ -140,6 +140,21 @@ So when the watchman restarts as mellow-weevil, it rejoins with its first record
 session is still open doesn't join. With no roster to read, only the listed nicknames count. The names and the
 roster are declared, so a succession is a reading, not proof. The rally's own list doesn't change.
 
+The operator specifies the rest (RAL-110):
+
+```bash
+rally rally-session add cobalt-glen --note "helping on MAR"           # add a session to the open rally
+rally rally-session add mellow-weevil --succeeds frank-crocodile --note "restarted"   # confirm a restart
+rally rally-session remove late-lark --note "not a restart; started later"            # take a session out
+```
+
+An added session is in, and a removed one is out, whatever would otherwise take it in, whether it was listed, added
+or detected as a restart. The latest record for a nickname decides. A detected restart counts straight away, and the
+page shows it as an "unconfirmed restart" until it's confirmed with `--succeeds` or removed. A confirmed restart stops
+another nickname being detected for the same session. The page lists what was added and removed since the rally
+opened. Like opening and closing a rally, only the operator or the watchman may do it once `--rally-openers` is
+set. It's one record kind, `rally_session`, and the first one ends the rollback window (see `docs/service.md`).
+
 Nothing is removed. The ledger is append-only and hash-chained, and deleting records would fail its check, so a
 closed rally is kept whole. The page lists past rallies, and each opens as its own board (`#/rally/<record that
 opened it>`, RAL-77): the ledger as it stood when it closed (RAL-28), showing only its projects' stories recorded
@@ -178,6 +193,14 @@ While a rally is open, the report box at the end of the overview shows only what
   An older writeup is named as written before the rally opened, and isn't shown. If the time can't be read, the
   page says so, and doesn't show the writeup as this rally's. A commit's time is the committer's clock, so a
   writeup committed from a machine whose clock is far off can land on the wrong side of the opening.
+
+## Labels, once per column (RAL-93)
+
+Every fact on the page is labelled with how it's known. A table column whose cells are all known the same way
+says so once, in its header: Evidence's "declared", for instance, or Rally's check's "observed". A column that
+mixes kinds keeps a label on each cell that has one. The State column is the usual case: a story in review carries
+"declared", and a verified one carries none, since its state says so. A legend at the foot of the page says what observed, declared,
+verified and attested mean.
 
 ## Project pages (RAL-43)
 

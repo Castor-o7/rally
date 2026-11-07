@@ -718,9 +718,11 @@ async fn write_record(
             Err(error) => return failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         }
     }
-    // Only the operator or the watchman opens or closes a rally (RAL-77), backfilled or not.
+    // Only the operator or the watchman opens or closes a rally (RAL-77), or adds or removes one
+    // of its sessions (RAL-110), backfilled or not.
     let applied = applied_change(&body);
-    let rally_change = applied == "open_rally" || applied == "close_rally";
+    let rally_change =
+        applied == "open_rally" || applied == "close_rally" || applied == "rally_session";
     if rally_change && let Err(refused) = may_open_rallies(&service, &identity.credential).await {
         return *refused;
     }
