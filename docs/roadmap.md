@@ -242,7 +242,7 @@ The bones. Everything later reads from this.
   roadmap, the watchman can see how many stories are in each state, which ready stories have nothing
   blocking them, which blockers hold up the most stories, and which roadmap ticks have no Verified
   behind them, with no comparison or ranking of teams.
-- [x] **RAL-24: Bring in other projects.** Merged in #154 (69f5768). Open question 4 in the design. Done when: the decision is
+- [x] **RAL-24: Bring in other projects.** Merged in #165 (4e7e8c4). Open question 4 in the design. Done when: the decision is
   recorded, and Muster, catapp, ParadoxDetector and any other team on the board can be tracked by it.
   Decided by the operator on 2026-11-06: Rally is the source of truth for every project in `web/projects.json`,
   and the hand-kept board retires (design, open question 4). The ledger already tracks MUS, MAR, CAT and DSM
