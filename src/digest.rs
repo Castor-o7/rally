@@ -523,6 +523,97 @@ struct Section {
 /// so the commit itself is what landed.
 pub type Landed<'a> = &'a dyn Fn(&str, &str) -> Result<Option<(String, String)>, String>;
 
+/// An open pull request (RAL-105): its number, head commit, base branch and link.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenPr {
+    pub number: u64,
+    pub head: String,
+    pub base: String,
+    pub url: String,
+}
+
+/// The open pull requests in a repository, read from GitHub (RAL-105).
+pub type OpenPrs<'a> = &'a dyn Fn(&str) -> Result<Vec<OpenPr>, String>;
+
+/// How many commits of base branch `base` head `head` lacks, in `repo` (RAL-105).
+pub type BehindBy<'a> = &'a dyn Fn(&str, &str, &str) -> Result<u64, String>;
+
+/// At most this many repositories' open pull requests are read for one digest (RAL-105).
+pub const BEHIND_REPOS: usize = 10;
+
+/// RAL-105: each verified story not yet merged whose open pull request, at a commit verified, has
+/// fallen behind its base, so its author knows to merge the base in (and have the new head read)
+/// before it can merge. A read that fails is said, never left silent.
+pub fn behind_base(stories: &Value, open: OpenPrs, behind: BehindBy) -> Vec<String> {
+    let mut by_repo: std::collections::BTreeMap<String, Vec<(&str, Vec<&str>)>> =
+        Default::default();
+    for (story, row) in stories["stories"].as_object().into_iter().flatten() {
+        if row["state"] != "verified" || row["merged"] == true {
+            continue;
+        }
+        let verified: Vec<&str> = row["verified_commits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let evidence = row["evidence"]["text"].as_str().unwrap_or("");
+        if verified.is_empty() {
+            continue;
+        }
+        if let Ok((repo, _)) = crate::evidence::parse(evidence) {
+            by_repo.entry(repo).or_default().push((story, verified));
+        }
+    }
+    let mut lines = Vec::new();
+    let skipped = by_repo.len().saturating_sub(BEHIND_REPOS);
+    for (repo, waiting) in by_repo.iter().take(BEHIND_REPOS) {
+        let prs = match open(repo) {
+            Ok(prs) => prs,
+            Err(error) => {
+                lines.push(format!(
+                    "- {}: open pull requests couldn't be read: {}",
+                    clean(repo),
+                    clean(&error)
+                ));
+                continue;
+            }
+        };
+        for (story, verified) in waiting {
+            let Some(pr) = prs
+                .iter()
+                .find(|pr| verified.iter().any(|v| v.eq_ignore_ascii_case(&pr.head)))
+            else {
+                continue;
+            };
+            let (story, base) = (clean(story), clean(&pr.base));
+            match behind(repo, &pr.base, &pr.head) {
+                Ok(0) => {}
+                Ok(n) => lines.push(format!(
+                    "- {story}: #{} at {} is {n} commit{} behind {base} [observed]; merge {base} in \
+                     and have the new head read before it merges {}",
+                    pr.number,
+                    short(&pr.head),
+                    if n == 1 { "" } else { "s" },
+                    clean(&pr.url)
+                )),
+                Err(error) => lines.push(format!(
+                    "- {story}: #{} couldn't be compared with {base}: {}",
+                    pr.number,
+                    clean(&error)
+                )),
+            }
+        }
+    }
+    if skipped > 0 {
+        lines.push(format!(
+            "- {skipped} more repositor{} with verified stories not checked",
+            if skipped == 1 { "y" } else { "ies" }
+        ));
+    }
+    lines
+}
+
 /// The current reads a digest draws on, beside the records.
 pub struct Reads<'a> {
     /// `/v1/waiting`.
@@ -535,6 +626,9 @@ pub struct Reads<'a> {
     pub landed: Landed<'a>,
     /// What the base's CI said after merges (RAL-102), from [`check_ci`].
     pub ci: &'a [String],
+    /// Verified stories whose open pull request is behind its base (RAL-105), from
+    /// [`behind_base`].
+    pub behind: &'a [String],
 }
 
 /// RAL-31 for a merge at `merged`: compare what landed with the commits verified (RAL-67: the
@@ -701,6 +795,13 @@ pub fn render(
         title: "Base CI after merges (RAL-102)".into(),
         lines: reads.ci.to_vec(),
         more: "gh run list --branch main",
+        always: false,
+    });
+
+    sections.push(Section {
+        title: "Verified, but behind their base (RAL-105)".into(),
+        lines: reads.behind.to_vec(),
+        more: "gh pr list",
         always: false,
     });
 
@@ -1176,6 +1277,131 @@ mod tests {
     }
 
     #[test]
+    fn a_verified_story_whose_open_pr_is_behind_its_base_is_named() {
+        let a40 = |c: char| c.to_string().repeat(40);
+        let row = |verified: &str, repo: &str| {
+            json!({"state": "verified", "verified_commits": [verified],
+                   "evidence": {"text": format!("{repo}@{verified}")}})
+        };
+        let mut merged = row(&a40('3'), "Castor-o7/rally");
+        merged["merged"] = json!(true);
+        let mut review = row(&a40('4'), "Castor-o7/rally");
+        review["state"] = json!("in_review");
+        let stories = json!({"stories": {
+            "RAL-1": row(&a40('1'), "Castor-o7/rally"),   // behind by 2
+            "RAL-2": row(&a40('2'), "Castor-o7/rally"),   // up to date
+            "RAL-3": merged,                              // merged: not asked about
+            "RAL-4": review,                              // not verified: not asked about
+            "RAL-5": row(&a40('5'), "Castor-o7/rally"),   // no open PR at a verified commit
+            "RAL-6": row(&a40('6'), "Castor-o7/rally"),   // compare fails
+            "CAT-1": row(&a40('7'), "Castor-o7/catapp"),  // repo unreadable
+        }});
+        let pr = |number, head: String| OpenPr {
+            number,
+            head,
+            base: "main".into(),
+            url: format!("https://github.com/Castor-o7/rally/pull/{number}"),
+        };
+        let open = |repo: &str| -> Result<Vec<OpenPr>, String> {
+            match repo {
+                "Castor-o7/rally" => Ok(vec![
+                    pr(11, a40('1').to_uppercase()),
+                    pr(12, a40('2')),
+                    pr(13, a40('3')),
+                    pr(14, a40('4')),
+                    pr(15, a40('e')),
+                    pr(16, a40('6')),
+                ]),
+                _ => Err("gh: not signed in".into()),
+            }
+        };
+        let asked = std::cell::RefCell::new(Vec::new());
+        let behind = |repo: &str, base: &str, head: &str| -> Result<u64, String> {
+            asked
+                .borrow_mut()
+                .push(format!("{repo} {base} {}", &head[..1]));
+            match &head[..1] {
+                "1" => Ok(2),
+                "2" => Ok(0),
+                _ => Err("gh: not found".into()),
+            }
+        };
+        let lines = behind_base(&stories, &open, &behind);
+        assert_eq!(
+            lines,
+            [
+                "- Castor-o7/catapp: open pull requests couldn't be read: gh: not signed in"
+                    .to_owned(),
+                "- RAL-1: #11 at 1111111 is 2 commits behind main [observed]; merge main in \
+                 and have the new head read before it merges \
+                 https://github.com/Castor-o7/rally/pull/11"
+                    .to_owned(),
+                "- RAL-6: #16 couldn't be compared with main: gh: not found".to_owned(),
+            ]
+        );
+        // Only verified, unmerged stories with an open PR at a verified commit are compared.
+        assert_eq!(
+            *asked.borrow(),
+            [
+                "Castor-o7/rally main 1",
+                "Castor-o7/rally main 2",
+                "Castor-o7/rally main 6"
+            ]
+        );
+    }
+
+    #[test]
+    fn behind_base_reads_at_most_a_few_repositories() {
+        let stories: serde_json::Map<String, Value> = (0..BEHIND_REPOS + 2)
+            .map(|i| {
+                let c = "1".repeat(40);
+                (
+                    format!("S{i}-1"),
+                    json!({"state": "verified", "verified_commits": [c],
+                           "evidence": {"text": format!("o/r{i:02}@{c}")}}),
+                )
+            })
+            .collect();
+        let reads = std::cell::Cell::new(0);
+        let open = |_: &str| -> Result<Vec<OpenPr>, String> {
+            reads.set(reads.get() + 1);
+            Ok(vec![])
+        };
+        let behind = |_: &str, _: &str, _: &str| -> Result<u64, String> { Ok(0) };
+        let lines = behind_base(&json!({"stories": stories}), &open, &behind);
+        assert_eq!(reads.get(), BEHIND_REPOS);
+        assert_eq!(
+            lines,
+            ["- 2 more repositories with verified stories not checked"]
+        );
+    }
+
+    #[test]
+    fn a_digest_shows_the_behind_section_only_when_there_is_something() {
+        let (waiting, empty) = (json!({"waiting": []}), json!({}));
+        let landed = |_: &str, _: &str| -> Result<Option<(String, String)>, String> { Ok(None) };
+        let lines = ["- RAL-1: #11 at 1111111 is 2 commits behind main [observed]".to_owned()];
+        let reads = Reads {
+            waiting: &waiting,
+            handover: &empty,
+            stories: &empty,
+            landed: &landed,
+            ci: &[],
+            behind: &lines,
+        };
+        let digest = render(0, 0, &[], &watch(), &reads, 0);
+        assert!(
+            digest.contains("Verified, but behind their base (RAL-105) (1)\n- RAL-1"),
+            "{digest}"
+        );
+        let quiet = Reads {
+            behind: &[],
+            ..reads
+        };
+        assert!(!render(0, 0, &[], &watch(), &quiet, 0).contains("behind their base"));
+    }
+
+    #[test]
     fn a_digest_shows_the_base_ci_section_only_when_there_is_something() {
         let (waiting, empty) = (json!({"waiting": []}), json!({}));
         let landed = |_: &str, _: &str| -> Result<Option<(String, String)>, String> { Ok(None) };
@@ -1189,6 +1415,7 @@ mod tests {
             stories: &empty,
             landed: &landed,
             ci: &lines,
+            behind: &[],
         };
         let digest = render(0, 0, &[], &watch(), &reads, 0);
         assert!(
@@ -1397,6 +1624,7 @@ mod tests {
             stories: &stories,
             landed: &landed,
             ci: &[],
+            behind: &[],
         };
         render(0, to, recs, &watch(), &reads, 1_000_000)
     }
@@ -1578,6 +1806,7 @@ mod tests {
             stories: &empty,
             landed: &landed,
             ci: &[],
+            behind: &[],
         };
         let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
         assert!(
@@ -1596,6 +1825,7 @@ mod tests {
             stories: &empty,
             landed: &landed,
             ci: &[],
+            behind: &[],
         };
         let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
         assert!(digest.contains("Waiting for you (0)"), "{digest}");
