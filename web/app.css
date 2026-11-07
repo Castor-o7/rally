@@ -39,7 +39,7 @@
 * { box-sizing: border-box; }
 body {
   margin: 0 auto;
-  max-width: 960px;
+  max-width: 1200px;
   padding: 24px 16px 64px;
   background: var(--page);
   color: var(--text);
