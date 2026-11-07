@@ -3228,14 +3228,21 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     backend.read_value("/v1/rallies", None, &Page::default(), views::rallies)
                 })
                 .ok();
-            let text = match default_projects_file(&config)? {
-                Some(path) => std::fs::read_to_string(path)?,
-                None => DEFAULT_PROJECTS.to_owned(),
+            // The brief degrades and never fails (RAL-22a): a bad projects list is noted, not fatal.
+            let file = match default_projects_file(&config) {
+                Ok(None) => None,
+                Ok(Some(path)) => Some(
+                    std::fs::read_to_string(&path)
+                        .map_err(|error| format!("can't read {}: {error}", path.display())),
+                ),
+                Err(error) => Some(Err(error.to_string())),
             };
-            let projects: Vec<Project> = serde_json::from_str(&text)
-                .map_err(|error| format!("the projects list isn't a list of projects: {error}"))?;
+            let (projects, note) = rally::brief::brief_projects(file);
             report["rally"] =
                 rally::brief::rally_section(rallies.as_ref(), roster.as_ref(), &projects);
+            if let Some(note) = note {
+                report["rally"]["projects_note"] = json!(note);
+            }
             return Ok(report.to_string());
         }
         Command::Waiting => {

@@ -221,6 +221,36 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
     })
 }
 
+/// The project list for the brief's rally section (RAL-78): the operator's file's text, or
+/// `Err` saying why it couldn't be read, or `None` with no file. The brief degrades and never fails
+/// (RAL-22a), so an unreadable or malformed file falls back to the built-in list, with a note.
+pub fn brief_projects(
+    file: Option<Result<String, String>>,
+) -> (Vec<crate::web::Project>, Option<String>) {
+    let builtin = || serde_json::from_str(crate::web::DEFAULT_PROJECTS).unwrap_or_default();
+    match file {
+        None => (builtin(), None),
+        Some(Err(why)) => (
+            builtin(),
+            Some(format!("{why}; using the built-in project list")),
+        ),
+        Some(Ok(text)) => match serde_json::from_str(&text) {
+            Ok(projects) => (projects, None),
+            Err(error) => (
+                builtin(),
+                Some(format!(
+                    "the projects list isn't a list of projects ({error}); using the built-in one"
+                )),
+            ),
+        },
+    }
+}
+
+/// `text` quoted for a POSIX shell, so a suggested command can be pasted as it is.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// The rally a watchman starts from (RAL-78). With a rally open: the rally, and each session on
 /// Muster's roster marked in it or not. With none open: the rally the roster suggests. A session's
 /// project comes only from the project list's `sessions` (its Muster project or nickname), never
@@ -307,10 +337,10 @@ pub fn rally_section(
         .collect();
     let mut command = String::from("rally open-rally --name \"<name>\"");
     for prefix in &prefixes {
-        command.push_str(&format!(" --project {prefix}"));
+        command.push_str(&format!(" --project {}", shell_quote(prefix)));
     }
     for team in &teams {
-        command.push_str(&format!(" --team {team}"));
+        command.push_str(&format!(" --team {}", shell_quote(team)));
     }
     value["open"] = Value::Null;
     value["suggested"] = json!({
@@ -394,10 +424,22 @@ mod tests {
         );
         assert_eq!(
             suggested["command"],
-            "rally open-rally --name \"<name>\" --project MUS --project RAL --project MAR \
-             --team robust-warbler --team plush-tortoise --team wise-leopard --team cobalt-glen"
+            "rally open-rally --name \"<name>\" --project 'MUS' --project 'RAL' --project 'MAR' \
+             --team 'robust-warbler' --team 'plush-tortoise' --team 'wise-leopard' --team 'cobalt-glen'"
         );
         assert_eq!(out["sessions"][1]["working_on"], "RAL-78");
+    }
+
+    #[test]
+    fn a_missing_or_malformed_projects_list_falls_back_and_says_so() {
+        let (projects, note) = brief_projects(None);
+        assert!(projects.iter().any(|p| p.prefix == "MAR") && note.is_none());
+        let (projects, note) = brief_projects(Some(Ok("not json".into())));
+        assert!(projects.iter().any(|p| p.prefix == "RAL"));
+        assert!(note.unwrap().contains("built-in"));
+        let (_, note) = brief_projects(Some(Err("can't read p.json".into())));
+        assert!(note.unwrap().starts_with("can't read p.json"));
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
     }
 
     #[test]
