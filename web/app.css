@@ -127,3 +127,11 @@ ul.events li.incident > .label:first-child { color: var(--bad); border-color: va
 .past-form { margin-top: 1rem; }
 .past-form input { width: 7em; margin: 0 0.25rem; font: inherit; }
 .past-form button { font: inherit; }
+
+/* How each fact is known, said once for the page (RAL-93), so a column's label can sit in its header. */
+#provenance { margin-top: 32px; font-size: 13px; }
+#provenance h2 { font-size: 14px; margin: 0 0 6px; }
+.provenance-legend { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 0; }
+.provenance-legend div { display: flex; gap: 6px; align-items: baseline; }
+.provenance-legend dd { margin: 0; }
+th .label { font-weight: normal; margin-left: 2px; }
