@@ -1184,10 +1184,22 @@ fn an_open_section_stays_open_across_a_refresh() {
     let viewer = start_after(projects, Some(FAKE_GH), 60, |db, dir| {
         let out = on(db, dir)
             .args(["--credential", "a1", "--as", "author"])
-            .args(["open-rally", "--name", "test", "--project", "RAL", "--team", "rally"])
+            .args([
+                "open-rally",
+                "--name",
+                "test",
+                "--project",
+                "RAL",
+                "--team",
+                "rally",
+            ])
             .output()
             .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     });
     let probe = r##"(async () => {
       // The roadmaps are read in the background, so wait for a section to appear.
@@ -1207,6 +1219,9 @@ fn an_open_section_stays_open_across_a_refresh() {
     let seen = in_browser(&viewer, &chrome, Some(probe));
     let probe = &seen["probe"];
     assert_eq!(probe["found"], true, "{seen}");
-    assert_eq!(probe["redrawn"], true, "the refresh should redraw the section: {probe}");
+    assert_eq!(
+        probe["redrawn"], true,
+        "the refresh should redraw the section: {probe}"
+    );
     assert_eq!(probe["open"], true, "the open section closed: {probe}");
 }
