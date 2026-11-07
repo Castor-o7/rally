@@ -37,6 +37,11 @@ function sessionInRally(rally, session) {
   return [session.nickname, session.project].some((n) => n && teams.includes(String(n).trim().toLowerCase()));
 }
 
+// "1 session", "2 sessions": a count with its noun in the right number.
+function counted(n, one, many) {
+  return n + " " + (n === 1 ? one : many);
+}
+
 // `text` is a string, or an array of strings and nodes (such as `ago`'s), appended in order.
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -239,7 +244,8 @@ function rallyLine(rally, otherStories) {
     box.append(el("p", "muted", rally.rule));
   }
   if (otherStories > 0) {
-    box.append(el("p", "muted", otherStories + " earlier or other stories are kept in the ledger, not shown here."));
+    box.append(el("p", "muted", counted(otherStories, "earlier or other story is", "earlier or other stories are")
+      + " kept in the ledger, not shown here."));
   }
   const past = rally.past || [];
   if (past.length) {
@@ -619,7 +625,10 @@ function renderTeams(status, now) {
       live.append(el("p", "warning figure", "⚠ This roster is out of date"));
     }
     const hidden = roster.sessions.length - rows.length;
-    if (hidden > 0) live.append(el("p", "muted figure", hidden + " other sessions on the roster aren't in this rally."));
+    if (hidden > 0) {
+      live.append(el("p", "muted figure", counted(hidden, "other session on the roster isn't", "other sessions on the roster aren't")
+        + " in this rally."));
+    }
     live.append(el("p", "muted figure", ["Read ", ago(roster.read_at_ms, now),
       ". “wake” is a best guess, and none of this proves a session is alive."]));
   } else {
