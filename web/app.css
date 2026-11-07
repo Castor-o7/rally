@@ -108,6 +108,11 @@ code.path { font: 12px ui-monospace, monospace; }
 /* Recorded text can hold direction characters, so keep them from reordering what's around them. */
 td, .section-name, .source { unicode-bidi: isolate; }
 .label { display: inline-block; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--text-2); font-size: 11px; }
+/* A rally's events (RAL-104): an incident's label in the warning colour, so it stands out from a notice. */
+ul.events { list-style: none; padding: 0; margin: 0; }
+ul.events li { padding: 6px 0; border-top: 1px solid var(--line); }
+ul.events li p { margin: 2px 0 0; }
+ul.events li.incident > .label:first-child { color: var(--bad); border-color: var(--bad); }
 .group { margin-top: 16px; }
 .group:first-child { margin-top: 0; }
 

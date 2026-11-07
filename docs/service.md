@@ -29,6 +29,7 @@ Records that end the rollback window, because a binary older than the one named 
 | `amend` (a submit with `"amend": true`) | `6b7227f` | RAL-71 |
 | `read-merged` | not yet | RAL-85 |
 | `rally-session` | not yet | RAL-110 |
+| `event` | not yet | RAL-104 |
 
 Before rolling back to a binary older than the story that added one, check that none has been written.
 

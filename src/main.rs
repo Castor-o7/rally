@@ -603,6 +603,20 @@ enum Command {
         #[arg(long)]
         note: String,
     },
+    /// Record a major event of the open rally (RAL-104), such as an incident that took the muster's
+    /// time: a one-line headline, how serious it was, and what backs it. Declared, and shown in the
+    /// viewer's report box, newest first.
+    Event {
+        /// One line saying what happened.
+        #[arg(long)]
+        headline: String,
+        /// notice or incident.
+        #[arg(long, value_parser = ["notice", "incident"])]
+        severity: String,
+        /// What backs it: a record number, pull request, commit or file. Repeat for each.
+        #[arg(long = "backing")]
+        backing: Vec<String>,
+    },
     /// List the rallies, newest first, and the one that's open (RAL-76).
     Rallies {
         /// Show them as they stood after this record.
@@ -3425,6 +3439,17 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             Kind::Declared,
             json!({"change": "close_rally", "note": note}),
         ),
+        Command::Event {
+            headline,
+            severity,
+            backing,
+        } => {
+            let mut body = json!({"change": "event", "headline": headline, "severity": severity});
+            if !backing.is_empty() {
+                body["backing"] = json!(backing);
+            }
+            (Kind::Declared, body)
+        }
         Command::EndStanding { standing, note } => (
             Kind::Declared,
             json!({"change": "end_standing", "standing": standing, "note": note}),

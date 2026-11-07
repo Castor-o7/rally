@@ -345,7 +345,27 @@ pub enum Change {
         succeeds: Option<String>,
         note: String,
     },
+    /// Anyone records a major event of the open rally (RAL-104): a one-line headline, how serious
+    /// it is, and what backs it (record numbers, pull requests, commits or files), if anything.
+    /// Declared, like any other claim. It belongs to the open rally, and stays with it once closed.
+    Event {
+        headline: String,
+        severity: Severity,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        backing: Vec<String>,
+    },
 }
+
+/// How serious a rally's event is (RAL-104).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Notice,
+    Incident,
+}
+
+/// The most things one event can name as backing it (RAL-104).
+pub const MAX_EVENT_BACKING: usize = 8;
 
 impl Change {
     /// The story this change is about. A team's state may only mention one.
@@ -360,6 +380,7 @@ impl Change {
             | Self::OpenRally { .. }
             | Self::CloseRally { .. }
             | Self::RallySession { .. }
+            | Self::Event { .. }
             | Self::Shelve { .. }
             | Self::OperatorAway { .. }
             | Self::Designate { .. }
@@ -752,6 +773,9 @@ pub struct Rally {
     pub teams: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closed: Option<Closure>,
+    /// Its major events, oldest first (RAL-104).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<RallyEvent>,
     /// Who recorded under which ledger team while the rally was open (RAL-108): for each team,
     /// each declared name (folded) with its first and last record and the pairing credentials it
     /// used. It's the evidence that ties a restarted session's new nickname to the listed one it
@@ -775,6 +799,21 @@ pub struct RallySessionEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub succeeds: Option<String>,
     pub note: String,
+}
+
+/// A major event of a rally, as someone declared it (RAL-104).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RallyEvent {
+    pub seq: u64,
+    pub kind: Kind,
+    pub source: Source,
+    pub at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backfilled: Option<Backfill>,
+    pub headline: String,
+    pub severity: Severity,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub backing: Vec<String>,
 }
 
 /// One declared name's records under one team during a rally (RAL-108).
@@ -1947,6 +1986,7 @@ impl Ledger {
                     projects,
                     teams,
                     closed: None,
+                    events: Vec::new(),
                     recorded_as: BTreeMap::new(),
                     sessions: Vec::new(),
                 });
@@ -1993,6 +2033,30 @@ impl Ledger {
                     remove,
                     succeeds: succeeds.as_deref().map(name_key),
                     note,
+                });
+                self.last_seq = seq;
+                return Ok(());
+            }
+            Change::Event {
+                headline,
+                severity,
+                backing,
+            } => {
+                require_kind(record, Kind::Declared)?;
+                let open = self
+                    .rallies
+                    .last_mut()
+                    .filter(|rally| rally.closed.is_none())
+                    .ok_or(LedgerError::NoRallyOpen)?;
+                open.events.push(RallyEvent {
+                    seq,
+                    kind: record.kind(),
+                    source: record.source().clone(),
+                    at_ms: record.at_ms(),
+                    backfilled: backfill,
+                    headline,
+                    severity,
+                    backing,
                 });
                 self.last_seq = seq;
                 return Ok(());
@@ -2270,6 +2334,7 @@ fn transition(
         | Change::OpenRally { .. }
         | Change::CloseRally { .. }
         | Change::RallySession { .. }
+        | Change::Event { .. }
         | Change::Shelve { .. }
         | Change::OperatorAway { .. }
         | Change::Designate { .. }
@@ -2872,6 +2937,7 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
             | Change::OpenRally { .. }
             | Change::CloseRally { .. }
             | Change::RallySession { .. }
+            | Change::Event { .. }
             | Change::Shelve { .. }
             | Change::OperatorAway { .. }
             | Change::Designate { .. }
@@ -2985,6 +3051,27 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
                 }
             }
             &[("session", session), ("note", note)]
+        }
+        Change::Event {
+            headline, backing, ..
+        } => {
+            // One line each, so a headline or backing can't pass for more than one.
+            let line = |text: &str| !text.chars().any(char::is_control);
+            if !line(headline) {
+                return Err(LedgerError::ControlCharacter("headline"));
+            }
+            if backing.len() > MAX_EVENT_BACKING {
+                return Err(LedgerError::InvalidChange(format!(
+                    "an event names at most {MAX_EVENT_BACKING} things backing it"
+                )));
+            }
+            if backing.iter().any(|b| b.trim().is_empty()) {
+                return Err(LedgerError::EmptyField("backing"));
+            }
+            if !backing.iter().all(|b| line(b)) {
+                return Err(LedgerError::ControlCharacter("backing"));
+            }
+            &[("headline", headline)]
         }
         Change::OpenRally {
             name,
@@ -3160,6 +3247,12 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
         | Change::CloseRally { note }
         | Change::RequestRead { note, .. }
         | Change::WithdrawRead { note, .. } => text.push(("note", note)),
+        Change::Event {
+            headline, backing, ..
+        } => {
+            text.push(("title", headline));
+            text.extend(backing.iter().map(|b| ("evidence", b.as_str())));
+        }
         Change::OpenRally { name, teams, .. } => {
             text.push(("note", name));
             text.extend(teams.iter().map(|team| ("team", team.as_str())));
@@ -3968,6 +4061,80 @@ mod tests {
             Err(LedgerError::NoRallyOpen)
         );
         ledger.check(4, &rec(Kind::Declared, open)).unwrap();
+    }
+
+    #[test]
+    fn a_rallys_events_are_declared_belong_to_it_and_stay_with_it() {
+        let rec = |kind: Kind, body: serde_json::Value| {
+            let source = crate::record::Source {
+                credential: "a1".into(),
+                declared_name: (kind != Kind::Observed).then(|| "r".into()),
+            };
+            Record::new(kind, source, 1_000, body).unwrap()
+        };
+        let event = |headline: &str| {
+            json!({"change": "event", "headline": headline, "severity": "incident",
+                   "backing": ["record 1", "Castor-o7/rally#170"]})
+        };
+        let mut ledger = Ledger::default();
+        // No rally is open, so there's nothing for it to belong to.
+        assert_eq!(
+            ledger.check(1, &rec(Kind::Declared, event("x"))),
+            Err(LedgerError::NoRallyOpen)
+        );
+        let open = json!({"change": "open_rally", "name": "first", "projects": ["RAL"]});
+        ledger.apply(1, &rec(Kind::Declared, open.clone())).unwrap();
+        // One line, with its severity, and at most a few backings, none blank; declared only.
+        for body in [
+            event(" "),
+            event("two\nlines"),
+            json!({"change": "event", "headline": "x", "severity": "dire"}),
+            json!({"change": "event", "headline": "x"}),
+            json!({"change": "event", "headline": "x", "severity": "notice", "backing": [" "]}),
+            json!({"change": "event", "headline": "x", "severity": "notice", "backing": ["a\nb"]}),
+            json!({"change": "event", "headline": "x", "severity": "notice",
+                   "backing": vec!["r"; MAX_EVENT_BACKING + 1]}),
+            json!({"change": "event", "headline": "x".repeat(MAX_TITLE_CHARS + 1),
+                   "severity": "notice"}),
+        ] {
+            assert!(
+                ledger.check(2, &rec(Kind::Declared, body.clone())).is_err(),
+                "{body}"
+            );
+        }
+        assert!(matches!(
+            ledger.check(2, &rec(Kind::Verified, event("x"))),
+            Err(LedgerError::WrongKind { .. })
+        ));
+        // An event with nothing backing it is still an event: it's declared, and says so.
+        let bare = json!({"change": "event", "headline": "the tmpfs filled", "severity": "notice"});
+        ledger.check(2, &rec(Kind::Declared, bare.clone())).unwrap();
+        ledger.apply(2, &rec(Kind::Declared, bare)).unwrap();
+        ledger
+            .apply(3, &rec(Kind::Declared, event("a sha that didn't exist")))
+            .unwrap();
+        let events = &ledger.open_rally().unwrap().events;
+        assert_eq!(events.len(), 2);
+        assert_eq!((events[0].seq, events[0].severity), (2, Severity::Notice));
+        assert!(events[0].backing.is_empty());
+        assert_eq!(events[0].kind, Kind::Declared);
+        assert_eq!(events[1].backing, ["record 1", "Castor-o7/rally#170"]);
+
+        // Closed, the rally keeps its events, and the next rally starts with none.
+        let close = json!({"change": "close_rally", "note": "done"});
+        ledger.apply(4, &rec(Kind::Declared, close)).unwrap();
+        assert_eq!(
+            ledger.check(5, &rec(Kind::Declared, event("late"))),
+            Err(LedgerError::NoRallyOpen)
+        );
+        ledger.apply(5, &rec(Kind::Declared, open)).unwrap();
+        assert!(ledger.open_rally().unwrap().events.is_empty());
+        ledger
+            .apply(6, &rec(Kind::Declared, event("second's")))
+            .unwrap();
+        assert_eq!(ledger.rallies()[0].events.len(), 2);
+        assert_eq!(ledger.rallies()[1].events.len(), 1);
+        assert_eq!(ledger.rallies()[1].events[0].headline, "second's");
     }
 
     #[test]
