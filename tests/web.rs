@@ -1465,6 +1465,136 @@ fn every_bar_is_coloured_by_what_it_measures() {
     }
 }
 
+/// RAL-94, in the browser: the watchman's writeup is drawn from its markdown, with headings, lists
+/// (nested too), emphasis, code, quotes and tables, built from text nodes only. A `<script>` or an
+/// `<img onerror>` in it stays inert text, and so does a `javascript:` link; an https link is a
+/// link. Before RAL-94 the whole writeup was one block of preformatted text.
+#[cfg(unix)]
+#[test]
+fn the_writeup_s_markdown_is_drawn_and_its_html_stays_text() {
+    let Some(chrome) = browser() else { return };
+    let folder = std::cell::RefCell::new(None);
+    let writeup = r#"# Rally 0x5
+
+The night went **mostly** well, with *one* slip and `rally gate`.
+
+## What happened
+- first item
+  - nested, with [the PR](https://example.com/pr/1)
+- second, with [a bad link](javascript:window.__pwned=4)
+1. one
+2. two
+
+> a quote
+
+```
+<script>window.__pwned = 1</script>
+```
+
+| Team | Stories |
+|---|---|
+| rally | 3 |
+
+<script>window.__pwned = 2</script>
+<img src=x onerror="window.__pwned = 3">
+"#;
+    // The writeup is read alongside Rally's own entry in the project list.
+    let projects = r#"[{"name": "Rally", "prefix": "RAL", "repo": "Castor-o7/rally",
+        "path": "docs/roadmap.md", "tick_meaning": "Verified by the watchman"}]"#;
+    let viewer = start_after_with(
+        projects,
+        Some(FAKE_GH),
+        60,
+        |_, dir| {
+            let writeups = dir.join("writeups");
+            std::fs::create_dir(&writeups).unwrap();
+            std::fs::write(writeups.join("2026-11-06.md"), writeup).unwrap();
+            *folder.borrow_mut() = Some(writeups);
+        },
+        |_| {
+            let writeups = folder.borrow().clone().unwrap();
+            vec![
+                "--watchman-summaries".into(),
+                writeups.display().to_string(),
+            ]
+        },
+    );
+    let probe = r##"(async () => {
+      for (let i = 0; i < 40 && !document.querySelector("#muster .summary"); i++) {
+        await refresh();
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      const writeup = document.querySelector("#muster .summary");
+      if (!writeup) return { found: false };
+      // Long enough for an image's onerror to have fired, had one been made.
+      await new Promise((r) => setTimeout(r, 500));
+      const texts = (selector) => [...writeup.querySelectorAll(selector)].map((n) => n.textContent);
+      return {
+        found: true,
+        headings: [...writeup.querySelectorAll("h4, h5, h6")].map((n) => n.tagName + " " + n.textContent),
+        strong: texts("strong"),
+        em: texts("em"),
+        code: texts("p code"),
+        nested: writeup.querySelector("ul > li > ul > li")?.textContent ?? null,
+        ordered: texts("ol > li"),
+        quote: texts("blockquote"),
+        fenced: texts("pre code"),
+        header: texts("th"),
+        links: [...writeup.querySelectorAll("a")].map((a) => ({ href: a.href, rel: a.rel, text: a.textContent })),
+        inert: texts(".md-link-inert"),
+        elements: [...writeup.querySelectorAll("script, img, iframe, object, embed")].length,
+        handlers: [...writeup.querySelectorAll("*")]
+          .flatMap((n) => [...n.attributes].map((a) => a.name)).filter((name) => name.startsWith("on")),
+        pwned: window.__pwned ?? null,
+        text: writeup.textContent,
+      };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    assert_eq!(probe["found"], true, "{seen}");
+    assert_eq!(
+        probe["headings"],
+        json!(["H4 Rally 0x5", "H5 What happened"]),
+        "{probe}"
+    );
+    assert_eq!(probe["strong"], json!(["mostly"]), "{probe}");
+    assert_eq!(probe["em"], json!(["one"]), "{probe}");
+    assert_eq!(probe["code"], json!(["rally gate"]), "{probe}");
+    assert_eq!(probe["nested"], "nested, with the PR", "{probe}");
+    assert_eq!(probe["ordered"], json!(["one", "two"]), "{probe}");
+    assert_eq!(probe["quote"], json!(["a quote"]), "{probe}");
+    assert_eq!(
+        probe["fenced"],
+        json!(["<script>window.__pwned = 1</script>"]),
+        "{probe}"
+    );
+    assert_eq!(probe["header"], json!(["Team", "Stories"]), "{probe}");
+    // Only the https link is a link, and it carries no referrer or handle back to the viewer.
+    assert_eq!(
+        probe["links"],
+        json!([{"href": "https://example.com/pr/1", "rel": "noopener noreferrer", "text": "the PR"}]),
+        "{probe}"
+    );
+    assert_eq!(
+        probe["inert"],
+        json!(["a bad link (javascript:window.__pwned=4)"]),
+        "{probe}"
+    );
+    // Nothing in the writeup became an element that runs, or a handler, and nothing ran.
+    assert_eq!(probe["elements"], 0, "{probe}");
+    assert_eq!(probe["handlers"], json!([]), "{probe}");
+    assert_eq!(probe["pwned"], Value::Null, "{probe}");
+    let text = probe["text"].as_str().unwrap();
+    assert!(
+        text.contains("<script>window.__pwned = 2</script>"),
+        "{probe}"
+    );
+    assert!(
+        text.contains(r#"<img src=x onerror="window.__pwned = 3">"#),
+        "{probe}"
+    );
+}
+
 /// RAL-96: the 30-second refresh redraws every section, and a section someone opened stays open.
 #[cfg(unix)]
 #[test]

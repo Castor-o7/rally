@@ -126,8 +126,22 @@ ul.events li.incident > .label:first-child { color: var(--bad); border-color: va
 .stories li { padding: 4px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; unicode-bidi: isolate; }
 .stories li:last-child { border-bottom: 0; }
 .story-id { display: inline-block; min-width: 64px; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.summary { margin: 8px 0 0; padding: 12px; max-height: 480px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
-  unicode-bidi: isolate; background: var(--track); border-radius: 6px; font: 13px/1.5 ui-monospace, monospace; }
+.summary { margin: 8px 0 0; padding: 12px; max-height: 480px; overflow: auto; overflow-wrap: anywhere;
+  unicode-bidi: isolate; background: var(--track); border-radius: 6px; font-size: 14px; }
+/* A writeup's markdown, drawn as text nodes (RAL-94). */
+.writeup > :first-child { margin-top: 0; }
+.writeup p, .writeup ul, .writeup ol, .writeup blockquote, .writeup pre, .writeup .table-wrap { margin: 8px 0 0; }
+.writeup ul, .writeup ol { padding-left: 1.4em; }
+.writeup li > ul, .writeup li > ol { margin: 2px 0 0; }
+.writeup .md-heading { margin: 16px 0 0; font-size: 15px; }
+.writeup h4.md-heading { font-size: 16px; }
+.writeup blockquote { padding-left: 10px; border-left: 3px solid var(--line); color: var(--text-2); }
+.writeup hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0 0; }
+.writeup code { font: 12.5px ui-monospace, monospace; padding: 0 3px; background: var(--surface); border-radius: 3px; }
+.writeup pre.md-code { padding: 8px; overflow-x: auto; background: var(--surface); border-radius: 4px; }
+.writeup pre.md-code code { padding: 0; white-space: pre; }
+.writeup a { color: var(--s-ready); }
+.writeup table { font-size: 13px; }
 .past-form { margin-top: 1rem; }
 .past-form input { width: 7em; margin: 0 0.25rem; font: inherit; }
 .past-form button { font: inherit; }
