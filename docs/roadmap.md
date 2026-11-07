@@ -345,6 +345,16 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   builds of the same commit, which aren't byte-identical. Done when: a build from a clean checkout embeds its commit
   and `rally view` compares commits, falling back to the binary's SHA-256 without one; the restart note names both
   builds; and a test covers a rebuild of the same commit not restarting.
+- [ ] **RAL-108: A restarted session stays in the rally under its new nickname.** Requested by the operator on
+  2026-11-06, keeping the nicknames: the watchman restarted as mellow-weevil and dropped off rally 0x5's board until
+  the rally was closed and reopened (913, 914). The operator ruled who is in a rally: "all the agents started by me,
+  the current operator, that are open and available at the start of the rally; unless otherwise specified". Done
+  when: while a rally is open, the ledger keeps each team's declared names with their first and last records and
+  credentials. A new nickname joins only as a listed one's successor: the listed one is off the roster, and the new
+  one recorded for the same team after it, with the same credential. The viewer, the brief and the page use this, and
+  the page names each successor beside the one it succeeds. The listed nicknames are unchanged, and there's no new
+  record kind. Tests show the restarted watchman rejoining, and a later unrelated session recording for `rally` not
+  joining.
 - [ ] **RAL-106: An also-read answers the open read request it covers.** From RAL-100 on 2026-11-06: the request
   for a read at 4e145b1 (961) stayed open after the watchman added 4e145b1 as also read to the verification in force,
   since a story already Verified can't be verified again, and the merge then flagged it `merged_before_read`, saying
