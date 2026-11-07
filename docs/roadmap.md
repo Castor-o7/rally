@@ -548,6 +548,13 @@ word.
   `commit_differs` counts it and RAL-67's also-reads; `verified_commits` lists it; it's dropped with the
   verification; `rally verifications` labels it by the designation, gated by nothing; with tests and
   docs/evidence.md.
+- [ ] **RAL-107: The service's socket test runs without `lsof`.** From §15.1 of the DiscoSim rally's issues log:
+  `nothing_listens_but_the_door` failed outright on Murph, which has no `lsof`, and a plain `cargo test` then stopped
+  before tests/web.rs, so local runs skipped the browser tests unnoticed. Agreed with mellow-weevil. Done when: the
+  test lists the service's internet sockets with `lsof` and, where there's `/proc`, from `/proc/<pid>/fd` and
+  `/proc/<pid>/net/{tcp,udp,raw}{,6}`, and checks each reader's list; without `lsof` it uses `/proc` alone; with
+  neither it's skipped with a printed reason; `RALLY_TEST_LSOF_REQUIRED`, set in CI, fails it when `lsof` is
+  missing; with a test of the `/proc` address parsing, and README.md.
 - [ ] **RAL-102: The digest says when a merge leaves the base red.** From the DiscoSim rally's issues log (§10.3,
   §10.4): Muster's main was red for about a day and Rally's 11c0579 until a team noticed. Picked by mellow-weevil.
   Done when: for each merge the ledger records, the watchman's own included, a digest pass reads the base's CI on
