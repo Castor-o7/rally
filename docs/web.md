@@ -15,7 +15,8 @@ The first time, give it the settings `rally web` takes, for example
 `rally view --summaries DSM=~/Documents/GitHub/Discoteque/docs/muster --watchman-summaries ~/src/rally/docs/muster/watchman`.
 They're saved in `view-settings.json` beside the pairing (`~/.config/rally/`), so after that `rally view` alone is
 enough, and a setting given again replaces the saved one. `rally view` restarts the viewer by itself when it runs
-another build of Rally than the one you ran, so an update shows up the next time you open it, or when it runs
+another build of Rally than the one you ran (by the commit it was built from, so a rebuild of the same commit
+doesn't count; a build from uncommitted changes is told apart by its bytes, RAL-100), so an update shows up the next time you open it, or when it runs
 other settings. The viewer keeps running after the command ends. Its output is in `view.log`, and what's
 running is in `view-run.json`, both in the same folder. The viewer reads with the read-only pairing,
 `viewer.json` there, when it exists, and none of these files ever takes that name. A viewer started by hand is opened as it is until

@@ -103,21 +103,36 @@ pub struct Running {
     pub settings: Settings,
 }
 
-/// Why a running viewer is restarted, if it is.
-pub fn why_restart(running: &Running, build: &str, settings: &Settings) -> Option<&'static str> {
+/// Why a running viewer is restarted, if it is: another build, naming both, or other settings.
+pub fn why_restart(running: &Running, build: &str, settings: &Settings) -> Option<String> {
     if running.build != build {
-        Some("it runs another build")
+        Some(format!(
+            "it runs another build ({}, and this is {})",
+            short(&running.build),
+            short(build)
+        ))
     } else if running.settings != *settings {
-        Some("its settings changed")
+        Some("its settings changed".to_owned())
     } else {
         None
     }
 }
 
-/// A file's SHA-256, as hex: the build a binary is.
-pub fn build_of(path: &Path) -> Result<String, String> {
+fn short(build: &str) -> String {
+    match build.split_once(':') {
+        Some((kind, id)) => format!("{kind} {}", &id[..id.len().min(12)]),
+        None => build.chars().take(12).collect(),
+    }
+}
+
+/// Which build a binary is (RAL-100): the commit it was built from when that was a clean checkout,
+/// since two builds of one commit aren't byte-identical, and otherwise the file's SHA-256.
+pub fn build_id(commit: &str, path: &Path) -> Result<String, String> {
+    if commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(format!("commit:{commit}"));
+    }
     let bytes = std::fs::read(path).map_err(|e| format!("can't read {}: {e}", path.display()))?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
 }
 
 pub fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<Option<T>, String> {
@@ -337,6 +352,30 @@ mod tests {
         };
         assert_eq!(why_restart(&running, "a", &settings), None);
         assert!(why_restart(&running, "b", &settings).is_some());
+        let commit = "c".repeat(40);
+        let id = build_id(&commit, Path::new("/nonexistent")).unwrap();
+        assert_eq!(id, format!("commit:{commit}"), "a commit needs no file");
+        let rebuilt = Running {
+            build: id.clone(),
+            ..running.clone()
+        };
+        assert_eq!(
+            why_restart(&rebuilt, &id, &settings),
+            None,
+            "same commit, other bytes"
+        );
+        let why = why_restart(&rebuilt, &format!("commit:{}", "d".repeat(40)), &settings).unwrap();
+        assert!(
+            why.contains("commit cccccccccccc") && why.contains("commit dddddddddddd"),
+            "{why}"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("rally");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(
+            build_id("", &file).unwrap().starts_with("sha256:"),
+            "no commit: the bytes"
+        );
         let other = Settings {
             projects: Some("/p".into()),
             ..settings

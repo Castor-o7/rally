@@ -1849,6 +1849,8 @@ fn digest_pass(
             )?)?),
             Backend::File(store) => Ok(match path {
                 "/v1/handover" => store.handover_report(None)?,
+                // So a due digest can be built straight from the database too (RAL-102).
+                "/v1/waiting" => store.waiting_report(None)?,
                 _ => return Err(format!("{path} isn't read from the database here").into()),
             }),
         }
@@ -1862,21 +1864,17 @@ fn digest_pass(
             }
         }
     };
-    // Every page of the story list, for RAL-31's comparison of merges.
+    // Every page of the story list, for RAL-31's comparison of merges and RAL-102's repositories,
+    // from the service or straight from the database.
     let all_stories = || -> Result<Value, Box<dyn std::error::Error>> {
-        let mut merged = serde_json::Map::new();
-        let mut path = "/v1/stories".to_owned();
-        for _ in 0..DIGEST_PAGES {
-            let page = get(&path)?;
-            if let Some(rows) = page["stories"].as_object() {
-                merged.extend(rows.clone());
-            }
-            match page["next"].as_str() {
-                Some(next) => path = format!("/v1/stories?after={}", encode(next)),
-                None => break,
-            }
-        }
-        Ok(json!({"stories": merged}))
+        let (stories, _) = backend.read_all_as_of(
+            "/v1/stories",
+            None,
+            "stories",
+            DIGEST_PAGES,
+            |ledger, page| views::stories(ledger, None, page),
+        )?;
+        Ok(json!({"stories": stories["stories"]}))
     };
     let handover = get("/v1/handover")?;
     let mut watchmen: Vec<Watchman> = handover["watchmen"]
@@ -1943,7 +1941,39 @@ fn digest_pass(
             let mut row = json!({"watchman": watch.name, "how": how});
             // `step` and `sent` start what's kept afresh, so carry when a digest last went (RAL-87).
             let last_sent_ms = kept.last_sent_ms;
-            match rally::digest::step(&mut kept, &recs, watch, times, now_ms) {
+            // RAL-102: each new merge, the watchman's own included, has its CI on the base checked
+            // now and on each pass until it's told. What was told is kept only once it's been sent.
+            let mut stories_read = None;
+            if recs
+                .iter()
+                .any(|r| r.seq > kept.ci_checked_to && r.body["change"] == "merge")
+            {
+                let stories = all_stories()?;
+                rally::digest::take_in_merges(&mut kept, &recs, &stories, now_ms);
+                stories_read = Some(stories);
+            }
+            let before_ci = kept.ci.clone();
+            let ci = rally::digest::check_ci(&mut kept, &web::pr_head, &web::ci_state, now_ms);
+            if !ci.lines.is_empty() {
+                row["ci"] = json!(ci.lines);
+            }
+            let mut decision = rally::digest::step(&mut kept, &recs, watch, times, now_ms);
+            // Something the base's CI said can't wait for the batch, so it goes now.
+            if ci.urgent && !matches!(decision, Decision::Send { .. }) {
+                let newest = recs.last().map_or(kept.head, |r| r.seq).max(kept.head);
+                decision = Decision::Send {
+                    from: kept.head,
+                    to: newest,
+                };
+            }
+            let stories_for =
+                |read: &mut Option<Value>| -> Result<Value, Box<dyn std::error::Error>> {
+                    if read.is_none() {
+                        *read = Some(all_stories()?);
+                    }
+                    Ok(read.clone().unwrap_or_default())
+                };
+            match decision {
                 Decision::Nothing => row["decision"] = json!("nothing new"),
                 Decision::Batching { due_in_ms } => {
                     row["decision"] = json!("batching");
@@ -1952,12 +1982,13 @@ fn digest_pass(
                         // Nothing is kept, so show what the digest would say now.
                         let to = recs.last().map_or(kept.head, |r| r.seq);
                         let waiting = get("/v1/waiting")?;
-                        let stories = all_stories()?;
+                        let stories = stories_for(&mut stories_read)?;
                         let reads = rally::digest::Reads {
                             waiting: &waiting,
                             handover: &handover,
                             stories: &stories,
                             landed: &web::pr_head,
+                            ci: &ci.lines,
                         };
                         row["preview"] = json!(rally::digest::render(
                             kept.head, to, &recs, watch, &reads, now_ms
@@ -1966,12 +1997,13 @@ fn digest_pass(
                 }
                 Decision::Send { from, to } => {
                     let waiting = get("/v1/waiting")?;
-                    let stories = all_stories()?;
+                    let stories = stories_for(&mut stories_read)?;
                     let reads = rally::digest::Reads {
                         waiting: &waiting,
                         handover: &handover,
                         stories: &stories,
                         landed: &web::pr_head,
+                        ci: &ci.lines,
                     };
                     let digest = rally::digest::render(from, to, &recs, watch, &reads, now_ms);
                     if report_only {
@@ -1993,6 +2025,10 @@ fn digest_pass(
                         }
                     }
                 }
+            }
+            // An urgent CI line that wasn't sent is told again next pass (RAL-102).
+            if ci.urgent && row["decision"] != "sent" {
+                kept.ci = before_ci;
             }
             // Only a pass that got this far counts as one (RAL-87); a failed one returns above.
             kept.last_pass_ms = Some(now_ms);
@@ -2468,7 +2504,7 @@ fn view_command(
     }
     let bind = settings.bind().to_owned();
     let exe = std::env::current_exe()?;
-    let build = view::build_of(&exe)?;
+    let build = view::build_id(env!("RALLY_COMMIT"), &exe)?;
     let running: Option<view::Running> =
         view::read_json(&run_path)?.filter(|r: &view::Running| view::alive(r.pid));
     let ours = running.as_ref().map(|r| r.pid);
@@ -2477,14 +2513,15 @@ fn view_command(
         .filter(|pid| Some(*pid) != ours)
         .collect();
     let mut notes: Vec<String> = Vec::new();
-    let reason = if stop {
-        Some("you asked to stop it")
+    let reason: Option<std::borrow::Cow<str>> = if stop {
+        Some("you asked to stop it".into())
     } else if restart {
-        Some("you asked to restart it")
+        Some("you asked to restart it".into())
     } else {
         running
             .as_ref()
             .and_then(|r| view::why_restart(r, &build, &settings))
+            .map(std::borrow::Cow::Owned)
     };
     let mut current = running;
     if let Some(reason) = reason {
