@@ -355,7 +355,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   the page names each successor beside the one it succeeds. The listed nicknames are unchanged, and there's no new
   record kind. Tests show the restarted watchman rejoining, and a later unrelated session recording for `rally` not
   joining.
-- [ ] **RAL-106: An also-read answers the open read request it covers.** From RAL-100 on 2026-11-06: the request
+- [x] **RAL-106: An also-read answers the open read request it covers.** Merged in #173 (56f425f). From RAL-100 on 2026-11-06: the request
   for a read at 4e145b1 (961) stayed open after the watchman added 4e145b1 as also read to the verification in force,
   since a story already Verified can't be verified again, and the merge then flagged it `merged_before_read`, saying
   a merge went past a read that had in fact been done. Done when: adding a commit as also read, or reading a merged
@@ -379,7 +379,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   on 2026-11-06 and confirmed in headless Chrome. Done when: the sign-in page's referrer policy is `same-origin`
   in its header and its `<meta>`, every other page stays `no-referrer`, `Origin: null` is still refused, a test
   asserts both, and `docs/web.md` says why.
-- [ ] **RAL-97: A browser test leaves nothing behind, and checks it.** From 2026-11-06, when every flatpak run of
+- [x] **RAL-97: A browser test leaves nothing behind, and checks it.** Merged in #170 (a388f03). From 2026-11-06, when every flatpak run of
   RAL-84's script left a headless Chrome and a 170 MB profile in $XDG_RUNTIME_DIR until it filled. robust-warbler
   fixed the leak in #167 (RAL-96); this guards it. Done when: the script names every profile it used, on the host
   and in a flatpak sandbox, and every browser test checks after its run that none is left and no process still runs
@@ -564,14 +564,14 @@ word.
   `commit_differs` counts it and RAL-67's also-reads; `verified_commits` lists it; it's dropped with the
   verification; `rally verifications` labels it by the designation, gated by nothing; with tests and
   docs/evidence.md.
-- [ ] **RAL-107: The service's socket test runs without `lsof`.** From §15.1 of the DiscoSim rally's issues log:
+- [x] **RAL-107: The service's socket test runs without `lsof`.** Merged in #175 (1e16ed6). From §15.1 of the DiscoSim rally's issues log:
   `nothing_listens_but_the_door` failed outright on Murph, which has no `lsof`, and a plain `cargo test` then stopped
   before tests/web.rs, so local runs skipped the browser tests unnoticed. Agreed with mellow-weevil. Done when: the
   test lists the service's internet sockets with `lsof` and, where there's `/proc`, from `/proc/<pid>/fd` and
   `/proc/<pid>/net/{tcp,udp,raw}{,6}`, and checks each reader's list; without `lsof` it uses `/proc` alone; with
   neither it's skipped with a printed reason; `RALLY_TEST_LSOF_REQUIRED`, set in CI, fails it when `lsof` is
   missing; with a test of the `/proc` address parsing, and README.md.
-- [ ] **RAL-102: The digest says when a merge leaves the base red.** From the DiscoSim rally's issues log (§10.3,
+- [x] **RAL-102: The digest says when a merge leaves the base red.** Merged in #169 (87cfe08). From the DiscoSim rally's issues log (§10.3,
   §10.4): Muster's main was red for about a day and Rally's 11c0579 until a team noticed. Picked by mellow-weevil.
   Done when: for each merge the ledger records, the watchman's own included, a digest pass reads the base's CI on
   what landed (RAL-31's lookup, then `gh run list --commit`, read-only) and tells a failed run at once with its
@@ -579,7 +579,7 @@ word.
   up on, said, after 2 hours; no run is told after 10 minutes; a check that can't be made says so rather than staying
   silent, and is tried again; a pass says nothing; what's pending is kept with the head; with unit tests, a test of
   the digest with a fake `gh`, and docs/digest.md.
-- [ ] **RAL-103: `rally gate` refuses a head that doesn't contain its base's tip.** From the DiscoSim rally's issues
+- [x] **RAL-103: `rally gate` refuses a head that doesn't contain its base's tip.** Merged in #172 (e1bdc69). From the DiscoSim rally's issues
   log (§10.4): #144 merged at a head without #145, and main went red; #152 merged on 2026-11-06 without #151. Filed
   by mellow-weevil's pick. Done when: `rally gate <base>..<new>` also refuses when `<new>` doesn't contain the
   current tip of `<base>` (after a fetch of `origin/<base>`), saying to merge the base in first; it works without
