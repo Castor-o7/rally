@@ -38,6 +38,16 @@ An ID-shaped word whose prefix the ledger has never used, such as `SHA-256` or `
 files it on the roadmap does, or a part of a multi-part story (§2.1) that the watchman has read. It's listed under
 `allowed`, and isn't refused. The flag is recorded nowhere: say why in the merge or the ledger.
 
+## A stale head (RAL-103)
+
+For a range `<base>..<head>` (or `<base>...<head>`; an empty side is `HEAD`), the gate also refuses if the head
+doesn't contain the base's tip: `git merge-base --is-ancestor <base> <head>` fails. Such a head is a stale branch.
+`git log <base>..<head>` lists only the head's own commits, so its stories can all be verified while moving a
+branch to it, or merging it, drops what landed on the base since. The refusal names both commits, in its first
+line and under `stale` (`base`, `head`, `why`), and `--allow` doesn't lift it: bring the branch up to date with
+its base, by a merge or a rebase, and gate again. An end the checkout can't find is refused too. A range that
+isn't two ends, such as a single commit, has no base and isn't checked.
+
 ## Verified parts (RAL-79)
 
 A story that isn't Verified still passes for each commit that a verified part's read covers (`docs/parts.md`). A
