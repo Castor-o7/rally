@@ -56,7 +56,8 @@ every 30 seconds.
 The page polls every 30 seconds, and between polls every "12s ago" keeps counting on its own, so an age is always
 current (RAL-90). The line under the title says "● Live · updated 3s ago": the dot turns amber once a poll is more
 than 45 seconds late, and the line turns red after 3 minutes, or when the viewer can't be reached. Only a change
-of that state is announced to a screen reader, not each second. Verified is green and In review amber. A commit
+of that state is announced to a screen reader, not each second. Verified is green and In review amber, on every
+bar too (RAL-91, below). A commit
 in evidence written as `owner/repo@<40 hex>` shows as `owner/repo@<first 7>`, with the whole of it in its
 tooltip, and IDs and ages stay on one line. Colours and that shortening can still change when the look is
 agreed with the operator (RAL-26).
@@ -75,6 +76,12 @@ agreed with the operator (RAL-26).
   to the boxes across projects, which name the projects left out.
 - **Verified** comes only from the ledger, and is never worked out from ticks. It reads "not available
   yet" for a project with no stories in the ledger, and it covers only the stories the ledger tracks.
+- **Colours follow meaning** (RAL-91). Each Verified bar, and each Progress from the ledger, is one bar over
+  the stories tracked: Verified green, In review amber and Sent back pink, in the colours of the stories-by-state
+  bar, each segment titled with its count, with a legend under it, and the rest as empty track. Ticks aren't a
+  ledger state, so tick bars have a neutral colour of their own (`--ticked`), which the legend under each tick
+  figure names. Green only ever means Verified, so a ticked box the ledger hasn't verified can't pass for one.
+  A headless Chrome test reads every bar's computed colour in the light and dark schemes.
 - **Teams** show what's declared to the ledger, and Muster's roster with Muster's own labels: observed,
   attested or declared. The roster lists each team's session (RAL-99) with the directory it was started in
   (home folder as `~`, the whole path on hover), its project and branch, its machine, its status (busy or idle,
