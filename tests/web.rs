@@ -747,6 +747,46 @@ fn a_restart_keeps_browsers_signed_in_and_a_new_key_still_signs_them_out() {
     assert_eq!(get(&viewer, "/api/status").0, 401);
 }
 
+/// RAL-80: a kept session older than 14 days signs no one in after a restart, and only the newest
+/// 32 sessions are kept.
+#[test]
+fn old_sessions_end_and_only_the_newest_are_kept() {
+    let mut viewer = start();
+    let second = sign_in(&viewer);
+    let kept = viewer.key_file.with_file_name("web-key.sessions");
+    let mut file: Value = serde_json::from_str(&std::fs::read_to_string(&kept).unwrap()).unwrap();
+    let rows = file["sessions"].as_array_mut().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["made_at_ms"].as_u64().is_some()));
+    // The first sign-in, 15 days ago.
+    let made = rows[0]["made_at_ms"].as_u64().unwrap();
+    rows[0]["made_at_ms"] = json!(made - 15 * 86_400_000);
+    std::fs::write(&kept, file.to_string()).unwrap();
+    restart(&mut viewer);
+    assert_eq!(get(&viewer, "/api/status").0, 401, "15 days old");
+    let newer = format!("Cookie: rally_view={second}\r\n");
+    assert_eq!(
+        bare(&viewer, "GET", "/api/status", &viewer.address, &newer).0,
+        200
+    );
+
+    // 32 more sign-ins push the second out, and the file holds 32.
+    let later: Vec<String> = (0..32).map(|_| sign_in(&viewer)).collect();
+    assert_eq!(
+        bare(&viewer, "GET", "/api/status", &viewer.address, &newer).0,
+        401
+    );
+    for session in [&later[0], &later[31]] {
+        let cookie = format!("Cookie: rally_view={session}\r\n");
+        assert_eq!(
+            bare(&viewer, "GET", "/api/status", &viewer.address, &cookie).0,
+            200
+        );
+    }
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(&kept).unwrap()).unwrap();
+    assert_eq!(file["sessions"].as_array().unwrap().len(), 32);
+}
+
 #[test]
 fn a_request_the_browser_marks_as_from_another_site_is_refused_even_with_the_key() {
     let viewer = start();

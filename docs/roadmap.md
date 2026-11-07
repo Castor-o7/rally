@@ -449,7 +449,8 @@ word.
   sessions were held only in memory, so adding `--summaries`, or any restart or deploy, signed the operator out.
   Chosen over a SIGHUP reload of the projects and summaries, which would spare only config changes, not a deploy or
   a crash. Done when: a session made by signing in holds across a restart of the viewer; the sessions are kept in
-  a file beside the key, readable only by the account, holding only hashes of the sessions and the key; `--new-key`
+  a file beside the key, readable only by the account, holding only hashes of the sessions and the key; a session
+  lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
 - [ ] **RAL-71: Evidence can be corrected.** From the DiscoSim rally's issues log (§2.2, 2026-11-06): DSM-41's

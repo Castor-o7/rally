@@ -1063,9 +1063,8 @@ struct App {
     key_file: std::path::PathBuf,
     /// One-time codes and when each stops working.
     codes: Mutex<Vec<(String, Instant)>>,
-    /// Signed-in sessions, as the SHA-256 of each session and of the key it was made under, kept
-    /// in `sessions_file` too (RAL-80).
-    sessions: Mutex<Vec<(String, String)>>,
+    /// Signed-in sessions, oldest first, kept in `sessions_file` too (RAL-80).
+    sessions: Mutex<Vec<Session>>,
     sessions_file: std::path::PathBuf,
     /// How long a one-time code works.
     code_ttl: Duration,
@@ -1479,8 +1478,33 @@ const COOKIE: &str = "rally_view";
 /// Where `rally web --login` asks for a one-time code.
 pub const CODE_PATH: &str = "/api/code";
 
-/// The most codes and sessions held at once; the oldest go first.
+/// The most codes held at once; the oldest go first.
 const MAX_HELD: usize = 64;
+
+/// The most sessions kept at once; the oldest go first (RAL-80).
+const MAX_SESSIONS: usize = 32;
+
+/// How long a session lasts from its sign-in, across restarts: 14 days (RAL-80).
+const SESSION_MAX_AGE_MS: u64 = 14 * 24 * 60 * 60 * 1000;
+
+/// A signed-in session: the SHA-256 of the session and of the key it was made under, and when it
+/// was made, by the wall clock, so its age holds across restarts (RAL-80).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Session {
+    sha256: String,
+    key_sha256: String,
+    made_at_ms: u64,
+}
+
+impl Session {
+    /// Whether it's still good at `now_ms` under the key whose hash is `key_sha256`. A clock set
+    /// back before it was made doesn't make it last longer.
+    fn live(&self, key_sha256: &str, now_ms: u64) -> bool {
+        self.key_sha256 == key_sha256
+            && now_ms >= self.made_at_ms
+            && now_ms - self.made_at_ms < SESSION_MAX_AGE_MS
+    }
+}
 
 /// The key now in the key file, or `None` if it can't be read.
 fn current_key(app: &App) -> Option<String> {
@@ -1600,12 +1624,16 @@ fn sign_in(app: &App, offered: &str) -> Response {
     };
     {
         let key = sha256_hex(&key);
+        let now = now_ms();
         let mut sessions = app.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.retain(|(_, made_under)| *made_under == key);
-        if sessions.len() >= MAX_HELD {
-            sessions.remove(0);
-        }
-        sessions.push((sha256_hex(&session), key));
+        sessions.retain(|kept| kept.live(&key, now));
+        sessions.push(Session {
+            sha256: sha256_hex(&session),
+            key_sha256: key,
+            made_at_ms: now,
+        });
+        let extra = sessions.len().saturating_sub(MAX_SESSIONS);
+        sessions.drain(..extra);
         // Saved under the lock, so two sign-ins can't save out of order. A failed save leaves
         // this session good until the viewer restarts.
         if let Err(error) = save_sessions(&app.sessions_file, &sessions) {
@@ -1637,12 +1665,12 @@ fn signed_in(app: &App, headers: &axum::http::HeaderMap) -> bool {
     let (Some(held), Some(key)) = (cookie_key(headers), current_key(app)) else {
         return false;
     };
-    let (held, key) = (sha256_hex(held), sha256_hex(&key));
+    let (held, key, now) = (sha256_hex(held), sha256_hex(&key), now_ms());
     app.sessions
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .any(|(session, made_under)| *made_under == key && same_key(&held, session))
+        .any(|session| session.live(&key, now) && same_key(&held, &session.sha256))
 }
 
 fn sha256_hex(text: &str) -> String {
@@ -1657,9 +1685,10 @@ pub fn sessions_file(key_file: &std::path::Path) -> std::path::PathBuf {
     key_file.with_file_name(name)
 }
 
-/// The kept sessions made under the key now in `key_file`. Anything unreadable, or made under
-/// another key, as after `--new-key`, is left out, so it signs no one in.
-fn load_sessions(file: &std::path::Path, key_file: &std::path::Path) -> Vec<(String, String)> {
+/// The kept sessions made under the key now in `key_file` and younger than the most a session
+/// lasts, the newest [`MAX_SESSIONS`]. Anything unreadable, older, or made under another key, as
+/// after `--new-key`, is left out, so it signs no one in.
+fn load_sessions(file: &std::path::Path, key_file: &std::path::Path) -> Vec<Session> {
     let Some(key) = std::fs::read_to_string(key_file)
         .ok()
         .map(|text| text.trim().to_owned())
@@ -1678,27 +1707,38 @@ fn load_sessions(file: &std::path::Path, key_file: &std::path::Path) -> Vec<(Str
         );
         return Vec::new();
     };
-    let mut sessions: Vec<(String, String)> = kept["sessions"]
+    let now = now_ms();
+    let mut sessions: Vec<Session> = kept["sessions"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|row| {
-            let session = row["session_sha256"].as_str()?;
-            let made_under = row["key_sha256"].as_str()?;
-            (is_key(session) && made_under == key).then(|| (session.to_owned(), key.clone()))
+            let session = Session {
+                sha256: row["session_sha256"]
+                    .as_str()
+                    .filter(|s| is_key(s))?
+                    .to_owned(),
+                key_sha256: row["key_sha256"].as_str()?.to_owned(),
+                made_at_ms: row["made_at_ms"].as_u64()?,
+            };
+            session.live(&key, now).then_some(session)
         })
         .collect();
-    let extra = sessions.len().saturating_sub(MAX_HELD);
+    sessions.sort_by_key(|session| session.made_at_ms);
+    let extra = sessions.len().saturating_sub(MAX_SESSIONS);
     sessions.drain(..extra);
     sessions
 }
 
 /// Writes the sessions to a private file, replacing the old one whole, so a crash mid-write leaves
 /// the old file or the new one, never part of one.
-fn save_sessions(file: &std::path::Path, sessions: &[(String, String)]) -> Result<(), String> {
+fn save_sessions(file: &std::path::Path, sessions: &[Session]) -> Result<(), String> {
     let rows: Vec<Value> = sessions
         .iter()
-        .map(|(session, key)| json!({"session_sha256": session, "key_sha256": key}))
+        .map(|session| {
+            json!({"session_sha256": session.sha256, "key_sha256": session.key_sha256,
+                   "made_at_ms": session.made_at_ms})
+        })
         .collect();
     let text = serde_json::to_vec(&json!({"sessions": rows})).map_err(|e| e.to_string())?;
     let mut temporary = file.as_os_str().to_os_string();
@@ -1758,6 +1798,23 @@ fn origin_allowed(origin: Option<&HeaderValue>, host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RAL-80: a session lasts 14 days from its sign-in, only under its own key, and a clock set
+    /// back doesn't stretch it.
+    #[test]
+    fn a_session_lasts_its_age_under_its_own_key() {
+        let made = Session {
+            sha256: "a".repeat(64),
+            key_sha256: "k".into(),
+            made_at_ms: 1_000,
+        };
+        assert!(made.live("k", 1_000));
+        assert!(made.live("k", 1_000 + SESSION_MAX_AGE_MS - 1));
+        assert!(!made.live("k", 1_000 + SESSION_MAX_AGE_MS));
+        assert!(!made.live("other", 1_000));
+        assert!(!made.live("k", 999));
+        assert_eq!(SESSION_MAX_AGE_MS, 14 * 86_400_000);
+    }
 
     #[test]
     fn a_past_moment_is_a_record_that_exists() {
