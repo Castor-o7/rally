@@ -1582,16 +1582,21 @@ fn an_open_section_stays_open_across_a_refresh() {
       await refresh();
       const after = [...document.querySelectorAll("details > summary")]
         .find((s) => s.textContent === summary)?.parentElement;
-      return { found: true, summary, redrawn: !before.isConnected, open: Boolean(after && after.open) };
+      // A draw with no refresh around it, as on a hash change, keeps it open too (RAL-89).
+      show(lastStatus, Date.now());
+      return { found: true, summary, kept: before.isConnected && after === before,
+               open: Boolean(after && after.open), openAfterShow: before.open };
     })()"##;
     let seen = in_browser(&viewer, &chrome, Some(probe));
     let probe = &seen["probe"];
     assert_eq!(probe["found"], true, "{seen}");
+    // RAL-89: the refresh patches the section rather than rebuilding it, so it's the same node.
     assert_eq!(
-        probe["redrawn"], true,
-        "the refresh should redraw the section: {probe}"
+        probe["kept"], true,
+        "the refresh replaced the section: {probe}"
     );
     assert_eq!(probe["open"], true, "the open section closed: {probe}");
+    assert_eq!(probe["openAfterShow"], true, "a draw closed it: {probe}");
 }
 
 /// RAL-104: the report box belongs to the open rally. A second rally opened the same day doesn't
@@ -1944,4 +1949,83 @@ fn the_page_fits_a_narrow_window() {
     assert!(probe["tables"].as_u64().unwrap() > 0, "{probe}");
     assert_eq!(probe["sticking"], json!([]), "{probe}");
     assert_eq!(probe["overflow"], false, "{probe}");
+}
+
+/// RAL-89, in the browser: a refresh patches the page rather than rebuilding it. Every node that
+/// hasn't changed is the same node afterwards, so nothing flashes and focus stays put, and text
+/// that's out of date is put right in place.
+#[test]
+fn a_refresh_keeps_every_unchanged_node_and_fixes_what_changed() {
+    let Some(chrome) = browser() else { return };
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let viewer = start_after("[]", None, 60, |db, dir| {
+        let write = |args: &[&str]| {
+            let out = on(db, dir)
+                .args(["--credential", "a1", "--as", "author"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        write(&[
+            "open-rally",
+            "--name",
+            "test",
+            "--project",
+            "RAL",
+            "--team",
+            "rally",
+        ]);
+        write(&["ready", "RAL-1"]);
+        write(&["claim", "RAL-1", "--team", "rally"]);
+        let evidence = format!("Castor-o7/rally@{commit}");
+        write(&[
+            "submit",
+            "RAL-1",
+            "--team",
+            "rally",
+            "--evidence",
+            &evidence,
+            "--not-checkable",
+        ]);
+    });
+    let probe = r##"(async () => {
+      for (let i = 0; i < 100 && !document.querySelector("#ledger table"); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const sections = ["ledger", "roadmaps", "teams", "muster"];
+      const nodes = sections.flatMap((id) => [...document.getElementById(id).querySelectorAll("*")]);
+      // Something on the page now says the wrong thing, as if it had gone out of date.
+      const cell = document.querySelector("#ledger td");
+      const text = [...cell.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue.trim())
+        || cell.firstChild;
+      const truth = text.textContent;
+      text.textContent = "out of date";
+      // A field someone is in keeps its focus and what they typed.
+      const input = document.querySelector("#ledger input");
+      input.focus();
+      input.value = "7";
+      // busyReading() would skip the redraw while a field has focus, so draw directly.
+      show(lastStatus, Date.now());
+      return {
+        nodes: nodes.length,
+        kept: nodes.filter((n) => n.isConnected).length,
+        cellKept: cell.isConnected,
+        fixed: cell.textContent.includes(truth) && !cell.textContent.includes("out of date"),
+        focused: document.activeElement === input,
+        typed: input.value,
+      };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    assert!(probe["nodes"].as_u64().unwrap() > 20, "{seen}");
+    assert_eq!(probe["kept"], probe["nodes"], "a node was rebuilt: {probe}");
+    assert_eq!(probe["cellKept"], true, "{probe}");
+    assert_eq!(probe["fixed"], true, "the stale text stayed: {probe}");
+    assert_eq!(probe["focused"], true, "{probe}");
+    assert_eq!(probe["typed"], "7", "{probe}");
 }
