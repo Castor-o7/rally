@@ -615,6 +615,13 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
+- [ ] **RAL-89: The viewer refreshes without flashing or closing what's open.** From robust-warbler's visual review
+  of the viewer on 2026-11-06, item 1: each poll rebuilt every section with `replaceChildren`. RAL-96 (#167) kept
+  open sections open and skipped the redraw while someone types or selects. Done when: a refresh draws each section
+  into a detached copy and patches the page's own section to match, so every node that hasn't changed is the same
+  node afterwards, and text or attributes that differ are changed in place; a field keeps its focus and what was
+  typed; a section's open state survives a draw with no refresh around it; and headless Chrome tests show each,
+  failing on the page before it. Item 3 (highlight changed rows, ease bars) isn't part of it.
 - [ ] **RAL-111: A browser test checks the viewer at a narrow window.** From mellow-weevil's read of RAL-92: with
   every browser test at 1500 pixels, nothing covered a half screen. Done when: a test can ask `sign-in.mjs` for its
   window with `RALLY_BROWSER_WINDOW` (`width,height`, checked, defaulting to 1500,1000); a headless Chrome test at

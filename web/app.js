@@ -217,8 +217,7 @@ function renderBackup(root, backup, now) {
 }
 
 function renderLedger(ledger, backup, now, untrusted, rally) {
-  const root = document.getElementById("ledger");
-  root.replaceChildren();
+  const root = drawing("ledger");
   renderBackup(root, backup, now);
   if (!ledger.available) {
     root.append(el("p", "", "The ledger isn't available yet."));
@@ -586,8 +585,7 @@ function currentPast() {
 }
 
 function renderRoadmaps(projects, now, rally) {
-  const root = document.getElementById("roadmaps");
-  root.replaceChildren();
+  const root = drawing("roadmaps");
   const shown = projects.filter((p) => p.in_rally !== false);
   if (!shown.length) root.append(el("p", "muted", "No listed project is in this rally."));
   const unlisted = (rallyKnown(rally) && rally.prefixes || []).filter((prefix) => !projects.some((p) => p.prefix === prefix));
@@ -673,8 +671,7 @@ function renderRoadmaps(projects, now, rally) {
 }
 
 function renderTeams(status, now) {
-  const root = document.getElementById("teams");
-  root.replaceChildren();
+  const root = drawing("teams");
   const ledger = status.ledger;
   const teams = Object.entries((ledger.available && ledger.teams) || {})
     .filter(([name]) => teamInRally(status.rally, name));
@@ -844,8 +841,7 @@ function progressPanel(progress, untrusted, now) {
 
 // One project's page (RAL-43). Built only from /api/status, and only for a project the viewer lists.
 function renderProject(status, prefix, now) {
-  const root = document.getElementById("project-page");
-  root.replaceChildren();
+  const root = drawing("project-page");
   const back = el("a", "back", "← All projects");
   back.href = "#/";
   root.append(back);
@@ -936,8 +932,7 @@ function ledgerFigure(part) {
 
 // The end of the overview: totals across projects, then the watchman's writeup of the whole muster.
 function renderMuster(status, now) {
-  const root = document.getElementById("muster");
-  root.replaceChildren();
+  const root = drawing("muster");
   const current = status.projects.filter((p) => p.in_rally !== false);
   const read = current.filter((p) => p.boxes && p.boxes.total > 0);
   const ticked = read.reduce((sum, p) => sum + p.boxes.ticked, 0);
@@ -1010,6 +1005,64 @@ function eventList(events, untrusted, now) {
 
 let lastStatus = null;
 
+// RAL-89: a refresh draws each section into a detached copy, then patches the page's own section to
+// match it, so a node that hasn't changed is the same node afterwards. Nothing that didn't change is
+// rebuilt: no flash, and focus, selection, scroll and what the reader opened stay where they were.
+let drafts = null;
+
+// Where a section's render draws: its detached copy during a patched draw, or the page's own,
+// emptied, otherwise.
+function drawing(id) {
+  if (drafts && drafts[id]) return drafts[id];
+  const live = document.getElementById(id);
+  live.replaceChildren();
+  return live;
+}
+
+function drawPatched(id, render) {
+  const live = document.getElementById(id);
+  const draft = live.cloneNode(false);
+  drafts = { [id]: draft };
+  try {
+    render();
+  } finally {
+    drafts = null;
+  }
+  patchChildren(live, draft);
+}
+
+// The same kind of node: text with text, or an element with the same tag.
+function sameKind(a, b) {
+  return a.nodeType === b.nodeType && (a.nodeType !== Node.ELEMENT_NODE || a.tagName === b.tagName);
+}
+
+function patchChildren(live, fresh) {
+  const wanted = [...fresh.childNodes];
+  wanted.forEach((node, i) => {
+    const have = live.childNodes[i];
+    if (!have) live.append(node);
+    else if (sameKind(have, node)) patchNode(have, node);
+    else live.replaceChild(node, have);
+  });
+  while (live.childNodes.length > wanted.length) live.lastChild.remove();
+}
+
+function patchNode(live, fresh) {
+  if (live.nodeType !== Node.ELEMENT_NODE) {
+    if (live.nodeValue !== fresh.nodeValue) live.nodeValue = fresh.nodeValue;
+    return;
+  }
+  // A section the reader opened or closed stays as they left it (RAL-96).
+  const keep = (name) => live.tagName === "DETAILS" && name === "open";
+  for (const { name } of [...live.attributes]) {
+    if (!fresh.hasAttribute(name) && !keep(name)) live.removeAttribute(name);
+  }
+  for (const { name, value } of [...fresh.attributes]) {
+    if (live.getAttribute(name) !== value && !keep(name)) live.setAttribute(name, value);
+  }
+  patchChildren(live, fresh);
+}
+
 function show(status, now) {
   const match = /^#\/project\/([^/]+)$/.exec(location.hash);
   const pastSeq = currentPast();
@@ -1026,12 +1079,12 @@ function show(status, now) {
   } else if (match) {
     let prefix = "";
     try { prefix = decodeURIComponent(match[1]); } catch (error) { prefix = ""; }
-    renderProject(status, prefix, now);
+    drawPatched("project-page", () => renderProject(status, prefix, now));
   } else {
-    renderLedger(status.ledger, status.backup, now, status.untrusted_text, status.rally);
-    renderRoadmaps(status.projects, now, status.rally);
-    renderTeams(status, now);
-    renderMuster(status, now);
+    drawPatched("ledger", () => renderLedger(status.ledger, status.backup, now, status.untrusted_text, status.rally));
+    drawPatched("roadmaps", () => renderRoadmaps(status.projects, now, status.rally));
+    drawPatched("teams", () => renderTeams(status, now));
+    drawPatched("muster", () => renderMuster(status, now));
   }
 }
 
