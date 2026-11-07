@@ -360,6 +360,19 @@ pub fn progress(prefix: &str, roadmap: &Value, ledger: &Value) -> Value {
             states.insert(state.into(), json!(count + 1));
         }
     }
+    // A roadmap read with no checkboxes, such as DiscoSim's table, has no ticks to count, so its
+    // progress comes from the ledger's states instead (RAL-81): Verified of the stories the ledger
+    // tracks under this prefix. Ticks and Verified mean different things, so it's labelled as the
+    // ledger's, and only stands in where there are no boxes at all.
+    let no_boxes = roadmap_stories.is_some() && roadmap["boxes"]["total"].as_u64() == Some(0);
+    if no_boxes && !tracked.is_empty() {
+        let verified = states.get("verified").and_then(Value::as_u64).unwrap_or(0);
+        let total = tracked.len() as u64;
+        value["from_ledger"] = json!({
+            "kind": "verified", "as_of": ledger["as_of"],
+            "verified": verified, "tracked": total, "percent": verified * 100 / total,
+        });
+    }
     value["states"] = Value::Object(states);
     value["tracked"] = json!(tracked.len());
 
@@ -2011,6 +2024,43 @@ mod tests {
         let damaged = backup_status(Err("torn".into()), 0, 1.0);
         assert_eq!(damaged["overdue"], true);
         assert!(damaged["reason"].as_str().unwrap().contains("torn"));
+    }
+
+    /// RAL-81: a roadmap with no checkboxes takes its progress from the ledger's states; one with
+    /// boxes, or not yet read, or with nothing in the ledger, doesn't.
+    #[test]
+    fn a_roadmap_without_boxes_takes_its_progress_from_the_ledger() {
+        let ledger = json!({
+            "available": true, "as_of": 40,
+            "stories": {
+                "DSM-1": {"state": "verified"}, "DSM-2": {"state": "verified"},
+                "DSM-3": {"state": "in_review"}, "DSM-4": {"state": "claimed"},
+                "RAL-1": {"state": "verified"},
+            },
+            "blockers": [],
+        });
+        let table = "| ID | Story |\n|---|---|\n| DSM-1 | one |\n";
+        let (boxes, _) = parse_roadmap(table);
+        assert_eq!(boxes.total, 0);
+        let roadmap =
+            json!({"boxes": boxes, "stories": parse_stories(table, "DSM"), "read_at_ms": 1});
+        let value = progress("DSM", &roadmap, &ledger);
+        assert_eq!(
+            value["from_ledger"],
+            json!({"kind": "verified", "as_of": 40, "verified": 2, "tracked": 4, "percent": 50})
+        );
+        assert_eq!(value["states"]["in_review"], 1);
+
+        // Boxes, even none ticked, are the roadmap's own progress.
+        let boxed = "- [ ] **DSM-1: one.**\n";
+        let roadmap =
+            json!({"boxes": parse_roadmap(boxed).0, "stories": parse_stories(boxed, "DSM")});
+        assert!(progress("DSM", &roadmap, &ledger)["from_ledger"].is_null());
+        // A roadmap not read yet has no boxes to judge, and a prefix the ledger doesn't track has
+        // nothing to count.
+        assert!(progress("DSM", &json!({}), &ledger)["from_ledger"].is_null());
+        let unread = json!({"boxes": boxes, "stories": [], "read_at_ms": 1});
+        assert!(progress("CAT", &unread, &ledger)["from_ledger"].is_null());
     }
 
     #[test]
