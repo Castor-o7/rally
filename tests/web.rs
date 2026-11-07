@@ -253,6 +253,9 @@ fn the_page_and_its_files_are_served_with_a_strict_policy() {
         assert!(lower.contains("x-content-type-options: nosniff"), "{path}");
         assert!(lower.contains("frame-ancestors 'none'"), "{path}");
         assert!(!lower.contains("access-control-allow"), "{path}");
+        // Never kept by the browser, so a reload always fetches the code the viewer serves now
+        // (RAL-112).
+        assert!(lower.contains("cache-control: no-store"), "{path}");
     }
 }
 
