@@ -106,13 +106,14 @@ again:
   `retry_after_ms`. Nothing waits longer than an hour. A pass that succeeds starts the count again.
 - It **exits** (status 1, the reason on stderr) only on what waiting won't clear: a pairing or `--config` that
   can't be read, no `--db` database, or any other refusal, such as 401 (a token that isn't valid) or 403 (read-only).
-  These are checked before every pass. Bad flags are refused before the loop starts.
+  These are checked before every pass. It also exits if its state file can't be written (below). Bad flags are refused before the loop starts.
 - Without `--every`, one pass, and a failure exits as before.
 
 **The kept heads stay consistent.** Each watchman's head is kept as soon as its own turn in the pass ends, and
 written even when a later watchman's turn fails. So a digest that was sent is never sent again after a failure part
-way through, and one that wasn't sent is still due next pass. A send that succeeds and then a state file that can't
-be written is the one way a digest goes twice: the file is the record of what was sent.
+way through, and one that wasn't sent is still due next pass. If the state file can't be written (a full disk,
+permissions), the loop **exits** rather than retrying: the next pass would reload the old heads and send the same
+digest again, on every retry. Fix the file and start it again.
 
 ## Running it on a1
 

@@ -1834,7 +1834,11 @@ fn digest_pass(
         Ok(kept)
     });
     if !report_only {
-        write_private(state_file, serde_json::to_string_pretty(&state)?.as_bytes())?;
+        // Fatal if it fails: the next pass would reload the old heads and send again (RAL-86).
+        rally::retry::keep_or_exit(
+            state_file,
+            write_private(state_file, serde_json::to_string_pretty(&state)?.as_bytes()),
+        )?;
     }
     if let Some(error) = failed {
         return Err(error);
@@ -1978,9 +1982,14 @@ fn wake_pass(
     report["sender"] = json!(sender.map_or("none: report only", |s| s.name()));
     report["untrusted_text"] = json!(views::UNTRUSTED_TEXT);
     if let Some(parent) = state_file.parent() {
-        std::fs::create_dir_all(parent)?;
+        rally::retry::keep_or_exit(state_file, std::fs::create_dir_all(parent))?;
     }
-    std::fs::write(state_file, serde_json::to_string_pretty(&state)?)?;
+    // Fatal if it fails: the next pass would reload the old times and wake the teams again
+    // (RAL-86).
+    rally::retry::keep_or_exit(
+        state_file,
+        std::fs::write(state_file, serde_json::to_string_pretty(&state)?),
+    )?;
     std::fs::write(
         state_file.with_file_name("wake-status.json"),
         serde_json::to_string_pretty(&report)?,

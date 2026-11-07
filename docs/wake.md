@@ -70,12 +70,14 @@ again:
   `retry_after_ms`. Nothing waits longer than an hour. A pass that succeeds starts the count again.
 - It **exits** (status 1, the reason on stderr) only on what waiting won't clear: a pairing or `--config` that
   can't be read, a `--projects` file that can't be read as a projects list, or any other refusal, such as 401 (a token that isn't valid) or 403 (read-only).
-  These are checked before every pass. Bad flags are refused before the loop starts.
+  These are checked before every pass. It also exits if its state file can't be written (below). Bad flags are refused before the loop starts.
 - Without `--every`, one pass, and a failure exits as before.
 
 A pass that fails on a read writes nothing: every read happens before any digest is sent, and a send that fails is
-reported on the team's row, not as a failed pass. So a team isn't woken twice, or marked woken when it wasn't. The
-one exception is `wake.json` failing to be written after a send, since the file is the record of who was woken.
+reported on the team's row, not as a failed pass. So a team isn't woken twice, or marked woken when it wasn't. If
+`wake.json` can't be written after a send, the loop **exits** rather than retrying, since the next pass would reload
+the old times and wake the same teams again. `wake-status.json`, the last report, is written after it, so failing
+to write it is a failed pass, retried as usual.
 
 ## Limits
 

@@ -55,6 +55,20 @@ impl fmt::Display for Fatal {
 
 impl Error for Fatal {}
 
+/// A state file that couldn't be written is [`Fatal`] (RAL-86): the loop would reload what it last
+/// kept and send the same message again on every retry, so it exits instead.
+pub fn keep_or_exit<T, E: fmt::Display>(
+    path: &std::path::Path,
+    written: Result<T, E>,
+) -> Result<T, Box<dyn Error>> {
+    written.map_err(|error| {
+        Box::new(Fatal(format!(
+            "can't keep the state in {}: {error}; stopping, so nothing already sent is sent again",
+            path.display()
+        ))) as Box<dyn Error>
+    })
+}
+
 /// What a failed pass means for the loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -236,6 +250,34 @@ mod tests {
             4,
             "the fatal error is returned, not logged as a pass"
         );
+    }
+
+    /// The watchman's case: a pass that sends and then can't keep its state exits after that one
+    /// send, rather than retrying from the old state and sending again.
+    #[test]
+    fn a_pass_that_sends_and_cant_keep_its_state_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory where the state file should be, so writing it fails as a full disk would.
+        let state = dir.path().join("digest.json");
+        std::fs::create_dir(&state).unwrap();
+        let sends = RefCell::new(0);
+        let error = run(
+            1,
+            || Ok(()),
+            || {
+                *sends.borrow_mut() += 1;
+                keep_or_exit(&state, std::fs::write(&state, "{}"))?;
+                Ok("sent".into())
+            },
+            |_| {},
+            |_| {},
+        );
+        assert_eq!(*sends.borrow(), 1, "sent once, then stopped");
+        assert!(
+            error.to_string().contains("can't keep the state"),
+            "{error}"
+        );
+        assert_eq!(classify(error.as_ref()), Kind::Fatal);
     }
 
     #[test]
