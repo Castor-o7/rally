@@ -1527,6 +1527,11 @@ async fn status(State(app): State<Arc<App>>) -> Response {
     .into_response()
 }
 
+/// The refusal of a request a browser marks as from another site (RAL-88).
+const CROSS_SITE_REFUSAL: &str = "other sites can't read this page. To sign in, run `rally web \
+     --login` in a terminal and open the address it prints from the terminal, or paste it into the \
+     address bar, not from another page or a browser extension";
+
 async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
     let refused = |status: StatusCode, message: &'static str| (status, message).into_response();
     let host = request
@@ -1542,7 +1547,9 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
     } else if !origin_allowed(request.headers().get(header::ORIGIN), host)
         || !fetched_from_here(request.headers().get("sec-fetch-site"))
     {
-        refused(StatusCode::FORBIDDEN, "other sites can't read this page")
+        // Refused as before; the text also says how to get in (RAL-88, issues log §3.2), since a
+        // link opened from another page or an extension is marked as from another site.
+        refused(StatusCode::FORBIDDEN, CROSS_SITE_REFUSAL)
     } else if *request.method() == Method::POST && request.uri().path() == CODE_PATH {
         mint_code(&app, request.headers())
     } else if *request.method() == Method::POST && request.uri().path() == "/" {

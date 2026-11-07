@@ -299,6 +299,73 @@ fn a_successor_records_its_read_of_the_merged_commit() {
     );
 }
 
+/// RAL-87: `brief` and `stalls` say when a watchman's digest has no pass on record, and stop
+/// saying it once `rally digest` has run. Without a window, nothing is checked.
+#[test]
+fn brief_and_stalls_flag_a_watchman_whose_digest_isnt_running() {
+    let db = Ledger::new();
+    ok(&db, "silken-tanager", &["ready", "RAL-3"]);
+    let state = db.dir.path().join("digest.json");
+    let state = state.to_str().unwrap();
+    let check = [
+        "--digest-quiet-after",
+        "15m",
+        "--digest-state-file",
+        state,
+        "--digest-watchman",
+        "Watch-Keeper",
+    ];
+    let unchecked = ok(&db, "silken-tanager", &["brief"]);
+    assert_eq!(unchecked["digest"]["checked"], false);
+    let brief = ok(&db, "silken-tanager", &[&["brief"][..], &check].concat());
+    let warnings = brief["digest"]["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{brief}");
+    assert_eq!(warnings[0]["watchman"], "Watch-Keeper");
+    assert!(
+        warnings[0]["warning"]
+            .as_str()
+            .unwrap()
+            .contains("no digest pass")
+    );
+    let stalls = ok(&db, "silken-tanager", &[&["stalls"][..], &check].concat());
+    let prompts = stalls["prompts"].as_array().unwrap();
+    assert!(
+        prompts
+            .iter()
+            .any(|row| row["row"] == "digest_quiet" && row["watchman"] == "Watch-Keeper"),
+        "{stalls}"
+    );
+
+    // One pass of the digest, which has nothing new to send on its first run, records that it ran.
+    ok(
+        &db,
+        "silken-tanager",
+        &[
+            "digest",
+            "--quiet",
+            "1m",
+            "--max",
+            "1m",
+            "--watchman",
+            "watch-keeper",
+            "--state-file",
+            state,
+        ],
+    );
+    let kept: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(state).unwrap()).unwrap();
+    assert!(
+        kept["watch-keeper"]["last_pass_ms"].as_i64().is_some(),
+        "{kept}"
+    );
+    let brief = ok(&db, "silken-tanager", &[&["brief"][..], &check].concat());
+    assert_eq!(
+        brief["digest"]["warnings"],
+        serde_json::json!([]),
+        "{brief}"
+    );
+}
+
 #[test]
 fn a_team_claims_and_submits_and_the_history_is_kept() {
     let db = Ledger::new();
