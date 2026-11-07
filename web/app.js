@@ -759,7 +759,9 @@ function trackGroup(ledger, now, rally) {
   return group;
 }
 
-// A day summary from docs/muster/, as text only, with where it came from and the untrusted notice.
+// A day summary from docs/muster/, or the watchman's writeup, with where it came from and the
+// untrusted notice. Its markdown is drawn as headings, lists, emphasis and code (RAL-94), built
+// only with el() and text, so whatever HTML it holds shows as text and nothing in it runs.
 function summaryBlock(summary, notice, now) {
   const wrap = el("div");
   if (!summary || summary.reason) {
@@ -771,13 +773,177 @@ function summaryBlock(summary, notice, now) {
       + " yet."));
   } else if (typeof summary.text === "string") {
     wrap.append(el("p", "muted", notice));
-    wrap.append(el("pre", "summary", summary.text));
+    const text = el("div", "summary writeup");
+    text.append(...markdownBlocks(summary.text));
+    wrap.append(text);
     wrap.append(el("p", "source muted", summary.local
       ? ["Read from the local file " + summary.file + ", ", ago(summary.read_at_ms, now)]
       : [summary.file + " at " + String(summary.commit).slice(0, 7) + ", read ", ago(summary.read_at_ms, now)]));
   }
   if (summary.error) wrap.append(el("p", "warning", "⚠ Last read failed: " + summary.error));
   return wrap;
+}
+
+// Markdown, as the writeups use it (RAL-94): headings, paragraphs, lists (nested by indent), quotes,
+// rules, fenced code and pipe tables, with inline code, emphasis and links. It makes nodes with
+// el() and text only, never by parsing markup, so raw HTML in the text stays text. A link is a link only
+// when it's http or https; anything else, javascript: included, is shown as its text.
+const MD_FENCE = /^\s*(`{3,}|~{3,})/;
+const MD_HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
+const MD_ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
+const MD_RULE = /^\s*([-*_])(\s*\1){2,}\s*$/;
+const MD_QUOTE = /^\s*>\s?(.*)$/;
+const MD_ROW = /^\s*\|(.*)\|\s*$/;
+const MD_DIVIDER = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+
+function markdownBlocks(text) {
+  const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+  const blocks = [];
+  let i = 0;
+  const isBlank = (line) => line.trim() === "";
+  const startsBlock = (line) => MD_FENCE.test(line) || MD_HEADING.test(line) || MD_ITEM.test(line)
+    || MD_RULE.test(line) || MD_QUOTE.test(line) || MD_ROW.test(line);
+  while (i < lines.length) {
+    const line = lines[i];
+    if (isBlank(line)) { i++; continue; }
+    const fence = MD_FENCE.exec(line);
+    if (fence) {
+      const close = fence[1][0];
+      const body = [];
+      i++;
+      while (i < lines.length && !new RegExp("^\\s*\\" + close + "{" + fence[1].length + ",}\\s*$").test(lines[i])) {
+        body.push(lines[i]);
+        i++;
+      }
+      i++;
+      const pre = el("pre", "md-code");
+      pre.append(el("code", "", body.join("\n")));
+      blocks.push(pre);
+      continue;
+    }
+    const heading = MD_HEADING.exec(line);
+    if (heading) {
+      // The writeup sits under its card's h3, so its own headings start at h4.
+      const level = Math.min(6, heading[1].length + 3);
+      blocks.push(el("h" + level, "md-heading", markdownInline(heading[2])));
+      i++;
+      continue;
+    }
+    if (MD_RULE.test(line)) {
+      blocks.push(el("hr"));
+      i++;
+      continue;
+    }
+    if (MD_QUOTE.test(line)) {
+      const body = [];
+      while (i < lines.length && MD_QUOTE.test(lines[i])) {
+        body.push(MD_QUOTE.exec(lines[i])[1]);
+        i++;
+      }
+      const quote = el("blockquote");
+      quote.append(...markdownBlocks(body.join("\n")));
+      blocks.push(quote);
+      continue;
+    }
+    if (MD_ROW.test(line)) {
+      const rows = [];
+      while (i < lines.length && MD_ROW.test(lines[i])) {
+        if (!MD_DIVIDER.test(lines[i])) rows.push(MD_ROW.exec(lines[i])[1].split("|").map((c) => c.trim()));
+        i++;
+      }
+      const wrap = el("div", "table-wrap");
+      const table = el("table");
+      rows.forEach((cells, n) => {
+        const tr = el("tr");
+        for (const cell of cells) tr.append(el(n === 0 ? "th" : "td", "", markdownInline(cell)));
+        table.append(tr);
+      });
+      wrap.append(table);
+      blocks.push(wrap);
+      continue;
+    }
+    if (MD_ITEM.test(line)) {
+      // Items nest by their indent: a deeper item opens a list inside the item before it.
+      const stack = [];
+      while (i < lines.length && (MD_ITEM.test(lines[i]) || (!isBlank(lines[i]) && stack.length
+        && /^\s+\S/.test(lines[i]) && !startsBlock(lines[i])))) {
+        const item = MD_ITEM.exec(lines[i]);
+        if (!item) {
+          // A continuation line belongs to the item above it.
+          const last = stack[stack.length - 1].list.lastElementChild;
+          last.append(" ", ...markdownInline(lines[i].trim()));
+          i++;
+          continue;
+        }
+        const indent = item[1].replace(/\t/g, "    ").length;
+        const ordered = /\d/.test(item[2]);
+        while (stack.length && indent < stack[stack.length - 1].indent) stack.pop();
+        let top = stack[stack.length - 1];
+        // A bulleted list after a numbered one at the same depth, or the other way round, is a new list.
+        if (top && indent === top.indent && top.ordered !== ordered) {
+          stack.pop();
+          top = null;
+        }
+        if (!top || indent > top.indent) {
+          const parent = stack[stack.length - 1];
+          const list = el(ordered ? "ol" : "ul");
+          if (parent && parent.list.lastElementChild) parent.list.lastElementChild.append(list);
+          else blocks.push(list);
+          top = { indent, ordered, list };
+          stack.push(top);
+        }
+        top.list.append(el("li", "", markdownInline(item[3])));
+        i++;
+      }
+      continue;
+    }
+    // A paragraph runs to a blank line or the start of another block.
+    const body = [];
+    while (i < lines.length && !isBlank(lines[i]) && !(body.length && startsBlock(lines[i]))) {
+      body.push(lines[i].trim());
+      i++;
+    }
+    blocks.push(el("p", "", markdownInline(body.join(" "))));
+  }
+  return blocks;
+}
+
+// Inline markdown as a list of nodes and strings: `code`, **strong**, *emphasis* or _emphasis_,
+// and [text](http or https address). Everything else, any HTML included, is text.
+const MD_INLINE = /(`+)([\s\S]*?[^`])\1(?!`)|\*\*(?=\S)([\s\S]*?\S)\*\*|(?<![\w])__(?=\S)([\s\S]*?\S)__(?![\w])|\*(?=\S)([^*]*?\S)\*|(?<![\w])_(?=\S)([^_]*?\S)_(?![\w])|\[([^\]]+)\]\(\s*([^)\s]+)\s*\)/g;
+
+function markdownInline(text, depth) {
+  const out = [];
+  const nested = (depth || 0) + 1;
+  // Deep nesting gives no more meaning, so past a few levels the rest is text.
+  if (nested > 4) return [String(text)];
+  let last = 0;
+  for (const match of String(text).matchAll(MD_INLINE)) {
+    if (match.index > last) out.push(text.slice(last, match.index));
+    last = match.index + match[0].length;
+    if (match[1]) out.push(el("code", "", match[2].trim() || match[2]));
+    else if (match[3] || match[4]) out.push(el("strong", "", markdownInline(match[3] || match[4], nested)));
+    else if (match[5] || match[6]) out.push(el("em", "", markdownInline(match[5] || match[6], nested)));
+    else out.push(markdownLink(match[7], match[8], nested));
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+// A link only to http or https, opened without a referrer or a handle back to this page; any other
+// address, javascript: and data: included, shows as the text and the address, inert.
+function markdownLink(label, address, depth) {
+  let url = null;
+  try { url = new URL(address); } catch { /* not an absolute address */ }
+  if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) {
+    return el("span", "md-link-inert", [...markdownInline(label, depth), " (" + address + ")"]);
+  }
+  const link = el("a", "", markdownInline(label, depth));
+  link.href = url.href;
+  link.rel = "noopener noreferrer";
+  link.target = "_blank";
+  link.referrerPolicy = "no-referrer";
+  return link;
 }
 
 function storyList(stories) {

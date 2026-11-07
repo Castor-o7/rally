@@ -642,6 +642,12 @@ word.
   only changes of state; Verified is green and In review amber, in both schemes; evidence of the form
   `owner/repo@<40 hex>` shows its first 7 with the whole in the title, and other evidence as written; IDs, states
   and ages don't wrap; a headless Chrome test shows each, and fails on the page before it.
+- [ ] **RAL-94: The watchman's writeup renders its markdown, as text only.** Filed by cobalt-glen, assigned by
+  mellow-weevil: the writeup and day summaries were one block of preformatted text. Done when: headings, lists,
+  emphasis, code, quotes and tables are drawn, built with el() and text nodes only (no innerHTML, RAL-16); raw HTML in
+  the markdown shows as text; only http and https links are links, opened without a referrer or opener, and any other
+  address shows as inert text; and a headless Chrome test shows a `<script>`, an `<img onerror>` and a `javascript:`
+  link staying inert, and fails on the page before.
 - [ ] **RAL-91: The viewer's bars are coloured by what they measure.** The open half of RAL-91 (cobalt-glen's "the
   viewer's status colours follow meaning"), assigned by mellow-weevil: every bar's fill was one blue (`--fill`),
   whatever it measured. Done when: each Verified bar and each Progress from the ledger is one bar of Verified green,

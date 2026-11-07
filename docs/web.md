@@ -226,6 +226,13 @@ kept apart from Rally's own day summaries. Summaries and PR titles are written b
 agents, so they're shown as text with the untrusted-text notice, like everything else recorded. All of
 it is read through `gh` with the roadmaps, on their five-minute cadence and with their time and size limits.
 
+A writeup's or day summary's markdown is drawn (RAL-94): headings, paragraphs, lists (nested by indent),
+quotes, rules, fenced code and pipe tables, with inline code, bold, italics and links. The page builds each
+part from text nodes and never uses `innerHTML`, so any HTML in the file, a `<script>` or an `<img onerror>`,
+shows as text and runs nothing. A link is a link only to an `http` or `https` address, and opens in a new tab
+with no referrer and no handle back to the viewer. Any other address, `javascript:` and `data:` included, is
+shown as its label and the address in brackets, as text. A headless Chrome test checks each of these.
+
 ## Day summaries from local folders (RAL-45)
 
 Day summaries live in each repository's `docs/muster/`, which git ignores by the operator's rule, so GitHub never
