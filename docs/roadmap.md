@@ -345,6 +345,12 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   builds of the same commit, which aren't byte-identical. Done when: a build from a clean checkout embeds its commit
   and `rally view` compares commits, falling back to the binary's SHA-256 without one; the restart note names both
   builds; and a test covers a rebuild of the same commit not restarting.
+- [ ] **RAL-108: A restarted session stays in the rally under its new nickname.** Requested by the operator on
+  2026-11-06, keeping the nicknames: the watchman restarted as mellow-weevil and dropped off rally 0x5's board until
+  the rally was closed and reopened (913, 914). Done when: while a rally is open the ledger keeps the declared names
+  that recorded under each team; a nickname is in the rally when it's listed, or when it recorded for a team that a
+  listed nickname recorded for or that is listed; the viewer, the brief and the page use it, and the page names the
+  nicknames that joined; the rally's listed nicknames are unchanged; no new record kind; and tests cover each.
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.
