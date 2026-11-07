@@ -366,11 +366,13 @@ pub fn progress(prefix: &str, roadmap: &Value, ledger: &Value) -> Value {
     // ledger's, and only stands in where there are no boxes at all.
     let no_boxes = roadmap_stories.is_some() && roadmap["boxes"]["total"].as_u64() == Some(0);
     if no_boxes && !tracked.is_empty() {
-        let verified = states.get("verified").and_then(Value::as_u64).unwrap_or(0);
+        let of = |state: &str| states.get(state).and_then(Value::as_u64).unwrap_or(0);
+        let verified = of("verified");
         let total = tracked.len() as u64;
         value["from_ledger"] = json!({
             "kind": "verified", "as_of": ledger["as_of"],
-            "verified": verified, "tracked": total, "percent": verified * 100 / total,
+            "verified": verified, "in_review": of("in_review"), "sent_back": of("sent_back"),
+            "tracked": total, "percent": verified * 100 / total,
         });
     }
     value["states"] = Value::Object(states);
@@ -465,11 +467,21 @@ pub fn verified_for(prefix: &str, ledger: &Value) -> Value {
     if matching.is_empty() {
         return json!({"available": false});
     }
-    let verified = matching
-        .iter()
-        .filter(|story| story["state"] == "verified")
-        .count();
-    json!({"available": true, "verified": verified, "tracked": matching.len()})
+    // Beside Verified, the two states a story passes through on its way there, so the viewer's bar
+    // shows each in its own colour and green only ever means Verified (RAL-91).
+    let count = |state: &str| {
+        matching
+            .iter()
+            .filter(|story| story["state"] == state)
+            .count()
+    };
+    json!({
+        "available": true,
+        "verified": count("verified"),
+        "in_review": count("in_review"),
+        "sent_back": count("sent_back"),
+        "tracked": matching.len(),
+    })
 }
 
 /// The story states in which a team still holds a story: it claimed it and hasn't been verified.
@@ -2453,6 +2465,8 @@ mod tests {
         }});
         let figure = verified_for("RAL", &ledger);
         assert_eq!(figure["verified"], 1);
+        assert_eq!(figure["in_review"], 1);
+        assert_eq!(figure["sent_back"], 0);
         assert_eq!(figure["tracked"], 2);
         assert_eq!(verified_for("CAT", &ledger)["available"], false);
     }
@@ -2509,7 +2523,8 @@ mod tests {
         let value = progress("DSM", &roadmap, &ledger);
         assert_eq!(
             value["from_ledger"],
-            json!({"kind": "verified", "as_of": 40, "verified": 2, "tracked": 4, "percent": 50})
+            json!({"kind": "verified", "as_of": 40, "verified": 2, "in_review": 1, "sent_back": 0,
+                "tracked": 4, "percent": 50})
         );
         assert_eq!(value["states"]["in_review"], 1);
 

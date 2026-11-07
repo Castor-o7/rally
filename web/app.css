@@ -6,7 +6,9 @@
   --text-2: #52514e;
   --line: #deddd8;
   --track: #e8e7e2;
-  --fill: #2a78d6;
+  /* A ticked box in a roadmap (RAL-91). A tick isn't a ledger state, so it has a neutral colour of its
+     own: never Verified's green, nor Ready's blue. */
+  --ticked: #5f5e59;
   --s-ready: #2a78d6;
   --s-claimed: #eb6834;
   --s-in_review: #eda100;
@@ -24,7 +26,7 @@
     --text-2: #c3c2b7;
     --line: #33332f;
     --track: #2b2b28;
-    --fill: #3987e5;
+    --ticked: #a6a59c;
     --s-ready: #3987e5;
     --s-claimed: #d95926;
     --s-in_review: #c98500;
@@ -37,7 +39,7 @@
 * { box-sizing: border-box; }
 body {
   margin: 0 auto;
-  max-width: 960px;
+  max-width: 1200px;
   padding: 24px 16px 64px;
   background: var(--page);
   color: var(--text);
@@ -68,7 +70,9 @@ p { margin: 0; }
 .figure-label { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; font-size: 13px; }
 .figure-label strong { font-variant-numeric: tabular-nums; }
 .bar { display: flex; gap: 2px; height: 8px; margin-top: 4px; background: var(--track); border-radius: 4px; overflow: hidden; }
-.bar > div { min-width: 2px; background: var(--fill); }
+/* Every fill says what it is (RAL-91): a tick, or a story state from the classes below. */
+.bar > div { min-width: 2px; }
+.ticked { background: var(--ticked) !important; }
 .bar > div:last-child { border-radius: 0 4px 4px 0; }
 .bar.tall { height: 14px; }
 .sections { margin-top: 12px; font-size: 13px; }
