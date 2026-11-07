@@ -43,6 +43,218 @@ pub struct Kept {
     /// When a digest last went to this watchman (RAL-87).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_sent_ms: Option<i64>,
+    /// Merges whose CI on the base hasn't been told yet (RAL-102), checked again each pass.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ci: Vec<CiPending>,
+    /// The newest merge record taken into `ci`, so each merge is checked once.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ci_checked_to: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// A merge whose CI is still to be told (RAL-102).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CiPending {
+    pub seq: u64,
+    pub story: String,
+    /// The repository, from the story's evidence; `None` when it has none.
+    pub repo: Option<String>,
+    /// The commit the merge record names, which may be the pull request's head.
+    pub commit: String,
+    /// The commit that landed on the base, once looked up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landed: Option<String>,
+    /// When a pass first took it in, by this machine's clock.
+    pub since_ms: i64,
+    /// Whether a failure to check it has been told already, so it's said once and then retried.
+    #[serde(default)]
+    pub error_told: bool,
+}
+
+/// What the base's CI says about a commit that landed (RAL-102).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ci {
+    /// A run failed, was cancelled or timed out: the first such, with its workflow and address.
+    Failed { workflow: String, url: String },
+    /// Some run hasn't finished, and none failed.
+    Running,
+    /// Every run finished well.
+    Passed,
+    /// No run for it on a push.
+    NoRun,
+}
+
+/// Reads the CI on a repository's commit: `(repo, commit)`.
+pub type CiRead<'a> = &'a dyn Fn(&str, &str) -> Result<Ci, String>;
+
+/// How long a merge's CI is waited for before the digest stops checking and says so.
+pub const CI_GIVE_UP_MS: i64 = 2 * 60 * 60 * 1000;
+/// How long a merge may have no run before that's told: GitHub starts one a little after a push.
+pub const CI_NO_RUN_GRACE_MS: i64 = 10 * 60 * 1000;
+
+/// `gh run list --json status,conclusion,url,workflowName,event` for one commit, as a [`Ci`]: only
+/// runs on a push count, since that's what a merge to the base starts.
+pub fn ci_from_runs(runs: &Value) -> Ci {
+    let pushes: Vec<&Value> = runs
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|run| run["event"] == "push")
+        .collect();
+    if pushes.is_empty() {
+        return Ci::NoRun;
+    }
+    let bad = [
+        "failure",
+        "cancelled",
+        "timed_out",
+        "startup_failure",
+        "action_required",
+    ];
+    if let Some(run) = pushes.iter().find(|run| {
+        run["status"] == "completed" && bad.contains(&run["conclusion"].as_str().unwrap_or(""))
+    }) {
+        return Ci::Failed {
+            workflow: clean(run["workflowName"].as_str().unwrap_or("CI")),
+            url: clean(run["url"].as_str().unwrap_or("")),
+        };
+    }
+    if pushes.iter().any(|run| run["status"] != "completed") {
+        Ci::Running
+    } else {
+        Ci::Passed
+    }
+}
+
+/// Takes each merge record after `kept.ci_checked_to` into `kept.ci`, the watchman's own included,
+/// since a red base matters whoever merged (RAL-102). `stories` is `/v1/stories`, for each
+/// story's repository.
+pub fn take_in_merges(kept: &mut Kept, recs: &[Rec], stories: &Value, now_ms: i64) {
+    let after = kept.ci_checked_to;
+    for rec in recs
+        .iter()
+        .filter(|r| r.change() == "merge" && r.seq > after)
+    {
+        let story = rec.text("story");
+        let evidence = stories["stories"][&story]["evidence"]["text"]
+            .as_str()
+            .unwrap_or("");
+        kept.ci.push(CiPending {
+            seq: rec.seq,
+            repo: crate::evidence::parse(evidence).ok().map(|(repo, _)| repo),
+            story,
+            commit: rec.text("commit"),
+            landed: None,
+            since_ms: now_ms,
+            error_told: false,
+        });
+        kept.ci_checked_to = kept.ci_checked_to.max(rec.seq);
+    }
+}
+
+/// What checking the pending merges found (RAL-102).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CiReport {
+    /// Lines for the digest's "Base CI after merges" section.
+    pub lines: Vec<String>,
+    /// Whether any line can't wait for the next digest: a failure, a check that couldn't be
+    /// made, no run, or giving up. A run still going waits.
+    pub urgent: bool,
+}
+
+/// Checks each of `kept.ci`: what landed for it (`landed`, as RAL-31 reads it), then that commit's
+/// CI (`ci`). A finished pass is dropped silently; a failure, no run past the grace period, or
+/// still running past [`CI_GIVE_UP_MS`] is told and dropped; one still running is listed and
+/// kept; one that couldn't be checked is told once and kept, to be tried again.
+pub fn check_ci(kept: &mut Kept, landed: Landed, ci: CiRead, now_ms: i64) -> CiReport {
+    let mut report = CiReport::default();
+    let mut still = Vec::new();
+    for mut pending in std::mem::take(&mut kept.ci) {
+        let head = format!(
+            "- {} merged at {}",
+            clean(&pending.story),
+            short(&pending.commit)
+        );
+        let waited = now_ms - pending.since_ms;
+        let Some(repo) = pending.repo.clone() else {
+            report.lines.push(format!(
+                "{head}: the base's CI couldn't be checked: no repository in the evidence"
+            ));
+            report.urgent = true;
+            continue;
+        };
+        let landed_commit = match &pending.landed {
+            Some(commit) => Ok(commit.clone()),
+            None => match landed(&repo, &pending.commit) {
+                Ok(Some((_, merge))) => Ok(merge),
+                Ok(None) => Ok(pending.commit.clone()),
+                Err(error) => Err(error),
+            },
+        };
+        let outcome = landed_commit.and_then(|commit| {
+            pending.landed = Some(commit.clone());
+            ci(&repo, &commit).map(|state| (commit, state))
+        });
+        match outcome {
+            Ok((_, Ci::Passed)) => {}
+            Ok((commit, Ci::Failed { workflow, url })) => {
+                report.lines.push(format!(
+                    "{head}: left the base red [observed]: {workflow} failed on {} {url}",
+                    short(&commit)
+                ));
+                report.urgent = true;
+            }
+            Ok((commit, Ci::Running)) if waited >= CI_GIVE_UP_MS => {
+                report.lines.push(format!(
+                    "{head}: CI on {} still hadn't finished after {} [observed]; no longer checked",
+                    short(&commit),
+                    age(pending.since_ms, now_ms).trim_end_matches(" ago")
+                ));
+                report.urgent = true;
+            }
+            Ok((commit, Ci::Running)) => {
+                report.lines.push(format!(
+                    "- {} merged at {}: CI on {} running [observed]; checked again each pass",
+                    clean(&pending.story),
+                    short(&pending.commit),
+                    short(&commit)
+                ));
+                still.push(pending);
+            }
+            Ok((commit, Ci::NoRun)) if waited >= CI_NO_RUN_GRACE_MS => {
+                report.lines.push(format!(
+                    "{head}: no CI run on {} [observed], {} after the merge was seen",
+                    short(&commit),
+                    age(pending.since_ms, now_ms).trim_end_matches(" ago")
+                ));
+                report.urgent = true;
+            }
+            Ok((_, Ci::NoRun)) => still.push(pending),
+            Err(_) if waited >= CI_GIVE_UP_MS => {
+                report.lines.push(format!(
+                    "{head}: the base's CI still couldn't be checked after {}; no longer checked",
+                    age(pending.since_ms, now_ms).trim_end_matches(" ago")
+                ));
+                report.urgent = true;
+            }
+            Err(error) => {
+                if !pending.error_told {
+                    report.lines.push(format!(
+                        "{head}: the base's CI couldn't be checked: {}; tried again each pass",
+                        clean(&error)
+                    ));
+                    report.urgent = true;
+                    pending.error_told = true;
+                }
+                still.push(pending);
+            }
+        }
+    }
+    kept.ci = still;
+    report
 }
 
 /// One ledger record, as the export gives it.
@@ -147,10 +359,13 @@ pub fn step(
         .map(|r| r.seq)
         .max();
     let Some(theirs) = theirs else {
-        // Only the watchman's own records, or none: pass over them, and stay silent.
+        // Only the watchman's own records, or none: pass over them, and stay silent. Merges still
+        // waiting on CI are kept (RAL-102).
         *kept = Kept {
             head: newest.max(kept.head),
             seen_to: newest.max(kept.head),
+            ci: std::mem::take(&mut kept.ci),
+            ci_checked_to: kept.ci_checked_to,
             ..Kept::default()
         };
         return Decision::Nothing;
@@ -201,6 +416,8 @@ pub fn sent(kept: &mut Kept, to: u64) {
     *kept = Kept {
         head: to,
         seen_to: to,
+        ci: std::mem::take(&mut kept.ci),
+        ci_checked_to: kept.ci_checked_to,
         ..Kept::default()
     };
 }
@@ -316,6 +533,8 @@ pub struct Reads<'a> {
     pub stories: &'a Value,
     /// What landed, for those (RAL-31).
     pub landed: Landed<'a>,
+    /// What the base's CI said after merges (RAL-102), from [`check_ci`].
+    pub ci: &'a [String],
 }
 
 /// RAL-31 for a merge at `merged`: compare what landed with the commits verified (RAL-67: the
@@ -475,6 +694,13 @@ pub fn render(
             })
             .collect(),
         more: "rally show",
+        always: false,
+    });
+
+    sections.push(Section {
+        title: "Base CI after merges (RAL-102)".into(),
+        lines: reads.ci.to_vec(),
+        more: "gh run list --branch main",
         always: false,
     });
 
@@ -735,6 +961,244 @@ mod tests {
         )
     }
 
+    fn merge_rec(seq: u64, name: &str, story: &str, commit: &str) -> Rec {
+        rec(
+            seq,
+            name,
+            json!({"change": "merge", "story": story, "commit": commit}),
+        )
+    }
+
+    fn stories_with_repo() -> Value {
+        json!({"stories": {
+            "RAL-1": {"evidence": {"text": format!("Castor-o7/rally@{}", "a".repeat(40))}},
+            "RAL-2": {"evidence": {"text": format!("Castor-o7/rally@{}", "b".repeat(40))}},
+            "RAL-3": {"evidence": {"text": "no repository here"}},
+        }})
+    }
+
+    /// RAL-102: only push runs count, and a failure wins over one still going.
+    #[test]
+    fn ci_runs_read_as_failed_running_passed_or_none() {
+        let run = |event: &str, status: &str, conclusion: &str| {
+            json!({"event": event, "status": status, "conclusion": conclusion,
+                   "workflowName": "CI", "url": "https://github.com/o/r/actions/runs/1"})
+        };
+        assert_eq!(ci_from_runs(&json!([])), Ci::NoRun);
+        assert_eq!(
+            ci_from_runs(&json!([run("pull_request", "completed", "failure")])),
+            Ci::NoRun
+        );
+        assert_eq!(
+            ci_from_runs(&json!([run("push", "completed", "success")])),
+            Ci::Passed
+        );
+        assert_eq!(
+            ci_from_runs(&json!([
+                run("push", "completed", "success"),
+                run("push", "in_progress", "")
+            ])),
+            Ci::Running
+        );
+        assert_eq!(
+            ci_from_runs(&json!([
+                run("push", "in_progress", ""),
+                run("push", "completed", "failure")
+            ])),
+            Ci::Failed {
+                workflow: "CI".into(),
+                url: "https://github.com/o/r/actions/runs/1".into()
+            }
+        );
+        assert!(matches!(
+            ci_from_runs(&json!([run("push", "completed", "cancelled")])),
+            Ci::Failed { .. }
+        ));
+    }
+
+    /// RAL-102: each merge is taken in once, the watchman's own included, with its repository.
+    #[test]
+    fn merges_are_taken_in_once_whoever_merged() {
+        let mut kept = start_at(0);
+        let recs = [
+            claim(1, "a"),
+            merge_rec(2, "frank-crocodile", "RAL-1", "aaaaaaa"),
+            merge_rec(3, "a", "RAL-3", "ccccccc"),
+        ];
+        take_in_merges(&mut kept, &recs, &stories_with_repo(), 10);
+        assert_eq!(kept.ci.len(), 2);
+        assert_eq!(kept.ci[0].repo.as_deref(), Some("Castor-o7/rally"));
+        assert_eq!(kept.ci[1].repo, None);
+        assert_eq!(kept.ci_checked_to, 3);
+        take_in_merges(&mut kept, &recs, &stories_with_repo(), 20);
+        assert_eq!(kept.ci.len(), 2, "taken in once");
+    }
+
+    /// RAL-102: the base's CI is told for each merge: a failure at once with its address, one still
+    /// running listed and checked again, a pass silently, and a check that couldn't be made said
+    /// once and tried again; the commit read is the one that landed, not the pull request's head.
+    #[test]
+    fn the_base_ci_after_a_merge_is_told_and_never_left_silent() {
+        let mut kept = start_at(0);
+        let recs = [
+            merge_rec(1, "a", "RAL-1", "aaaaaaa"),
+            merge_rec(2, "a", "RAL-2", "bbbbbbb"),
+            merge_rec(3, "a", "RAL-3", "ccccccc"),
+        ];
+        take_in_merges(&mut kept, &recs, &stories_with_repo(), 0);
+        // RAL-1's head aaaaaaa landed as merge 1111111; RAL-2 landed as itself.
+        let landed = |_: &str, commit: &str| -> Result<Option<(String, String)>, String> {
+            Ok((commit == "aaaaaaa").then(|| ("aaaaaaa".to_owned(), "1111111".to_owned())))
+        };
+        let asked = std::cell::RefCell::new(Vec::new());
+        let ci = |_: &str, commit: &str| -> Result<Ci, String> {
+            asked.borrow_mut().push(commit.to_owned());
+            Ok(match commit {
+                "1111111" => Ci::Failed {
+                    workflow: "CI".into(),
+                    url: "https://github.com/Castor-o7/rally/actions/runs/9".into(),
+                },
+                _ => Ci::Running,
+            })
+        };
+        let report = check_ci(&mut kept, &landed, &ci, 1_000);
+        assert!(report.urgent);
+        let text = report.lines.join("\n");
+        assert!(
+            text.contains("RAL-1 merged at aaaaaaa: left the base red [observed]: CI failed on 1111111 https://github.com/Castor-o7/rally/actions/runs/9"),
+            "{text}"
+        );
+        assert!(
+            text.contains("RAL-2 merged at bbbbbbb: CI on bbbbbbb running"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "RAL-3 merged at ccccccc: the base's CI couldn't be checked: no repository"
+            ),
+            "{text}"
+        );
+        assert_eq!(
+            *asked.borrow(),
+            ["1111111", "bbbbbbb"],
+            "the landed commit is read"
+        );
+        // Only RAL-2, still running, is kept.
+        assert_eq!(kept.ci.len(), 1);
+        assert_eq!(kept.ci[0].story, "RAL-2");
+
+        // Running is listed but doesn't hurry a digest; a pass then drops it silently.
+        let running = |_: &str, _: &str| -> Result<Ci, String> { Ok(Ci::Running) };
+        let report = check_ci(&mut kept, &landed, &running, 2_000);
+        assert!(!report.urgent && report.lines.len() == 1, "{report:?}");
+        let passed = |_: &str, _: &str| -> Result<Ci, String> { Ok(Ci::Passed) };
+        let report = check_ci(&mut kept, &landed, &passed, 3_000);
+        assert_eq!(report, CiReport::default());
+        assert!(kept.ci.is_empty());
+    }
+
+    #[test]
+    fn a_ci_check_that_cant_be_made_is_said_once_retried_and_given_up_on() {
+        let mut kept = start_at(0);
+        take_in_merges(
+            &mut kept,
+            &[merge_rec(1, "a", "RAL-2", "bbbbbbb")],
+            &stories_with_repo(),
+            0,
+        );
+        let landed = |_: &str, _: &str| -> Result<Option<(String, String)>, String> { Ok(None) };
+        let down = |_: &str, _: &str| -> Result<Ci, String> { Err("gh: timed out".into()) };
+        let first = check_ci(&mut kept, &landed, &down, 1_000);
+        assert!(first.urgent, "{first:?}");
+        assert!(
+            first.lines[0].contains("couldn't be checked: gh: timed out; tried again each pass")
+        );
+        let again = check_ci(&mut kept, &landed, &down, 2_000);
+        assert_eq!(again, CiReport::default(), "said once");
+        let late = check_ci(&mut kept, &landed, &down, CI_GIVE_UP_MS + 1);
+        assert!(
+            late.urgent && late.lines[0].contains("no longer checked"),
+            "{late:?}"
+        );
+        assert!(kept.ci.is_empty());
+    }
+
+    #[test]
+    fn no_run_waits_its_grace_then_is_told() {
+        let mut kept = start_at(0);
+        take_in_merges(
+            &mut kept,
+            &[merge_rec(1, "a", "RAL-2", "bbbbbbb")],
+            &stories_with_repo(),
+            0,
+        );
+        let landed = |_: &str, _: &str| -> Result<Option<(String, String)>, String> { Ok(None) };
+        let none = |_: &str, _: &str| -> Result<Ci, String> { Ok(Ci::NoRun) };
+        assert_eq!(
+            check_ci(&mut kept, &landed, &none, 1_000),
+            CiReport::default()
+        );
+        let told = check_ci(&mut kept, &landed, &none, CI_NO_RUN_GRACE_MS);
+        assert!(
+            told.urgent && told.lines[0].contains("no CI run on bbbbbbb"),
+            "{told:?}"
+        );
+        assert!(kept.ci.is_empty());
+    }
+
+    #[test]
+    fn pending_ci_survives_a_sent_digest_and_a_quiet_pass() {
+        let mut kept = start_at(0);
+        take_in_merges(
+            &mut kept,
+            &[merge_rec(1, "a", "RAL-2", "bbbbbbb")],
+            &stories_with_repo(),
+            0,
+        );
+        sent(&mut kept, 1);
+        assert_eq!(kept.ci.len(), 1);
+        assert_eq!(kept.ci_checked_to, 1);
+        let times = Times {
+            quiet_ms: 1,
+            max_ms: 1,
+        };
+        assert_eq!(step(&mut kept, &[], &watch(), times, 5), Decision::Nothing);
+        assert_eq!(kept.ci.len(), 1, "a quiet pass keeps it");
+        let text = serde_json::to_string(&kept).unwrap();
+        assert_eq!(serde_json::from_str::<Kept>(&text).unwrap(), kept);
+        // A state file from before RAL-102 still reads.
+        assert_eq!(
+            serde_json::from_str::<Kept>(r#"{"head":3,"seen_to":3}"#)
+                .unwrap()
+                .ci,
+            []
+        );
+    }
+
+    #[test]
+    fn a_digest_shows_the_base_ci_section_only_when_there_is_something() {
+        let (waiting, empty) = (json!({"waiting": []}), json!({}));
+        let landed = |_: &str, _: &str| -> Result<Option<(String, String)>, String> { Ok(None) };
+        let lines = [
+            "- RAL-1 merged at aaaaaaa: left the base red [observed]: CI failed on 1111111 u"
+                .to_owned(),
+        ];
+        let reads = Reads {
+            waiting: &waiting,
+            handover: &empty,
+            stories: &empty,
+            landed: &landed,
+            ci: &lines,
+        };
+        let digest = render(0, 0, &[], &watch(), &reads, 0);
+        assert!(
+            digest.contains("Base CI after merges (RAL-102) (1)\n- RAL-1"),
+            "{digest}"
+        );
+        let quiet = Reads { ci: &[], ..reads };
+        assert!(!render(0, 0, &[], &watch(), &quiet, 0).contains("Base CI"));
+    }
+
     #[test]
     fn a_first_run_starts_at_the_current_head_in_silence() {
         let mut kept = start_at(203);
@@ -874,6 +1338,7 @@ mod tests {
             last_change_ms: Some(7),
             last_pass_ms: Some(8),
             last_sent_ms: Some(6),
+            ..Kept::default()
         };
         let text = serde_json::to_string(&kept).unwrap();
         assert_eq!(serde_json::from_str::<Kept>(&text).unwrap(), kept);
@@ -931,6 +1396,7 @@ mod tests {
             handover: &handover,
             stories: &stories,
             landed: &landed,
+            ci: &[],
         };
         render(0, to, recs, &watch(), &reads, 1_000_000)
     }
@@ -1111,6 +1577,7 @@ mod tests {
             handover: &empty,
             stories: &empty,
             landed: &landed,
+            ci: &[],
         };
         let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
         assert!(
@@ -1128,6 +1595,7 @@ mod tests {
             handover: &empty,
             stories: &empty,
             landed: &landed,
+            ci: &[],
         };
         let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
         assert!(digest.contains("Waiting for you (0)"), "{digest}");

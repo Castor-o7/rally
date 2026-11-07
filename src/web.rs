@@ -825,6 +825,30 @@ pub fn pr_head(repo: &str, commit: &str) -> Result<Option<(String, String)>, Str
     }
 }
 
+/// The CI on `commit` in `repo` (RAL-102), read-only through `gh run list`, for the digest to say
+/// when a merge left the base red. `repo` must already be checked as `owner/repo`; `commit` must
+/// be hex.
+pub fn ci_state(repo: &str, commit: &str) -> Result<crate::digest::Ci, String> {
+    if commit.is_empty() || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("the commit isn't a hash".into());
+    }
+    let out = run_gh(&[
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--commit",
+        commit,
+        "--limit",
+        "20",
+        "--json",
+        "status,conclusion,url,workflowName,event",
+    ])?;
+    let runs: Value =
+        serde_json::from_str(out.trim()).map_err(|_| "gh returned runs that can't be read")?;
+    Ok(crate::digest::ci_from_runs(&runs))
+}
+
 /// A project's roadmap from GitHub, as `(commit, text)`.
 pub fn read_roadmap(project: &Project) -> Result<(String, String), String> {
     let commit = run_gh(&[

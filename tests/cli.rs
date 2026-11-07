@@ -1469,3 +1469,97 @@ fn a_multi_part_story_is_read_part_by_part_and_gated_by_its_reads() {
     assert_eq!(brief["state"], "verified");
     assert_eq!(brief["parts"], "2/2 verified");
 }
+
+/// RAL-102: after a merge, the digest reads the base's CI on what landed, and says so at once when
+/// it failed, without waiting for the quiet period; when GitHub can't be read, it says that too.
+#[test]
+fn the_digest_says_at_once_when_a_merge_left_the_base_red() {
+    let db = Ledger::new();
+    ok(&db, "author", &["ready", "RAL-3"]);
+    ok(&db, "author", &["claim", "RAL-3", "--team", "rally"]);
+    let submitted = ok(
+        &db,
+        "author",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    let head = submitted["recorded"].as_u64().unwrap();
+    ok(&db, "author", &["merge", "RAL-3", "--commit", COMMIT]);
+
+    // A gh that says COMMIT was a pull request's head, landed as OTHER_COMMIT, whose push run failed.
+    let bin = db.dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let run = r#"[{"event":"push","status":"completed","conclusion":"failure","workflowName":"CI","url":"https://github.com/Castor-o7/rally/actions/runs/42"}]"#;
+    let script = format!(
+        "#!/bin/sh\ncase \"$*\" in\n  *commits/{COMMIT}/pulls*) echo \"{COMMIT} {OTHER_COMMIT}\" ;;\n  \
+         *\"run list\"*\"--commit {OTHER_COMMIT}\"*) echo '{run}' ;;\n  *) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+    );
+    let write_gh = |text: &str| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(bin.join("gh"), text).unwrap();
+        std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    write_gh(&script);
+    let state = db.dir.path().join("digest.json");
+    let digest = |gh_dir: &std::path::Path| -> Value {
+        // The watchman's last digest covered everything up to the submission.
+        std::fs::write(
+            &state,
+            format!(r#"{{"w": {{"head": {head}, "seen_to": {head}}}}}"#),
+        )
+        .unwrap();
+        let path = std::env::var("PATH").unwrap_or_default();
+        let out = Command::new(env!("CARGO_BIN_EXE_rally"))
+            .arg("--db")
+            .arg(&db.db.url)
+            .arg("--head-file")
+            .arg(&db.head)
+            .args([
+                "digest",
+                "--quiet",
+                "10m",
+                "--max",
+                "10m",
+                "--watchman",
+                "w",
+                "--report-only",
+            ])
+            .arg("--state-file")
+            .arg(&state)
+            .env("PATH", format!("{}:{path}", gh_dir.display()))
+            .env_remove("RALLY_DB")
+            .env_remove("RALLY_HEAD_FILE")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let report = digest(&bin);
+    let row = &report["watchmen"][0];
+    // Due now, not after the 10-minute quiet period, because the base is red.
+    assert_eq!(row["decision"], "due (report only: not sent)", "{report}");
+    let text = row["digest"].as_str().unwrap();
+    assert!(
+        text.contains("Base CI after merges (RAL-102) (1)"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "RAL-3 merged at 0123456: left the base red [observed]: CI failed on fedcba9 \
+             https://github.com/Castor-o7/rally/actions/runs/42"
+        ),
+        "{text}"
+    );
+
+    // GitHub unreadable: said, not left silent.
+    write_gh("#!/bin/sh\necho 'gh: not signed in' >&2\nexit 1\n");
+    let report = digest(&bin);
+    let text = report["watchmen"][0]["digest"].as_str().unwrap_or_default();
+    assert!(
+        text.contains("RAL-3 merged at 0123456: the base's CI couldn't be checked: gh:"),
+        "{report}"
+    );
+}
