@@ -733,9 +733,36 @@ fn with_rally_openers_only_those_credentials_open_or_close_a_rally() {
         rallies["who_may_open"]["credentials"],
         json!(["watchman", "operator"])
     );
-    assert_eq!(write(&watchman, "w", "declared", close).status, 200);
-    // Every other write is unaffected.
+    // A backfill applies the entry inside it, so wrapping a rally change doesn't get past the
+    // rule, at any depth (the watchman's read of #152).
+    let backfill = |entry: Value| json!({"change": "backfill", "entered_at_ms": 1, "entered_by": "w", "entry": entry});
+    for wrapped in [
+        backfill(close.clone()),
+        backfill(backfill(close.clone())),
+        backfill(json!({"change": "open_rally", "name": "Sneaky", "projects": ["RAL"]})),
+    ] {
+        let reply = write(&a1, "w", "declared", wrapped.clone());
+        assert_eq!(reply.status, 403, "{wrapped}: {}", reply.body);
+    }
+    let rallies: Value = serde_json::from_str(&call(&a1, "GET", "/v1/rallies", None).body).unwrap();
+    assert_eq!(
+        rallies["open"]["name"], "Friday",
+        "a backfilled close closes nothing"
+    );
+    // A listed credential may still backfill one.
+    let backfilled = write(&watchman, "w", "declared", backfill(close.clone()));
+    assert_eq!(backfilled.status, 200, "{}", backfilled.body);
+    let rallies: Value = serde_json::from_str(&call(&a1, "GET", "/v1/rallies", None).body).unwrap();
+    assert!(rallies["open"].is_null(), "{rallies}");
+    // Every other write is unaffected, backfilled or not.
     assert_eq!(ready(&a1).status, 200);
+    let other = write(
+        &a1,
+        "w",
+        "declared",
+        backfill(json!({"change": "ready", "story": "RAL-14"})),
+    );
+    assert_eq!(other.status, 200, "{}", other.body);
 }
 
 #[test]

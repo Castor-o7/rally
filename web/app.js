@@ -358,15 +358,22 @@ function renderPast(moment, untrusted) {
   const past = pastCache.value;
   const rally = past.rally || null;
   if (rally) {
-    root.replaceChildren(back, el("h2", "", "Rally: " + rally.name));
+    // Its name, who opened and closed it, and the note were declared by whoever wrote them.
+    const head = el("h2", "", "Rally: " + rally.name);
+    head.append(" ", el("span", "label", "declared"));
+    root.replaceChildren(back, head);
     const line = el("p", "figure", "Projects: " + (rally.prefixes || []).join(", ")
       + ((rally.board.teams || []).length ? " · Teams: " + rally.board.teams.join(", ") : ""));
     line.append(" ", el("span", "label", "declared"));
     root.append(line);
-    root.append(el("p", "muted", "Opened " + when(rally.opened_at_ms) + " at record " + rally.since_seq
-      + (rally.opened_by ? " by " + rally.opened_by : "") + "; closed " + when(rally.closed_at_ms)
-      + " at record " + rally.closed_seq + (rally.closed_by ? " by " + rally.closed_by : "")
-      + (rally.note ? ": " + rally.note : ".")));
+    const opened = el("p", "muted", "Opened " + when(rally.opened_at_ms) + " at record " + rally.since_seq
+      + (rally.opened_by ? " by " + rally.opened_by : ""));
+    if (rally.opened_by) opened.append(" ", el("span", "label", "declared"));
+    root.append(opened);
+    const closed = el("p", "muted", "Closed " + when(rally.closed_at_ms) + " at record " + rally.closed_seq
+      + (rally.closed_by ? " by " + rally.closed_by : "") + (rally.note ? ": " + rally.note : "."));
+    if (rally.closed_by || rally.note) closed.append(" ", el("span", "label", "declared"));
+    root.append(closed);
     root.append(el("p", "muted", rally.rule));
     const whole = el("a", "", "The whole ledger at record " + rally.closed_seq);
     whole.href = "#/past/" + encodeURIComponent(rally.closed_seq);

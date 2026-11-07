@@ -1385,7 +1385,11 @@ async fn past_view(
     query: Result<axum::extract::Query<PastQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
     let Ok(axum::extract::Query(query)) = query else {
-        return (StatusCode::BAD_REQUEST, "as_of must be a record number").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "as_of and rally are record numbers: as_of a moment, rally the record that opened one",
+        )
+            .into_response();
     };
     if query.rally.is_some() == query.as_of.is_some() {
         return (

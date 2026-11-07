@@ -718,8 +718,9 @@ async fn write_record(
             Err(error) => return failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         }
     }
-    // Only the operator or the watchman opens or closes a rally (RAL-77).
-    let rally_change = body["change"] == "open_rally" || body["change"] == "close_rally";
+    // Only the operator or the watchman opens or closes a rally (RAL-77), backfilled or not.
+    let applied = applied_change(&body);
+    let rally_change = applied == "open_rally" || applied == "close_rally";
     if rally_change && let Err(refused) = may_open_rallies(&service, &identity.credential).await {
         return *refused;
     }
@@ -1291,6 +1292,17 @@ async fn list_rallies(
         })
     })
     .await
+}
+
+/// The change a record's body applies: a backfill applies the entry inside it (RAL-30), so a
+/// check on the kind of change looks through the wrapper (RAL-77). The ledger refuses a backfill
+/// inside a backfill, but this unwraps every level regardless.
+fn applied_change(body: &Value) -> &Value {
+    let mut body = body;
+    while body["change"] == "backfill" {
+        body = &body["entry"];
+    }
+    &body["change"]
 }
 
 /// What every answer says while `--rally-openers` isn't set (RAL-77).

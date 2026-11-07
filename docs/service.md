@@ -54,6 +54,12 @@ watchman`) and lists only that one. Even then it guards against mistakes, not a 
 running as the same Unix account could read that credential's token. Proof that the operator opened a rally
 would need an operator-signed record, as `designate` is, which isn't built.
 
+A watchman's scope (RAL-63) doesn't narrow this: a watchman designated for one team or one machine's submissions,
+bound to a credential, can still open or close a rally for everyone, since a rally isn't any one team's.
+
+A backfill (RAL-30) applies the entry inside it, so a backfilled `open-rally` or `close-rally` is held to the same
+rule.
+
 Rolling back past RAL-77 drops the check, so any credential can open a rally again; nothing it records needs a
 newer binary to read.
 
