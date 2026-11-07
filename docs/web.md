@@ -119,7 +119,7 @@ While a rally is open, the overview is its board: only its projects, only its te
 since it opened, plus each of its projects' stories still held (claimed, in review or sent back) whenever that
 was, so work in flight when the rally opens stays on it. The rally's teams are shown whatever the age of their last
 declared state. That covers the ledger's figures and evidence, the declared team states, the roster's sessions,
-and the watchman's writeup if it's older than the rally. A listed session brings in the ledger team of its Muster
+and the watchman's writeup if it was written before the rally opened (RAL-104). A listed session brings in the ledger team of its Muster
 project, so `--team plush-tortoise` brings `rally` too. Track records stay all-time, and say so.
 
 A rally lists sessions by their Muster nickname. By the operator's ruling of 2026-11-06, the rally takes in the
@@ -155,8 +155,29 @@ operator or the watchman may open or close one once the service's `--rally-opene
 reading below. A service older than RAL-76 has no `/v1/rallies`, and the page says so; any other failure to read
 the rallies (a refused token, a network error) is a warning instead, since an open rally may then be missing.
 
-The watchman's writeup is shown as "not for this rally yet" when its day file is dated before the day the rally
-opened. Both are local dates: day files are named by the day where they were written (RAL-77).
+## The report box belongs to the open rally (RAL-104)
+
+While a rally is open, the report box at the end of the overview shows only what belongs to it:
+
+- **Its events**, newest first, above the writeup. Anyone records one while a rally is open:
+
+  ```bash
+  rally event --headline "Leaked headless Chromes filled /run/user/1000" --severity incident \
+    --backing "Castor-o7/rally#170" --backing "record 986"
+  ```
+
+  An event has a one-line headline, a severity (`notice` or `incident`) and, optionally, up to 8 things backing it
+  (record numbers, pull requests, commits or files), each one line. Each is listed with who declared it, its record
+  and its age, and an event with nothing backing it says so. Like every claim in Rally, it's declared: the viewer
+  doesn't check the backing. With no rally open, `rally event` is refused, since there's no rally for it to belong
+  to. A closed rally keeps its events, shown on its past-rally board, and the next rally starts with none.
+- **The watchman's writeup, only if it was written after the rally opened.** Being dated the same day isn't
+  enough: a rally opened in the afternoon doesn't take the morning rally's writeup. The viewer decides from when
+  the file was written: its latest commit's time on GitHub (read with `gh api repos/<repo>/commits?path=<file>`),
+  or its modified time with `--watchman-summaries`. Then it compares that with the record that opened the rally.
+  An older writeup is named as written before the rally opened, and isn't shown. If the time can't be read, the
+  page says so, and doesn't show the writeup as this rally's. A commit's time is the committer's clock, so a
+  writeup committed from a machine whose clock is far off can land on the wrong side of the opening.
 
 ## Project pages (RAL-43)
 

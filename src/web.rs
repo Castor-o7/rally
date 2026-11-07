@@ -648,6 +648,7 @@ fn opened_rally(open: &Value, roster: &Value) -> Value {
         "teams": open["teams"],
         "teams_listed": !listed.is_empty(),
         "active_teams": teams,
+        "events": rally_events(open),
         "members": members,
         "successors": successions
             .iter()
@@ -656,6 +657,25 @@ fn opened_rally(open: &Value, roster: &Value) -> Value {
         "rule": "This rally's board: its projects and teams as declared when it opened, and only \
                  what was recorded since. Earlier work is kept in the ledger and under past rallies.",
     })
+}
+
+/// A rally's events, newest first (RAL-104), each with who declared it.
+fn rally_events(rally: &Value) -> Vec<Value> {
+    let mut events: Vec<Value> = rally["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|event| {
+            json!({
+                "seq": event["seq"], "at_ms": event["at_ms"], "kind": event["kind"],
+                "headline": event["headline"], "severity": event["severity"],
+                "backing": event["backing"].as_array().cloned().unwrap_or_default(),
+                "by": event["source"]["declared_name"],
+            })
+        })
+        .collect();
+    events.reverse();
+    events
 }
 
 /// What an opened rally's board shows (RAL-76): in its projects, each story recorded since it
@@ -1061,6 +1081,53 @@ fn read_summary(repo: &str, commit: &str, folder: &str) -> Result<Value, String>
     Ok(json!({"file": file, "commit": commit, "text": text, "read_at_ms": now_ms()}))
 }
 
+/// When `file` was last written, as of `commit` (RAL-104): its latest commit's committer time, in
+/// milliseconds, read through `gh`.
+fn written_at(repo: &str, commit: &str, file: &str) -> Result<i64, String> {
+    let out = run_gh(&[
+        "api",
+        &format!("repos/{repo}/commits?path={file}&sha={commit}&per_page=1"),
+        "--jq",
+        ".[0].commit.committer.date | fromdateiso8601 * 1000",
+    ])?;
+    out.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|ms| ms.is_finite() && *ms > 0.0)
+        .map(|ms| ms as i64)
+        .ok_or_else(|| "GitHub gave no time for its last commit".to_owned())
+}
+
+/// Adds to a writeup read when it was written (RAL-104), or why that couldn't be read, so whether
+/// it belongs to the open rally is decided, never guessed from its file's date.
+fn with_written_at(mut summary: Value, written: impl FnOnce(&str) -> Result<i64, String>) -> Value {
+    let Some(file) = summary["file"].as_str().map(str::to_owned) else {
+        return summary;
+    };
+    match written(&file) {
+        Ok(ms) => summary["written_at_ms"] = json!(ms),
+        Err(error) => summary["written_at_error"] = json!(error),
+    }
+    summary
+}
+
+/// Whether the watchman's writeup belongs to `rally`, the open one (RAL-104): only if it was
+/// written after the rally opened, not merely dated the same day. `None` with no open rally.
+pub fn writeup_for_rally(summary: &Value, rally: &Value) -> Option<&'static str> {
+    if rally["opened"] != json!(true) {
+        return None;
+    }
+    if summary["text"].is_null() {
+        return Some("none");
+    }
+    let opened = rally["opened_at_ms"].as_i64()?;
+    Some(match summary["written_at_ms"].as_i64() {
+        Some(written) if written >= opened => "this_rally",
+        Some(_) => "before_it_opened",
+        None => "time_unknown",
+    })
+}
+
 /// Blame of a file at `commit`, the commit the roadmap was read at, so its lines match.
 const BLAME: &str = "query($owner:String!,$name:String!,$expr:String!,$path:String!){repository(owner:$owner,name:$name)\
 {object(expression:$expr){... on Commit{blame(path:$path){ranges{startingLine endingLine commit{committedDate}}}}}}}";
@@ -1171,8 +1238,12 @@ fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
                 let summary = read_summary(&project.repo, &commit, SUMMARY_FOLDER)
                     .unwrap_or_else(|error| kept("summary", error));
                 let watchman_summary = (project.repo == RALLY_REPO).then(|| {
-                    read_summary(&project.repo, &commit, WATCHMAN_FOLDER)
-                        .unwrap_or_else(|error| kept("watchman_summary", error))
+                    match read_summary(&project.repo, &commit, WATCHMAN_FOLDER) {
+                        Ok(summary) => with_written_at(summary, |file| {
+                            written_at(&project.repo, &commit, file)
+                        }),
+                        Err(error) => kept("watchman_summary", error),
+                    }
                 });
                 let merged =
                     read_merged(&project.repo).unwrap_or_else(|error| kept("merged", error));
@@ -1356,7 +1427,15 @@ fn apply_local_summaries(projects: &[Project], roadmaps: &mut [Value], local: &L
         if project.repo == RALLY_REPO
             && let Some(folder) = &local.watchman
         {
-            row["watchman_summary"] = read_local_summary(folder);
+            row["watchman_summary"] = with_written_at(read_local_summary(folder), |file| {
+                let modified = std::fs::metadata(file)
+                    .and_then(|meta| meta.modified())
+                    .map_err(|error| format!("its modified time can't be read: {error}"))?;
+                modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|since| since.as_millis() as i64)
+                    .map_err(|_| "its modified time is before 1970".to_owned())
+            });
         }
     }
 }
@@ -1689,10 +1768,13 @@ async fn status(State(app): State<Arc<App>>) -> Response {
             row
         })
         .collect();
-    let muster_summary = snapshot
+    let mut muster_summary = snapshot
         .muster_summary
         .clone()
         .unwrap_or_else(|| json!({"reason": "still reading it."}));
+    if let Some(fit) = writeup_for_rally(&muster_summary, &rally) {
+        muster_summary["for_rally"] = json!(fit);
+    }
     let backup = snapshot
         .backup
         .clone()
@@ -2774,6 +2856,95 @@ mod tests {
             .collect();
         teams.sort_unstable();
         assert_eq!(teams, ["crafty-wolverine", "silken-birch"]);
+    }
+
+    /// RAL-104: the open rally's events, newest first with who declared them; a past rally keeps
+    /// its own, and an old rally's never show on the new one.
+    #[test]
+    fn a_rallys_events_show_on_its_own_board_newest_first() {
+        let event = |seq: u64, headline: &str, backing: Value| {
+            json!({"seq": seq, "at_ms": seq * 10, "kind": "declared", "headline": headline,
+                   "severity": "incident", "backing": backing,
+                   "source": {"credential": "secret-cred", "declared_name": "mellow-weevil"}})
+        };
+        let old = json!({"seq": 10, "at_ms": 1, "name": "earlier", "projects": ["RAL"],
+                         "events": [event(12, "old one", json!(["record 11"]))],
+                         "closed": {"seq": 20, "at_ms": 2, "note": "done"}});
+        let open = json!({"seq": 30, "at_ms": 3, "name": "later", "projects": ["RAL"],
+                          "events": [event(31, "first", json!([])),
+                                     event(33, "second", json!(["Castor-o7/rally#170"]))]});
+        let ledger = json!({"available": true, "stories": {}, "rallies": {
+            "open": open, "rallies": [open, old],
+        }});
+        let rally = current_rally(&rally_projects(), &ledger, &json!({}));
+        let events = rally["events"].as_array().unwrap();
+        let headlines: Vec<&str> = events
+            .iter()
+            .filter_map(|e| e["headline"].as_str())
+            .collect();
+        assert_eq!(
+            headlines,
+            ["second", "first"],
+            "newest first, and not the old rally's"
+        );
+        assert_eq!(events[0]["by"], "mellow-weevil");
+        assert_eq!(events[0]["kind"], "declared");
+        assert_eq!(events[1]["backing"], json!([]));
+        assert!(!rally.to_string().contains("secret-cred"), "no credential");
+        // The past rally's own board has its own events.
+        let past = past_board(&closed_rally(&ledger, 10).unwrap(), &json!({}));
+        assert_eq!(past["events"][0]["headline"], "old one");
+        assert_eq!(past["events"].as_array().unwrap().len(), 1);
+    }
+
+    /// RAL-104: a writeup is the open rally's only if it was written after the rally opened, so a
+    /// second rally opened the same day doesn't inherit the first one's.
+    #[test]
+    fn a_writeup_belongs_to_the_open_rally_only_if_written_after_it_opened() {
+        let rally = |opened_at_ms: i64| json!({"opened": true, "opened_at_ms": opened_at_ms});
+        // Both the same day: the writeup was written at 10:00, the second rally opened at 15:00.
+        let morning = 1_794_000_000_000_i64;
+        let afternoon = morning + 5 * 3_600_000;
+        let file = "docs/muster/watchman/2026-11-06.md";
+        let summary = |written: Option<i64>| {
+            let mut value = json!({"file": file, "text": "the day so far"});
+            if let Some(ms) = written {
+                value["written_at_ms"] = json!(ms);
+            }
+            value
+        };
+        assert_eq!(
+            writeup_for_rally(&summary(Some(morning)), &rally(afternoon)),
+            Some("before_it_opened")
+        );
+        assert_eq!(
+            writeup_for_rally(&summary(Some(afternoon + 1)), &rally(afternoon)),
+            Some("this_rally")
+        );
+        // A time that couldn't be read isn't guessed from the file's name.
+        assert_eq!(
+            writeup_for_rally(&summary(None), &rally(afternoon)),
+            Some("time_unknown")
+        );
+        assert_eq!(
+            writeup_for_rally(&json!({"missing": true}), &rally(afternoon)),
+            Some("none")
+        );
+        // With no rally open, there's nothing to decide.
+        assert_eq!(
+            writeup_for_rally(&summary(Some(morning)), &json!({"known": true})),
+            None
+        );
+        // The time comes from the reader, or why it couldn't.
+        let read = with_written_at(json!({"file": file}), |f| {
+            assert_eq!(f, file);
+            Ok(morning)
+        });
+        assert_eq!(read["written_at_ms"], morning);
+        let failed = with_written_at(json!({"file": file}), |_| Err("gh: offline".into()));
+        assert_eq!(failed["written_at_error"], "gh: offline");
+        let none = with_written_at(json!({"missing": true}), |_| unreachable!());
+        assert!(none.get("written_at_error").is_none());
     }
 
     #[test]

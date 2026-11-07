@@ -349,14 +349,6 @@ function pastForm(newest) {
 let pastCache = null; // { key, value } or { key, error }: a past state doesn't change, so it's read once
 let pastShown = null; // the cache entry last drawn, so the 30-second refresh doesn't redraw it
 
-// The local calendar day of a time, as YYYY-MM-DD. Day files are named by the day where they
-// were written, so they're compared with a local date, not a UTC one (RAL-77): an evening rally
-// west of Greenwich is already tomorrow in UTC.
-function localDay(ms) {
-  const d = new Date(ms);
-  const two = (n) => String(n).padStart(2, "0");
-  return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate());
-}
 
 function when(ms) {
   return ms ? new Date(ms).toLocaleString() : "unknown time";
@@ -419,6 +411,7 @@ function renderPast(moment, untrusted) {
     if (rally.closed_by || rally.note) closed.append(" ", el("span", "label", "declared"));
     root.append(closed);
     root.append(el("p", "muted", rally.rule));
+    root.append(eventList(rally.events || [], past.untrusted_text || untrusted, Date.now()));
     const whole = el("a", "", "The whole ledger at record " + rally.closed_seq);
     whole.href = "#/past/" + encodeURIComponent(rally.closed_seq);
     const wholeLine = el("p");
@@ -875,18 +868,55 @@ function renderMuster(status, now) {
     root.append(figure("Verified in the ledger · the sum of each project's Verified", done + " of " + tracked, tracked ? done / tracked : 0,
       done + " of " + tracked + " verified"));
   }
+  const rally = status.rally;
+  if (rally && rally.opened) root.append(eventList(rally.events || [], status.untrusted_text, now));
   const writeup = el("div", "group");
   writeup.append(el("h3", "", "The watchman's writeup"));
   const summary = status.muster_summary || {};
-  const day = /([0-9]{4}-[0-9]{2}-[0-9]{2})\.md$/.exec(summary.file || "");
-  const rally = status.rally;
-  if (rally && rally.opened && day && day[1] < localDay(rally.opened_at_ms)) {
+  // Whether it's this rally's is the server's to say, from when the file was written (RAL-104),
+  // not from its name's date: a rally opened later the same day doesn't inherit the earlier one's.
+  const fit = summary.for_rally;
+  if (fit === "before_it_opened") {
     writeup.append(el("p", "muted", "No writeup for this rally yet. The latest, " + summary.file
-      + ", is from before it opened."));
+      + ", was written before it opened."));
+  } else if (fit === "time_unknown") {
+    writeup.append(el("p", "warning", "⚠ When the latest writeup, " + summary.file
+      + ", was written couldn't be read, so it isn't shown as this rally's: "
+      + (summary.written_at_error || "no time was given") + "."));
   } else {
-    writeup.append(summaryBlock(status.muster_summary, status.untrusted_text, now));
+    writeup.append(summaryBlock(summary, status.untrusted_text, now));
+  }
+  // summaryBlock says a failed read itself; the two notes above don't show it.
+  if (summary.error && (fit === "before_it_opened" || fit === "time_unknown")) {
+    writeup.append(el("p", "warning", "⚠ Last read failed: " + summary.error));
   }
   root.append(writeup);
+}
+
+// A rally's major events, newest first (RAL-104): each declared by whoever wrote it, with its
+// severity and what backs it.
+function eventList(events, untrusted, now) {
+  const group = el("div", "group events");
+  group.append(el("h3", "", "This rally's events (" + events.length + ")"));
+  if (!events.length) {
+    group.append(el("p", "muted", "None recorded. Anyone records one with rally event."));
+    return group;
+  }
+  group.append(el("p", "muted", untrusted));
+  const list = el("ul", "events");
+  for (const event of events) {
+    const item = el("li", event.severity === "incident" ? "incident" : "notice");
+    item.append(el("span", "label", event.severity === "incident" ? "incident" : "notice"), " ",
+      String(event.headline || ""), " ", el("span", "label", event.kind || "declared"));
+    const line = el("p", "muted");
+    line.append((event.by ? "by " + event.by + ", " : "") + "record " + event.seq + ", ", ago(event.at_ms, now));
+    const backing = event.backing || [];
+    line.append(backing.length ? " · backed by " + backing.join(", ") : " · nothing named as backing it");
+    item.append(line);
+    list.append(item);
+  }
+  group.append(list);
+  return group;
 }
 
 let lastStatus = null;
