@@ -500,6 +500,13 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
+- [ ] **RAL-90: The viewer's ages tick, with a live indicator; Verified green; short commits; no wrapped IDs.**
+  From robust-warbler's visual review of the viewer on 2026-11-06 (items 2, 4, 6 and 7), assigned by mellow-weevil.
+  Done when: every age on the page counts on between polls without anything being redrawn; a "Live · updated Ns
+  ago" line replaces "Updated hh:mm:ss", amber when a poll is late and red when stale or unreachable, announcing
+  only changes of state; Verified is green and In review amber, in both schemes; evidence of the form
+  `owner/repo@<40 hex>` shows its first 7 with the whole in the title, and other evidence as written; IDs, states
+  and ages don't wrap; a headless Chrome test shows each, and fails on the page before it.
 - [ ] **RAL-88: The viewer's cross-site refusal says how to sign in instead.** From the DiscoSim rally's issues
   log, §3.2: the Claude-in-Chrome extension's navigation is marked cross-site, so the viewer answered "other sites
   can't read this page", which is right but says nothing about what to do. Assigned by mellow-weevil. Done when:

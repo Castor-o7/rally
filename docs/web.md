@@ -31,6 +31,14 @@ kept. Sessions made under another key are dropped at start, and `--new-key` remo
 It needs `gh` signed in to read roadmap files, and reads them every 5 minutes. The ledger and roster are read
 every 30 seconds.
 
+The page polls every 30 seconds, and between polls every "12s ago" keeps counting on its own, so an age is always
+current (RAL-90). The line under the title says "● Live · updated 3s ago": the dot turns amber once a poll is more
+than 45 seconds late, and the line turns red after 3 minutes, or when the viewer can't be reached. Only a change
+of that state is announced to a screen reader, not each second. Verified is green and In review amber. A commit
+in evidence written as `owner/repo@<40 hex>` shows as `owner/repo@<first 7>`, with the whole of it in its
+tooltip, and IDs and ages stay on one line. Colours and that shortening can still change when the look is
+agreed with the operator (RAL-26).
+
 ## How to read the figures
 
 - **Roadmap ticks** are counted from each project's roadmap file, with the file, commit and read time

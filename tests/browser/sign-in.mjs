@@ -101,5 +101,12 @@ const after = await evaluate(`(async () => {
     status: response.status,
   };
 })()`);
+// A test can look further at the signed-in board: RALLY_BROWSER_PROBE names a file holding one
+// JavaScript expression, which may be async, evaluated in the page; its value is printed as `probe`.
+let probe;
+if (process.env.RALLY_BROWSER_PROBE) {
+  const { readFileSync } = await import("node:fs");
+  probe = await evaluate(readFileSync(process.env.RALLY_BROWSER_PROBE, "utf8"));
+}
 clearTimeout(timer);
-finish(0, { codePage, after });
+finish(0, { codePage, after, probe });

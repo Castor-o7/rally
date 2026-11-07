@@ -2689,6 +2689,23 @@ mod tests {
         assert!(allowed_hosts("0.0.0.0:7300".parse().unwrap()).is_err());
     }
 
+    /// RAL-90: Verified, the state a story ends in, is green, and In review amber, in both schemes.
+    #[test]
+    fn the_status_colours_follow_meaning() {
+        for (verified, in_review) in [("#1baf7a", "#eda100"), ("#199e70", "#c98500")] {
+            assert!(
+                APP_CSS.contains(&format!("--s-verified: {verified};")),
+                "{verified}"
+            );
+            assert!(
+                APP_CSS.contains(&format!("--s-in_review: {in_review};")),
+                "{in_review}"
+            );
+        }
+        // The ages are kept current by a ticker, not by redrawing.
+        assert!(APP_JS.contains("setInterval(tick, 1000)"));
+    }
+
     #[test]
     fn the_page_never_builds_markup_from_text() {
         for banned in [

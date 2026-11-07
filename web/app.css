@@ -9,8 +9,8 @@
   --fill: #2a78d6;
   --s-ready: #2a78d6;
   --s-claimed: #eb6834;
-  --s-in_review: #1baf7a;
-  --s-verified: #eda100;
+  --s-in_review: #eda100;
+  --s-verified: #1baf7a;
   --s-sent_back: #e87ba4;
   --good: #008300;
   --bad: #c92f2e;
@@ -27,8 +27,8 @@
     --fill: #3987e5;
     --s-ready: #3987e5;
     --s-claimed: #d95926;
-    --s-in_review: #199e70;
-    --s-verified: #c98500;
+    --s-in_review: #c98500;
+    --s-verified: #199e70;
     --s-sent_back: #d55181;
     --good: #4cb04c;
     --bad: #e66767;
@@ -93,6 +93,13 @@ th { text-align: left; color: var(--text-2); font-weight: 500; }
 th, td { padding: 6px 12px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 tr:last-child td { border-bottom: 0; }
 td.text { min-width: 180px; overflow-wrap: anywhere; }
+/* IDs, states and times stay on one line (RAL-90): the first column is always a story, team or record. */
+td.nowrap, td:first-child { white-space: nowrap; }
+code.commit { font: 12px ui-monospace, monospace; }
+/* The live indicator (RAL-90): green while polls arrive, amber once one is late, red once stale. */
+.freshness .dot { color: var(--good); }
+.freshness.late .dot { color: var(--s-in_review); }
+.freshness.stale { color: var(--bad); }
 /* Recorded text can hold direction characters, so keep them from reordering what's around them. */
 td, .section-name, .source { unicode-bidi: isolate; }
 .label { display: inline-block; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--text-2); font-size: 11px; }

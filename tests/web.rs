@@ -992,6 +992,46 @@ fn a_past_rally_opens_as_its_own_board() {
     );
 }
 
+/// The Chrome command `RALLY_TEST_CHROME` names, or `None` to skip a browser test (RAL-84).
+/// `RALLY_TEST_BROWSER_REQUIRED`, which CI sets, makes a missing browser a failure.
+fn browser() -> Option<String> {
+    let chrome = std::env::var("RALLY_TEST_CHROME")
+        .ok()
+        .filter(|command| !command.trim().is_empty());
+    if chrome.is_none() {
+        assert!(
+            std::env::var_os("RALLY_TEST_BROWSER_REQUIRED").is_none(),
+            "RALLY_TEST_BROWSER_REQUIRED is set, but RALLY_TEST_CHROME names no browser"
+        );
+        eprintln!("skipped: set RALLY_TEST_CHROME to sign in through a real browser (RAL-84)");
+    }
+    chrome
+}
+
+/// Signs in to `viewer` through the button in headless `chrome`, and with `probe`, a JavaScript
+/// expression, evaluates it on the board afterwards. Returns what tests/browser/sign-in.mjs saw.
+fn in_browser(viewer: &Viewer, chrome: &str, probe: Option<&str>) -> Value {
+    let url = format!("http://{}{}", viewer.address, login(viewer));
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser/sign-in.mjs");
+    let mut command = Command::new("node");
+    command
+        .arg(&script)
+        .arg(&url)
+        .args(chrome.split_whitespace());
+    let probe_file = tempfile::NamedTempFile::new().unwrap();
+    if let Some(probe) = probe {
+        std::fs::write(probe_file.path(), probe).unwrap();
+        command.env("RALLY_BROWSER_PROBE", probe_file.path());
+    }
+    let output = command
+        .output()
+        .expect("node is needed to drive the browser");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{printed}\n{stderr}");
+    serde_json::from_str(printed.trim()).unwrap_or_else(|_| panic!("{printed}"))
+}
+
 /// RAL-84: sign in through the button in a real headless Chrome, as the operator does. RAL-83's
 /// bug, Chrome's own `Origin: null` under a no-referrer page, passed every curl-driven test here.
 /// It runs when `RALLY_TEST_CHROME` names a Chrome command (for example `google-chrome`, or
@@ -999,30 +1039,9 @@ fn a_past_rally_opens_as_its_own_board() {
 /// `RALLY_TEST_BROWSER_REQUIRED` so it can't be skipped there.
 #[test]
 fn a_real_browser_signs_in_through_the_button() {
-    let Some(chrome) = std::env::var("RALLY_TEST_CHROME")
-        .ok()
-        .filter(|command| !command.trim().is_empty())
-    else {
-        assert!(
-            std::env::var_os("RALLY_TEST_BROWSER_REQUIRED").is_none(),
-            "RALLY_TEST_BROWSER_REQUIRED is set, but RALLY_TEST_CHROME names no browser"
-        );
-        eprintln!("skipped: set RALLY_TEST_CHROME to sign in through a real browser (RAL-84)");
-        return;
-    };
+    let Some(chrome) = browser() else { return };
     let viewer = start();
-    let url = format!("http://{}{}", viewer.address, login(&viewer));
-    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser/sign-in.mjs");
-    let output = Command::new("node")
-        .arg(&script)
-        .arg(&url)
-        .args(chrome.split_whitespace())
-        .output()
-        .expect("node is needed to drive the browser");
-    let printed = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{printed}\n{stderr}");
-    let seen: Value = serde_json::from_str(printed.trim()).unwrap_or_else(|_| panic!("{printed}"));
+    let seen = in_browser(&viewer, &chrome, None);
     // Opening the address showed the button and spent nothing.
     assert_eq!(seen["codePage"]["button"], true, "{seen}");
     assert_eq!(seen["codePage"]["referrer"], "same-origin", "{seen}");
@@ -1036,4 +1055,109 @@ fn a_real_browser_signs_in_through_the_button() {
             .contains("other sites can't read this page"),
         "{seen}"
     );
+}
+
+/// RAL-90, in the browser: ages tick between polls, the live indicator shows, Verified is green
+/// and In review amber, a commit in evidence is shortened with the whole of it in its title, and
+/// IDs and ages don't wrap.
+#[test]
+fn the_board_keeps_its_ages_current_and_shows_commits_short() {
+    let Some(chrome) = browser() else { return };
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let viewer = start_after("[]", None, 60, |db, dir| {
+        let write = |args: &[&str]| {
+            let out = on(db, dir)
+                .args(["--credential", "a1", "--as", "author"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        // An open rally fixes the board to RAL, whoever is on this machine's Muster roster.
+        write(&[
+            "open-rally",
+            "--name",
+            "test",
+            "--project",
+            "RAL",
+            "--team",
+            "rally",
+        ]);
+        write(&["ready", "RAL-1"]);
+        write(&["claim", "RAL-1", "--team", "rally"]);
+        let evidence = format!("Castor-o7/rally@{commit}");
+        write(&[
+            "submit",
+            "RAL-1",
+            "--team",
+            "rally",
+            "--evidence",
+            &evidence,
+            "--not-checkable",
+        ]);
+    });
+    let probe = r##"(async () => {
+      const ages = () => [...document.querySelectorAll(".age[data-ts]")].map((n) => n.textContent);
+      const before = ages();
+      await new Promise((r) => setTimeout(r, 2500));
+      const after = ages();
+      const commit = document.querySelector("code.commit");
+      const colour = (name) => {
+        const probe = document.createElement("i");
+        probe.className = name;
+        document.body.append(probe);
+        const value = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return value;
+      };
+      const firstCell = document.querySelector("#ledger td");
+      const ageCell = document.querySelector("td.nowrap .age")?.parentElement;
+      return {
+        before, after,
+        freshness: document.getElementById("freshness").textContent,
+        freshnessClass: document.getElementById("freshness").className,
+        commit: commit && { text: commit.textContent, title: commit.title },
+        verified: colour("s-verified"),
+        inReview: colour("s-in_review"),
+        firstCellWraps: firstCell ? getComputedStyle(firstCell).whiteSpace : null,
+        ageCellWraps: ageCell ? getComputedStyle(ageCell).whiteSpace : null,
+      };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    assert_eq!(seen["after"]["status"], 200, "{seen}");
+    // Some age moved on by itself between polls, with nothing redrawn.
+    let before = probe["before"].as_array().unwrap();
+    let after = probe["after"].as_array().unwrap();
+    assert!(!before.is_empty(), "{probe}");
+    assert_eq!(before.len(), after.len(), "{probe}");
+    assert_ne!(before, after, "the ages stood still: {probe}");
+    let freshness = probe["freshness"].as_str().unwrap();
+    assert!(
+        freshness.contains("Live") && freshness.contains("updated"),
+        "{probe}"
+    );
+    assert!(
+        probe["freshnessClass"].as_str().unwrap().contains("live"),
+        "{probe}"
+    );
+    // The commit is shortened, with the whole evidence in the title.
+    assert_eq!(
+        probe["commit"]["text"], "Castor-o7/rally@0123456",
+        "{probe}"
+    );
+    assert_eq!(
+        probe["commit"]["title"],
+        format!("Castor-o7/rally@{commit}"),
+        "{probe}"
+    );
+    // Verified is green and In review amber (light scheme).
+    assert_eq!(probe["verified"], "rgb(27, 175, 122)", "{probe}");
+    assert_eq!(probe["inReview"], "rgb(237, 161, 0)", "{probe}");
+    assert_eq!(probe["firstCellWraps"], "nowrap", "{probe}");
+    assert_eq!(probe["ageCellWraps"], "nowrap", "{probe}");
 }
