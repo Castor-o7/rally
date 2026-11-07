@@ -1563,3 +1563,87 @@ fn the_digest_says_at_once_when_a_merge_left_the_base_red() {
         "{report}"
     );
 }
+
+#[test]
+fn the_digest_names_a_verified_story_whose_pull_request_is_behind_its_base() {
+    let db = Ledger::new();
+    ok(&db, "author", &["ready", "RAL-3"]);
+    ok(&db, "author", &["claim", "RAL-3", "--team", "rally"]);
+    let submitted = ok(
+        &db,
+        "author",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    let head = submitted["recorded"].as_u64().unwrap();
+    ok(
+        &db,
+        "reader",
+        &["verify", "RAL-3", "--note", "read it", "--commit", COMMIT],
+    );
+
+    // A gh with one open pull request at the verified commit, three commits behind main.
+    let bin = db.dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let prs = format!(
+        r#"[{{"number":7,"headRefOid":"{COMMIT}","baseRefName":"main","url":"https://github.com/Castor-o7/rally/pull/7"}}]"#
+    );
+    let script = format!(
+        "#!/bin/sh\ncase \"$*\" in\n  *\"pr list --repo Castor-o7/rally\"*) echo '{prs}' ;;\n  \
+         *\"compare/main...{COMMIT}\"*) echo 3 ;;\n  *) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+    );
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(bin.join("gh"), script).unwrap();
+        std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // The watchman's last digest covered everything up to the submission.
+    let state = db.dir.path().join("digest.json");
+    std::fs::write(
+        &state,
+        format!(r#"{{"w": {{"head": {head}, "seen_to": {head}}}}}"#),
+    )
+    .unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    let out = Command::new(env!("CARGO_BIN_EXE_rally"))
+        .arg("--db")
+        .arg(&db.db.url)
+        .arg("--head-file")
+        .arg(&db.head)
+        .args([
+            "digest",
+            "--quiet",
+            "10m",
+            "--max",
+            "10m",
+            "--watchman",
+            "w",
+            "--report-only",
+        ])
+        .arg("--state-file")
+        .arg(&state)
+        .env("PATH", format!("{}:{path}", bin.display()))
+        .env_remove("RALLY_DB")
+        .env_remove("RALLY_HEAD_FILE")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    // Due or still batching, the digest it would send names the story.
+    let row = &report["watchmen"][0];
+    let text = row["digest"]
+        .as_str()
+        .or(row["preview"].as_str())
+        .unwrap_or_default();
+    assert!(
+        text.contains(
+            "Verified, but behind their base (RAL-105) (1)\n- RAL-3: #7 at 0123456 is 3 commits \
+             behind main [observed]; merge main in and have the new head read before it merges \
+             https://github.com/Castor-o7/rally/pull/7"
+        ),
+        "{report}"
+    );
+}
