@@ -340,6 +340,11 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   not, or with none open, suggests one: the projects whose `sessions` in the project list match a roster session,
   every session as a team, those in no project as assisting, and the `rally open-rally` command to run; it opens
   nothing itself; and tests cover both.
+- [ ] **RAL-100: `rally view` names the builds it restarts for, and keys them on the commit.** From the watchman's
+  report on 2026-11-06: a run after `--restart` restarted the viewer again, because the two commands ran different
+  builds of the same commit, which aren't byte-identical. Done when: a build from a clean checkout embeds its commit
+  and `rally view` compares commits, falling back to the binary's SHA-256 without one; the restart note names both
+  builds; and a test covers a rebuild of the same commit not restarting.
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.
@@ -536,6 +541,19 @@ word.
   `commit_differs` counts it and RAL-67's also-reads; `verified_commits` lists it; it's dropped with the
   verification; `rally verifications` labels it by the designation, gated by nothing; with tests and
   docs/evidence.md.
+- [ ] **RAL-102: The digest says when a merge leaves the base red.** From the DiscoSim rally's issues log (§10.3,
+  §10.4): Muster's main was red for about a day and Rally's 11c0579 until a team noticed. Picked by mellow-weevil.
+  Done when: for each merge the ledger records, the watchman's own included, a digest pass reads the base's CI on
+  what landed (RAL-31's lookup, then `gh run list --commit`, read-only) and tells a failed run at once with its
+  address, without waiting for the quiet period; a run still going is listed and checked again each pass, and given
+  up on, said, after 2 hours; no run is told after 10 minutes; a check that can't be made says so rather than staying
+  silent, and is tried again; a pass says nothing; what's pending is kept with the head; with unit tests, a test of
+  the digest with a fake `gh`, and docs/digest.md.
+- [ ] **RAL-103: `rally gate` refuses a head that doesn't contain its base's tip.** From the DiscoSim rally's issues
+  log (§10.4): #144 merged at a head without #145, and main went red; #152 merged on 2026-11-06 without #151. Filed
+  by mellow-weevil's pick. Done when: `rally gate <base>..<new>` also refuses when `<new>` doesn't contain the
+  current tip of `<base>` (after a fetch of `origin/<base>`), saying to merge the base in first; it works without
+  GitHub branch protection, which is the operator's setting; with a CLI test on two branches.
 - [x] **RAL-87: Say when a watchman's digest has stopped.** Merged in #163 (a64baa3). From the DiscoSim rally's issues log (§2.7) and
   mellow-weevil's digest dying on a 429 on 2026-11-06 with nothing noticing. Done when: each `rally digest` pass
   records when it ran and when a digest last went; `rally brief` and `rally stalls` with `--digest-quiet-after
