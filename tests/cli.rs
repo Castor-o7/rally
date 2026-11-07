@@ -1010,7 +1010,15 @@ fn the_gate_refuses_a_range_naming_a_sent_back_story_and_passes_once_it_is_verif
         ok(
             &db,
             "author",
-            &["submit", story, "--team", "rally", "--evidence", "abc"],
+            &[
+                "submit",
+                story,
+                "--team",
+                "rally",
+                "--evidence",
+                "abc",
+                "--not-checkable",
+            ],
         );
     }
     ok(
@@ -1046,7 +1054,15 @@ fn the_gate_refuses_a_range_naming_a_sent_back_story_and_passes_once_it_is_verif
     ok(
         &db,
         "author",
-        &["submit", "RAL-2", "--team", "rally", "--evidence", "abc"],
+        &[
+            "submit",
+            "RAL-2",
+            "--team",
+            "rally",
+            "--evidence",
+            "abc",
+            "--not-checkable",
+        ],
     );
     ok(
         &db,
