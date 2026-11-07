@@ -3640,6 +3640,28 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 })
                 .flatten();
             rally::brief::mark_sessions(&mut report, roster.as_ref());
+            // The rally the watchman starts from (RAL-78), with the projects list the viewer uses.
+            let config = config_path(cli.config.clone())?;
+            let rallies = Backend::choose(location.as_ref(), &config, false)
+                .and_then(|backend| {
+                    backend.read_value("/v1/rallies", None, &Page::default(), views::rallies)
+                })
+                .ok();
+            // The brief degrades and never fails (RAL-22a): a bad projects list is noted, not fatal.
+            let file = match default_projects_file(&config) {
+                Ok(None) => None,
+                Ok(Some(path)) => Some(
+                    std::fs::read_to_string(&path)
+                        .map_err(|error| format!("can't read {}: {error}", path.display())),
+                ),
+                Err(error) => Some(Err(error.to_string())),
+            };
+            let (projects, note) = rally::brief::brief_projects(file);
+            report["rally"] =
+                rally::brief::rally_section(rallies.as_ref(), roster.as_ref(), &projects);
+            if let Some(note) = note {
+                report["rally"]["projects_note"] = json!(note);
+            }
             let now = report["now_ms"].as_i64().unwrap_or_default();
             report["digest"] =
                 digest_check(&digest, &report["watchmen"], &config_path(cli.config)?, now);
