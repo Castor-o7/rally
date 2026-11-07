@@ -524,33 +524,84 @@ pub fn current_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Va
     value
 }
 
-/// Who is in an open rally (RAL-108), by nickname, folded. It's the sessions the operator listed
-/// when the rally opened, and nobody else unless specified, apart from one exception: a listed
-/// session restarted under a new nickname. A new name joins as a listed name's successor only when
-/// all of these hold:
-/// - the listed name is no longer on Muster's roster;
-/// - the new name recorded for a team the listed name recorded for during the rally;
-/// - its first record for that team came after the listed name's last;
+/// A session that continues another in an open rally (RAL-108, RAL-110): confirmed when the
+/// operator or watchman recorded it with `rally rally-session add --succeeds`, otherwise read
+/// from the ledger and the roster, and shown as unconfirmed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Succession {
+    pub name: String,
+    pub succeeds: String,
+    pub team: Option<String>,
+    pub confirmed: bool,
+}
+
+/// Who is in an open rally (RAL-108, RAL-110), by nickname, folded.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Members {
+    pub names: BTreeSet<String>,
+    pub successions: Vec<Succession>,
+    /// Nicknames removed by `rally rally-session remove`, out whatever else would take them in.
+    pub removed: BTreeSet<String>,
+}
+
+/// Who is in an open rally, by nickname, folded. It's the sessions the operator listed when the
+/// rally opened, and nobody else unless specified (RAL-108).
+///
+/// Specified, by `rally rally-session` (RAL-110): a session added is in, and a session removed is
+/// out, whether listed, added or detected. The latest record for a name decides. An add with
+/// `--succeeds` confirms that session as a restart of another.
+///
+/// Detected: a listed or added session restarted under a new nickname continues as its
+/// successor, shown unconfirmed, when all of these hold:
+/// - the earlier name is no longer on Muster's roster, and has no confirmed successor;
+/// - the new name recorded for a team the earlier name recorded for during the rally;
+/// - its first record for that team came after the earlier name's last;
 /// - it used one of the same pairing credentials (the operator's machine).
 ///
-/// Each name has at most one successor: the earliest. A successor can have its own when it
-/// restarts in turn. With no roster to read, nobody is known to have stopped, so only the listed
-/// names count. Returns the members, and each succession as (successor, listed name, team).
-pub fn rally_members(
-    open: &Value,
-    on_roster: Option<&BTreeSet<String>>,
-) -> (BTreeSet<String>, Vec<(String, String, String)>) {
+/// Each name has at most one detected successor, the earliest, and a successor can have its own
+/// when it restarts in turn. With no roster to read, nobody is known to have stopped, so nothing
+/// is detected.
+pub fn rally_members(open: &Value, on_roster: Option<&BTreeSet<String>>) -> Members {
     let fold = |name: &str| name.trim().to_lowercase();
     let listed: Vec<String> = open["teams"]
         .as_array()
         .map(|teams| teams.iter().filter_map(Value::as_str).map(fold).collect())
         .unwrap_or_default();
     let mut members: BTreeSet<String> = listed.iter().cloned().collect();
-    let mut successions = Vec::new();
+    let mut removed: BTreeSet<String> = BTreeSet::new();
+    let mut confirmed: BTreeMap<String, String> = BTreeMap::new();
+    for entry in open["sessions"].as_array().into_iter().flatten() {
+        let Some(name) = entry["session"].as_str().map(fold) else {
+            continue;
+        };
+        if entry["remove"] == json!(true) {
+            members.remove(&name);
+            confirmed.remove(&name);
+            removed.insert(name);
+        } else {
+            removed.remove(&name);
+            if let Some(of) = entry["succeeds"].as_str() {
+                confirmed.insert(name.clone(), fold(of));
+            }
+            members.insert(name);
+        }
+    }
+    let mut successions: Vec<Succession> = confirmed
+        .iter()
+        .map(|(name, of)| Succession {
+            name: name.clone(),
+            succeeds: of.clone(),
+            team: None,
+            confirmed: true,
+        })
+        .collect();
     let (Some(on_roster), Some(recorded)) = (on_roster, open["recorded_as"].as_object()) else {
-        return (members, successions);
+        return Members {
+            names: members,
+            successions,
+            removed,
+        };
     };
-    // (team, name) -> (first, last, credentials)
     fn span<'a>(team: &'a Value, name: &str) -> Option<(u64, u64, BTreeSet<&'a str>)> {
         let span = &team[name];
         let credentials = span["credentials"]
@@ -559,9 +610,9 @@ pub fn rally_members(
             .unwrap_or_default();
         Some((span["first"].as_u64()?, span["last"].as_u64()?, credentials))
     }
-    let mut heads = listed;
+    let mut heads: Vec<String> = members.iter().cloned().collect();
     while let Some(head) = heads.pop() {
-        if on_roster.contains(&head) {
+        if on_roster.contains(&head) || confirmed.values().any(|of| *of == head) {
             continue;
         }
         let mut best: Option<(u64, String, String)> = None;
@@ -573,7 +624,7 @@ pub fn rally_members(
                 continue;
             };
             for name in names.keys() {
-                if members.contains(name) {
+                if members.contains(name) || removed.contains(name) {
                     continue;
                 }
                 let Some((first, _, theirs)) = span(team, name) else {
@@ -591,11 +642,20 @@ pub fn rally_members(
         }
         if let Some((_, name, team)) = best {
             members.insert(name.clone());
-            successions.push((name.clone(), head, team));
+            successions.push(Succession {
+                name: name.clone(),
+                succeeds: head,
+                team: Some(team),
+                confirmed: false,
+            });
             heads.push(name);
         }
     }
-    (members, successions)
+    Members {
+        names: members,
+        successions,
+        removed,
+    }
 }
 
 /// The nicknames on a roster the viewer shaped, or `None` when it couldn't be read.
@@ -622,10 +682,14 @@ fn opened_rally(open: &Value, roster: &Value) -> Value {
         .as_array()
         .map(|teams| teams.iter().filter_map(Value::as_str).map(fold).collect())
         .unwrap_or_default();
-    let (members, successions) = rally_members(open, roster_names(roster).as_ref());
+    let Members {
+        names: members,
+        successions,
+        removed,
+    } = rally_members(open, roster_names(roster).as_ref());
     let mut teams: BTreeSet<String> = listed.iter().cloned().collect();
     // A successor's team is the listed session's, so it comes onto the board too.
-    teams.extend(successions.iter().map(|(_, _, team)| team.clone()));
+    teams.extend(successions.iter().filter_map(|s| s.team.clone()));
     if let Some(sessions) = roster["sessions"].as_array() {
         for session in sessions {
             let nickname = session["nickname"].as_str().map(fold);
@@ -646,13 +710,17 @@ fn opened_rally(open: &Value, roster: &Value) -> Value {
         "opened_by": open["source"]["declared_name"],
         "prefixes": open["projects"],
         "teams": open["teams"],
-        "teams_listed": !listed.is_empty(),
+        // Listed when it opened, or specified since (RAL-110).
+        "teams_listed": !listed.is_empty() || open["sessions"].as_array().is_some_and(|s| !s.is_empty()),
         "active_teams": teams,
         "members": members,
+        "removed": removed,
         "successors": successions
             .iter()
-            .map(|(name, of, team)| json!({"name": name, "succeeds": of, "team": team}))
+            .map(|s| json!({"name": s.name, "succeeds": s.succeeds, "team": s.team,
+                            "confirmed": s.confirmed}))
             .collect::<Vec<_>>(),
+        "sessions_changed": open["sessions"].as_array().cloned().unwrap_or_default(),
         "rule": "This rally's board: its projects and teams as declared when it opened, and only \
                  what was recorded since. Earlier work is kept in the ledger and under past rallies.",
     })
@@ -2613,30 +2681,35 @@ mod tests {
         .into_iter()
         .map(String::from)
         .collect();
-        let (members, successions) = rally_members(&open, Some(&roster));
+        let Members {
+            names: members,
+            successions,
+            ..
+        } = rally_members(&open, Some(&roster));
         assert_eq!(
             members.iter().map(String::as_str).collect::<Vec<_>>(),
             ["frank-crocodile", "mellow-weevil", "plush-tortoise"]
         );
         assert_eq!(
             successions,
-            [(
-                "mellow-weevil".into(),
-                "frank-crocodile".into(),
-                "watchman".into()
-            )]
+            [Succession {
+                name: "mellow-weevil".into(),
+                succeeds: "frank-crocodile".into(),
+                team: Some("watchman".into()),
+                confirmed: false,
+            }]
         );
         // While the listed name is still on the roster, it hasn't restarted: nobody succeeds it.
         let mut both = roster.clone();
         both.insert("frank-crocodile".into());
-        assert_eq!(rally_members(&open, Some(&both)).0.len(), 2);
+        assert_eq!(rally_members(&open, Some(&both)).names.len(), 2);
         // Without a roster, nobody is known to have stopped.
-        assert_eq!(rally_members(&open, None).0.len(), 2);
+        assert_eq!(rally_members(&open, None).names.len(), 2);
         // Another machine's credential isn't the operator's session restarting.
         let mut other = open.clone();
         other["recorded_as"]["watchman"]["mellow-weevil"] = span(925, 990, "elsewhere");
         other["recorded_as"]["watchman"]["late-lark"] = span(995, 995, "elsewhere");
-        assert_eq!(rally_members(&other, Some(&roster)).0.len(), 2);
+        assert_eq!(rally_members(&other, Some(&roster)).names.len(), 2);
         // A successor that restarts in turn has its own successor.
         let mut again = open.clone();
         again["recorded_as"]["watchman"]["late-lark"] = span(995, 999, "murph");
@@ -2644,7 +2717,7 @@ mod tests {
             .into_iter()
             .map(String::from)
             .collect();
-        let (members, _) = rally_members(&again, Some(&roster_after));
+        let members = rally_members(&again, Some(&roster_after)).names;
         assert!(members.contains("late-lark") && members.contains("mellow-weevil"));
         // The board: the listed nicknames unchanged, the successor named beside its listed one.
         let shaped = rally_roster(json!([
@@ -2656,7 +2729,8 @@ mod tests {
         assert_eq!(rally["teams"], json!(["frank-crocodile", "plush-tortoise"]));
         assert_eq!(
             rally["successors"],
-            json!([{"name": "mellow-weevil", "succeeds": "frank-crocodile", "team": "watchman"}])
+            json!([{"name": "mellow-weevil", "succeeds": "frank-crocodile", "team": "watchman",
+                     "confirmed": false}])
         );
         let in_rally = rally["members"].as_array().unwrap();
         assert!(!in_rally.contains(&json!("cobalt-glen")));
@@ -2668,6 +2742,86 @@ mod tests {
             !active.contains(&json!("src")),
             "cobalt-glen's project isn't brought in"
         );
+    }
+
+    /// RAL-110: the operator or watchman specifies sessions: an add is in, a removal is out
+    /// whatever would take it in, the latest record decides, and a confirmed restart stops
+    /// another being guessed for the same session.
+    #[test]
+    fn the_operator_adds_removes_and_confirms_sessions() {
+        let span =
+            |first: u64, last: u64| json!({"first": first, "last": last, "credentials": ["murph"]});
+        let entry = |session: &str, remove: bool, succeeds: Option<&str>| {
+            let mut e = json!({"session": session, "remove": remove, "note": "x"});
+            if let Some(of) = succeeds {
+                e["succeeds"] = json!(of);
+            }
+            e
+        };
+        let mut open = json!({"seq": 914, "name": "x", "projects": ["RAL"],
+        "teams": ["frank-crocodile", "plush-tortoise"],
+        "recorded_as": {"watchman": {
+            "frank-crocodile": span(915, 920),
+            "late-lark": span(925, 930),
+        }},
+        "sessions": [
+            // Added outright: in, though nothing ties it to a listed session.
+            entry("cobalt-glen", false, None),
+            // A listed session removed, then added back: the latest decides.
+            entry("plush-tortoise", true, None),
+            entry("plush-tortoise", false, None),
+            // Confirmed as frank-crocodile's restart, so late-lark isn't guessed for it.
+            entry("mellow-weevil", false, Some("frank-crocodile")),
+            entry("wise-leopard", true, None),
+        ]});
+        let roster: BTreeSet<String> = ["mellow-weevil", "plush-tortoise", "late-lark"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let members = rally_members(&open, Some(&roster));
+        assert_eq!(
+            members.names.iter().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "cobalt-glen",
+                "frank-crocodile",
+                "mellow-weevil",
+                "plush-tortoise"
+            ]
+        );
+        assert_eq!(
+            members.successions,
+            [Succession {
+                name: "mellow-weevil".into(),
+                succeeds: "frank-crocodile".into(),
+                team: None,
+                confirmed: true,
+            }]
+        );
+        assert_eq!(members.removed.iter().collect::<Vec<_>>(), ["wise-leopard"]);
+        // Without the confirmation, late-lark is guessed, and shown unconfirmed.
+        open["sessions"].as_array_mut().unwrap().remove(3);
+        let guessed = rally_members(&open, Some(&roster));
+        assert!(guessed.names.contains("late-lark"));
+        assert!(!guessed.successions[0].confirmed);
+        // A removal takes a guessed restart out, and a listed session too.
+        open["sessions"].as_array_mut().unwrap().extend([
+            entry("late-lark", true, None),
+            entry("frank-crocodile", true, None),
+        ]);
+        let removed = rally_members(&open, Some(&roster));
+        assert!(!removed.names.contains("late-lark") && !removed.names.contains("frank-crocodile"));
+        // Specified sessions count without a roster; guesses don't.
+        let unread = rally_members(&open, None);
+        assert!(unread.names.contains("cobalt-glen") && unread.successions.is_empty());
+        // The board shows the removal, so the page leaves that session out.
+        let rally = opened_rally(&open, &rally_roster(json!([])));
+        assert!(
+            rally["removed"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("frank-crocodile"))
+        );
+        assert_eq!(rally["sessions_changed"].as_array().unwrap().len(), 6);
     }
 
     #[test]
