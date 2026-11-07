@@ -12,7 +12,8 @@
 //! running viewer for a one-time code. Opening `/?code=<code>` shows a "Sign in" button, and only
 //! the button's POST spends the code, which works once, within a minute (RAL-73). It becomes a
 //! random session cookie, HttpOnly and SameSite=Strict. A session holds only while the key it was
-//! made under is the one in the file, so `rally web --new-key` signs every browser out. See
+//! made under is the one in the file, so `rally web --new-key` signs every browser out. Sessions are
+//! kept, as hashes, in a private file beside the key, so a restart signs no one out (RAL-80). See
 //! `docs/web.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -1062,8 +1063,10 @@ struct App {
     key_file: std::path::PathBuf,
     /// One-time codes and when each stops working.
     codes: Mutex<Vec<(String, Instant)>>,
-    /// Signed-in sessions, each with the key it was made under.
+    /// Signed-in sessions, as the SHA-256 of each session and of the key it was made under, kept
+    /// in `sessions_file` too (RAL-80).
     sessions: Mutex<Vec<(String, String)>>,
+    sessions_file: std::path::PathBuf,
     /// How long a one-time code works.
     code_ttl: Duration,
     /// The backup directory on this machine to report on, if any (RAL-15).
@@ -1204,6 +1207,8 @@ pub async fn serve(
     local: LocalSummaries,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let address = listener.local_addr()?;
+    let sessions_file = sessions_file(&sign_in.key_file);
+    let sessions = load_sessions(&sessions_file, &sign_in.key_file);
     let app = Arc::new(App {
         projects,
         local,
@@ -1211,7 +1216,8 @@ pub async fn serve(
         allowed_hosts: allowed_hosts(address)?,
         key_file: sign_in.key_file,
         codes: Mutex::new(Vec::new()),
-        sessions: Mutex::new(Vec::new()),
+        sessions: Mutex::new(sessions),
+        sessions_file,
         code_ttl: sign_in.code_ttl,
         backup,
         past: Mutex::new(past),
@@ -1593,12 +1599,21 @@ fn sign_in(app: &App, offered: &str) -> Response {
         );
     };
     {
+        let key = sha256_hex(&key);
         let mut sessions = app.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.retain(|(_, made_under)| *made_under == key);
         if sessions.len() >= MAX_HELD {
             sessions.remove(0);
         }
-        sessions.push((session.clone(), key));
+        sessions.push((sha256_hex(&session), key));
+        // Saved under the lock, so two sign-ins can't save out of order. A failed save leaves
+        // this session good until the viewer restarts.
+        if let Err(error) = save_sessions(&app.sessions_file, &sessions) {
+            eprintln!(
+                "rally web: couldn't keep the sessions in {}: {error}",
+                app.sessions_file.display()
+            );
+        }
     }
     let cookie = format!("{COOKIE}={session}; HttpOnly; SameSite=Strict; Path=/");
     match HeaderValue::from_str(&cookie) {
@@ -1622,11 +1637,75 @@ fn signed_in(app: &App, headers: &axum::http::HeaderMap) -> bool {
     let (Some(held), Some(key)) = (cookie_key(headers), current_key(app)) else {
         return false;
     };
+    let (held, key) = (sha256_hex(held), sha256_hex(&key));
     app.sessions
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .any(|(session, made_under)| *made_under == key && same_key(held, session))
+        .any(|(session, made_under)| *made_under == key && same_key(&held, session))
+}
+
+fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(text.as_bytes()))
+}
+
+/// Where the sessions are kept: beside the key file, named after it (RAL-80).
+pub fn sessions_file(key_file: &std::path::Path) -> std::path::PathBuf {
+    let mut name = key_file.file_name().unwrap_or_default().to_os_string();
+    name.push(".sessions");
+    key_file.with_file_name(name)
+}
+
+/// The kept sessions made under the key now in `key_file`. Anything unreadable, or made under
+/// another key, as after `--new-key`, is left out, so it signs no one in.
+fn load_sessions(file: &std::path::Path, key_file: &std::path::Path) -> Vec<(String, String)> {
+    let Some(key) = std::fs::read_to_string(key_file)
+        .ok()
+        .map(|text| text.trim().to_owned())
+        .filter(|key| is_key(key))
+    else {
+        return Vec::new();
+    };
+    let key = sha256_hex(&key);
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return Vec::new();
+    };
+    let Ok(kept) = serde_json::from_str::<Value>(&text) else {
+        eprintln!(
+            "rally web: {} isn't a sessions file, so no one is signed in",
+            file.display()
+        );
+        return Vec::new();
+    };
+    let mut sessions: Vec<(String, String)> = kept["sessions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let session = row["session_sha256"].as_str()?;
+            let made_under = row["key_sha256"].as_str()?;
+            (is_key(session) && made_under == key).then(|| (session.to_owned(), key.clone()))
+        })
+        .collect();
+    let extra = sessions.len().saturating_sub(MAX_HELD);
+    sessions.drain(..extra);
+    sessions
+}
+
+/// Writes the sessions to a private file, replacing the old one whole, so a crash mid-write leaves
+/// the old file or the new one, never part of one.
+fn save_sessions(file: &std::path::Path, sessions: &[(String, String)]) -> Result<(), String> {
+    let rows: Vec<Value> = sessions
+        .iter()
+        .map(|(session, key)| json!({"session_sha256": session, "key_sha256": key}))
+        .collect();
+    let text = serde_json::to_vec(&json!({"sessions": rows})).map_err(|e| e.to_string())?;
+    let mut temporary = file.as_os_str().to_os_string();
+    temporary.push(".new");
+    let temporary = std::path::PathBuf::from(temporary);
+    crate::access::write_private(&temporary, &text).map_err(|e| e.to_string())?;
+    std::fs::rename(&temporary, file).map_err(|e| e.to_string())
 }
 
 /// A browser says where a request came from in `Sec-Fetch-Site`: only this page itself, or the
