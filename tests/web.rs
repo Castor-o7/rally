@@ -1034,6 +1034,28 @@ fn in_browser_with(
     probe: Option<&str>,
     schemes: Option<&str>,
 ) -> Value {
+    in_browser_full(viewer, chrome, probe, schemes, None)
+}
+
+/// Like `in_browser`, in a window of `window` ("width,height") rather than the script's 1500x1000
+/// (RAL-111).
+fn in_browser_at(
+    viewer: &Viewer,
+    chrome: &str,
+    probe: Option<&str>,
+    window: Option<&str>,
+) -> Value {
+    in_browser_full(viewer, chrome, probe, None, window)
+}
+
+/// `in_browser` with each of its options: colour schemes (RAL-91) and a window size (RAL-111).
+fn in_browser_full(
+    viewer: &Viewer,
+    chrome: &str,
+    probe: Option<&str>,
+    schemes: Option<&str>,
+    window: Option<&str>,
+) -> Value {
     let url = format!("http://{}{}", viewer.address, login(viewer));
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser/sign-in.mjs");
     let mut command = Command::new("node");
@@ -1048,6 +1070,9 @@ fn in_browser_with(
     }
     if let Some(schemes) = schemes {
         command.env("RALLY_BROWSER_SCHEMES", schemes);
+    }
+    if let Some(window) = window {
+        command.env("RALLY_BROWSER_WINDOW", window);
     }
     let output = command
         .output()
@@ -1720,5 +1745,73 @@ fn the_page_uses_a_wide_window() {
     assert_eq!(probe["window"], 1500, "{seen}");
     assert_eq!(probe["maxWidth"], "1200px", "{probe}");
     assert_eq!(probe["body"], 1200, "{probe}");
+    assert_eq!(probe["overflow"], false, "{probe}");
+}
+
+/// RAL-111, in the browser: on an 800-pixel window, as on a half screen, the page fits it. Wide
+/// tables scroll inside their own box, and the page itself never scrolls sideways.
+#[test]
+fn the_page_fits_a_narrow_window() {
+    let Some(chrome) = browser() else { return };
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let viewer = start_after("[]", None, 60, |db, dir| {
+        let write = |args: &[&str]| {
+            let out = on(db, dir)
+                .args(["--credential", "a1", "--as", "author"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        write(&[
+            "open-rally",
+            "--name",
+            "test",
+            "--project",
+            "RAL",
+            "--team",
+            "rally",
+        ]);
+        // A story in review, so the evidence table, the widest, is on the page.
+        write(&["ready", "RAL-1"]);
+        write(&["claim", "RAL-1", "--team", "rally"]);
+        let evidence = format!("Castor-o7/rally@{commit}");
+        write(&[
+            "submit",
+            "RAL-1",
+            "--team",
+            "rally",
+            "--evidence",
+            &evidence,
+            "--not-checkable",
+        ]);
+    });
+    let probe = r##"(async () => {
+      for (let i = 0; i < 100 && !document.querySelector("#ledger table"); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const root = document.documentElement;
+      // Anything wider than the window that isn't inside a box that scrolls on its own.
+      const sticking = [...document.querySelectorAll("body *")]
+        .filter((node) => node.getBoundingClientRect().right > root.clientWidth + 1)
+        .filter((node) => !node.closest(".table-wrap"))
+        .map((node) => node.tagName + (node.id ? "#" + node.id : "") + "." + node.className)
+        .slice(0, 5);
+      return {
+        window: window.innerWidth,
+        tables: document.querySelectorAll("table").length,
+        overflow: root.scrollWidth > root.clientWidth,
+        sticking,
+      };
+    })()"##;
+    let seen = in_browser_at(&viewer, &chrome, Some(probe), Some("800,1000"));
+    let probe = &seen["probe"];
+    assert_eq!(probe["window"], 800, "{seen}");
+    assert!(probe["tables"].as_u64().unwrap() > 0, "{probe}");
+    assert_eq!(probe["sticking"], json!([]), "{probe}");
     assert_eq!(probe["overflow"], false, "{probe}");
 }
