@@ -524,6 +524,34 @@ pub fn current_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Va
     value
 }
 
+/// Who is in an open rally (RAL-108), by nickname, folded: each listed name, and each name that
+/// recorded, while the rally was open, under a ledger team that a listed name also recorded under
+/// or that is itself listed. A session restarted under a new nickname rejoins once it records for
+/// its team. It's one step: a name only another joined name vouches for isn't taken in. Returns
+/// the names and the ledger teams that tied them.
+pub fn rally_members(open: &Value) -> (BTreeSet<String>, BTreeSet<String>) {
+    let fold = |name: &str| name.trim().to_lowercase();
+    let listed: BTreeSet<String> = open["teams"]
+        .as_array()
+        .map(|teams| teams.iter().filter_map(Value::as_str).map(fold).collect())
+        .unwrap_or_default();
+    let mut members = listed.clone();
+    let mut linked = BTreeSet::new();
+    if let Some(recorded) = open["recorded_as"].as_object() {
+        for (team, names) in recorded {
+            let names: Vec<String> = names
+                .as_array()
+                .map(|n| n.iter().filter_map(Value::as_str).map(fold).collect())
+                .unwrap_or_default();
+            if listed.contains(&fold(team)) || names.iter().any(|n| listed.contains(n)) {
+                linked.insert(fold(team));
+                members.extend(names);
+            }
+        }
+    }
+    (members, linked)
+}
+
 /// The board of a rally someone opened (RAL-76): its projects and teams as declared, and only what
 /// was recorded since it opened. A listed team also takes in the ledger team of each listed
 /// session's Muster project, so `rally` comes with the session working on it.
@@ -533,11 +561,13 @@ fn opened_rally(open: &Value, roster: &Value) -> Value {
         .as_array()
         .map(|teams| teams.iter().filter_map(Value::as_str).map(fold).collect())
         .unwrap_or_default();
+    let (members, linked) = rally_members(open);
     let mut teams: BTreeSet<String> = listed.iter().cloned().collect();
+    teams.extend(linked);
     if let Some(sessions) = roster["sessions"].as_array() {
         for session in sessions {
             let nickname = session["nickname"].as_str().map(fold);
-            if nickname.is_some_and(|n| listed.contains(&n))
+            if nickname.is_some_and(|n| members.contains(&n))
                 && let Some(project) = session["project"].as_str()
             {
                 teams.insert(fold(project));
@@ -556,6 +586,7 @@ fn opened_rally(open: &Value, roster: &Value) -> Value {
         "teams": open["teams"],
         "teams_listed": !listed.is_empty(),
         "active_teams": teams,
+        "members": members,
         "rule": "This rally's board: its projects and teams as declared when it opened, and only \
                  what was recorded since. Earlier work is kept in the ledger and under past rallies.",
     })
@@ -2431,6 +2462,58 @@ mod tests {
             &current_rally(&rally_projects(), &held, &on),
             "RAL"
         ));
+    }
+
+    /// RAL-108: a session restarted under a new nickname stays in the rally once it records for
+    /// the team its listed nickname recorded for; the listed nicknames stay as they were.
+    #[test]
+    fn a_restarted_session_rejoins_by_recording_for_its_team() {
+        let open = json!({"seq": 914, "name": "x", "projects": ["RAL"],
+        "teams": ["frank-crocodile", "plush-tortoise"],
+        "recorded_as": {
+            "watchman": ["frank-crocodile", "mellow-weevil"],
+            "rally": ["plush-tortoise", "cobalt-glen"],
+            // No listed name recorded for catapp, so its names aren't taken in.
+            "catapp": ["someone", "mellow-weevil"],
+        }});
+        let (members, linked) = rally_members(&open);
+        assert_eq!(
+            members.iter().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "cobalt-glen",
+                "frank-crocodile",
+                "mellow-weevil",
+                "plush-tortoise"
+            ]
+        );
+        assert_eq!(
+            linked.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["rally", "watchman"]
+        );
+        let roster = rally_roster(json!([
+            {"nickname": "mellow-weevil", "project": "Caster"},
+            {"nickname": "someone", "project": "catapp"},
+        ]));
+        let rally = opened_rally(&open, &roster);
+        assert_eq!(rally["teams"], json!(["frank-crocodile", "plush-tortoise"]));
+        assert!(
+            rally["members"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("mellow-weevil"))
+        );
+        assert!(
+            !rally["members"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("someone"))
+        );
+        let active = rally["active_teams"].as_array().unwrap();
+        // The watchman's ledger team and the rejoined session's project come in; catapp doesn't.
+        for team in ["watchman", "rally", "caster"] {
+            assert!(active.contains(&json!(team)), "{team}");
+        }
+        assert!(!active.contains(&json!("catapp")));
     }
 
     #[test]

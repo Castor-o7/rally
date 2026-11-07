@@ -122,6 +122,14 @@ declared state. That covers the ledger's figures and evidence, the declared team
 and the watchman's writeup if it's older than the rally. A listed session brings in the ledger team of its Muster
 project, so `--team plush-tortoise` brings `rally` too. Track records stay all-time, and say so.
 
+A rally lists sessions by their Muster nickname, and a session restarted under a new nickname keeps its place
+(RAL-108). While a rally is open, the ledger keeps who recorded under which ledger team (`recorded_as` in
+`rally rallies`). A nickname that records for a team that a listed nickname also recorded for, or that is itself
+listed, is in the rally too, and the page names it under "Joined since". So when the watchman restarts as
+mellow-weevil, it rejoins with its first record for `watchman`. It's one step only: a name vouched for only by
+another joined name isn't taken in. The names are declared, like every name in Rally. The rally's own list doesn't
+change.
+
 Nothing is removed. The ledger is append-only and hash-chained, and deleting records would fail its check, so a
 closed rally is kept whole. The page lists past rallies, and each opens as its own board (`#/rally/<record that
 opened it>`, RAL-77): the ledger as it stood when it closed (RAL-28), showing only its projects' stories recorded

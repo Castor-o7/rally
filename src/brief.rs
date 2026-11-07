@@ -291,11 +291,8 @@ pub fn rally_section(
                 "working_on": session["declared"]["current_task"],
             });
             if let Some(open) = &open {
-                let teams: Vec<String> = open["teams"]
-                    .as_array()
-                    .map(|t| t.iter().filter_map(Value::as_str).map(fold).collect())
-                    .unwrap_or_default();
-                row["in_rally"] = json!(teams.contains(&fold(nickname)));
+                let (members, _) = crate::web::rally_members(open);
+                row["in_rally"] = json!(members.contains(&fold(nickname)));
             }
             row
         })
@@ -451,6 +448,13 @@ mod tests {
         assert!(out.get("suggested").is_none());
         assert_eq!(out["sessions"][0]["in_rally"], true);
         assert_eq!(out["sessions"][3]["in_rally"], false);
+        // RAL-108: cobalt-glen recorded for the team the listed name did, so it's in too.
+        let rallies = json!({"open": {"seq": 628, "name": "0x5", "projects": ["MUS"],
+            "teams": ["Robust-Warbler"],
+            "recorded_as": {"muster": ["robust-warbler", "cobalt-glen"]}}});
+        let out = rally_section(Some(&rallies), Some(&rally_roster()), &rally_projects());
+        assert_eq!(out["sessions"][3]["in_rally"], true);
+        assert_eq!(out["sessions"][2]["in_rally"], false);
         // Without the service's rallies or the roster, it says so.
         let older = rally_section(None, None, &rally_projects());
         assert!(older["note"].is_string() && older["sessions_note"].is_string());

@@ -34,6 +34,10 @@ function teamInRally(rally, name) {
 function sessionInRally(rally, session) {
   if (!(rally && rally.opened && rally.teams_listed)) return true;
   const teams = rally.active_teams || [];
+  // A restarted session's new nickname is a member once it records for its team (RAL-108).
+  const members = rally.members || [];
+  const nickname = String(session.nickname || "").trim().toLowerCase();
+  if (nickname && members.includes(nickname)) return true;
   return [session.nickname, session.project].some((n) => n && teams.includes(String(n).trim().toLowerCase()));
 }
 
@@ -233,6 +237,12 @@ function rallyLine(rally, otherStories) {
     box.append(head);
     box.append(el("p", "figure", "Projects: " + prefixes.join(", ")
       + ((rally.teams || []).length ? " · Teams: " + rally.teams.join(", ") : "")));
+    // Nicknames that joined since it opened, by recording for a listed session's team (RAL-108).
+    const listed = (rally.teams || []).map((n) => String(n).trim().toLowerCase());
+    const joined = (rally.members || []).filter((n) => !listed.includes(n));
+    if (joined.length) {
+      box.append(el("p", "muted", "Joined since, by recording for a listed session's team: " + joined.join(", ")));
+    }
     box.append(el("p", "muted", "Opened " + when(rally.opened_at_ms) + ", at record " + rally.since_seq
       + (rally.opened_by ? ", by " + rally.opened_by : "") + ". " + rally.rule));
   } else {
