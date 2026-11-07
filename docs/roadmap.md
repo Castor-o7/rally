@@ -395,6 +395,19 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   `current_task_at` (still not the operator's address), and the roster's columns are Team (the session's
   nickname), Directory (`~` for the home folder, the whole path in its title), Project (and branch), Machine,
   Status (busy or idle, and wake), Working on (and when it was set) and Last action (its age and tool).
+- [ ] **RAL-104: The rally report belongs to the open rally and carries its major events.** Asked for by Josh
+  on 2026-11-06. When "rally 0x5" opened (record 914), the report box still showed the writeup from the rally
+  before it. The overview matches the watchman's writeup to a rally by its day file's date, so a rally opened
+  later the same day inherits the earlier one's writeup. Josh also wants the report to be more than an end-of-day
+  summary: the major events of the rally, as they happen, such as the leaked headless Chrome processes that
+  filled `/run/user/1000` and had to be killed, or a team's commit SHA that turned out not to exist. Done when: the
+  report box shows nothing from before the open rally opened (a writeup counts only if it was written after the
+  opening record, not merely dated the same day), and with no writeup yet it says so rather than showing an old
+  one. A new `rally event` record, written by the watchman or any team, has a one-line headline, a severity
+  (notice or incident), and what backs it (a record number, PR, commit or file), and is labelled declared like
+  any other claim. The report box lists the open rally's events newest first, above the writeup, each with its
+  author and age. A closed rally keeps its events in its past-rally view. And tests cover a same-day second
+  rally, an event with no backing, and an old rally's events staying out of the new one.
 
 ## Phase 5: Rally into Levi
 

@@ -46,6 +46,9 @@ Where you use Rally:
 - **Open the viewer**: `rally view` starts it if needed and opens it signed in; `--restart` and `--stop` too.
 - **Open and close a rally**: `rally open-rally --name "..." --project <PREFIX>... --team <team>...` starts a
   clean board for the viewer, and `rally close-rally --note "..."` keeps it as a past rally. `rally rallies` lists them.
+- **Record a major event** of the open rally, such as an incident that cost the muster time:
+  `rally event --headline "..." --severity notice|incident [--backing <record, PR, commit or file>]...`.
+  The viewer's report box lists them, newest first.
   Only the operator or the watchman opens or closes a rally; the service enforces it with `--rally-openers`.
 - **Record what's standing**: `rally hold`, `rally condition` and `rally grant` (with `--direct` or
   `--relayed-by`), ended with `rally end-standing <N> --note "why"`. Declared only: a recorded grant

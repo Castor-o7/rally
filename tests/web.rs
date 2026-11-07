@@ -73,6 +73,17 @@ fn start_after(
     code_seconds: u64,
     setup: impl FnOnce(&Database, &std::path::Path),
 ) -> Viewer {
+    start_after_with(projects_json, fake_gh, code_seconds, setup, |_| Vec::new())
+}
+
+/// Like `start_after`, with more arguments for `rally web`, made from the test's folder.
+fn start_after_with(
+    projects_json: &str,
+    fake_gh: Option<&str>,
+    code_seconds: u64,
+    setup: impl FnOnce(&Database, &std::path::Path),
+    web_args: impl FnOnce(&std::path::Path) -> Vec<String>,
+) -> Viewer {
     let dir = tempfile::tempdir().unwrap();
     let db = scratch_pg::shared().database();
     setup(&db, dir.path());
@@ -99,6 +110,7 @@ fn start_after(
         .arg("--key-file")
         .arg(&key_file)
         .args(["--code-seconds", &code_seconds.to_string()])
+        .args(web_args(dir.path()))
         .stdout(Stdio::piped());
     if fake_gh.is_some() {
         let path = std::env::var("PATH").unwrap_or_default();
@@ -1258,4 +1270,155 @@ fn an_open_section_stays_open_across_a_refresh() {
         "the refresh should redraw the section: {probe}"
     );
     assert_eq!(probe["open"], true, "the open section closed: {probe}");
+}
+
+/// RAL-104: the report box belongs to the open rally. A second rally opened the same day doesn't
+/// take the first one's writeup, and its events are its own, newest first, while the first keeps
+/// its events in its past-rally view.
+#[test]
+fn the_report_box_belongs_to_the_open_rally_and_lists_its_events() {
+    let projects = r#"[{"name": "Rally", "prefix": "RAL", "repo": "Castor-o7/rally",
+        "path": "docs/roadmap.md", "tick_meaning": "Verified by the watchman"}]"#;
+    let writeups = std::cell::RefCell::new(None);
+    let viewer = start_after_with(
+        projects,
+        // GitHub is never reached: the writeups are read locally.
+        Some("#!/bin/sh\necho 'gh: offline' >&2\nexit 1\n"),
+        60,
+        |db, dir| {
+            let write = |args: &[&str]| {
+                let out = on(db, dir)
+                    .args(["--credential", "a1", "--as", "mellow-weevil"])
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "{args:?}: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            };
+            write(&["open-rally", "--name", "first", "--project", "RAL"]);
+            write(&[
+                "event",
+                "--headline",
+                "the first rally's incident",
+                "--severity",
+                "incident",
+                "--backing",
+                "record 2",
+            ]);
+            // The first rally's writeup, written today, before the second rally opens.
+            let folder = dir.join("watchman");
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(folder.join("2026-11-06.md"), "the first rally's day").unwrap();
+            *writeups.borrow_mut() = Some(folder);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            write(&["close-rally", "--note", "done"]);
+            write(&["open-rally", "--name", "second", "--project", "RAL"]);
+            write(&[
+                "event",
+                "--headline",
+                "a sha that didn't exist",
+                "--severity",
+                "incident",
+                "--backing",
+                "Castor-o7/marshal#11",
+            ]);
+            write(&[
+                "event",
+                "--headline",
+                "the tmpfs filled",
+                "--severity",
+                "notice",
+            ]);
+        },
+        |_| {
+            let folder = writeups.borrow().clone().unwrap();
+            vec!["--watchman-summaries".into(), folder.display().to_string()]
+        },
+    );
+    let mut status = Value::Null;
+    for _ in 0..200 {
+        let (_, text) = get(&viewer, "/api/status");
+        status = serde_json::from_str(body_of(&text)).unwrap_or(Value::Null);
+        if status["muster_summary"]["for_rally"].is_string() && status["rally"]["events"].is_array()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Dated today, but written before this rally opened: not this rally's.
+    assert_eq!(
+        status["muster_summary"]["for_rally"], "before_it_opened",
+        "{status}"
+    );
+    assert!(
+        status["muster_summary"]["written_at_ms"].is_i64(),
+        "{status}"
+    );
+    let rally = &status["rally"];
+    assert_eq!(rally["name"], "second");
+    let headlines: Vec<&str> = rally["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["headline"].as_str())
+        .collect();
+    // Newest first, and none of the first rally's.
+    assert_eq!(
+        headlines,
+        ["the tmpfs filled", "a sha that didn't exist"],
+        "{rally}"
+    );
+    let bare = &rally["events"][0];
+    assert_eq!(bare["severity"], "notice");
+    assert_eq!(bare["kind"], "declared");
+    assert_eq!(bare["by"], "mellow-weevil");
+    assert_eq!(
+        bare["backing"],
+        json!([]),
+        "nothing backs it, and that's shown"
+    );
+    // The first rally keeps its events in its past-rally view.
+    let opened = rally["past"][0]["opened_seq"].as_u64().unwrap();
+    let (code, text) = get(&viewer, &format!("/api/past?rally={opened}"));
+    assert_eq!(code, 200, "{text}");
+    let past: Value = serde_json::from_str(body_of(&text)).unwrap();
+    assert_eq!(
+        past["rally"]["events"][0]["headline"],
+        "the first rally's incident"
+    );
+    assert_eq!(past["rally"]["events"].as_array().unwrap().len(), 1);
+
+    // In the browser, the report box says so, and lists the events above it.
+    let Some(chrome) = browser() else { return };
+    let probe = r##"(async () => {
+      for (let i = 0; i < 100 && !document.querySelector("#muster ul.events"); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const box = document.getElementById("muster");
+      const incident = box.querySelector("ul.events li.incident > .label");
+      return {
+        text: box.textContent,
+        incident: incident && getComputedStyle(incident).color,
+        notice: getComputedStyle(box.querySelector("ul.events li.notice > .label")).color,
+      };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let text = seen["probe"]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("This rally's events (2)"), "{seen}");
+    assert!(
+        text.contains("No writeup for this rally yet") && text.contains("written before it opened"),
+        "{seen}"
+    );
+    assert!(!text.contains("the first rally's"), "{seen}");
+    let (newer, older) = (
+        text.find("the tmpfs filled").unwrap(),
+        text.find("a sha that didn't exist").unwrap(),
+    );
+    assert!(newer < older, "newest first: {seen}");
+    assert!(text.contains("nothing named as backing it"), "{seen}");
+    assert!(text.contains("backed by Castor-o7/marshal#11"), "{seen}");
+    assert_ne!(seen["probe"]["incident"], seen["probe"]["notice"], "{seen}");
 }
