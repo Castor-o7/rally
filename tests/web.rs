@@ -673,6 +673,120 @@ fn a_new_key_signs_every_browser_out() {
     );
 }
 
+/// Stops the viewer and starts it again on the same ledger and key file, as a restart or deploy
+/// does, and points `viewer` at the new one.
+fn restart(viewer: &mut Viewer) {
+    let _ = viewer.child.kill();
+    let _ = viewer.child.wait();
+    let projects = viewer._dir.path().join("projects.json");
+    let mut child = on(&viewer._db, viewer._dir.path())
+        .args(["web", "--bind", "127.0.0.1:0", "--projects"])
+        .arg(&projects)
+        .arg("--key-file")
+        .arg(&viewer.key_file)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let started: Value = serde_json::from_str(&line).unwrap();
+    viewer.child = child;
+    viewer.address = started["listening"].as_str().unwrap().to_owned();
+}
+
+/// RAL-80: a restart signs no one out. Sessions are kept beside the key as hashes, in a private
+/// file, and `--new-key` still signs everyone out, across a restart too.
+#[test]
+fn a_restart_keeps_browsers_signed_in_and_a_new_key_still_signs_them_out() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut viewer = start();
+    let second = sign_in(&viewer);
+    let kept = viewer.key_file.with_file_name("web-key.sessions");
+    let text = std::fs::read_to_string(&kept).unwrap();
+    // Neither a session nor the key is in the file, only their hashes.
+    for secret in [&viewer.session, &second, &viewer.key] {
+        assert!(!text.contains(secret.trim()), "{text}");
+    }
+    let mode = std::fs::metadata(&kept).unwrap().permissions().mode();
+    assert_eq!(mode & 0o077, 0, "the sessions file isn't private");
+
+    restart(&mut viewer);
+    assert_eq!(get(&viewer, "/api/status").0, 200);
+    let other = format!("Cookie: rally_view={second}\r\n");
+    assert_eq!(
+        bare(&viewer, "GET", "/api/status", &viewer.address, &other).0,
+        200
+    );
+    // A cookie that was never a session still isn't one.
+    let made_up = format!("Cookie: rally_view={}\r\n", "ab".repeat(32));
+    assert_eq!(
+        bare(&viewer, "GET", "/api/status", &viewer.address, &made_up).0,
+        401
+    );
+
+    let out = rally()
+        .args(["web", "--new-key", "--key-file"])
+        .arg(&viewer.key_file)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(get(&viewer, "/api/status").0, 401);
+    restart(&mut viewer);
+    assert_eq!(get(&viewer, "/api/status").0, 401);
+    // A sign-in under the new key holds across a restart.
+    viewer.key = std::fs::read_to_string(&viewer.key_file).unwrap();
+    viewer.session = sign_in(&viewer);
+    restart(&mut viewer);
+    assert_eq!(get(&viewer, "/api/status").0, 200);
+
+    // A sessions file that isn't one signs no one in, and the viewer still starts.
+    std::fs::write(&kept, "not json").unwrap();
+    restart(&mut viewer);
+    assert_eq!(get(&viewer, "/api/status").0, 401);
+}
+
+/// RAL-80: a kept session older than 14 days signs no one in after a restart, and only the newest
+/// 32 sessions are kept.
+#[test]
+fn old_sessions_end_and_only_the_newest_are_kept() {
+    let mut viewer = start();
+    let second = sign_in(&viewer);
+    let kept = viewer.key_file.with_file_name("web-key.sessions");
+    let mut file: Value = serde_json::from_str(&std::fs::read_to_string(&kept).unwrap()).unwrap();
+    let rows = file["sessions"].as_array_mut().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["made_at_ms"].as_u64().is_some()));
+    // The first sign-in, 15 days ago.
+    let made = rows[0]["made_at_ms"].as_u64().unwrap();
+    rows[0]["made_at_ms"] = json!(made - 15 * 86_400_000);
+    std::fs::write(&kept, file.to_string()).unwrap();
+    restart(&mut viewer);
+    assert_eq!(get(&viewer, "/api/status").0, 401, "15 days old");
+    let newer = format!("Cookie: rally_view={second}\r\n");
+    assert_eq!(
+        bare(&viewer, "GET", "/api/status", &viewer.address, &newer).0,
+        200
+    );
+
+    // 32 more sign-ins push the second out, and the file holds 32.
+    let later: Vec<String> = (0..32).map(|_| sign_in(&viewer)).collect();
+    assert_eq!(
+        bare(&viewer, "GET", "/api/status", &viewer.address, &newer).0,
+        401
+    );
+    for session in [&later[0], &later[31]] {
+        let cookie = format!("Cookie: rally_view={session}\r\n");
+        assert_eq!(
+            bare(&viewer, "GET", "/api/status", &viewer.address, &cookie).0,
+            200
+        );
+    }
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(&kept).unwrap()).unwrap();
+    assert_eq!(file["sessions"].as_array().unwrap().len(), 32);
+}
+
 #[test]
 fn a_request_the_browser_marks_as_from_another_site_is_refused_even_with_the_key() {
     let viewer = start();

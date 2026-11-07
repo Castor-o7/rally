@@ -2587,6 +2587,14 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     std::fs::create_dir_all(parent)?;
                 }
                 rally::access::write_private(&key_file, key.as_bytes())?;
+                // The kept sessions were made under the old key, so they're of no more use
+                // (RAL-80). A viewer already running refuses them anyway.
+                let sessions = web::sessions_file(&key_file);
+                if let Err(error) = std::fs::remove_file(&sessions)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    return Err(format!("can't remove {}: {error}", sessions.display()).into());
+                }
                 return Ok(json!({"new_key": key_file,
                                  "signed_out": "every browser signed in to a viewer using this file"})
                 .to_string());
