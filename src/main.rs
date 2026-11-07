@@ -186,8 +186,8 @@ enum Command {
     },
     /// Open the viewer in your browser, signed in, starting it first if it isn't running (RAL-82).
     /// It's restarted when it runs another build or other settings. Settings given here are
-    /// remembered in viewer.json beside the pairing, so next time `rally view` alone is enough.
-    /// The viewer keeps running after this ends; its output is in viewer.log there.
+    /// remembered in view-settings.json beside the pairing, so next time `rally view` alone is enough.
+    /// The viewer keeps running after this ends; its output is in view.log there.
     View {
         /// Restart it even if it's current, including a viewer started by hand with `rally web`.
         #[arg(long, conflicts_with = "stop")]
@@ -216,6 +216,10 @@ enum Command {
         /// As for `rally web`. Remembered.
         #[arg(long)]
         key_file: Option<PathBuf>,
+        /// The browser to open it in, such as `flatpak run com.google.Chrome`, instead of the
+        /// desktop's default (xdg-open).
+        #[arg(long)]
+        browser: Option<String>,
     },
     /// On the service's host, add a machine and write its pair code to a private file.
     AddMachine {
@@ -2219,15 +2223,16 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
 /// `rally view` (RAL-82): makes sure the viewer runs this build with these settings, then opens it.
 fn view_command(
     config: &Path,
-    given_config: Option<PathBuf>,
     given: &view::Settings,
     restart: bool,
     stop: bool,
     no_open: bool,
+    browser: Option<String>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let saved_path = config.with_file_name("viewer.json");
-    let run_path = config.with_file_name("viewer-run.json");
-    let log = config.with_file_name("viewer.log");
+    // Not viewer.json: that name is the viewer's read-only pairing, beside client.json.
+    let saved_path = config.with_file_name(view::SETTINGS_FILE);
+    let run_path = config.with_file_name(view::RUN_FILE);
+    let log = config.with_file_name(view::LOG_FILE);
     let saved: view::Settings = view::read_json(&saved_path)?.unwrap_or_default();
     let settings = saved.merged(given);
     if settings != saved {
@@ -2288,9 +2293,9 @@ fn view_command(
                  `rally view --restart` replaces it with this build and the saved settings"
             ));
         } else {
-            let global: Vec<String> = given_config
-                .map(|path| vec!["--config".to_owned(), path.display().to_string()])
-                .unwrap_or_default();
+            // The viewer reads with the read-only pairing when there is one.
+            let pairing = view::viewer_pairing(config);
+            let global = vec!["--config".to_owned(), pairing.display().to_string()];
             let pid = view::start(&exe, &global, &settings, &log)?;
             view::write_json(
                 &run_path,
@@ -2309,7 +2314,7 @@ fn view_command(
         .unwrap_or_else(|| config.with_file_name("web-key"));
     let login: Value = serde_json::from_str(&web_login(&bind, &key_file)?)?;
     let url = login["open"].as_str().ok_or("the viewer gave no address")?;
-    let opened = !no_open && view::open(url).is_ok();
+    let opened = !no_open && view::open(url, browser.as_deref()).is_ok();
     let mut out = json!({"viewer": format!("http://{bind}/"), "opened": opened, "notes": notes,
                          "log": log});
     if !opened {
@@ -2748,13 +2753,13 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             summaries,
             watchman_summaries,
             key_file,
+            browser,
         } => {
             if location.is_some() {
                 return Err(
                     "rally view reads through the pairing; on the host, use rally web --db".into(),
                 );
             }
-            let given_config = cli.config.clone();
             let config = config_path(cli.config)?;
             let absolute = |path: Option<PathBuf>| -> Option<PathBuf> {
                 path.map(|p| {
@@ -2779,7 +2784,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 watchman_summaries: absolute(watchman_summaries),
                 key_file: absolute(key_file),
             };
-            return view_command(&config, given_config, &given, restart, stop, no_open);
+            return view_command(&config, &given, restart, stop, no_open, browser);
         }
         Command::Backup { to, max_age_hours } => {
             if location.is_some() {

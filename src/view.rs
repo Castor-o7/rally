@@ -1,9 +1,11 @@
 //! `rally view` (RAL-82): one command that starts the viewer if it isn't running, restarts it when
 //! it runs an older build or other settings, waits for it to answer, and opens it signed in.
 //!
-//! The viewer's settings are remembered in `viewer.json` beside the pairing, so a restart needs no
-//! arguments. What's running is kept in `viewer-run.json` there too: its process, the build it runs
-//! (the binary's SHA-256) and the settings it was started with. Its output goes to `viewer.log`.
+//! The viewer's settings are remembered in `view-settings.json` beside the pairing, so a restart
+//! needs no arguments. What's running is kept in `view-run.json` there too: its process, the build
+//! it runs (the binary's SHA-256) and the settings it was started with. Its output goes to
+//! `view.log`. None of them is `viewer.json`, which is the viewer's read-only pairing. The viewer
+//! is started with that pairing when it exists, so it reads with a credential that can't write.
 //! A viewer started by hand with `rally web` is found by its command line, but only stopped when
 //! asked to with `--restart` or `--stop`.
 
@@ -27,6 +29,22 @@ pub struct Settings {
 }
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:7300";
+pub const SETTINGS_FILE: &str = "view-settings.json";
+pub const RUN_FILE: &str = "view-run.json";
+pub const LOG_FILE: &str = "view.log";
+/// The read-only pairing a viewer reads with, beside the writable one (see docs/web.md).
+pub const VIEWER_PAIRING: &str = "viewer.json";
+
+/// The pairing the viewer is started with: the read-only `viewer.json` beside `config` when it
+/// exists, else `config` itself.
+pub fn viewer_pairing(config: &Path) -> PathBuf {
+    let read_only = config.with_file_name(VIEWER_PAIRING);
+    if read_only.is_file() {
+        read_only
+    } else {
+        config.to_owned()
+    }
+}
 
 impl Settings {
     /// These settings with each one `given` names put in its place.
@@ -261,14 +279,17 @@ fn tail(log: &Path) -> String {
     }
 }
 
-/// Opens `url` in the desktop's browser.
-pub fn open(url: &str) -> Result<(), String> {
-    let opener = if cfg!(target_os = "macos") {
+/// Opens `url` in `browser`, a command and its arguments, or else the desktop's default browser.
+pub fn open(url: &str, browser: Option<&str>) -> Result<(), String> {
+    let default = if cfg!(target_os = "macos") {
         "open"
     } else {
         "xdg-open"
     };
+    let mut words = browser.unwrap_or(default).split_whitespace();
+    let opener = words.next().ok_or("--browser is empty")?;
     std::process::Command::new(opener)
+        .args(words)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -321,6 +342,18 @@ mod tests {
             ..settings
         };
         assert!(why_restart(&running, "a", &other).is_some());
+    }
+
+    #[test]
+    fn the_viewer_reads_with_the_read_only_pairing_and_its_files_never_take_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("client.json");
+        assert_eq!(viewer_pairing(&config), config, "no read-only pairing yet");
+        std::fs::write(dir.path().join(VIEWER_PAIRING), "{}").unwrap();
+        assert_eq!(viewer_pairing(&config), dir.path().join(VIEWER_PAIRING));
+        for name in [SETTINGS_FILE, RUN_FILE, LOG_FILE] {
+            assert!(name != VIEWER_PAIRING && name != "client.json" && name != "web-key");
+        }
     }
 
     #[test]
