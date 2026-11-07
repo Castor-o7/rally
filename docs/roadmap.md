@@ -304,6 +304,16 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   rally's projects, teams and what was recorded since it opened; past rallies are listed, each viewable as the ledger
   stood when it closed; nothing is removed from the ledger; and tests cover the records, the service route and the
   board.
+- [ ] **RAL-77: Rallies, after RAL-76: who may open one, past rallies as their own board, dates, and errors.** From
+  the watchman's read of #149 (RAL-76), filed by plush-tortoise. Done when: with the service's `--rally-openers`
+  set, only the credentials it lists, or the credential bound to a signed watchman designation, can open or close
+  a rally, and others get a 403 naming the rule; unset, any paired credential may, and each answer and
+  `rally rallies` say to set it; a past rally opens as its own board (its projects, the stories recorded for them
+  while it was open or held then, and its teams) as the ledger stood at its close, not the whole ledger at that
+  record; the overview compares the watchman's writeup's day file with the rally's opening as local dates, not a
+  local one with a UTC one; a `/v1/rallies` read that fails for any reason but an older service (a refused token,
+  a network error) shows as a warning, not as "an older service"; `docs/service.md` says what `--rally-openers`
+  does and can't do; and tests cover each.
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.
@@ -459,6 +469,12 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
+- [ ] **RAL-81: Progress from the ledger when a roadmap has no checkboxes.** From the DiscoSim rally's issues log
+  (§3.5, 2026-11-06): DiscoSim's roadmap is a table, so the overview read 0 ticks all rally. Done when: a roadmap
+  that's read and has no checkboxes shows its progress from the ledger's states, Verified of the stories the ledger
+  tracks under its prefix, labelled as the ledger's, on its card and its project page; a roadmap with boxes, one not
+  yet read, or a prefix the ledger doesn't track, doesn't; it's kept out of the boxes across projects, which say
+  which projects were left out; with a test.
 - [ ] **RAL-71: Evidence can be corrected.** From the DiscoSim rally's issues log (§2.2, 2026-11-06): DSM-41's
   evidence named `Castor-o7/DiscoteSim`, a typo, and DSM-54's wasn't `owner/repo@<full commit>`, and the only fix
   for either was a send-back, since a resubmit in review is refused. Done when: `rally submit` refuses evidence

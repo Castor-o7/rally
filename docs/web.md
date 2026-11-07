@@ -39,7 +39,10 @@ every 30 seconds.
   `projects.json` beside the pairing (`~/.config/rally/projects.json`) if it exists, and otherwise from the
   built-in `web/projects.json` (RAL-74). The viewer's first line says which, as `projects`. A file that's
   there but can't be read or isn't a list stops the viewer, rather than falling back. Every checkbox in the
-  file counts, outside code examples. Percentages round down.
+  file counts, outside code examples. Percentages round down. A roadmap that's read but has no checkboxes at
+  all, such as DiscoSim's table, has no ticks to count, so its card shows **Progress from the ledger** instead
+  (RAL-81): Verified of the stories the ledger tracks under its prefix, labelled as the ledger's. It isn't added
+  to the boxes across projects, which name the projects left out.
 - **Verified** comes only from the ledger, and is never worked out from ticks. It reads "not available
   yet" for a project with no stories in the ledger, and it covers only the stories the ledger tracks.
 - **Teams** show what's declared to the ledger, and Muster's roster with Muster's own labels: observed,
@@ -86,14 +89,22 @@ and the watchman's writeup if it's older than the rally. A listed session brings
 project, so `--team plush-tortoise` brings `rally` too. Track records stay all-time, and say so.
 
 Nothing is removed. The ledger is append-only and hash-chained, and deleting records would fail its check, so a
-closed rally is kept whole. The page lists past rallies, and each opens as the ledger stood when it closed (RAL-28).
+closed rally is kept whole. The page lists past rallies, and each opens as its own board (`#/rally/<record that
+opened it>`, RAL-77): the ledger as it stood when it closed (RAL-28), showing only its projects' stories recorded
+while it was open or still held then, and its teams: those it named, and those holding its stories. The roster of
+the time isn't kept, so a session that brought its project's team in then doesn't now. The board links to the
+whole ledger at that record.
 Projects outside the rally keep their pages. A project in the rally without an entry in `projects.json` is named
 in a warning.
 
-Opening and closing are declared, like every name in Rally, and the viewer shows who opened the rally. For now any
-paired credential can open or close a rally; restricting it to the operator or the watchman is a follow-up. A second
-rally can't open while one is open. With no rally open, the viewer falls back to RAL-69's reading below. A service
-older than RAL-76 has no `/v1/rallies`, and the page says so.
+Opening and closing are declared, like every name in Rally, and the viewer shows who opened the rally. Only the
+operator or the watchman may open or close one once the service's `--rally-openers` is set; see `docs/service.md`
+(RAL-77). A second rally can't open while one is open. With no rally open, the viewer falls back to RAL-69's
+reading below. A service older than RAL-76 has no `/v1/rallies`, and the page says so; any other failure to read
+the rallies (a refused token, a network error) is a warning instead, since an open rally may then be missing.
+
+The watchman's writeup is shown as "not for this rally yet" when its day file is dated before the day the rally
+opened. Both are local dates: day files are named by the day where they were written (RAL-77).
 
 ## Project pages (RAL-43)
 

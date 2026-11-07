@@ -188,6 +188,10 @@ function rallyLine(rally, otherStories) {
   if (rally && rally.rallies_unavailable) {
     box.append(el("p", "muted", "The service doesn't list rallies yet (" + rally.rallies_unavailable
       + "), so what's in play is read from Muster's roster."));
+  } else if (rally && rally.rallies_error) {
+    // Not an older service: a rally may be open that this board can't show (RAL-77).
+    box.append(el("p", "warning", "⚠ The rallies couldn't be read (" + rally.rallies_error
+      + "), so an open rally may be missing; what's in play is read from Muster's roster meanwhile."));
   }
   if (!rallyKnown(rally)) {
     box.append(el("p", "warning", "⚠ Can't tell which projects are in this rally: "
@@ -222,7 +226,7 @@ function rallyLine(rally, otherStories) {
     for (const r of past) {
       const item = el("li");
       const link = el("a", "", r.name);
-      link.href = "#/past/" + encodeURIComponent(r.closed_seq);
+      link.href = "#/rally/" + encodeURIComponent(r.opened_seq);
       item.append(link, " ", el("span", "muted", (r.projects || []).join(", ") + " · "
         + when(r.opened_at_ms) + " to " + when(r.closed_at_ms)));
       list.append(item);
@@ -298,45 +302,87 @@ function pastForm(newest) {
   return form;
 }
 
-let pastCache = null; // { seq, value } or { seq, error }: a past state doesn't change, so it's read once
+let pastCache = null; // { key, value } or { key, error }: a past state doesn't change, so it's read once
 let pastShown = null; // the cache entry last drawn, so the 30-second refresh doesn't redraw it
+
+// The local calendar day of a time, as YYYY-MM-DD. Day files are named by the day where they
+// were written, so they're compared with a local date, not a UTC one (RAL-77): an evening rally
+// west of Greenwich is already tomorrow in UTC.
+function localDay(ms) {
+  const d = new Date(ms);
+  const two = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate());
+}
 
 function when(ms) {
   return ms ? new Date(ms).toLocaleString() : "unknown time";
 }
 
-// The ledger as it stood at a past record, and what was corrected since, kept apart and labelled.
-function renderPast(seq, untrusted) {
+// The ledger as it stood at a past record, and what was corrected since, kept apart and labelled;
+// or a closed rally's own board, as it stood when it closed (RAL-77).
+function renderPast(moment, untrusted) {
   const root = document.getElementById("past-page");
   root.replaceChildren();
   const back = el("a", "back", "← Now");
   back.href = "#/";
-  root.append(back, el("h2", "", "The ledger at record " + seq));
-  if (!pastCache || pastCache.seq !== seq) {
-    root.append(el("p", "muted", "Replaying the ledger to record " + seq + "…"));
-    const asked = seq;
-    pastCache = { seq, loading: true };
-    fetch("/api/past?as_of=" + encodeURIComponent(seq), { cache: "no-store" })
+  const title = moment.rally ? "A past rally" : "The ledger at record " + moment.seq;
+  const waiting = moment.rally ? "Replaying the ledger to the rally's close…"
+    : "Replaying the ledger to record " + moment.seq + "…";
+  root.append(back, el("h2", "", title));
+  if (!pastCache || pastCache.key !== moment.key) {
+    root.append(el("p", "muted", waiting));
+    const asked = moment.key;
+    pastCache = { key: asked, loading: true };
+    const query = moment.rally ? "rally=" + encodeURIComponent(moment.seq) : "as_of=" + encodeURIComponent(moment.seq);
+    fetch("/api/past?" + query, { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) throw new Error(await response.text());
         return response.json();
       })
-      .then((value) => { if (pastCache.seq === asked) pastCache = { seq: asked, value }; },
-        (error) => { if (pastCache.seq === asked) pastCache = { seq: asked, error: String(error.message || error) }; })
-      .then(() => { if (currentPast() === asked) renderPast(asked, untrusted); });
+      .then((value) => { if (pastCache.key === asked) pastCache = { key: asked, value }; },
+        (error) => { if (pastCache.key === asked) pastCache = { key: asked, error: String(error.message || error) }; })
+      .then(() => { const now = currentPast(); if (now && now.key === asked) renderPast(now, untrusted); });
     return;
   }
   if (pastCache.loading) {
-    root.append(el("p", "muted", "Replaying the ledger to record " + seq + "…"));
+    root.append(el("p", "muted", waiting));
     return;
   }
   if (pastCache.error) {
     pastShown = pastCache;
-    root.append(el("p", "warning", "⚠ Couldn't show record " + seq + ": " + pastCache.error));
+    root.append(el("p", "warning", "⚠ Couldn't show " + (moment.rally ? "that rally" : "record " + moment.seq)
+      + ": " + pastCache.error));
     return;
   }
   pastShown = pastCache;
   const past = pastCache.value;
+  const rally = past.rally || null;
+  if (rally) {
+    // Its name, who opened and closed it, and the note were declared by whoever wrote them.
+    const head = el("h2", "", "Rally: " + rally.name);
+    head.append(" ", el("span", "label", "declared"));
+    root.replaceChildren(back, head);
+    const line = el("p", "figure", "Projects: " + (rally.prefixes || []).join(", ")
+      + ((rally.board.teams || []).length ? " · Teams: " + rally.board.teams.join(", ") : ""));
+    line.append(" ", el("span", "label", "declared"));
+    root.append(line);
+    const opened = el("p", "muted", "Opened " + when(rally.opened_at_ms) + " at record " + rally.since_seq
+      + (rally.opened_by ? " by " + rally.opened_by : ""));
+    if (rally.opened_by) opened.append(" ", el("span", "label", "declared"));
+    root.append(opened);
+    const closed = el("p", "muted", "Closed " + when(rally.closed_at_ms) + " at record " + rally.closed_seq
+      + (rally.closed_by ? " by " + rally.closed_by : "") + (rally.note ? ": " + rally.note : "."));
+    if (rally.closed_by || rally.note) closed.append(" ", el("span", "label", "declared"));
+    root.append(closed);
+    root.append(el("p", "muted", rally.rule));
+    const whole = el("a", "", "The whole ledger at record " + rally.closed_seq);
+    whole.href = "#/past/" + encodeURIComponent(rally.closed_seq);
+    const wholeLine = el("p");
+    wholeLine.append(whole);
+    root.append(wholeLine);
+  }
+  const onBoard = (id) => !rally || (rally.board.stories || []).includes(id);
+  const teamOnBoard = (name) => !rally || (rally.board.teams || []).includes(name);
   root.append(pastForm(past.now));
   root.append(el("p", "muted", "As it stood after record " + past.as_of + ", made " + when(past.as_of_at_ms)
     + ": a replay of the ledger to that record."
@@ -372,7 +418,7 @@ function renderPast(seq, untrusted) {
 
   const stories = el("section", "panel");
   stories.append(el("h3", "", "Stories then"));
-  const rows = Object.entries(past.stories || {});
+  const rows = Object.entries(past.stories || {}).filter(([id]) => onBoard(id));
   if (rows.length) {
     stories.append(table(["Story", "State", "Team"], rows.map(([id, story]) => [
       id, story.state, { text: story.team || "", className: "text" }])));
@@ -385,7 +431,7 @@ function renderPast(seq, untrusted) {
 
   const teams = el("section", "panel");
   teams.append(el("h3", "", "Teams then"));
-  const teamRows = Object.entries(past.teams || {});
+  const teamRows = Object.entries(past.teams || {}).filter(([name]) => teamOnBoard(name));
   if (teamRows.length) {
     teams.append(table(["Team", "State", "Story", "Note", "When"], teamRows.map(([name, team]) => [
       name, { text: team.status, label: "declared" }, team.story || "",
@@ -396,7 +442,7 @@ function renderPast(seq, untrusted) {
 
   const blockers = el("section", "panel");
   blockers.append(el("h3", "", "Open blockers then"));
-  const open = past.blockers || [];
+  const open = (past.blockers || []).filter((b) => !rally || teamOnBoard(b.team) || onBoard(b.story));
   if (open.length) {
     blockers.append(table(["Blocker", "Team", "Story", "Waits on", "Note"], open.map((b) => [
       "#" + b.seq, { text: b.team || "", className: "text" }, b.story || "",
@@ -408,9 +454,11 @@ function renderPast(seq, untrusted) {
   root.append(later, stories, teams, blockers);
 }
 
+// The past moment the address names: #/past/<record>, or #/rally/<record that opened it>.
 function currentPast() {
-  const match = /^#\/past\/([0-9]+)$/.exec(location.hash);
-  return match ? Number(match[1]) : null;
+  const match = /^#\/(past|rally)\/([0-9]+)$/.exec(location.hash);
+  if (!match) return null;
+  return { key: match[1] + ":" + match[2], seq: Number(match[2]), rally: match[1] === "rally" };
 }
 
 function renderRoadmaps(projects, now, rally) {
@@ -440,6 +488,8 @@ function renderRoadmaps(projects, now, rally) {
         boxes.ticked / boxes.total,
         boxes.ticked + " of " + boxes.total + " ticked",
       ));
+    } else if (fromLedger(project)) {
+      card.append(ledgerFigure(fromLedger(project)));
     } else {
       card.append(figure("Roadmap ticks", "not available", null));
     }
@@ -684,6 +734,8 @@ function renderProject(status, prefix, now) {
     roadmap.append(figure("Ticked · a tick here means: " + project.tick_meaning,
       project.boxes.ticked + " of " + project.boxes.total, project.boxes.ticked / project.boxes.total,
       project.boxes.ticked + " of " + project.boxes.total + " ticked"));
+  } else if (fromLedger(project)) {
+    roadmap.append(ledgerFigure(fromLedger(project)));
   }
   const open = stories.filter((s) => !s.ticked);
   const done = stories.filter((s) => s.ticked);
@@ -742,6 +794,18 @@ function renderProject(status, prefix, now) {
   root.append(ledger, day, facts);
 }
 
+// A roadmap with no checkboxes, such as a table, takes its progress from the ledger (RAL-81).
+function fromLedger(project) {
+  return (project.progress && project.progress.from_ledger) || null;
+}
+
+function ledgerFigure(part) {
+  return figure("Progress from the ledger · this roadmap has no checkboxes, so it's Verified of the stories the ledger tracks",
+    part.percent + "% (" + part.verified + " of " + part.tracked + ")",
+    part.tracked ? part.verified / part.tracked : 0,
+    part.verified + " of " + part.tracked + " verified");
+}
+
 // The end of the overview: totals across projects, then the watchman's writeup of the whole muster.
 function renderMuster(status, now) {
   const root = document.getElementById("muster");
@@ -752,6 +816,11 @@ function renderMuster(status, now) {
   const total = read.reduce((sum, p) => sum + p.boxes.total, 0);
   root.append(figure("Roadmap boxes across " + read.length + " projects · ticks mean different things in each",
     ticked + " of " + total, total ? ticked / total : 0, ticked + " of " + total + " ticked"));
+  const unboxed = current.filter((p) => fromLedger(p)).map((p) => p.prefix);
+  if (unboxed.length) {
+    root.append(el("p", "muted", "No checkboxes in " + unboxed.join(", ")
+      + ", so not counted here; their progress is the ledger's Verified."));
+  }
   const verified = current.map((p) => p.verified).filter((v) => v && v.available);
   if (verified.length) {
     const done = verified.reduce((sum, v) => sum + v.verified, 0);
@@ -764,7 +833,7 @@ function renderMuster(status, now) {
   const summary = status.muster_summary || {};
   const day = /([0-9]{4}-[0-9]{2}-[0-9]{2})\.md$/.exec(summary.file || "");
   const rally = status.rally;
-  if (rally && rally.opened && day && day[1] < new Date(rally.opened_at_ms).toISOString().slice(0, 10)) {
+  if (rally && rally.opened && day && day[1] < localDay(rally.opened_at_ms)) {
     writeup.append(el("p", "muted", "No writeup for this rally yet. The latest, " + summary.file
       + ", is from before it opened."));
   } else {
@@ -785,7 +854,7 @@ function show(status, now) {
   pastPage.hidden = pastSeq === null;
   overview.hidden = Boolean(match) || pastSeq !== null;
   if (pastSeq !== null) {
-    if (!(pastShown && pastShown === pastCache && pastCache.seq === pastSeq)) {
+    if (!(pastShown && pastShown === pastCache && pastCache.key === pastSeq.key)) {
       renderPast(pastSeq, status.untrusted_text);
     }
   } else if (match) {
