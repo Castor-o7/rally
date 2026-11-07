@@ -212,6 +212,13 @@ The bones. Everything later reads from this.
   refused story ID says the form is capital letters, a hyphen and a number with no leading zero or suffix, and
   points at `rally new-story`; a submit of a sent-back, released or never-claimed story says to re-claim first,
   with the command; each with a test.
+- [ ] **RAL-70: Gate a branch move on the stories it carries.** From the DiscoSim rally's issues log, §2.5: on
+  2026-11-06 `main` was moved to f979331 while DSM-42 had been sent back by a peer. Assigned by frank-crocodile.
+  Done when: `rally gate <range>` lists every story the range's commits name (subject, a merge's pull request title,
+  or a trailer) with its ledger state, and exits non-zero if any is sent back, unverified or claimed, or isn't in
+  the ledger under a prefix the ledger uses; `--allow <STORY>` lets one the range only mentions pass, listed; it
+  reads only commit messages and runs nothing from the checkout; documented in `docs/gate.md`; with a test of a
+  range refused for a sent-back story and passed once it's verified.
 - [x] **RAL-21: Keep each team's track record as plain facts.** Done when: the watchman can read each
   team's stories verified, stories sent back and what was missing, and problems reported, with no points,
   scores, weights or ranking.
