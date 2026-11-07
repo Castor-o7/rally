@@ -54,7 +54,11 @@ It needs `gh` signed in to read roadmap files, and reads them every 5 minutes. T
 every 30 seconds.
 
 The page polls every 30 seconds, and between polls every "12s ago" keeps counting on its own, so an age is always
-current (RAL-90). The line under the title says "● Live · updated 3s ago": the dot turns amber once a poll is more
+current (RAL-90). A poll doesn't rebuild the page (RAL-89). Each section is drawn into a copy off the page, and
+the page's own section is patched to match: a node that hasn't changed stays the same node, and only text and
+attributes that differ are changed. So nothing flashes, and focus, a selection, a field being typed in and the
+scroll position stay where they were. A section the reader opened or closed keeps that state, even on a draw
+that isn't a poll, such as a change of page. The line under the title says "● Live · updated 3s ago": the dot turns amber once a poll is more
 than 45 seconds late, and the line turns red after 3 minutes, or when the viewer can't be reached. Only a change
 of that state is announced to a screen reader, not each second. Verified is green and In review amber, on every
 bar too (RAL-91, below). A commit
