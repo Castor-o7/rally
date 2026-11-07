@@ -36,7 +36,10 @@ every 30 seconds.
   `projects.json` beside the pairing (`~/.config/rally/projects.json`) if it exists, and otherwise from the
   built-in `web/projects.json` (RAL-74). The viewer's first line says which, as `projects`. A file that's
   there but can't be read or isn't a list stops the viewer, rather than falling back. Every checkbox in the
-  file counts, outside code examples. Percentages round down.
+  file counts, outside code examples. Percentages round down. A roadmap that's read but has no checkboxes at
+  all, such as DiscoSim's table, has no ticks to count, so its card shows **Progress from the ledger** instead
+  (RAL-81): Verified of the stories the ledger tracks under its prefix, labelled as the ledger's. It isn't added
+  to the boxes across projects, which name the projects left out.
 - **Verified** comes only from the ledger, and is never worked out from ticks. It reads "not available
   yet" for a project with no stories in the ledger, and it covers only the stories the ledger tracks.
 - **Teams** show what's declared to the ledger, and Muster's roster with Muster's own labels: observed,
