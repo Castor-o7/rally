@@ -96,6 +96,11 @@ td.text { min-width: 180px; overflow-wrap: anywhere; }
 /* IDs, states and times stay on one line (RAL-90): the first column is always a story, team or record. */
 td.nowrap, td:first-child { white-space: nowrap; }
 code.commit { font: 12px ui-monospace, monospace; }
+/* A session's directory (RAL-99). */
+code.path { font: 12px ui-monospace, monospace; }
+/* A state as a dot in its bar colour and its name (RAL-96). */
+.state-pill { display: inline-flex; align-items: center; gap: 6px; }
+.state-pill .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
 /* The live indicator (RAL-90): green while polls arrive, amber once one is late, red once stale. */
 .freshness .dot { color: var(--good); }
 .freshness.late .dot { color: var(--s-in_review); }

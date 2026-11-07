@@ -361,6 +361,12 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   beside `--config`) when it exists, and the built-in list when it doesn't; `--projects` still wins; the first
   line says which list was read; a file that's there but broken is an error, never a quiet fall back; tests
   cover each case and don't read the operator's own config; and `docs/web.md` says so.
+- [x] **RAL-99: The roster says where each team is.** Asked for by Josh on 2026-11-06: the roster no longer
+  said which Muster session was in which directory, because the viewer dropped `cwd`, keeping the page to what it
+  showed since #24. Done: `shape_roster` passes each session's `cwd`, `git_branch`, `last_tool` and
+  `current_task_at` (still not the operator's address), and the roster's columns are Team (the session's
+  nickname), Directory (`~` for the home folder, the whole path in its title), Project (and branch), Machine,
+  Status (busy or idle, and wake), Working on (and when it was set) and Last action (its age and tool).
 
 ## Phase 5: Rally into Levi
 

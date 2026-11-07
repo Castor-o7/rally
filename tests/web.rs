@@ -1125,6 +1125,12 @@ fn the_board_keeps_its_ages_current_and_shows_commits_short() {
         inReview: colour("s-in_review"),
         firstCellWraps: firstCell ? getComputedStyle(firstCell).whiteSpace : null,
         ageCellWraps: ageCell ? getComputedStyle(ageCell).whiteSpace : null,
+        // RAL-96: a state shows once, as a dot and its name.
+        stateCell: (() => {
+          const pill = document.querySelector("#ledger .state-pill");
+          const cell = pill?.closest("td");
+          return pill && { text: cell.textContent.trim(), dot: Boolean(pill.querySelector(".dot.s-in_review")) };
+        })(),
       };
     })()"##;
     let seen = in_browser(&viewer, &chrome, Some(probe));
@@ -1160,4 +1166,47 @@ fn the_board_keeps_its_ages_current_and_shows_commits_short() {
     assert_eq!(probe["inReview"], "rgb(237, 161, 0)", "{probe}");
     assert_eq!(probe["firstCellWraps"], "nowrap", "{probe}");
     assert_eq!(probe["ageCellWraps"], "nowrap", "{probe}");
+    // RAL-96: the state shows once, as its coloured dot and name, labelled declared while in review.
+    assert_eq!(probe["stateCell"]["text"], "declared in review", "{probe}");
+    assert_eq!(probe["stateCell"]["dot"], true, "{probe}");
+}
+
+/// RAL-96: the 30-second refresh redraws every section, and a section someone opened stays open.
+#[cfg(unix)]
+#[test]
+fn an_open_section_stays_open_across_a_refresh() {
+    let Some(chrome) = browser() else { return };
+    // A project the rally doesn't name puts a "Not in this rally" section on the board.
+    let projects = r#"[{"name": "Rally", "prefix": "RAL", "repo": "Castor-o7/rally",
+        "path": "docs/roadmap.md", "tick_meaning": "Verified by the watchman"},
+        {"name": "Muster", "prefix": "MUS", "repo": "Castor-o7/muster",
+        "path": "docs/roadmap.md", "tick_meaning": "Verified by the watchman"}]"#;
+    let viewer = start_after(projects, Some(FAKE_GH), 60, |db, dir| {
+        let out = on(db, dir)
+            .args(["--credential", "a1", "--as", "author"])
+            .args(["open-rally", "--name", "test", "--project", "RAL", "--team", "rally"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    });
+    let probe = r##"(async () => {
+      // The roadmaps are read in the background, so wait for a section to appear.
+      for (let i = 0; i < 40 && !document.querySelector("details"); i++) {
+        await refresh();
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      const before = document.querySelector("details");
+      if (!before) return { found: false };
+      before.open = true;
+      const summary = before.querySelector("summary").textContent;
+      await refresh();
+      const after = [...document.querySelectorAll("details > summary")]
+        .find((s) => s.textContent === summary)?.parentElement;
+      return { found: true, summary, redrawn: !before.isConnected, open: Boolean(after && after.open) };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    assert_eq!(probe["found"], true, "{seen}");
+    assert_eq!(probe["redrawn"], true, "the refresh should redraw the section: {probe}");
+    assert_eq!(probe["open"], true, "the open section closed: {probe}");
 }

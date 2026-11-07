@@ -295,7 +295,9 @@ function evidenceGroup(stories, untrusted, now) {
       const short = shortCommit(evidence.text);
       return [
         { text: id, className: "nowrap" },
-        { text: story.state.replace("_", " "), label: story.state === "verified" ? "verified" : "declared",
+        // A verified state is itself the watchman's record, so it isn't labelled "verified"
+        // a second time; a state still in review is only declared (RAL-96).
+        { text: statePill(story.state), label: story.state === "verified" ? undefined : "declared",
           className: "nowrap" },
         { text: ago(evidence.at_ms, now), className: "nowrap" },
         short ? { text: short, label: "declared", className: "nowrap" }
@@ -602,15 +604,16 @@ function renderTeams(status, now) {
   if (roster.available) {
     const rows = roster.sessions.filter((session) => sessionInRally(status.rally, session)).sort((a, b) =>
       String(a.project).localeCompare(String(b.project)));
-    live.append(table(["Team", "Session", "Machine", "Can be woken", "Working on", "Activity", "Last active"],
+    // Who each team is, where it was started, what it's on and when it last acted (RAL-99).
+    live.append(table(["Team", "Directory", "Project", "Machine", "Status", "Working on", "Last action"],
       rows.map((session) => [
-        session.project || "",
-        session.nickname || "",
-        { text: session.machine || "", label: "attested" },
-        { text: session.wake || "", label: session.wake_observed ? "observed" : "declared" },
-        { text: session.current_task || "", label: "declared", className: "text" },
-        { text: session.activity || "", label: "declared" },
-        { text: ago(session.last_activity_at, now), label: "declared", className: "nowrap" },
+        { text: session.nickname || "", className: "nowrap" },
+        { text: rosterDirectory(session.cwd), label: "declared" },
+        { text: rosterProject(session.project, session.git_branch), label: "declared" },
+        { text: session.machine || "", label: "attested", className: "nowrap" },
+        { text: rosterStatus(session), className: "nowrap" },
+        { text: rosterWorkingOn(session, now), label: "declared", className: "text" },
+        { text: rosterLastAction(session, now), label: "declared", className: "nowrap" },
       ])));
     if (now - roster.read_at_ms > LIVE_STALE_MS) {
       live.append(el("p", "warning figure", "⚠ This roster is out of date"));
@@ -618,7 +621,7 @@ function renderTeams(status, now) {
     const hidden = roster.sessions.length - rows.length;
     if (hidden > 0) live.append(el("p", "muted figure", hidden + " other sessions on the roster aren't in this rally."));
     live.append(el("p", "muted figure", ["Read ", ago(roster.read_at_ms, now),
-      ". “Can be woken” is a best guess, and none of this proves a session is alive."]));
+      ". “wake” is a best guess, and none of this proves a session is alive."]));
   } else {
     live.append(el("p", "muted", "Not available yet: " + roster.reason));
   }
@@ -940,6 +943,80 @@ function tick() {
   showFreshness(now);
 }
 
+// A session's start directory, with the home folder as ~ and the whole path in its title (RAL-99).
+function rosterDirectory(cwd) {
+  if (!cwd) return el("span", "muted", "unknown");
+  const short = String(cwd).replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, "~");
+  const code = el("code", "path", short);
+  code.title = String(cwd);
+  return code;
+}
+
+// The project (its repository's name) and, when known, the branch checked out.
+function rosterProject(name, branch) {
+  const span = el("span");
+  span.append(name || "none");
+  if (branch) span.append(" ", el("span", "muted", "(" + branch + ")"));
+  return span;
+}
+
+// Busy or idle, as the session declares it, and whether a message would wake it,
+// observed only when the daemon holds its wait.
+function rosterStatus(session) {
+  const span = el("span", "status");
+  span.append(session.activity || "unknown");
+  if (session.wake) {
+    span.append(el("br"), el("span", "muted", "wake: " + session.wake + (session.wake_observed ? " (observed)" : "")));
+  }
+  return span;
+}
+
+// The declared task, and how long ago it was set when the shim says.
+function rosterWorkingOn(session, now) {
+  const span = el("span");
+  span.append(session.current_task || "");
+  if (session.current_task && session.current_task_at) {
+    span.append(" ", el("span", "muted", ["· set ", ago(session.current_task_at, now)]));
+  }
+  return span;
+}
+
+// When the session last did anything, and the last tool it called.
+function rosterLastAction(session, now) {
+  const span = el("span");
+  span.append(ago(session.last_activity_at, now));
+  if (session.last_tool) span.append(el("br"), el("span", "muted", session.last_tool));
+  return span;
+}
+
+// A story's state as a dot in the bar's colour and its name (RAL-96).
+function statePill(state) {
+  const pill = el("span", "state-pill");
+  pill.append(el("span", "dot s-" + state), state.replace("_", " "));
+  return pill;
+}
+
+// Which collapsible sections are open, by their summary text, so the 30-second
+// redraw doesn't snap them shut (RAL-96).
+function openSections() {
+  return new Set([...document.querySelectorAll("details[open] > summary")].map((s) => s.textContent));
+}
+
+function reopen(open) {
+  for (const summary of document.querySelectorAll("details > summary")) {
+    if (open.has(summary.textContent)) summary.parentElement.open = true;
+  }
+}
+
+// A redraw would lose what someone is typing or has selected; the next refresh
+// draws what this one read (RAL-96).
+function busyReading() {
+  const active = document.activeElement;
+  if (active && active.matches("input, textarea, select")) return true;
+  const selection = window.getSelection();
+  return Boolean(selection && !selection.isCollapsed);
+}
+
 async function refresh() {
   let status;
   try {
@@ -957,8 +1034,13 @@ async function refresh() {
   try {
     const now = Date.now();
     lastStatus = status;
-    show(status, now);
-    drawnAt = now;
+    // "Updated" says when the page was last drawn, so it moves only when it is.
+    if (!busyReading()) {
+      const open = openSections();
+      show(status, now);
+      reopen(open);
+      drawnAt = now;
+    }
     freshnessProblem = null;
   } catch (error) {
     freshnessProblem = "⚠ This page couldn't display what it read, so it may be out of date";
