@@ -299,7 +299,7 @@ pub fn rally_section(
                 "working_on": session["declared"]["current_task"],
             });
             if let Some(open) = &open {
-                let (members, _) = crate::web::rally_members(open, roster_names.as_ref());
+                let members = crate::web::rally_members(open, roster_names.as_ref()).names;
                 row["in_rally"] = json!(members.contains(&fold(nickname)));
             }
             row
