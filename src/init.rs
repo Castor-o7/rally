@@ -57,6 +57,8 @@ Where you use Rally:
 - **Ask for a read** before a merge: `rally request-read <STORY> --commit <full commit> --note \"...\"`.
   An open request blocks the merge, and the read must cover the head being merged.
 - **Record a merge**: `rally merge <STORY> --commit <full commit>`.
+- **A story in parts**: `rally submit <STORY> --part k [--of n] ...`, then a verify or send-back
+  `--part k` for each; close it with a plain submit and verify. See docs/parts.md.
 - **Before moving a branch**: `rally gate <base>..<new>` refuses if a story the commits name is
   sent back or unverified.
 - **Say what you're waiting on**: `rally block --team <team> [--story <STORY>] [--on-story <STORY> |

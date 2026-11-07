@@ -563,6 +563,14 @@ fn opening_a_codes_address_spends_nothing_and_only_the_button_signs_in() {
         assert!(text.contains(code_of(&path)), "{text}");
         // Its policy lets only its own form post, back to this page.
         assert!(lower.contains("form-action 'self'"), "{text}");
+        // And its form's POST carries this page's origin: under no-referrer, Chrome sends
+        // `Origin: null`, which is refused, so the button never worked (RAL-83).
+        assert!(lower.contains("referrer-policy: same-origin\r\n"), "{text}");
+        assert!(
+            text.contains(r#"<meta name="referrer" content="same-origin">"#),
+            "{text}"
+        );
+        assert!(!lower.contains("no-referrer"), "{text}");
         assert!(lower.contains("default-src 'none'"), "{text}");
         assert!(lower.contains("frame-ancestors 'none'"), "{text}");
         assert!(!lower.contains("script-src"), "{text}");
@@ -603,7 +611,10 @@ fn another_site_cant_press_the_button() {
     let body = format!("code={}", code_of(&path));
     for from in [
         "Origin: http://evil.example\r\nSec-Fetch-Site: cross-site\r\n",
+        // What a browser sends under no-referrer, or from a sandboxed or opaque page: still
+        // refused, which is why the sign-in page mustn't be no-referrer (RAL-83).
         "Origin: null\r\n",
+        "Origin: null\r\nSec-Fetch-Site: same-origin\r\n",
         "Sec-Fetch-Site: same-site\r\n",
     ] {
         let extra = format!(

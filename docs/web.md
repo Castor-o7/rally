@@ -189,7 +189,10 @@ why.
   back to `/`; the page has its own content security policy, which allows that form and nothing else (no
   script, no style, no other site). It shows the code only if it's a code's 64 hex digits. The POST is held to
   the same `Origin` and `Sec-Fetch-Site` rules as every request, so another site's form can't press it, and a
-  POST without a code is still refused as a write.
+  POST without a code is still refused as a write. The sign-in page's referrer policy is `same-origin` (header
+  and `<meta>`), where every other page's is `no-referrer`: under `no-referrer` a browser sends `Origin: null`
+  with a form's POST, and `Origin: null` is refused, so the button never worked in Chrome. `same-origin` sends
+  the real origin back to this page and nothing to any other site; the page links nowhere else.
 - **A page can't ask for a code.** Codes are given only to a request without `Origin` or `Sec-Fetch-Site`,
   which a browser always sends, and with the key.
 - **Other sites can't read it.** Requests must name this address in `Host`, which stops DNS rebinding, and
