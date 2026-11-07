@@ -448,6 +448,13 @@ developer welcomes Rally merging into Levi. Nothing goes to ignition-is-go/levi 
 operator says so; the work is done on a local checkout of Levi at `~/Documents/Gamoire/levi`. RAL-40 is still the
 story for Rally reading Levi; these stories are about putting Rally's features into Levi.
 
+- [ ] **RAL-112: The viewer page reloads itself when the viewer runs new page code.** From the operator on
+  2026-11-06: rally 0x5's report box kept showing the DiscoSim writeup after RAL-104 was deployed, because the tab
+  had loaded its code before the restart, and a new window fixed it. Done when: the viewer stamps the page it serves
+  with a fingerprint of its page code, and every status carries it. A tab whose status names other code reloads
+  itself once, not while you're typing or selecting, and never twice for one code. Tests show the page and status
+  agree, and in a real browser that the same code doesn't reload, new code reloads once, and a code already
+  reloaded for doesn't again. `docs/web.md` says so.
 - [x] **RAL-46: Compare Rally and Levi, and propose what moves (G6).** Done when: a comparison of the two,
   each claim about Levi checked against its source at a named commit or a real run; a proposal of which Rally
   features belong in Levi and how each fits Levi's model (events in `refs/levi/events`, `levi-hub`, `levi-dash`),
@@ -615,6 +622,10 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
+- [ ] **RAL-113: `drawPatched` says a kept node keeps its first listener.** From mellow-weevil's read of RAL-89:
+  a node the patch keeps keeps the listeners from its first draw, so a handler that closed over render-time data
+  would act on stale data. Done when: a comment above `drawPatched` says a handler in a patched section must read
+  what it needs when it runs. Comment only.
 - [ ] **RAL-89: The viewer refreshes without flashing or closing what's open.** From robust-warbler's visual review
   of the viewer on 2026-11-06, item 1: each poll rebuilt every section with `replaceChildren`. RAL-96 (#167) kept
   open sections open and skipped the redraw while someone types or selects. Done when: a refresh draws each section

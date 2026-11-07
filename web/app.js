@@ -1185,6 +1185,8 @@ function drawing(id) {
   return live;
 }
 
+// A kept node keeps the listeners from its first draw (RAL-113): a handler in a patched section must
+// read what it needs when it runs, never close over data or nodes from the render that made it.
 function drawPatched(id, render) {
   const live = document.getElementById(id);
   const draft = live.cloneNode(false);
@@ -1374,6 +1376,27 @@ function busyReading() {
   return Boolean(selection && !selection.isCollapsed);
 }
 
+// The page code this tab is running, stamped into the page it was loaded from (RAL-112).
+const PAGE_CODE = (document.querySelector('meta[name="rally-page-code"]') || {}).content || null;
+
+// When the viewer now serves other page code than this tab runs, as after a restart onto a new
+// build, reload once to run it: a tab left open across a deploy otherwise keeps drawing new data
+// with old code. Not while the operator is reading or typing, and at most once for each code, so
+// a page that keeps getting a mismatch can't reload forever (RAL-112). `reload` is for the browser
+// test, which checks the decision without navigating away.
+function reloadForNewCode(status, reload = () => location.reload()) {
+  const serving = status && status.page_code;
+  if (!PAGE_CODE || !serving || serving === PAGE_CODE || busyReading()) return false;
+  try {
+    if (sessionStorage.getItem("rally-reloaded-for") === serving) return false;
+    sessionStorage.setItem("rally-reloaded-for", serving);
+  } catch (error) {
+    return false;
+  }
+  reload();
+  return true;
+}
+
 async function refresh() {
   let status;
   try {
@@ -1388,6 +1411,7 @@ async function refresh() {
     ledger.replaceChildren(el("p", "warning", "⚠ The viewer isn't answering, so the ledger's state is unknown"));
     return;
   }
+  if (reloadForNewCode(status)) return;
   try {
     const now = Date.now();
     lastStatus = status;

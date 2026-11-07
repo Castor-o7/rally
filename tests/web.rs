@@ -253,6 +253,9 @@ fn the_page_and_its_files_are_served_with_a_strict_policy() {
         assert!(lower.contains("x-content-type-options: nosniff"), "{path}");
         assert!(lower.contains("frame-ancestors 'none'"), "{path}");
         assert!(!lower.contains("access-control-allow"), "{path}");
+        // Never kept by the browser, so a reload always fetches the code the viewer serves now
+        // (RAL-112).
+        assert!(lower.contains("cache-control: no-store"), "{path}");
     }
 }
 
@@ -1004,6 +1007,29 @@ fn a_past_rally_opens_as_its_own_board() {
     );
 }
 
+/// RAL-112: the page is stamped with a fingerprint of the page code the viewer serves, and every
+/// status carries the same one, so a tab running other code can tell and reload.
+#[test]
+fn the_page_and_its_status_carry_the_same_page_code() {
+    let viewer = start();
+    let (status, text) = wait_for_ledger(&viewer);
+    assert_eq!(status, 200);
+    let value: Value = serde_json::from_str(body_of(&text)).unwrap();
+    let code = value["page_code"]
+        .as_str()
+        .expect("the status names its page code");
+    assert_eq!(code.len(), 16, "{code}");
+    assert!(code.bytes().all(|b| b.is_ascii_hexdigit()), "{code}");
+    let page = get(&viewer, "/").1;
+    assert!(
+        page.contains(&format!(
+            r#"<meta name="rally-page-code" content="{code}">"#
+        )),
+        "{page}"
+    );
+    assert!(!page.contains("PAGE_CODE"), "the placeholder is replaced");
+}
+
 /// The Chrome command `RALLY_TEST_CHROME` names, or `None` to skip a browser test (RAL-84).
 /// `RALLY_TEST_BROWSER_REQUIRED`, which CI sets, makes a missing browser a failure.
 fn browser() -> Option<String> {
@@ -1115,6 +1141,36 @@ fn nothing_of_the_browser_survives(seen: &Value) {
             String::from_utf8_lossy(&still.stdout)
         );
     }
+}
+
+/// RAL-112: in a real browser, the page knows the code it runs, doesn't reload while the viewer
+/// serves the same code, reloads once when it serves other code, and never twice for one code.
+#[test]
+fn a_tab_reloads_once_when_the_viewer_serves_new_page_code() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start();
+    let probe = r##"(async () => {
+      const status = await (await fetch("/api/status", { cache: "no-store" })).json();
+      sessionStorage.removeItem("rally-reloaded-for");
+      const same = reloadForNewCode(status);
+      sessionStorage.setItem("rally-reloaded-for", "0123456789abcdef");
+      const again = reloadForNewCode({ page_code: "0123456789abcdef" });
+      sessionStorage.removeItem("rally-reloaded-for");
+      let reloads = 0;
+      const changed = reloadForNewCode({ page_code: "fedcba9876543210" }, () => { reloads += 1; });
+      const twice = reloadForNewCode({ page_code: "fedcba9876543210" }, () => { reloads += 1; });
+      return { pageCode: PAGE_CODE, serving: status.page_code, same, again, changed, twice, reloads,
+               remembered: sessionStorage.getItem("rally-reloaded-for") };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    assert_eq!(probe["pageCode"], probe["serving"], "{seen}");
+    assert_eq!(probe["same"], false, "the same code doesn't reload: {seen}");
+    assert_eq!(probe["again"], false, "never twice for one code: {seen}");
+    assert_eq!(probe["changed"], true, "new code reloads: {seen}");
+    assert_eq!(probe["twice"], false, "and only once: {seen}");
+    assert_eq!(probe["reloads"], 1, "{seen}");
+    assert_eq!(probe["remembered"], "fedcba9876543210", "{seen}");
 }
 
 /// RAL-84: sign in through the button in a real headless Chrome, as the operator does. RAL-83's
