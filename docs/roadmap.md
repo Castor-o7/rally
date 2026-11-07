@@ -615,6 +615,13 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
+- [ ] **RAL-111: A browser test checks the viewer at a narrow window.** From mellow-weevil's read of RAL-92: with
+  every browser test at 1500 pixels, nothing covered a half screen. Done when: a test can ask `sign-in.mjs` for its
+  window with `RALLY_BROWSER_WINDOW` (`width,height`, checked, defaulting to 1500,1000); a headless Chrome test at
+  800 pixels finds no horizontal page overflow and nothing wider than the window outside a table's own scrolling
+  box, with the evidence table on the page; and it fails when the page is made wider than the window. Headless
+  Chrome won't make a window narrower than 500 pixels, so a phone's width would need device emulation instead;
+  that isn't done here.
 - [ ] **RAL-92: The viewer's tables are compact: short SHAs, no wrapped IDs, a wider page.** From robust-warbler's
   visual review of the viewer on 2026-11-06, items 6 to 8. Short SHAs with the whole in the title and unwrapped IDs
   and ages came with RAL-90 (#167); the copy button item 6 suggested isn't built. What was left was item 8: at

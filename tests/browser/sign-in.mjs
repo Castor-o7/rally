@@ -19,6 +19,11 @@ if (!url || !chrome.length) {
   process.exit(2);
 }
 
+const windowSize = process.env.RALLY_BROWSER_WINDOW || "1500,1000";
+if (!/^[0-9]{2,5},[0-9]{2,5}$/.test(windowSize)) {
+  console.error("RALLY_BROWSER_WINDOW is width,height in pixels, such as 800,1000");
+  process.exit(2);
+}
 const profile = mkdtempSync(join(tmpdir(), "rally-browser-"));
 const browser = spawn(chrome[0], [
   ...chrome.slice(1),
@@ -26,8 +31,9 @@ const browser = spawn(chrome[0], [
   "--no-first-run",
   "--no-default-browser-check",
   "--disable-gpu",
-  // A desktop window, as the operator views it (RAL-92), rather than headless's 800x600.
-  "--window-size=1500,1000",
+  // A desktop window, as the operator views it (RAL-92), rather than headless's 800x600; a test
+  // can ask for another with RALLY_BROWSER_WINDOW, as "width,height" (RAL-111).
+  "--window-size=" + windowSize,
   "--remote-debugging-port=0",
   "--user-data-dir=" + profile,
   "about:blank",
