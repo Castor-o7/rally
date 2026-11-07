@@ -3,6 +3,25 @@
 A read-only page showing the rally's status, each roadmap's progress, and each team's status and work.
 It runs on your own machine, on a loopback address only.
 
+## One command: `rally view` (RAL-82)
+
+```bash
+rally view                 # start it if it isn't running, and open it in your browser, signed in
+rally view --restart       # restart it, even a viewer started by hand with `rally web`
+rally view --stop          # stop it
+```
+
+The first time, give it the settings `rally web` takes, for example
+`rally view --summaries DSM=~/Documents/GitHub/Discoteque/docs/muster --watchman-summaries ~/src/rally/docs/muster/watchman`.
+They're saved in `viewer.json` beside the pairing (`~/.config/rally/`), so after that `rally view` alone is
+enough, and a setting given again replaces the saved one. `rally view` restarts the viewer by itself when it runs
+another build of Rally than the one you ran, so an update shows up the next time you open it, or when it runs
+other settings. The viewer keeps running after the command ends. Its output is in `viewer.log`, and what's
+running is in `viewer-run.json`, both in the same folder. A viewer started by hand is opened as it is until
+`--restart` replaces it. With `--no-open`, it prints the one-time address instead of opening a browser.
+
+## By hand
+
 ```bash
 # Pair with a read-only credential first (see service.md), then:
 rally web --bind 127.0.0.1:7300

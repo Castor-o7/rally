@@ -304,6 +304,11 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   rally's projects, teams and what was recorded since it opened; past rallies are listed, each viewable as the ledger
   stood when it closed; nothing is removed from the ledger; and tests cover the records, the service route and the
   board.
+- [ ] **RAL-82: One command starts, restarts and opens the viewer.** Requested by the operator on 2026-11-06:
+  "I should be able to run one command and just have it open." Done when: `rally view` starts the viewer if it
+  isn't running, restarts it when it runs another build or other settings, or on `--restart`, including one started
+  by hand; waits until it answers; and opens it signed in. Its settings are remembered, `--stop` stops it, and tests
+  cover the settings, the restart rule and finding a viewer by its command line.
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.
