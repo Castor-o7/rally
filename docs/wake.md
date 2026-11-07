@@ -54,6 +54,31 @@ messaging, such as Prime Agent's (RAL-59), can be added as a sender later.
   operator's answers it has been woken for. Kept on a1, not in the ledger.
 - `wake-status.json`, beside it: the last pass's report.
 
+## When a pass fails (RAL-86)
+
+With `--every`, a pass that fails doesn't end the loop when the failure can clear with time: the service refusing
+with 429 ("too many requests", "too many checks and past-state reads"), 408 or 5xx; the service being unreachable or
+restarting; Muster being down. The failed pass is logged on stdout as one JSON line, and the loop waits and tries
+again:
+
+```json
+{"pass":"failed","error":"refused (429): too many checks and past-state reads","failures_in_a_row":1,"retry_in_ms":30000}
+```
+
+- The wait is `--every` after the first failure in a row, doubling with each one after, up to 16 times `--every`. If
+  the service sends `Retry-After` (whole seconds), the loop waits at least that long, and the line shows it as
+  `retry_after_ms`. Nothing waits longer than an hour. A pass that succeeds starts the count again.
+- It **exits** (status 1, the reason on stderr) only on what waiting won't clear: a pairing or `--config` that
+  can't be read, a `--projects` file that can't be read as a projects list, or any other refusal, such as 401 (a token that isn't valid) or 403 (read-only).
+  These are checked before every pass. It also exits if its state file can't be written (below). Bad flags are refused before the loop starts.
+- Without `--every`, one pass, and a failure exits as before.
+
+A pass that fails on a read writes nothing: every read happens before any digest is sent, and a send that fails is
+reported on the team's row, not as a failed pass. So a team isn't woken twice, or marked woken when it wasn't. If
+`wake.json` can't be written after a send, the loop **exits** rather than retrying, since the next pass would reload
+the old times and wake the same teams again. `wake-status.json`, the last report, is written after it, so failing
+to write it is a failed pass, retried as usual.
+
 ## Limits
 
 - Activity and wake on the roster are mostly declared, except `wake: waiting` (see design.md, "What Muster's
