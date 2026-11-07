@@ -340,11 +340,18 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   not, or with none open, suggests one: the projects whose `sessions` in the project list match a roster session,
   every session as a team, those in no project as assisting, and the `rally open-rally` command to run; it opens
   nothing itself; and tests cover both.
-- [ ] **RAL-100: `rally view` names the builds it restarts for, and keys them on the commit.** From the watchman's
+- [x] **RAL-100: `rally view` names the builds it restarts for, and keys them on the commit.** Merged in #168 (459e30a). From the watchman's
   report on 2026-11-06: a run after `--restart` restarted the viewer again, because the two commands ran different
   builds of the same commit, which aren't byte-identical. Done when: a build from a clean checkout embeds its commit
   and `rally view` compares commits, falling back to the binary's SHA-256 without one; the restart note names both
   builds; and a test covers a rebuild of the same commit not restarting.
+- [ ] **RAL-106: An also-read answers the open read request it covers.** From RAL-100 on 2026-11-06: the request
+  for a read at 4e145b1 (961) stayed open after the watchman added 4e145b1 as also read to the verification in force,
+  since a story already Verified can't be verified again, and the merge then flagged it `merged_before_read`, saying
+  a merge went past a read that had in fact been done. Done when: adding a commit as also read, or reading a merged
+  commit beside the verification (RAL-85), closes every open request whose commit the verification now covers; a
+  merge doesn't flag a request whose commit is already covered; replaying an existing ledger changes nothing else;
+  and tests cover both.
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.
