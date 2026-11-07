@@ -22,8 +22,11 @@ rally web --bind 127.0.0.1:7300 --login
 Open that address in the browser you'll view from and press **Sign in**. The code works once, within a minute,
 and becomes a session cookie. Opening the address spends nothing; only the button does (RAL-73). Browsers fetch
 addresses ahead of a visit (Chrome preloads what's typed or pasted into the address bar), and before RAL-73 such
-a fetch spent the code, so the visit itself found it used. `rally web --new-key` replaces the key, which signs every browser out at once; restarting the viewer
-does too, since sessions are only held in memory.
+a fetch spent the code, so the visit itself found it used. `rally web --new-key` replaces the key, which signs every browser out at once. Restarting the viewer
+signs no one out (RAL-80): each session is kept, as the SHA-256 of the session and of the key it was made under,
+in a private file beside the key (`web-key.sessions`), and read back at start, so the file holds no cookie that
+works. A session lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are
+kept. Sessions made under another key are dropped at start, and `--new-key` removes the file.
 
 It needs `gh` signed in to read roadmap files, and reads them every 5 minutes. The ledger and roster are read
 every 30 seconds.
