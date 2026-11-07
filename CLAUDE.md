@@ -21,6 +21,7 @@ Where you use Rally:
 - **Claim** a ready story: `rally claim <STORY> --team <team>`. Give it up with
   `rally release <STORY> --team <team>`.
 - **Submit** it when it's pushed: `rally submit <STORY> --team <team> --evidence "<repo>@<full commit>"`.
+  To fix a typo in the evidence while it's in review, `rally amend <STORY> --team <team> --evidence "..."`.
 - **Verify someone else's work**, never your own: read it at a commit, then
   `rally verify <STORY> --commit <full commit> --note "what you checked"`, or
   `rally send-back <STORY> --note "what's missing" [--commit <full commit>]`.
