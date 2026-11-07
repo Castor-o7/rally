@@ -1084,9 +1084,15 @@ fn read_summary(repo: &str, commit: &str, folder: &str) -> Result<Value, String>
 /// When `file` was last written, as of `commit` (RAL-104): its latest commit's committer time, in
 /// milliseconds, read through `gh`.
 fn written_at(repo: &str, commit: &str, file: &str) -> Result<i64, String> {
+    if commit.is_empty() || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("the commit isn't a hash".into());
+    }
     let out = run_gh(&[
         "api",
-        &format!("repos/{repo}/commits?path={file}&sha={commit}&per_page=1"),
+        &format!(
+            "repos/{repo}/commits?path={}&sha={commit}&per_page=1",
+            query_value(file)
+        ),
         "--jq",
         ".[0].commit.committer.date | fromdateiso8601 * 1000",
     ])?;
@@ -1096,6 +1102,19 @@ fn written_at(repo: &str, commit: &str, file: &str) -> Result<i64, String> {
         .filter(|ms| ms.is_finite() && *ms > 0.0)
         .map(|ms| ms as i64)
         .ok_or_else(|| "GitHub gave no time for its last commit".to_owned())
+}
+
+/// `text` as a URL query value (RAL-109): RFC 3986's unreserved characters and `/` as they are,
+/// and every other byte percent-encoded, so a file name can't end the value or add a parameter.
+fn query_value(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                char::from(b).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// Adds to a writeup read when it was written (RAL-104), or why that couldn't be read, so whether
@@ -2895,6 +2914,20 @@ mod tests {
         let past = past_board(&closed_rally(&ledger, 10).unwrap(), &json!({}));
         assert_eq!(past["events"][0]["headline"], "old one");
         assert_eq!(past["events"].as_array().unwrap().len(), 1);
+    }
+
+    /// RAL-109: a file name goes into the commit-time read's query as one value.
+    #[test]
+    fn a_file_name_is_one_query_value() {
+        assert_eq!(
+            query_value("docs/muster/watchman/2026-11-06.md"),
+            "docs/muster/watchman/2026-11-06.md"
+        );
+        assert_eq!(
+            query_value("a b&sha=evil#x+%.md"),
+            "a%20b%26sha%3Devil%23x%2B%25.md"
+        );
+        assert_eq!(query_value("é"), "%C3%A9");
     }
 
     /// RAL-104: a writeup is the open rally's only if it was written after the rally opened, so a
