@@ -428,8 +428,9 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   declared name, since a record doesn't name the verifier's team; and the board process in Muster's
   `docs/board.md` says the same, through a draft PR the watchman reads as the board's keeper.
 - [ ] **RAL-52: Hand a new watchman the peer-verified work.** Depends on RAL-51. Built in #99 (`rally
-  handover`) and approved by the watchman, apart from the digest, so it stays open on RAL-8, which waits on
-  MUS-43's design meeting with the operator. Done when: when a watchman is
+  handover`) and approved by the watchman, apart from the digest, which RAL-8 then built (#136, #137): its
+  "Peer-verified, awaiting your re-read (RAL-52)" section lists each story still awaiting the re-read and is left
+  out once none is, which a test now shows. Closed out on 2026-11-06 (RAL-52's own record). Done when: when a watchman is
   designated, Rally gives it one list of every story verified by a peer since the last designation, each with the
   commit read, who verified it, and whether and at what commit it merged; each stays marked "awaiting the
   watchman's re-read" until the watchman records its own verification, send-back or correction, none of which
@@ -488,6 +489,12 @@ word.
   `commit_differs` counts it and RAL-67's also-reads; `verified_commits` lists it; it's dropped with the
   verification; `rally verifications` labels it by the designation, gated by nothing; with tests and
   docs/evidence.md.
+- [ ] **RAL-87: Say when a watchman's digest has stopped.** From the DiscoSim rally's issues log (§2.7) and
+  mellow-weevil's digest dying on a 429 on 2026-11-06 with nothing noticing. Done when: each `rally digest` pass
+  records when it ran and when a digest last went; `rally brief` and `rally stalls` with `--digest-quiet-after
+  <window>` flag each designated watchman, or one named with `--digest-watchman`, whose digest has no pass recorded,
+  no pass within the window, or records waiting longer than the window with none sent, and not one whose ledger is
+  merely quiet; the window has no default, since it's the operator's to agree; with tests.
 - [ ] **RAL-80: Viewer sign-ins survive a restart.** From the DiscoSim rally's issues log (§3.4, 2026-11-06):
   sessions were held only in memory, so adding `--summaries`, or any restart or deploy, signed the operator out.
   Chosen over a SIGHUP reload of the projects and summaries, which would spare only config changes, not a deploy or

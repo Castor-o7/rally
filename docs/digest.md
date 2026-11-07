@@ -88,7 +88,9 @@ Teams
 
 Beside `rally wake`, as `rally digest --every <time>`: one pass reads the ledger through the paired service,
 decides from the kept head and the two clocks whether a digest is due, and sends it. Reads only. It writes
-nothing to the ledger.
+nothing to the ledger. Each pass records, per watchman, when it ran and when a digest last went (`last_pass_ms`,
+`last_sent_ms`), so `rally brief` and `rally stalls --digest-quiet-after <window>` can say when it has stopped
+(RAL-87; see docs/stalls.md).
 
 ## When a pass fails (RAL-86)
 

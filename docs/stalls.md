@@ -59,6 +59,18 @@ roster, so it's shown even when the roster can't be read.
 The issues log also suggests asking a run not to start the next one, rather than to "hold", since a hold may have
 caused that stop. The prompt says so.
 
+## A watchman's digest that stopped (RAL-87)
+
+On 2026-11-06 the watchman's `rally digest --every 30s` exited on a 429 and nothing noticed (issues log §2.7).
+With `--digest-quiet-after <window>`, `rally stalls` adds a `digest_quiet` prompt for each watchman whose digest
+looks stopped, from the state `rally digest` keeps on this machine (`--digest-state-file`, by default
+`digest.json` beside the pairing): no pass recorded at all, the last pass older than the window, or records first
+seen longer ago than the window and still not sent. A quiet ledger sends nothing and isn't flagged. The watchmen are
+the designated ones; with none designated, `--digest-watchman <name>` names one, declared. No window has been
+agreed with the operator, so it has no default (`RALLY_DIGEST_QUIET_AFTER`), and without it nothing is checked.
+`rally brief` takes the same flags and gives the same check as `digest`. The state is this machine's, so run the
+check where the digest runs.
+
 ## Labels
 
 Muster's facts keep Muster's own labels. `wake: waiting` is observed, and means "probably wakeable". Every other
