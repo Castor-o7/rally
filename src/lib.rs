@@ -8,6 +8,7 @@ pub mod designation;
 pub mod digest;
 pub mod entity;
 pub mod evidence;
+pub mod gate;
 pub mod init;
 pub mod ledger;
 pub mod levi;

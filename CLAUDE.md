@@ -21,12 +21,15 @@ Where you use Rally:
 - **Claim** a ready story: `rally claim <STORY> --team <team>`. Give it up with
   `rally release <STORY> --team <team>`.
 - **Submit** it when it's pushed: `rally submit <STORY> --team <team> --evidence "<repo>@<full commit>"`.
+  To fix a typo in the evidence while it's in review, `rally amend <STORY> --team <team> --evidence "..."`.
 - **Verify someone else's work**, never your own: read it at a commit, then
   `rally verify <STORY> --commit <full commit> --note "what you checked"`, or
   `rally send-back <STORY> --note "what's missing" [--commit <full commit>]`.
 - **Ask for a read** before a merge: `rally request-read <STORY> --commit <full commit> --note "..."`.
   An open request blocks the merge, and the read must cover the head being merged.
 - **Record a merge**: `rally merge <STORY> --commit <full commit>`.
+- **Before moving a branch**: `rally gate <base>..<new>` refuses if a story the commits name is
+  sent back or unverified.
 - **Say what you're waiting on**: `rally block --team <team> [--story <STORY>] [--on-story <STORY> |
   --on-team <team>] --note "..."`, and close it with `rally unblock <N> --note "why"`.
 - **Read your team's record** with `rally record <team>`, and correct it or disagree with

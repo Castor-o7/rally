@@ -832,6 +832,7 @@ fn the_deciding_test_three_real_records_a_saved_head_a_real_restart_and_check() 
             "rally",
             "--evidence",
             "Castor-o7/rally abc",
+            "--not-checkable",
         ],
     ] {
         let output = cli(&config, "silken-tanager", &args);
@@ -1615,6 +1616,7 @@ fn session_start_shows_a_teams_state_through_the_service() {
                 "muster",
                 "--evidence",
                 "muster@aaaa",
+                "--not-checkable",
             ],
         ),
         (

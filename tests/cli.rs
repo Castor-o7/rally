@@ -8,6 +8,7 @@ use serde_json::Value;
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const OTHER_COMMIT: &str = "fedcba9876543210fedcba9876543210fedcba98";
+const EVIDENCE: &str = "Castor-o7/rally@0123456789abcdef0123456789abcdef01234567";
 
 /// A scratch database of its own, and a directory for the head file.
 struct Ledger {
@@ -41,6 +42,7 @@ fn rally(db: &Ledger, name: &str, args: &[&str]) -> Output {
         .env_remove("RALLY_NAME")
         .env_remove("RALLY_TEAM")
         .env_remove("RALLY_HARNESS")
+        .env_remove("RALLY_PROJECTS")
         .output()
         .unwrap()
 }
@@ -61,6 +63,164 @@ fn refused(db: &Ledger, name: &str, args: &[&str]) -> String {
     String::from_utf8(output.stderr).unwrap()
 }
 
+/// RAL-71: a typo in the repository or a short commit is refused at submit, saying what to write,
+/// and the submitter corrects evidence in review with `amend`, without a send-back.
+#[test]
+fn evidence_is_checked_at_submit_and_amended_in_review() {
+    let db = Ledger::new();
+    ok(&db, "silken-tanager", &["ready", "RAL-3"]);
+    ok(
+        &db,
+        "silken-tanager",
+        &["claim", "RAL-3", "--team", "rally"],
+    );
+    let submit = |evidence: &str| {
+        refused(
+            &db,
+            "silken-tanager",
+            &["submit", "RAL-3", "--team", "rally", "--evidence", evidence],
+        )
+    };
+    let typo = submit(&format!("Castor-o7/ralyl@{COMMIT}"));
+    assert!(
+        typo.contains("names Castor-o7/ralyl, but RAL stories are in Castor-o7/rally"),
+        "{typo}"
+    );
+    let short = submit("Castor-o7/rally@0123456");
+    assert!(short.contains("isn't a full hash"), "{short}");
+    assert!(short.contains("owner/repo@<full commit>"), "{short}");
+    let bare = submit("abc");
+    assert!(bare.contains("isn't owner/repo@<full commit>"), "{bare}");
+    // Another project's prefix is checked against its own repository, from --projects.
+    let projects = db.dir.path().join("projects.json");
+    std::fs::write(
+        &projects,
+        r#"[{"name": "Rally", "prefix": "RAL", "repo": "someone/fork", "path": "docs/roadmap.md",
+             "tick_meaning": "x"}]"#,
+    )
+    .unwrap();
+    let elsewhere = refused(
+        &db,
+        "silken-tanager",
+        &[
+            "submit",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            EVIDENCE,
+            "--projects",
+            projects.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        elsewhere.contains("RAL stories are in someone/fork"),
+        "{elsewhere}"
+    );
+    // Nothing refused was recorded.
+    assert_eq!(
+        ok(&db, "silken-tanager", &["show", "RAL-3"])["detail"]["state"],
+        "claimed"
+    );
+
+    ok(
+        &db,
+        "silken-tanager",
+        &[
+            "submit",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            &format!("Castor-o7/rally@{OTHER_COMMIT}"),
+        ],
+    );
+    // A resubmit in review is refused, saying to amend.
+    let again = refused(
+        &db,
+        "silken-tanager",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    assert!(again.contains("rally amend RAL-3"), "{again}");
+    // Amending is checked the same way, and only the submitter can.
+    let typo = refused(
+        &db,
+        "silken-tanager",
+        &[
+            "amend",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            "Castor-o7/rally@abc",
+        ],
+    );
+    assert!(typo.contains("isn't a full hash"), "{typo}");
+    let other = refused(
+        &db,
+        "plucky-aspen",
+        &["amend", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    assert!(other.contains("only silken-tanager can amend"), "{other}");
+    ok(
+        &db,
+        "silken-tanager",
+        &["amend", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    let shown = ok(&db, "silken-tanager", &["show", "RAL-3"]);
+    assert_eq!(shown["detail"]["state"], "in_review");
+    let history = shown["detail"]["history"].as_array().unwrap();
+    assert_eq!(history[3]["change"]["evidence"], EVIDENCE);
+    assert_eq!(history[3]["change"]["amend"], true);
+    assert_eq!(
+        history[2]["change"]["evidence"],
+        format!("Castor-o7/rally@{OTHER_COMMIT}")
+    );
+    // The same evidence again is refused: nothing changed.
+    let same = refused(
+        &db,
+        "silken-tanager",
+        &["amend", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    assert!(same.contains("nothing to amend"), "{same}");
+    // A missing projects list is named.
+    let missing = refused(
+        &db,
+        "silken-tanager",
+        &[
+            "amend",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            EVIDENCE,
+            "--projects",
+            "/nonexistent/projects.json",
+        ],
+    );
+    assert!(missing.contains("/nonexistent/projects.json"), "{missing}");
+    // A read of the commit from before the amendment is refused, saying which to read.
+    let stale = refused(
+        &db,
+        "watch",
+        &[
+            "verify",
+            "RAL-3",
+            "--note",
+            "read it",
+            "--commit",
+            OTHER_COMMIT,
+        ],
+    );
+    assert!(stale.contains("amended at record 4 to commit"), "{stale}");
+    assert!(stale.contains(COMMIT), "{stale}");
+    ok(
+        &db,
+        "watch",
+        &["verify", "RAL-3", "--note", "read it", "--commit", COMMIT],
+    );
+}
+
 #[test]
 fn a_team_claims_and_submits_and_the_history_is_kept() {
     let db = Ledger::new();
@@ -71,7 +231,7 @@ fn a_team_claims_and_submits_and_the_history_is_kept() {
         "silken-tanager",
         &["claim", "RAL-3", "--team", "rally"],
     );
-    let evidence = "Castor-o7/rally abc123";
+    let evidence = EVIDENCE;
     let submitted = ok(
         &db,
         "silken-tanager",
@@ -117,6 +277,36 @@ fn a_team_claims_and_submits_and_the_history_is_kept() {
     assert_eq!(earlier["detail"]["state"], "in_review");
 }
 
+/// RAL-72: `show --brief` and `--field`, and the errors for a refused ID and a lapsed claim.
+#[test]
+fn show_brief_and_field_and_the_errors_say_what_to_do() {
+    let db = Ledger::new();
+    ok(&db, "t", &["ready", "RAL-3"]);
+    ok(&db, "t", &["claim", "RAL-3", "--team", "rally"]);
+    ok(
+        &db,
+        "t",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    ok(&db, "w", &["send-back", "RAL-3", "--note", "no test"]);
+
+    let brief = ok(&db, "t", &["show", "RAL-3", "--brief"]);
+    assert_eq!(brief["state"], "sent_back");
+    assert!(brief.get("history").is_none());
+    let field = rally(&db, "t", &["show", "RAL-3", "--field", "state"]);
+    assert!(field.status.success());
+    assert_eq!(String::from_utf8(field.stdout).unwrap().trim(), "sent_back");
+
+    let error = refused(
+        &db,
+        "t",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    assert!(error.contains("re-claim first"), "{error}");
+    let error = refused(&db, "t", &["ready", "DSM-45b"]);
+    assert!(error.contains("ABC-123"), "{error}");
+}
+
 #[test]
 fn the_submitter_cannot_verify_but_someone_else_can() {
     let db = Ledger::new();
@@ -126,7 +316,7 @@ fn the_submitter_cannot_verify_but_someone_else_can() {
     ok(
         &db,
         "author",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
     );
 
     let error = refused(
@@ -176,7 +366,7 @@ fn a_merge_is_a_commit_in_any_state_and_is_compared_with_the_verified_one() {
     ok(
         &db,
         "author",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
     );
     let error = refused(&db, "reader", &["verify", "RAL-3", "--note", "fine"]);
     assert!(error.contains("--commit"), "{error}");
@@ -259,7 +449,7 @@ fn a_requested_read_is_shown_until_answered_and_a_merge_meanwhile_is_marked() {
     ok(
         &db,
         "author",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
     );
     ok(
         &db,
@@ -410,7 +600,7 @@ fn a_track_record_reads_back_as_plain_facts() {
     ok(
         &db,
         "author",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", "abc"],
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
     );
     ok(&db, "watch", &["send-back", "RAL-3", "--note", "no test"]);
     ok(
@@ -483,7 +673,15 @@ fn recorded_text_is_marked_untrusted_and_shown_only_as_text() {
     ok(
         &db,
         "author",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", attack],
+        &[
+            "submit",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            attack,
+            "--not-checkable",
+        ],
     );
     ok(
         &db,
@@ -655,7 +853,15 @@ fn control_characters_in_recorded_text_are_escaped() {
     let output = rally(
         &db,
         "author",
-        &["submit", "RAL-3", "--team", "rally", "--evidence", escape],
+        &[
+            "submit",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            escape,
+            "--not-checkable",
+        ],
     );
     assert!(output.status.success());
     let shown = rally(&db, "author", &["show", "RAL-3"]);
@@ -751,4 +957,116 @@ fn session_start_is_silent_and_quick_when_the_service_cant_be_reached() {
     std::fs::write(config.join("client.json"), "not json").unwrap();
     let out = session_start(home.path(), &["--team", "rally"]);
     assert!(out.status.success() && out.stdout.is_empty());
+}
+
+fn git(repo: &std::path::Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn the_gate_refuses_a_range_naming_a_sent_back_story_and_passes_once_it_is_verified() {
+    let db = Ledger::new();
+    let repo = db.dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "start"]);
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    git(
+        &repo,
+        &["commit", "-q", "--allow-empty", "-m", "feat: one (RAL-1)"],
+    );
+    git(
+        &repo,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "fix: two (RAL-2)\n\nAfter RAL-9, which isn't this.",
+        ],
+    );
+    let range = format!("{base}..HEAD");
+    let repo_arg = repo.to_str().unwrap();
+
+    for story in ["RAL-1", "RAL-2"] {
+        ok(&db, "author", &["ready", story]);
+        ok(&db, "author", &["claim", story, "--team", "rally"]);
+        ok(
+            &db,
+            "author",
+            &["submit", story, "--team", "rally", "--evidence", "abc"],
+        );
+    }
+    ok(
+        &db,
+        "reader",
+        &["verify", "RAL-1", "--note", "read", "--commit", COMMIT],
+    );
+    ok(
+        &db,
+        "reader",
+        &["send-back", "RAL-2", "--note", "tick 0 bug"],
+    );
+
+    let error = refused(&db, "watchman", &["gate", &range, "--repo", repo_arg]);
+    assert!(error.contains("the gate refused"), "{error}");
+    let found: Value = serde_json::from_str(&error[error.find('{').unwrap()..]).unwrap();
+    assert_eq!(found["commits"], 2);
+    assert_eq!(found["refused"][0]["story"], "RAL-2");
+    assert_eq!(found["refused"][0]["why"], "sent back");
+    assert_eq!(found["stories"]["RAL-1"]["state"], "verified");
+    // RAL-9 is only cited in a body, so it isn't named.
+    assert!(found["stories"].get("RAL-9").is_none());
+
+    let allowed = ok(
+        &db,
+        "watchman",
+        &["gate", &range, "--repo", repo_arg, "--allow", "RAL-2"],
+    );
+    assert_eq!(allowed["ok"], true);
+    assert_eq!(allowed["allowed"], serde_json::json!(["RAL-2"]));
+
+    ok(&db, "author", &["claim", "RAL-2", "--team", "rally"]);
+    ok(
+        &db,
+        "author",
+        &["submit", "RAL-2", "--team", "rally", "--evidence", "abc"],
+    );
+    ok(
+        &db,
+        "reader",
+        &[
+            "verify",
+            "RAL-2",
+            "--note",
+            "fixed",
+            "--commit",
+            OTHER_COMMIT,
+        ],
+    );
+    let passed = ok(&db, "watchman", &["gate", &range, "--repo", repo_arg]);
+    assert_eq!(passed["ok"], true);
+
+    let error = refused(
+        &db,
+        "watchman",
+        &["gate", "--repo", repo_arg, "--", "--output=x"],
+    );
+    assert!(error.contains("isn't a commit range"), "{error}");
 }

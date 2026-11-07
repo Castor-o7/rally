@@ -95,6 +95,12 @@ pub enum Change {
         /// (RAL-5). Declared.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         untested: Option<String>,
+        /// An amendment (RAL-71): the submitter corrects the evidence of a story still in review,
+        /// without a send-back. The state stays In review, and this becomes the latest submission,
+        /// so Rally checks the new evidence and readers see it. The earlier submission stays in
+        /// the history.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        amend: bool,
     },
     /// Rally's own check of a submission's evidence against GitHub (RAL-5), observed. It's
     /// evidence, not a verdict: `ci: passed` is GitHub's word on that commit, and RAL-31 still
@@ -600,6 +606,12 @@ pub struct Team {
 pub enum LedgerError {
     /// The record's body isn't a valid change. Holds the reason.
     InvalidChange(String),
+    /// A submit of a story nobody holds a claim on: it was sent back, released or never claimed,
+    /// so it needs a claim first (RAL-72).
+    ClaimLapsed {
+        story: String,
+        from: State,
+    },
     /// A story ID isn't in the `ABC-1` form.
     InvalidStoryId(String),
     /// A required text field is empty. Holds the field's name.
@@ -673,6 +685,26 @@ pub enum LedgerError {
     ReservedTeam,
     /// An evidence check that doesn't fit the story's submissions (RAL-5).
     InvalidEvidenceCheck(u64, &'static str),
+    /// A submit of a story already in review, which an amendment does instead (RAL-71).
+    AlreadyInReview(String),
+    /// An amendment of a story that isn't in review (RAL-71).
+    NotInReview {
+        story: String,
+        from: State,
+    },
+    /// An amendment that changes neither the evidence nor what wasn't tested (RAL-71).
+    NothingAmended(String),
+    /// A read names a commit other than the amended evidence's (RAL-71).
+    ReadBeforeAmendment {
+        story: String,
+        amended_at: u64,
+        commit: String,
+    },
+    /// Someone other than the submitter tried to amend a submission (RAL-71).
+    NotTheSubmitter {
+        story: String,
+        submitter: String,
+    },
     /// A new story's number isn't above every one its prefix has in the ledger (RAL-55).
     NumberTaken {
         story: String,
@@ -715,7 +747,12 @@ impl fmt::Display for LedgerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidChange(reason) => write!(f, "invalid change: {reason}"),
-            Self::InvalidStoryId(id) => write!(f, "story ID {id:?} isn't in the form ABC-1"),
+            Self::InvalidStoryId(id) => write!(
+                f,
+                "story ID {id:?} isn't in the form ABC-123: capital letters, a hyphen, then a \
+                 number with no leading zero and nothing after it, so DSM-45b and DSM-045 are \
+                 refused; for a new story, take the next number with rally new-story <PREFIX>"
+            ),
             Self::EmptyField(field) => write!(f, "{field} is empty"),
             Self::TooLong(field, limit) => write!(f, "{field} is over {limit} characters"),
             Self::ControlCharacter(field) => write!(f, "{field} has a control character"),
@@ -732,6 +769,18 @@ impl fmt::Display for LedgerError {
             Self::InvalidTransition { story, from } => {
                 write!(f, "{story} can't make this change from {from:?}")
             }
+            Self::ClaimLapsed { story, from } => match from {
+                State::SentBack => write!(
+                    f,
+                    "{story} was sent back, so its claim has lapsed: re-claim first with \
+                     rally claim {story} --team <team>, then submit"
+                ),
+                _ => write!(
+                    f,
+                    "{story} isn't claimed (it's {from:?}): claim it first with \
+                     rally claim {story} --team <team>, then submit"
+                ),
+            },
             Self::WrongTeam { story, holder } => write!(f, "{story} is held by {holder}"),
             Self::WrongKind { expected, found } => {
                 write!(f, "this change needs a {expected:?} record, not {found:?}")
@@ -767,6 +816,32 @@ impl fmt::Display for LedgerError {
             Self::InvalidEvidenceCheck(seq, why) => {
                 write!(f, "can't record an evidence check of record {seq}: {why}")
             }
+            Self::AlreadyInReview(story) => write!(
+                f,
+                "{story} is already in review; to correct its evidence, amend it with \
+                 rally amend {story} --team <team> --evidence <owner/repo@full commit>"
+            ),
+            Self::NotInReview { story, from } => write!(
+                f,
+                "{story} is {from:?}, and only a submission still in review can be amended"
+            ),
+            Self::NothingAmended(story) => write!(
+                f,
+                "that's {story}'s evidence already, so there's nothing to amend"
+            ),
+            Self::ReadBeforeAmendment {
+                story,
+                amended_at,
+                commit,
+            } => write!(
+                f,
+                "{story}'s evidence was amended at record {amended_at} to commit {commit}: read \
+                 that commit, then name it with --commit"
+            ),
+            Self::NotTheSubmitter { story, submitter } => write!(
+                f,
+                "{submitter} submitted {story}, so only {submitter} can amend its evidence"
+            ),
             Self::NumberTaken { story, highest } => write!(
                 f,
                 "{story} isn't the next free number: its prefix already reaches {highest}"
@@ -1828,10 +1903,55 @@ fn transition(
                 ));
             }
         }
+        Change::Submit {
+            team,
+            evidence,
+            untested,
+            amend: true,
+            ..
+        } => {
+            require_kind(record, Kind::Declared)?;
+            if story.state != State::InReview {
+                return Err(LedgerError::NotInReview {
+                    story: id.to_owned(),
+                    from: story.state,
+                });
+            }
+            require_holder(story, id, team)?;
+            if let Some(Change::Submit {
+                evidence: before,
+                untested: untested_before,
+                ..
+            }) = latest_submission(story).map(|entry| &entry.change)
+                && before.trim() == evidence.trim()
+                && untested_before == untested
+            {
+                return Err(LedgerError::NothingAmended(id.to_owned()));
+            }
+            // Only whoever submitted it amends it: the evidence is theirs to correct.
+            if let (Some(submitter), Some(name)) = (&story.submitted_by, actor)
+                && !same_name(submitter, name)
+            {
+                return Err(LedgerError::NotTheSubmitter {
+                    story: id.to_owned(),
+                    submitter: submitter.clone(),
+                });
+            }
+        }
         Change::Submit { team, .. } => {
             require_kind(record, Kind::Declared)?;
-            if story.state != State::Claimed {
-                return Err(refuse(story.state));
+            match story.state {
+                State::Claimed => {}
+                // A send-back or release ends the claim, so a resubmit needs a new one (RAL-72).
+                from @ (State::SentBack | State::Ready) => {
+                    return Err(LedgerError::ClaimLapsed {
+                        story: id.to_owned(),
+                        from,
+                    });
+                }
+                // A resubmit in review has its own error, saying to amend (RAL-71).
+                State::InReview => return Err(LedgerError::AlreadyInReview(id.to_owned())),
+                from => return Err(refuse(from)),
             }
             require_holder(story, id, team)?;
             story.state = State::InReview;
@@ -1841,6 +1961,7 @@ fn transition(
             if story.state != State::InReview {
                 return Err(refuse(story.state));
             }
+            require_amended_read(story, id, commit.as_deref())?;
             require_verifier(story, id, record.kind(), actor)?;
             story.state = State::Verified;
             story.verified_commit = commit.clone();
@@ -1848,10 +1969,11 @@ fn transition(
             // A read answers every open request for one.
             story.requested_reads.clear();
         }
-        Change::SendBack { .. } => {
+        Change::SendBack { commit, .. } => {
             if story.state != State::InReview {
                 return Err(refuse(story.state));
             }
+            require_amended_read(story, id, commit.as_deref())?;
             require_verifier(story, id, record.kind(), actor)?;
             story.state = State::SentBack;
             story.requested_reads.clear();
@@ -1994,6 +2116,44 @@ fn require_holder(story: &Story, id: &str, team: &str) -> Result<(), LedgerError
             holder: holder.clone(),
         }),
         _ => Ok(()),
+    }
+}
+
+/// The story's latest submission, amended or not.
+fn latest_submission(story: &Story) -> Option<&HistoryEntry> {
+    story
+        .history
+        .iter()
+        .rev()
+        .find(|entry| matches!(entry.change, Change::Submit { .. }))
+}
+
+/// Once a submission is amended (RAL-71), a read that names a commit must name the amended
+/// evidence's, so a verify of the commit read before the amendment can't stand for the evidence
+/// after it. Evidence Rally can't parse has no commit to compare, and a send-back may name none.
+fn require_amended_read(story: &Story, id: &str, commit: Option<&str>) -> Result<(), LedgerError> {
+    let Some(entry) = latest_submission(story) else {
+        return Ok(());
+    };
+    let Change::Submit {
+        evidence,
+        amend: true,
+        ..
+    } = &entry.change
+    else {
+        return Ok(());
+    };
+    let (Some(read), Ok((_, amended))) = (commit, crate::evidence::parse(evidence)) else {
+        return Ok(());
+    };
+    if read.eq_ignore_ascii_case(&amended) {
+        Ok(())
+    } else {
+        Err(LedgerError::ReadBeforeAmendment {
+            story: id.to_owned(),
+            amended_at: entry.seq,
+            commit: amended,
+        })
     }
 }
 
@@ -2595,6 +2755,60 @@ mod tests {
 
     fn state(ledger: &Ledger) -> State {
         ledger.story(STORY).unwrap().state
+    }
+
+    /// RAL-72: a submit with no claim in force says to claim first, with the command; a submit
+    /// from review says to amend instead (RAL-71).
+    #[test]
+    fn a_submit_without_a_claim_says_to_claim_first() {
+        let mut ledger = ledger_with(&[ready(), claim(), submit()]);
+        assert_eq!(
+            apply_next(&mut ledger, &submit()),
+            Err(LedgerError::AlreadyInReview(STORY.into()))
+        );
+        apply_next(&mut ledger, &send_back()).unwrap();
+        let lapsed = apply_next(&mut ledger, &submit()).unwrap_err();
+        assert_eq!(
+            lapsed,
+            LedgerError::ClaimLapsed {
+                story: STORY.into(),
+                from: State::SentBack
+            }
+        );
+        let text = lapsed.to_string();
+        assert!(text.contains("re-claim first"), "{text}");
+        assert!(
+            text.contains(&format!("rally claim {STORY} --team")),
+            "{text}"
+        );
+        // Re-claiming lets it be submitted again.
+        apply_next(&mut ledger, &claim()).unwrap();
+        apply_next(&mut ledger, &submit()).unwrap();
+
+        let mut released = ledger_with(&[ready(), claim(), release()]);
+        let text = apply_next(&mut released, &submit())
+            .unwrap_err()
+            .to_string();
+        assert!(text.contains("claim it first"), "{text}");
+    }
+
+    /// RAL-72: a refused story ID says what the form is and how to get a new number.
+    #[test]
+    fn a_refused_story_id_explains_the_form() {
+        let ledger = Ledger::default();
+        for id in ["DSM-45b", "DSM-045", "dsm-45", "DSM"] {
+            // A leading zero is refused for new records only, by check.
+            let refused = ledger
+                .check(1, &team(json!({"change": "ready", "story": id})))
+                .unwrap_err();
+            assert_eq!(refused, LedgerError::InvalidStoryId(id.into()));
+            let text = refused.to_string();
+            assert!(
+                text.contains("capital letters, a hyphen, then a number"),
+                "{text}"
+            );
+            assert!(text.contains("rally new-story"), "{text}");
+        }
     }
 
     #[test]
@@ -3537,6 +3751,124 @@ mod tests {
     }
 
     #[test]
+    fn the_submitter_amends_evidence_while_in_review_and_history_keeps_both() {
+        let amend = |name: &str, team: &str| {
+            record(
+                Kind::Declared,
+                name,
+                json!({"change": "submit", "story": STORY, "team": team,
+                       "evidence": format!("o/r@{COMMIT}"), "amend": true}),
+            )
+        };
+        // Not before a submission: there's nothing to amend.
+        let mut ledger = ledger_with(&[ready(), claim()]);
+        assert_eq!(
+            ledger.check(3, &amend("alice", "rally")),
+            Err(LedgerError::NotInReview {
+                story: STORY.into(),
+                from: State::Claimed
+            })
+        );
+        push(&mut ledger, &submit());
+        // A second plain submit is refused, and the error says to amend.
+        assert_eq!(
+            ledger.check(4, &submit()),
+            Err(LedgerError::AlreadyInReview(STORY.into()))
+        );
+        assert!(
+            LedgerError::AlreadyInReview(STORY.into())
+                .to_string()
+                .contains("rally amend RAL-3")
+        );
+        // Only the holding team, and only the submitter.
+        assert!(matches!(
+            ledger.check(4, &amend("alice", "other")),
+            Err(LedgerError::WrongTeam { .. })
+        ));
+        assert_eq!(
+            ledger.check(4, &amend("bob", "rally")),
+            Err(LedgerError::NotTheSubmitter {
+                story: STORY.into(),
+                submitter: "alice".into()
+            })
+        );
+        assert!(matches!(
+            ledger.check(
+                4,
+                &verifier(json!({"change": "submit", "story": STORY,
+                "team": "rally", "evidence": "x", "amend": true}))
+            ),
+            Err(LedgerError::WrongKind { .. })
+        ));
+        push(&mut ledger, &amend("Alice", "rally"));
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.state, State::InReview);
+        assert_eq!(story.submitted_by.as_deref(), Some("alice"));
+        let evidence: Vec<(&str, bool)> = story
+            .history
+            .iter()
+            .filter_map(|entry| match &entry.change {
+                Change::Submit {
+                    evidence, amend, ..
+                } => Some((evidence.as_str(), *amend)),
+                _ => None,
+            })
+            .collect();
+        let fixed = format!("o/r@{COMMIT}");
+        assert_eq!(evidence, [("abc123", false), (fixed.as_str(), true)]);
+        // The amendment is the submission Rally checks next.
+        let jobs = crate::evidence::unchecked(&ledger);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            (jobs[0].submit, jobs[0].evidence.as_str()),
+            (4, fixed.as_str())
+        );
+        // The same evidence again changes nothing, so it's refused.
+        assert_eq!(
+            ledger.check(5, &amend("alice", "rally")),
+            Err(LedgerError::NothingAmended(STORY.into()))
+        );
+        // A read of another commit than the amended evidence's is refused, verify or send-back,
+        // saying which record amended it; a send-back naming no commit still stands.
+        let stale = |change: &str| {
+            verifier(json!({"change": change, "story": STORY, "note": "read it",
+                            "commit": OTHER_COMMIT}))
+        };
+        for change in ["verify", "send_back"] {
+            assert_eq!(
+                ledger.check(5, &stale(change)),
+                Err(LedgerError::ReadBeforeAmendment {
+                    story: STORY.into(),
+                    amended_at: 4,
+                    commit: COMMIT.into()
+                })
+            );
+        }
+        assert!(ledger.check(5, &send_back()).is_ok());
+        // The amended commit, in any case, is read.
+        let upper = verifier(
+            json!({"change": "verify", "story": STORY, "note": "read it",
+                                    "commit": COMMIT.to_ascii_uppercase()}),
+        );
+        assert!(ledger.check(5, &upper).is_ok());
+        push(&mut ledger, &verify());
+        assert_eq!(state(&ledger), State::Verified);
+        assert!(matches!(
+            ledger.check(6, &amend("alice", "rally")),
+            Err(LedgerError::NotInReview { .. })
+        ));
+        // A plain submit leaves `amend` out of the record, so older readers see no change.
+        let plain = Change::Submit {
+            story: STORY.into(),
+            team: "rally".into(),
+            evidence: "e".into(),
+            untested: None,
+            amend: false,
+        };
+        assert!(serde_json::to_value(&plain).unwrap().get("amend").is_none());
+    }
+
+    #[test]
     fn rally_records_one_evidence_check_per_submission_as_observed() {
         let observed = |submit: u64| {
             let source = Source {
@@ -3772,7 +4104,14 @@ mod tests {
                 let before = ledger.clone();
                 let result = apply_next(&mut ledger, &change);
                 assert!(
-                    matches!(result, Err(LedgerError::InvalidTransition { .. })),
+                    // A resubmit in review, and one without a claim, have their own errors
+                    // (RAL-71, RAL-72).
+                    matches!(
+                        result,
+                        Err(LedgerError::InvalidTransition { .. }
+                            | LedgerError::AlreadyInReview(_)
+                            | LedgerError::ClaimLapsed { .. })
+                    ),
                     "{change:?} from {:?} gave {result:?}",
                     before.story(STORY).unwrap().state
                 );

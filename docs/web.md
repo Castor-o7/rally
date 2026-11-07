@@ -19,8 +19,10 @@ rally web --bind 127.0.0.1:7300 --login
 # {"open": "http://127.0.0.1:7300/?code=…", "expires_in_seconds": 60, …}
 ```
 
-Open that address in the browser you'll view from. The code works once, within a minute, and becomes a session
-cookie. `rally web --new-key` replaces the key, which signs every browser out at once; restarting the viewer
+Open that address in the browser you'll view from and press **Sign in**. The code works once, within a minute,
+and becomes a session cookie. Opening the address spends nothing; only the button does (RAL-73). Browsers fetch
+addresses ahead of a visit (Chrome preloads what's typed or pasted into the address bar), and before RAL-73 such
+a fetch spent the code, so the visit itself found it used. `rally web --new-key` replaces the key, which signs every browser out at once; restarting the viewer
 does too, since sessions are only held in memory.
 
 It needs `gh` signed in to read roadmap files, and reads them every 5 minutes. The ledger and roster are read
@@ -30,7 +32,10 @@ every 30 seconds.
 
 - **Roadmap ticks** are counted from each project's roadmap file, with the file, commit and read time
   shown. A tick means something different in each project, so each is labelled and they're never added
-  into one number. `web/projects.json` holds the meanings, or use `--projects`. Every checkbox in the
+  into one number. The projects and their meanings come from `--projects` if given, otherwise from
+  `projects.json` beside the pairing (`~/.config/rally/projects.json`) if it exists, and otherwise from the
+  built-in `web/projects.json` (RAL-74). The viewer's first line says which, as `projects`. A file that's
+  there but can't be read or isn't a list stops the viewer, rather than falling back. Every checkbox in the
   file counts, outside code examples. Percentages round down.
 - **Verified** comes only from the ledger, and is never worked out from ticks. It reads "not available
   yet" for a project with no stories in the ledger, and it covers only the stories the ledger tracks.
@@ -46,6 +51,19 @@ every 30 seconds.
   send-backs (verified records) and problems reported (blockers it declared, and how many are open), each with
   when the last one was. Counts and dates only: no scores or ranking.
 - **Ledger check** repeats `rally check`. It can't show a rewrite of the whole host without a saved head.
+
+## The current rally (RAL-69)
+
+The overview shows only the projects in the current rally: those where a team on Muster's roster now holds a story
+(claimed, in review or sent back). A team is on the roster when a session's nickname is the team's name, or a session
+matches the team's `sessions` in `projects.json`, as `rally wake` matches them. A team's name is never guessed from a
+session's project. The roadmap cards, the ledger's figures and evidence, the declared teams, the track records and the
+totals across projects all follow it. The ledger status panel says which prefixes are in, labelled observed.
+
+Nothing is removed. Other projects are listed, collapsed, under "Not in this rally", and each keeps its page and
+its records; `rally show` and past moments still show everything. If the roster or the ledger can't be read, the
+viewer can't tell, so it shows every project with a warning instead of hiding any. `/api/status` carries the reading
+as `rally` (`known`, `prefixes`, `held`, `active_teams`) and each project's `in_rally`.
 
 ## Project pages (RAL-43)
 
@@ -126,6 +144,11 @@ why.
   for a one-time code: single use, a minute long, held only in memory. A session is a random value, not the
   key, and holds only while the key it was made under is still in the file. No response or printed line
   carries the key, and keys, codes and sessions are compared in constant time.
+- **Only pressing Sign in spends a code.** `GET /?code=…` answers a page with one form, which posts the code
+  back to `/`; the page has its own content security policy, which allows that form and nothing else (no
+  script, no style, no other site). It shows the code only if it's a code's 64 hex digits. The POST is held to
+  the same `Origin` and `Sec-Fetch-Site` rules as every request, so another site's form can't press it, and a
+  POST without a code is still refused as a write.
 - **A page can't ask for a code.** Codes are given only to a request without `Origin` or `Sec-Fetch-Site`,
   which a browser always sends, and with the key.
 - **Other sites can't read it.** Requests must name this address in `Host`, which stops DNS rebinding, and
@@ -149,4 +172,5 @@ why.
   as RAL-29 says. RAL-34, viewing from a phone, depends on that.
 - Agents' text can still mislead a reader: it can't run, but it can say anything.
 - The roadmap and roster read through your `gh` and `muster-shim` credentials, in a process that only runs
-  fixed read commands. Project names in `--projects` come from you and are trusted.
+  fixed read commands. Project names in `--projects`, or in `projects.json` beside the pairing, come from you
+  and are trusted.

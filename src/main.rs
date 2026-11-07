@@ -150,7 +150,8 @@ enum Command {
     Web {
         #[arg(long, default_value = "127.0.0.1:7300")]
         bind: String,
-        /// The projects to show, instead of the defaults.
+        /// The projects to show. Defaults to projects.json beside the pairing
+        /// (~/.config/rally/projects.json) when that exists, and otherwise the built-in list.
         #[arg(long)]
         projects: Option<PathBuf>,
         /// This machine's backup directory, to show how old the last backup is and whether that's
@@ -356,6 +357,34 @@ enum Command {
         /// What you didn't test, in its own field.
         #[arg(long)]
         untested: Option<String>,
+        /// The projects, whose `repo` the evidence must name for a story of that prefix (RAL-71),
+        /// instead of the defaults.
+        #[arg(long, env = "RALLY_PROJECTS")]
+        projects: Option<PathBuf>,
+        /// Skip this command's check of the evidence's form and repository, for evidence such as
+        /// work outside GitHub. The service still checks what it can, and records what it couldn't.
+        #[arg(long)]
+        not_checkable: bool,
+    },
+    /// Correct the evidence of a story you submitted that's still in review (RAL-71), without a
+    /// send-back. Checked as `submit` is, and recorded in the story's history as an amendment.
+    Amend {
+        story: String,
+        #[arg(long)]
+        team: String,
+        /// A repository and full commit, as owner/repo@<full commit>, which Rally checks (RAL-5).
+        #[arg(long)]
+        evidence: String,
+        /// What you didn't test, in its own field.
+        #[arg(long)]
+        untested: Option<String>,
+        /// The projects, whose `repo` the evidence must name for a story of that prefix, instead
+        /// of the defaults.
+        #[arg(long, env = "RALLY_PROJECTS")]
+        projects: Option<PathBuf>,
+        /// Skip this command's check of the evidence's form and repository.
+        #[arg(long)]
+        not_checkable: bool,
     },
     /// Confirm someone else's submitted story, naming the commit you read.
     Verify {
@@ -702,6 +731,20 @@ enum Command {
         #[arg(long = "also-read")]
         also_read: Vec<String>,
     },
+    /// Before moving a branch: every story the commits in a range name must be verified (RAL-70).
+    /// Lists each story named with its state, and fails if any is sent back, unverified, or not
+    /// in the ledger under a prefix the ledger uses. Reads only commit messages.
+    Gate {
+        /// The commits to check, as git takes them, such as 19cc9d1..origin/main.
+        range: String,
+        /// The checkout to read the commits from.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// A story the range only mentions, such as one a commit files on the roadmap: listed,
+        /// and not refused. Repeatable.
+        #[arg(long)]
+        allow: Vec<String>,
+    },
     /// Show the state of every story, or one story with its history.
     Show {
         story: Option<String>,
@@ -714,6 +757,13 @@ enum Command {
         /// For a history: the entries before this record, as the last page's `earlier` gave it.
         #[arg(long)]
         before: Option<u64>,
+        /// One top-level state per story and no history (RAL-72).
+        #[arg(long, conflicts_with = "before")]
+        brief: bool,
+        /// Print one field alone as plain text: state, team, submitted_by, verified_commit or
+        /// merged_commit. For the list, one `ID<tab>value` line per story (RAL-72).
+        #[arg(long, conflicts_with_all = ["brief", "before"])]
+        field: Option<String>,
     },
 }
 
@@ -1071,6 +1121,9 @@ impl Backend {
     }
 }
 
+/// The most pages of stories that `rally gate` reads.
+const GATE_PAGES: usize = 50;
+
 /// The most pages of stories, and of blockers, that `rally next` reads.
 const NEXT_PAGES: usize = 20;
 
@@ -1181,9 +1234,72 @@ impl PickRead {
 /// The most times `new-story` tries the next number when another team takes it first.
 const NEW_STORY_TRIES: usize = 20;
 
-/// `rally new-story`: the next free number for `prefix`, above every one in the ledger and in the
-/// roadmap, written in one append. If another team takes it first, the ledger refuses and this
-/// tries the next (RAL-55).
+/// A submit or amend record (RAL-71).
+fn submission(
+    story: &str,
+    team: &str,
+    evidence: &str,
+    untested: Option<String>,
+    amend: bool,
+) -> (Kind, Value) {
+    let mut body = json!({"change": "submit", "story": story, "team": team, "evidence": evidence});
+    if let Some(untested) = untested {
+        body["untested"] = json!(untested);
+    }
+    if amend {
+        body["amend"] = json!(true);
+    }
+    (Kind::Declared, body)
+}
+
+/// Checks evidence at submit (RAL-71): it must be `owner/repo@<full commit>`, and for a story whose
+/// prefix the projects list, name that project's repository. Caught here, a typo costs a retry
+/// rather than a send-back.
+fn check_evidence(
+    story: &str,
+    evidence: &str,
+    projects: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let text = match projects {
+        Some(path) => std::fs::read_to_string(path).map_err(|error| {
+            format!(
+                "couldn't read the projects list {}: {error}",
+                path.display()
+            )
+        })?,
+        None => DEFAULT_PROJECTS.to_owned(),
+    };
+    let projects: Vec<Project> = serde_json::from_str(&text)
+        .map_err(|error| format!("the projects list isn't a list of projects: {error}"))?;
+    match evidence_problem(story, evidence, &projects) {
+        Some(problem) => Err(problem.into()),
+        None => Ok(()),
+    }
+}
+
+/// Why `evidence` won't do for `story`, if it won't (RAL-71).
+fn evidence_problem(story: &str, evidence: &str, projects: &[Project]) -> Option<String> {
+    const FORM: &str = "write it as owner/repo@<full commit>, such as \
+                        Castor-o7/rally@<40 hex digits from git rev-parse HEAD>";
+    let (repo, _) = match rally::evidence::parse(evidence) {
+        Ok(parsed) => parsed,
+        Err(why) => return Some(format!("{why}: {FORM}, or give --not-checkable")),
+    };
+    let prefix = story.split_once('-').map_or(story, |(prefix, _)| prefix);
+    if let Some(project) = projects
+        .iter()
+        .find(|project| project.prefix.eq_ignore_ascii_case(prefix))
+        && !project.repo.eq_ignore_ascii_case(&repo)
+    {
+        return Some(format!(
+            "the evidence names {repo}, but {prefix} stories are in {}: check the repository's \
+             spelling, or give --projects with the right repo for {prefix}",
+            project.repo
+        ));
+    }
+    None
+}
+
 /// `owner/repo` from a github.com remote URL, in https or ssh form.
 fn github_repo(url: &str) -> Option<String> {
     let rest = url
@@ -1230,6 +1346,10 @@ fn open_pull_ids(backend: &Backend, repo: Option<&str>, roadmap: &Path, prefix: 
     }
 }
 
+/// `rally new-story`: the next free number for `prefix`, above every one in the ledger and in the
+/// roadmap, written in one append. If another team takes it first, the ledger refuses and this
+/// tries the next (RAL-55).
+///
 /// `roadmap` is the local roadmap and the GitHub repository whose open pull requests' roadmaps are
 /// read too, if given.
 fn new_story(
@@ -1889,6 +2009,19 @@ fn config_path(config: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::E
     }
 }
 
+/// The viewer's projects file when `--projects` isn't given (RAL-74): `projects.json` beside the
+/// pairing (`~/.config/rally/projects.json` by default), or `None` for the built-in list when there
+/// isn't one. A file that's there but can't be read is an error, never a quiet fall back to the
+/// built-in list.
+fn default_projects_file(config: &Path) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    let path = config.with_file_name("projects.json");
+    match std::fs::metadata(&path) {
+        Ok(_) => Ok(Some(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("can't read {}: {error}", path.display()).into()),
+    }
+}
+
 /// The most pages of each list the viewer reads, each of up to [`views::LIST_LIMIT`] entries.
 const VIEWER_PAGES: usize = 20;
 
@@ -2070,11 +2203,18 @@ fn run_viewer(
     sign_in: web::SignIn,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let key_file = sign_in.key_file.as_path();
-    let text = match projects {
-        Some(path) => std::fs::read_to_string(path)?,
+    let projects_from = projects
+        .as_ref()
+        .map_or_else(|| json!("built-in"), |path| json!(path));
+    let text = match &projects {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|e| format!("can't read {}: {e}", path.display()))?,
         None => DEFAULT_PROJECTS.to_owned(),
     };
-    let projects: Vec<Project> = serde_json::from_str(&text)?;
+    let projects: Vec<Project> = serde_json::from_str(&text).map_err(|e| {
+        let from = projects_from.as_str().unwrap_or("built-in");
+        format!("{from} isn't a projects list: {e}")
+    })?;
     // A prefix the viewer doesn't list would be silently ignored, so refuse it.
     if let Some(prefix) = local
         .by_prefix
@@ -2116,6 +2256,7 @@ fn run_viewer(
     println!(
         "{}",
         json!({"listening": listening.to_string(), "key_file": key_file,
+               "projects": projects_from,
                "sign_in": format!("rally web --bind {listening} --login")})
     );
     std::io::Write::flush(&mut std::io::stdout())?;
@@ -2414,6 +2555,11 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     .by_prefix
                     .insert(prefix.to_owned(), expand_home(std::path::Path::new(folder)));
             }
+            // RAL-74: the operator's own list beside the pairing, if there is one, then the built-in.
+            let projects = match projects {
+                Some(path) => Some(path),
+                None => default_projects_file(&config)?,
+            };
             return run_viewer(
                 &bind,
                 projects,
@@ -2515,11 +2661,32 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             return Err(format!("the ledger failed its check:\n{text}").into());
         }
+        Command::Gate { range, repo, allow } => {
+            let commits = rally::gate::commits(&repo, &range)?;
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
+            let (read, more) =
+                backend.read_all("/v1/stories", "stories", GATE_PAGES, |ledger, page| {
+                    views::stories(ledger, None, page)
+                })?;
+            if more {
+                return Err("the ledger has more stories than the gate reads: refused".into());
+            }
+            let stories = read["stories"].as_object().cloned().unwrap_or_default();
+            let found =
+                rally::gate::judge(&range, &commits, &stories, &allow.into_iter().collect());
+            let text = serde_json::to_string_pretty(&found)?;
+            if found["ok"] == json!(true) {
+                return Ok(text);
+            }
+            return Err(format!("the gate refused {range}:\n{text}").into());
+        }
         Command::Show {
             story,
             as_of,
             after,
             before,
+            brief,
+            field,
         } => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             let path = match &story {
@@ -2527,9 +2694,14 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 None => "/v1/stories".to_owned(),
             };
             let page = Page { after, before };
-            return backend.read(&path, as_of, &page, |ledger, page| {
+            let value = backend.read_value(&path, as_of, &page, |ledger, page| {
                 views::stories(ledger, story.as_deref(), page)
-            });
+            })?;
+            if let Some(name) = field {
+                return Ok(views::field(&value, &name)?);
+            }
+            let value = if brief { views::brief(&value) } else { value };
+            return Ok(serde_json::to_string_pretty(&value)?);
         }
         Command::Teams {
             team,
@@ -2707,13 +2879,26 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             team,
             evidence,
             untested,
+            projects,
+            not_checkable,
         } => {
-            let mut body =
-                json!({"change": "submit", "story": story, "team": team, "evidence": evidence});
-            if let Some(untested) = untested {
-                body["untested"] = json!(untested);
+            if !not_checkable {
+                check_evidence(&story, &evidence, projects.as_deref())?;
             }
-            (Kind::Declared, body)
+            submission(&story, &team, &evidence, untested, false)
+        }
+        Command::Amend {
+            story,
+            team,
+            evidence,
+            untested,
+            projects,
+            not_checkable,
+        } => {
+            if !not_checkable {
+                check_evidence(&story, &evidence, projects.as_deref())?;
+            }
+            submission(&story, &team, &evidence, untested, true)
         }
         Command::Verify {
             story,
