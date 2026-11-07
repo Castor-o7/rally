@@ -1023,6 +1023,17 @@ fn browser() -> Option<String> {
 /// Signs in to `viewer` through the button in headless `chrome`, and with `probe`, a JavaScript
 /// expression, evaluates it on the board afterwards. Returns what tests/browser/sign-in.mjs saw.
 fn in_browser(viewer: &Viewer, chrome: &str, probe: Option<&str>) -> Value {
+    in_browser_with(viewer, chrome, probe, None)
+}
+
+/// Like `in_browser`, and with `schemes` ("light,dark"), runs the probe again under each emulated
+/// colour scheme, the results in `probes` by scheme (RAL-91).
+fn in_browser_with(
+    viewer: &Viewer,
+    chrome: &str,
+    probe: Option<&str>,
+    schemes: Option<&str>,
+) -> Value {
     let url = format!("http://{}{}", viewer.address, login(viewer));
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser/sign-in.mjs");
     let mut command = Command::new("node");
@@ -1034,6 +1045,9 @@ fn in_browser(viewer: &Viewer, chrome: &str, probe: Option<&str>) -> Value {
     if let Some(probe) = probe {
         std::fs::write(probe_file.path(), probe).unwrap();
         command.env("RALLY_BROWSER_PROBE", probe_file.path());
+    }
+    if let Some(schemes) = schemes {
+        command.env("RALLY_BROWSER_SCHEMES", schemes);
     }
     let output = command
         .output()
@@ -1215,6 +1229,154 @@ fn the_board_keeps_its_ages_current_and_shows_commits_short() {
     // RAL-96: the state shows once, as its coloured dot and name, labelled declared while in review.
     assert_eq!(probe["stateCell"]["text"], "declared in review", "{probe}");
     assert_eq!(probe["stateCell"]["dot"], true, "{probe}");
+}
+
+/// RAL-91, in the browser: every bar's fill is coloured by what it measures, in both schemes. The
+/// ledger's progress is one bar of Verified green, In review amber and Sent back pink; roadmap ticks,
+/// which aren't a ledger state, have a neutral colour of their own, which the legend names; and so
+/// green only ever means Verified. Before RAL-91 every fill was one blue, whatever it measured.
+#[cfg(unix)]
+#[test]
+fn every_bar_is_coloured_by_what_it_measures() {
+    let Some(chrome) = browser() else { return };
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let projects = r#"[{"name": "Rally", "prefix": "RAL", "repo": "Castor-o7/rally",
+        "path": "docs/roadmap.md", "tick_meaning": "Verified by the watchman"}]"#;
+    let viewer = start_after(projects, Some(FAKE_GH), 60, |db, dir| {
+        let write = |name: &str, args: &[&str]| {
+            let out = on(db, dir)
+                .args(["--credential", "a1", "--as", name])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        write(
+            "author",
+            &[
+                "open-rally",
+                "--name",
+                "test",
+                "--project",
+                "RAL",
+                "--team",
+                "rally",
+            ],
+        );
+        let evidence = format!("Castor-o7/rally@{commit}");
+        for story in ["RAL-1", "RAL-2", "RAL-3"] {
+            write("author", &["ready", story]);
+            write("author", &["claim", story, "--team", "rally"]);
+            write(
+                "author",
+                &[
+                    "submit",
+                    story,
+                    "--team",
+                    "rally",
+                    "--evidence",
+                    &evidence,
+                    "--not-checkable",
+                ],
+            );
+        }
+        write(
+            "reader",
+            &["verify", "RAL-1", "--note", "read it", "--commit", commit],
+        );
+        write("reader", &["send-back", "RAL-3", "--note", "no test"]);
+        write("author", &["ready", "RAL-4"]);
+    });
+    let probe = r##"(async () => {
+      // The roadmap is read in the background, so wait for the project's card to have both figures.
+      const ready = () => document.querySelector(".roadmap .bar > .ticked")
+        && document.querySelector(".roadmap .bar > .s-verified");
+      for (let i = 0; i < 40 && !ready(); i++) {
+        await refresh();
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      const colour = (node) => getComputedStyle(node).backgroundColor;
+      const card = document.querySelector(".roadmap");
+      return {
+        fills: [...document.querySelectorAll(".bar > div")]
+          .map((node) => ({ class: node.className, colour: colour(node), title: node.title })),
+        keys: [...document.querySelectorAll(".legend i")]
+          .map((node) => ({ class: node.className, colour: colour(node), text: node.parentElement.textContent })),
+        card: card && [...card.querySelectorAll(".figure > .bar")]
+          .map((bar) => [...bar.children].map((part) => part.className)),
+      };
+    })()"##;
+    let seen = in_browser_with(&viewer, &chrome, Some(probe), Some("light,dark"));
+    assert_eq!(seen["after"]["status"], 200, "{seen}");
+    // The colours app.css gives each meaning, as Chrome computes them.
+    let expected = |scheme: &str, class: &str| -> &'static str {
+        match (scheme, class) {
+            ("light", "ticked") => "rgb(95, 94, 89)",
+            ("light", "s-ready") => "rgb(42, 120, 214)",
+            ("light", "s-claimed") => "rgb(235, 104, 52)",
+            ("light", "s-in_review") => "rgb(237, 161, 0)",
+            ("light", "s-verified") => "rgb(27, 175, 122)",
+            ("light", "s-sent_back") => "rgb(232, 123, 164)",
+            ("dark", "ticked") => "rgb(166, 165, 156)",
+            ("dark", "s-ready") => "rgb(57, 135, 229)",
+            ("dark", "s-claimed") => "rgb(217, 89, 38)",
+            ("dark", "s-in_review") => "rgb(201, 133, 0)",
+            ("dark", "s-verified") => "rgb(25, 158, 112)",
+            ("dark", "s-sent_back") => "rgb(213, 81, 129)",
+            _ => panic!("a fill with no meaning: {class:?} ({scheme})"),
+        }
+    };
+    for scheme in ["light", "dark"] {
+        let probe = &seen["probes"][scheme];
+        let fills = probe["fills"].as_array().unwrap();
+        assert!(!fills.is_empty(), "{scheme}: {probe}");
+        // Every fill on the page has exactly one meaning, drawn in that meaning's colour.
+        for fill in fills {
+            let class = fill["class"].as_str().unwrap();
+            assert_eq!(fill["colour"], expected(scheme, class), "{scheme}: {fill}");
+        }
+        // The project's card: its ticks in the ticked colour, then the ledger's progress as Verified,
+        // In review and Sent back, one story each, each segment titled with its count.
+        assert_eq!(
+            probe["card"],
+            json!([["ticked"], ["s-verified", "s-in_review", "s-sent_back"]]),
+            "{scheme}: {probe}"
+        );
+        for (class, title) in [
+            ("s-verified", "Verified: 1"),
+            ("s-in_review", "In review: 1"),
+            ("s-sent_back", "Sent back: 1"),
+        ] {
+            assert!(
+                fills
+                    .iter()
+                    .any(|fill| fill["class"] == class && fill["title"] == title),
+                "{scheme}: no {class} titled {title:?}: {probe}"
+            );
+        }
+        // The legend says what the ticked colour means, and keys each state in its colour.
+        let keys = probe["keys"].as_array().unwrap();
+        let ticked = keys
+            .iter()
+            .find(|key| key["class"] == "ticked")
+            .unwrap_or_else(|| panic!("{scheme}: no key for ticks: {probe}"));
+        assert_eq!(ticked["colour"], expected(scheme, "ticked"), "{scheme}");
+        assert!(
+            ticked["text"]
+                .as_str()
+                .unwrap()
+                .contains("not a state in the ledger"),
+            "{scheme}: {ticked}"
+        );
+        for key in keys {
+            let class = key["class"].as_str().unwrap();
+            assert_eq!(key["colour"], expected(scheme, class), "{scheme}: {key}");
+        }
+    }
 }
 
 /// RAL-96: the 30-second refresh redraws every section, and a section someone opened stays open.

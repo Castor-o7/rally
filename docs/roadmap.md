@@ -622,6 +622,14 @@ word.
   only changes of state; Verified is green and In review amber, in both schemes; evidence of the form
   `owner/repo@<40 hex>` shows its first 7 with the whole in the title, and other evidence as written; IDs, states
   and ages don't wrap; a headless Chrome test shows each, and fails on the page before it.
+- [ ] **RAL-91: The viewer's bars are coloured by what they measure.** The open half of RAL-91 (cobalt-glen's "the
+  viewer's status colours follow meaning"), assigned by mellow-weevil: every bar's fill was one blue (`--fill`),
+  whatever it measured. Done when: each Verified bar and each Progress from the ledger is one bar of Verified green,
+  In review amber and Sent back pink over the stories tracked, in RAL-90's state colours, with a title on each
+  segment and a legend; ticks, which aren't a ledger state, have a neutral `--ticked` colour of their own, and the
+  legend under each tick figure says what it means, so green only ever means Verified; the viewer's data gives the
+  in-review and sent-back counts beside Verified; and a headless Chrome test reads every bar's computed colour in
+  the light and dark schemes, and fails on the page before.
 - [x] **RAL-88: The viewer's cross-site refusal says how to sign in instead.** Merged in #162 (0ab6344). From the DiscoSim rally's issues
   log, §3.2: the Claude-in-Chrome extension's navigation is marked cross-site, so the viewer answered "other sites
   can't read this page", which is right but says nothing about what to do. Assigned by mellow-weevil. Done when:

@@ -83,24 +83,72 @@ function age(ms, now) {
   return Math.round(seconds / 86400) + "d ago";
 }
 
+// A bar of roadmap ticks. A tick isn't a ledger state, so its fill is the ticked colour, never a
+// state's: green only ever means Verified (RAL-91).
 function bar(fraction, title, tall) {
   const track = el("div", tall ? "bar tall" : "bar");
   track.title = title;
   if (fraction > 0) {
-    const fill = el("div");
+    const fill = el("div", "ticked");
     fill.style.width = Math.min(100, fraction * 100) + "%";
     track.append(fill);
   }
   return track;
 }
 
-function figure(label, value, fraction, title) {
+// A labelled figure: its bar is a tick bar drawn from `fraction`, or a bar already made (a Node), and
+// `legend`, if given, goes under it.
+function figure(label, value, fraction, title, legend) {
   const wrap = el("div", "figure");
   const line = el("div", "figure-label");
   line.append(el("span", "", label), el("strong", "", value));
   wrap.append(line);
-  if (fraction !== null) wrap.append(bar(fraction, title));
+  if (fraction instanceof Node) wrap.append(fraction);
+  else if (fraction !== null) wrap.append(bar(fraction, title));
+  if (legend) wrap.append(legend);
   return wrap;
+}
+
+// The ledger's progress over the stories it tracks (RAL-91): Verified green, In review amber and Sent
+// back pink, in the state colours the stories-by-state bar uses, and the rest as empty track.
+const PROGRESS = [
+  ["verified", "Verified"],
+  ["in_review", "In review"],
+  ["sent_back", "Sent back"],
+];
+
+function stateBar(counts, tracked) {
+  const track = el("div", "bar");
+  track.title = PROGRESS.map(([state, name]) => name + " " + (counts[state] || 0)).join(", ")
+    + " of " + tracked + " tracked";
+  for (const [state, name] of PROGRESS) {
+    const count = counts[state] || 0;
+    if (!count || !tracked) continue;
+    const part = el("div", "s-" + state);
+    part.style.width = Math.min(100, (count / tracked) * 100) + "%";
+    part.title = name + ": " + count;
+    track.append(part);
+  }
+  return track;
+}
+
+function stateLegend(counts) {
+  const legend = el("div", "legend");
+  for (const [state, name] of PROGRESS) {
+    const key = el("span");
+    key.append(el("i", "s-" + state), name + " " + (counts[state] || 0));
+    legend.append(key);
+  }
+  return legend;
+}
+
+// What the ticked colour means, under each tick figure.
+function tickLegend() {
+  const legend = el("div", "legend");
+  const key = el("span");
+  key.append(el("i", "ticked"), "Ticked: a box checked in the roadmap, not a state in the ledger");
+  legend.append(key);
+  return legend;
 }
 
 function table(headers, rows) {
@@ -539,6 +587,7 @@ function renderRoadmaps(projects, now, rally) {
         boxes.percent + "% (" + boxes.ticked + " of " + boxes.total + ")",
         boxes.ticked / boxes.total,
         boxes.ticked + " of " + boxes.total + " ticked",
+        tickLegend(),
       ));
     } else if (fromLedger(project)) {
       card.append(ledgerFigure(fromLedger(project)));
@@ -550,8 +599,9 @@ function renderRoadmaps(projects, now, rally) {
       card.append(figure(
         "Verified · stories the ledger tracks, not the whole roadmap",
         verified.verified + " of " + verified.tracked,
-        verified.tracked ? verified.verified / verified.tracked : 0,
-        verified.verified + " of " + verified.tracked + " verified",
+        stateBar(verified, verified.tracked),
+        null,
+        stateLegend(verified),
       ));
     } else {
       card.append(figure("Verified", "not available yet", null));
@@ -788,7 +838,7 @@ function renderProject(status, prefix, now) {
   if (project.boxes && project.boxes.total > 0) {
     roadmap.append(figure("Ticked · a tick here means: " + project.tick_meaning,
       project.boxes.ticked + " of " + project.boxes.total, project.boxes.ticked / project.boxes.total,
-      project.boxes.ticked + " of " + project.boxes.total + " ticked"));
+      project.boxes.ticked + " of " + project.boxes.total + " ticked", tickLegend()));
   } else if (fromLedger(project)) {
     roadmap.append(ledgerFigure(fromLedger(project)));
   }
@@ -857,8 +907,7 @@ function fromLedger(project) {
 function ledgerFigure(part) {
   return figure("Progress from the ledger · this roadmap has no checkboxes, so it's Verified of the stories the ledger tracks",
     part.percent + "% (" + part.verified + " of " + part.tracked + ")",
-    part.tracked ? part.verified / part.tracked : 0,
-    part.verified + " of " + part.tracked + " verified");
+    stateBar(part, part.tracked), null, stateLegend(part));
 }
 
 // The end of the overview: totals across projects, then the watchman's writeup of the whole muster.
@@ -870,7 +919,7 @@ function renderMuster(status, now) {
   const ticked = read.reduce((sum, p) => sum + p.boxes.ticked, 0);
   const total = read.reduce((sum, p) => sum + p.boxes.total, 0);
   root.append(figure("Roadmap boxes across " + read.length + " projects · ticks mean different things in each",
-    ticked + " of " + total, total ? ticked / total : 0, ticked + " of " + total + " ticked"));
+    ticked + " of " + total, total ? ticked / total : 0, ticked + " of " + total + " ticked", tickLegend()));
   const unboxed = current.filter((p) => fromLedger(p)).map((p) => p.prefix);
   if (unboxed.length) {
     root.append(el("p", "muted", "No checkboxes in " + unboxed.join(", ")
@@ -878,10 +927,11 @@ function renderMuster(status, now) {
   }
   const verified = current.map((p) => p.verified).filter((v) => v && v.available);
   if (verified.length) {
-    const done = verified.reduce((sum, v) => sum + v.verified, 0);
-    const tracked = verified.reduce((sum, v) => sum + v.tracked, 0);
-    root.append(figure("Verified in the ledger · the sum of each project's Verified", done + " of " + tracked, tracked ? done / tracked : 0,
-      done + " of " + tracked + " verified"));
+    const sum = (state) => verified.reduce((total, v) => total + (v[state] || 0), 0);
+    const counts = { verified: sum("verified"), in_review: sum("in_review"), sent_back: sum("sent_back") };
+    const tracked = sum("tracked");
+    root.append(figure("Verified in the ledger · the sum of each project's Verified", counts.verified + " of " + tracked,
+      stateBar(counts, tracked), null, stateLegend(counts)));
   }
   const rally = status.rally;
   if (rally && rally.opened) root.append(eventList(rally.events || [], status.untrusted_text, now));
