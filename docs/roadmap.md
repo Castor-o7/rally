@@ -455,6 +455,15 @@ word.
   out again. Done when: `rally new-story` also reads the prefix's roadmap in each open pull request, read-only
   through the service's GitHub token, and never hands out a number used there; when GitHub can't be read it says
   so rather than guessing; with a test for an ID in an open pull request and one for an unreadable GitHub.
+- [ ] **RAL-85: Record a read of the merged commit.** From mellow-weevil's re-read of RAL-81 on 2026-11-06: the
+  merged head a4e6f90 took a merge of main after the verify at 6949b93, and `annotate --also-read` takes only the
+  original verifier's credential and name, so the successor watchman couldn't record its read and `commit_differs`
+  stayed. Done when: `rally read-merged <STORY> --commit <latest merged commit> --note ...` records a verified-kind
+  read of its own, beside the verification, by any verifier who isn't an author, the original verifier included;
+  it's refused unless the story is Verified and the commit is its latest recorded merge and not already covered;
+  `commit_differs` counts it and RAL-67's also-reads; `verified_commits` lists it; it's dropped with the
+  verification; `rally verifications` labels it by the designation, gated by nothing; with tests and
+  docs/evidence.md.
 - [ ] **RAL-80: Viewer sign-ins survive a restart.** From the DiscoSim rally's issues log (§3.4, 2026-11-06):
   sessions were held only in memory, so adding `--summaries`, or any restart or deploy, signed the operator out.
   Chosen over a SIGHUP reload of the projects and summaries, which would spare only config changes, not a deploy or

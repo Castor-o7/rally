@@ -221,6 +221,84 @@ fn evidence_is_checked_at_submit_and_amended_in_review() {
     );
 }
 
+/// RAL-85: a successor records its read of the merged commit beside the verification, which
+/// clears `commit_differs`; an author can't.
+#[test]
+fn a_successor_records_its_read_of_the_merged_commit() {
+    let db = Ledger::new();
+    ok(&db, "silken-tanager", &["ready", "RAL-3"]);
+    ok(
+        &db,
+        "silken-tanager",
+        &["claim", "RAL-3", "--team", "rally"],
+    );
+    ok(
+        &db,
+        "silken-tanager",
+        &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
+    );
+    ok(
+        &db,
+        "frank-crocodile",
+        &["verify", "RAL-3", "--note", "read it", "--commit", COMMIT],
+    );
+    ok(
+        &db,
+        "silken-tanager",
+        &["merge", "RAL-3", "--commit", OTHER_COMMIT],
+    );
+    let shown = ok(&db, "silken-tanager", &["show", "RAL-3"]);
+    assert!(shown["detail"]["commit_differs"].is_object(), "{shown}");
+
+    let author = refused(
+        &db,
+        "silken-tanager",
+        &[
+            "read-merged",
+            "RAL-3",
+            "--commit",
+            OTHER_COMMIT,
+            "--note",
+            "fine",
+        ],
+    );
+    assert!(author.contains("can't verify"), "{author}");
+    let wrong = refused(
+        &db,
+        "mellow-weevil",
+        &["read-merged", "RAL-3", "--commit", COMMIT, "--note", "fine"],
+    );
+    assert!(wrong.contains("latest recorded merge is"), "{wrong}");
+    ok(
+        &db,
+        "mellow-weevil",
+        &[
+            "read-merged",
+            "RAL-3",
+            "--commit",
+            OTHER_COMMIT,
+            "--note",
+            "only a merge of main since",
+            "--team",
+            "watchman",
+        ],
+    );
+    let shown = ok(&db, "silken-tanager", &["show", "RAL-3"]);
+    let detail = &shown["detail"];
+    assert!(detail["commit_differs"].is_null(), "{shown}");
+    assert_eq!(detail["verified_commit"], COMMIT);
+    assert_eq!(detail["merged_reads"][0]["commit"], OTHER_COMMIT);
+    assert_eq!(
+        detail["merged_reads"][0]["source"]["declared_name"],
+        "mellow-weevil"
+    );
+    let listed = ok(&db, "silken-tanager", &["show"]);
+    assert_eq!(
+        listed["stories"]["RAL-3"]["verified_commits"],
+        serde_json::json!([COMMIT, OTHER_COMMIT])
+    );
+}
+
 #[test]
 fn a_team_claims_and_submits_and_the_history_is_kept() {
     let db = Ledger::new();

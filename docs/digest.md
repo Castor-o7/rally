@@ -138,7 +138,10 @@ watchman, re-run the `sed` and the two `launchctl` lines.
   It's accepted only from the verification's own credential and declared name, only on the verification in force,
   and only with full hashes; a new verdict drops what was added. `rally show <story>` lists them as `also_read`,
   and the story list gives `verified_commits`. A service older than RAL-67 gives only the mismatch's verified
-  commit, and the digest uses that. On Murph's ledger on
+  commit, and the digest uses that. When the head that landed is a commit someone other than the verifier read,
+  such as a watchman after the one who verified, that reader records it as its own read instead (RAL-85):
+  `rally read-merged <story> --commit <latest merged commit> --note "..."`, listed in `merged_reads` and in
+  `verified_commits`. On Murph's ledger on
   2026-11-05 that flagged 4 of 24 merges, not 21; one, RAL-22, landed #123's head 7fc4bef against a
   verification at bee9f46.
 - Records come from `/v1/export` after each watchman's head, at most 20 pages a pass; the waiting list, the

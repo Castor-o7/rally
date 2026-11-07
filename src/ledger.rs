@@ -137,6 +137,20 @@ pub enum Change {
     /// allowed in any state and changes none. It names no merger, since every session shares one
     /// GitHub account, so the record's source says only who recorded it.
     Merge { story: String, commit: String },
+    /// A reader records that they read the commit merged for a Verified story when it differs
+    /// from the commits the verification in force covers (RAL-85), such as a head that took a merge
+    /// of main after the read. It's the reader's own read, beside the verification, not an addition
+    /// to it, so a successor watchman can write it as well as the original verifier. Like a verify,
+    /// any verifier who isn't an author writes it; `rally verifications` labels it by the
+    /// designation, and nothing gates it.
+    ReadMerged {
+        story: String,
+        commit: String,
+        note: String,
+        /// The reader's own team, declared (RAL-57).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team: Option<String>,
+    },
     /// An entry made on the fallback board during an outage, backfilled afterwards (RAL-30):
     /// `entry` is the change as it was made, by `entered_by` at `entered_at_ms`. The record's own
     /// source and time stay those of whoever backfilled it and when, so the gap stays visible and a
@@ -328,6 +342,7 @@ impl Change {
             | Self::Verify { story, .. }
             | Self::SendBack { story, .. }
             | Self::Merge { story, .. }
+            | Self::ReadMerged { story, .. }
             | Self::RequestRead { story, .. }
             | Self::WithdrawRead { story, .. }
             | Self::Correct { story, .. } => story,
@@ -407,6 +422,10 @@ pub struct Story {
     /// The commit last recorded as merged (RAL-33), whatever the story's state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub merged_commit: Option<String>,
+    /// Reads of the merged commit recorded beside the verification in force (RAL-85), dropped
+    /// with it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub merged_reads: Vec<MergedRead>,
     /// Reads asked for and not yet answered or withdrawn (RAL-32), oldest first. Visible to
     /// whoever merges, until a verify or send-back answers them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -420,6 +439,17 @@ pub struct Story {
     /// service keeps between requests is this same in-memory `Ledger`, built by replay and apply.
     #[serde(skip)]
     authors: BTreeSet<String>,
+}
+
+/// A read of a merged commit beside the verification in force (RAL-85): the reader's own record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct MergedRead {
+    pub seq: u64,
+    pub at_ms: i64,
+    pub kind: Kind,
+    pub source: Source,
+    pub commit: String,
+    pub note: String,
 }
 
 /// A read someone asked for before a merge (RAL-32).
@@ -441,11 +471,27 @@ impl Story {
     /// worked out from the ledger alone, so it's observed, not anyone's claim.
     pub fn commit_mismatch(&self) -> Option<(&str, &str)> {
         match (&self.verified_commit, &self.merged_commit) {
-            (Some(verified), Some(merged)) if !verified.eq_ignore_ascii_case(merged) => {
-                Some((verified, merged))
-            }
+            (Some(verified), Some(merged)) if !self.covers(merged) => Some((verified, merged)),
             _ => None,
         }
+    }
+
+    /// Every commit the verification in force covers: its own, those its verifier added as also
+    /// read (RAL-67), and merged commits read beside it (RAL-85).
+    pub fn verified_commits(&self) -> Vec<&str> {
+        self.verified_commit
+            .iter()
+            .chain(&self.also_read)
+            .map(String::as_str)
+            .chain(self.merged_reads.iter().map(|read| read.commit.as_str()))
+            .collect()
+    }
+
+    /// Whether the verification in force covers `commit`.
+    pub fn covers(&self, commit: &str) -> bool {
+        self.verified_commits()
+            .iter()
+            .any(|covered| covered.eq_ignore_ascii_case(commit))
     }
 }
 
@@ -741,6 +787,14 @@ pub enum LedgerError {
         story: String,
         submitter: String,
     },
+    /// A merged-commit read names a commit other than the latest recorded merge, or there's none
+    /// (RAL-85).
+    NotTheMergedCommit {
+        story: String,
+        merged: Option<String>,
+    },
+    /// A merged-commit read of a commit the verification already covers (RAL-85).
+    AlreadyCovered(String),
     /// A new story's number isn't above every one its prefix has in the ledger (RAL-55).
     NumberTaken {
         story: String,
@@ -887,6 +941,17 @@ impl fmt::Display for LedgerError {
             Self::NotTheSubmitter { story, submitter } => write!(
                 f,
                 "{submitter} submitted {story}, so only {submitter} can amend its evidence"
+            ),
+            Self::NotTheMergedCommit { story, merged } => match merged {
+                Some(merged) => write!(
+                    f,
+                    "{story}'s latest recorded merge is {merged}: read that commit and name it"
+                ),
+                None => write!(f, "{story} has no recorded merge to read"),
+            },
+            Self::AlreadyCovered(story) => write!(
+                f,
+                "{story}'s verification already covers that commit, so there's nothing to record"
             ),
             Self::NumberTaken { story, highest } => write!(
                 f,
@@ -1898,6 +1963,7 @@ impl Ledger {
                     verified_commit: None,
                     also_read: Vec::new(),
                     merged_commit: None,
+                    merged_reads: Vec::new(),
                     requested_reads: Vec::new(),
                     history: Vec::new(),
                     authors: BTreeSet::new(),
@@ -2069,6 +2135,7 @@ fn transition(
             story.state = State::Verified;
             story.verified_commit = commit.clone();
             story.also_read.clear();
+            story.merged_reads.clear();
             // A read answers every open request for one.
             story.requested_reads.clear();
         }
@@ -2090,6 +2157,36 @@ fn transition(
             for read in &mut story.requested_reads {
                 read.merged_before_read = Some(commit.clone());
             }
+        }
+        Change::ReadMerged { commit, note, .. } => {
+            if story.state != State::Verified {
+                return Err(refuse(story.state));
+            }
+            require_verifier(story, id, record.kind(), actor)?;
+            // The latest recorded merge, the one `commit_differs` compares.
+            let Some(merged) = &story.merged_commit else {
+                return Err(LedgerError::NotTheMergedCommit {
+                    story: id.to_owned(),
+                    merged: None,
+                });
+            };
+            if !merged.eq_ignore_ascii_case(commit) {
+                return Err(LedgerError::NotTheMergedCommit {
+                    story: id.to_owned(),
+                    merged: Some(merged.clone()),
+                });
+            }
+            if story.covers(commit) {
+                return Err(LedgerError::AlreadyCovered(id.to_owned()));
+            }
+            story.merged_reads.push(MergedRead {
+                seq,
+                at_ms: record.at_ms(),
+                kind: record.kind(),
+                source: record.source().clone(),
+                commit: commit.to_ascii_lowercase(),
+                note: note.clone(),
+            });
         }
         Change::RequestRead { commit, note, .. } => {
             require_kind(record, Kind::Declared)?;
@@ -2186,6 +2283,7 @@ fn transition(
                     None
                 };
                 story.also_read.clear();
+                story.merged_reads.clear();
                 // Going back to Ready or Claimed means the work may change, so it needs a new
                 // submission rather than reviving the old evidence.
                 if matches!(new_state, State::Ready | State::Claimed) {
@@ -2397,7 +2495,9 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::Verify { commit, .. }
         | Change::SendBack { commit, .. }
         | Change::Correct { commit, .. } => commit.as_deref(),
-        Change::Merge { commit, .. } | Change::RequestRead { commit, .. } => Some(commit.as_str()),
+        Change::Merge { commit, .. }
+        | Change::ReadMerged { commit, .. }
+        | Change::RequestRead { commit, .. } => Some(commit.as_str()),
         _ => None,
     };
     if commit.is_some_and(|commit| !is_commit(commit)) {
@@ -2449,6 +2549,7 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::EvidenceCheck { .. } => &[],
         Change::Verify { note, .. }
         | Change::SendBack { note, .. }
+        | Change::ReadMerged { note, .. }
         | Change::RequestRead { note, .. }
         | Change::WithdrawRead { note, .. }
         | Change::Correct { note, .. } => &[("note", note)],
@@ -2521,7 +2622,8 @@ fn own_team(change: &Change) -> Option<&str> {
         | Change::Submit { team, .. } => Some(team),
         Change::Correct { team, .. }
         | Change::Verify { team, .. }
-        | Change::SendBack { team, .. } => team.as_deref(),
+        | Change::SendBack { team, .. }
+        | Change::ReadMerged { team, .. } => team.as_deref(),
         _ => None,
     }
 }
@@ -2569,7 +2671,9 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
             text.push(("note", note));
             text.extend(team.as_deref().map(|team| ("team", team)));
         }
-        Change::Verify { note, team, .. } | Change::SendBack { note, team, .. } => {
+        Change::Verify { note, team, .. }
+        | Change::SendBack { note, team, .. }
+        | Change::ReadMerged { note, team, .. } => {
             text.push(("note", note));
             text.extend(team.as_deref().map(|team| ("team", team)));
         }
@@ -4066,6 +4170,112 @@ mod tests {
             amend: false,
         };
         assert!(serde_json::to_value(&plain).unwrap().get("amend").is_none());
+    }
+
+    /// RAL-85: a reader who isn't an author records reading a merged commit the verification
+    /// doesn't cover, as its own read beside it, which clears the mismatch; also-reads count too.
+    #[test]
+    fn a_read_of_the_merged_commit_is_its_own_record_and_clears_the_mismatch() {
+        let merged =
+            |commit: &str| team(json!({"change": "merge", "story": STORY, "commit": commit}));
+        let read = |name: &str, commit: &str| {
+            record(
+                Kind::Verified,
+                name,
+                json!({"change": "read_merged", "story": STORY, "commit": commit,
+                       "note": "only a merge of main since", "team": "watchman"}),
+            )
+        };
+        // Not before the story is verified.
+        let mut ledger = ledger_with(&[ready(), claim(), submit()]);
+        assert!(matches!(
+            ledger.check(4, &read("successor", OTHER_COMMIT)),
+            Err(LedgerError::InvalidTransition { .. })
+        ));
+        push(&mut ledger, &verify());
+        // Not without a merge, and only the latest recorded merge.
+        assert_eq!(
+            ledger.check(5, &read("successor", OTHER_COMMIT)),
+            Err(LedgerError::NotTheMergedCommit {
+                story: STORY.into(),
+                merged: None
+            })
+        );
+        push(&mut ledger, &merged(COMMIT));
+        // A merge of the verified commit is covered already.
+        assert_eq!(
+            ledger.check(6, &read("successor", COMMIT)),
+            Err(LedgerError::AlreadyCovered(STORY.into()))
+        );
+        push(&mut ledger, &merged(OTHER_COMMIT));
+        assert_eq!(
+            ledger.story(STORY).unwrap().commit_mismatch(),
+            Some((COMMIT, OTHER_COMMIT))
+        );
+        assert!(matches!(
+            ledger.check(7, &read("successor", COMMIT)),
+            Err(LedgerError::NotTheMergedCommit {
+                merged: Some(_),
+                ..
+            })
+        ));
+        // Not by an author, and not as a declared record.
+        assert!(matches!(
+            ledger.check(7, &read("alice", OTHER_COMMIT)),
+            Err(LedgerError::SelfVerification { .. })
+        ));
+        let declared = team(json!({"change": "read_merged", "story": STORY,
+                                   "commit": OTHER_COMMIT, "note": "n"}));
+        assert!(matches!(
+            ledger.check(7, &declared),
+            Err(LedgerError::WrongKind { .. })
+        ));
+        // A successor under its own name, not the verifier's, in any case.
+        push(
+            &mut ledger,
+            &read("successor", &OTHER_COMMIT.to_ascii_uppercase()),
+        );
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.commit_mismatch(), None);
+        assert_eq!(story.verified_commits(), [COMMIT, OTHER_COMMIT]);
+        assert_eq!(story.verified_commit.as_deref(), Some(COMMIT));
+        let kept = &story.merged_reads[0];
+        assert_eq!((kept.seq, kept.commit.as_str()), (7, OTHER_COMMIT));
+        assert_eq!(kept.source.declared_name.as_deref(), Some("successor"));
+        assert_eq!(
+            ledger.check(8, &read("watch", OTHER_COMMIT)),
+            Err(LedgerError::AlreadyCovered(STORY.into()))
+        );
+        // A later merge differs again, and the original verifier can read it too.
+        let third = "1".repeat(40);
+        push(&mut ledger, &merged(&third));
+        assert!(ledger.story(STORY).unwrap().commit_mismatch().is_some());
+        push(&mut ledger, &read("watch", &third));
+        assert_eq!(ledger.story(STORY).unwrap().commit_mismatch(), None);
+        // A correction out of Verified drops the reads with the verification.
+        let reopen = verifier(json!({"change": "correct", "story": STORY, "corrects": 4,
+                                     "note": "reopen", "state": "in_review"}));
+        push(&mut ledger, &reopen);
+        assert!(ledger.story(STORY).unwrap().merged_reads.is_empty());
+    }
+
+    /// RAL-85: a verifier's also-read of the merged commit (RAL-67) clears the mismatch too.
+    #[test]
+    fn an_also_read_of_the_merged_commit_clears_the_mismatch() {
+        let mut ledger = ledger_with(&[ready(), claim(), submit(), verify()]);
+        push(
+            &mut ledger,
+            &team(json!({"change": "merge", "story": STORY, "commit": OTHER_COMMIT})),
+        );
+        assert!(ledger.story(STORY).unwrap().commit_mismatch().is_some());
+        let also = record(
+            Kind::Declared,
+            "watch",
+            json!({"change": "annotate", "corrects": 4, "team": "watchman",
+                   "note": "read the merge too", "also_read": [OTHER_COMMIT]}),
+        );
+        push(&mut ledger, &also);
+        assert_eq!(ledger.story(STORY).unwrap().commit_mismatch(), None);
     }
 
     #[test]

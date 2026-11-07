@@ -183,6 +183,9 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
         if !detail.also_read.is_empty() {
             shown["also_read"] = json!(detail.also_read);
         }
+        if !detail.merged_reads.is_empty() {
+            shown["merged_reads"] = json!(detail.merged_reads);
+        }
         if let Some(commit) = &detail.merged_commit {
             shown["merged_commit"] = json!(commit);
         }
@@ -228,12 +231,10 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
             if story.merged_commit.is_some() {
                 row["merged"] = json!(true);
             }
-            // Every commit the verification in force covers: its own and any added as also read
-            // (RAL-67).
-            if let Some(verified) = &story.verified_commit {
-                let mut commits = vec![verified.clone()];
-                commits.extend(story.also_read.iter().cloned());
-                row["verified_commits"] = json!(commits);
+            // Every commit the verification in force covers: its own, any added as also read
+            // (RAL-67), and merged commits read beside it (RAL-85).
+            if story.verified_commit.is_some() {
+                row["verified_commits"] = json!(story.verified_commits());
             }
             if let Some(evidence) = latest_evidence(story) {
                 row["evidence"] = evidence;

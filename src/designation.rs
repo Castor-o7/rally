@@ -416,18 +416,21 @@ pub fn verifications(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKe
     for (id, story) in ledger.stories() {
         for entry in &story.history {
             let (verdict, commit) = match &entry.change {
-                Change::Verify { commit, .. } => ("verified", commit),
-                Change::SendBack { commit, .. } => ("sent_back", commit),
+                Change::Verify { commit, .. } => ("verified", commit.as_deref()),
+                Change::SendBack { commit, .. } => ("sent_back", commit.as_deref()),
                 Change::Correct {
                     state: Some(State::Verified),
                     commit,
                     ..
-                } => ("verified", commit),
+                } => ("verified", commit.as_deref()),
                 Change::Correct {
                     state: Some(State::SentBack),
                     commit,
                     ..
-                } => ("sent_back", commit),
+                } => ("sent_back", commit.as_deref()),
+                // A read of the merged commit beside a verification (RAL-85), labelled the same
+                // way: written by whoever, gated by nothing.
+                Change::ReadMerged { commit, .. } => ("read_merged", Some(commit.as_str())),
                 _ => continue,
             };
             let by = entry
@@ -764,7 +767,7 @@ pub(crate) mod testing {
             };
             // A verifier's record is of the verified kind, as the ledger wants.
             let kind = match body["change"].as_str() {
-                Some("verify" | "send_back") => Kind::Verified,
+                Some("verify" | "send_back" | "read_merged") => Kind::Verified,
                 _ => Kind::Declared,
             };
             let record = Record::new(kind, source, 1_000, body).unwrap();
@@ -1214,6 +1217,44 @@ mod tests {
         let wrong = verifications(&ledger, &chain.hashes, Some(&stranger));
         let rows = wrong["verifications"].as_array().unwrap();
         assert!(rows.iter().all(|r| r["reader"] == "peer"));
+    }
+
+    /// RAL-85: a read of the merged commit is labelled like a verify, by the designation in force
+    /// when it was written, not gated: a successor watchman's reads as watchman, a peer's as other.
+    #[test]
+    fn a_read_of_the_merged_commit_is_labelled_by_the_designation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (private, key) = keypair(dir.path(), "operator");
+        let mut chain = Chain::new();
+        for story in ["RAL-1", "RAL-2"] {
+            submitted(&mut chain, story);
+            verify(&mut chain, "first-watch", story);
+            chain.push_as(
+                "t",
+                json!({"change": "merge", "story": story, "commit": "d".repeat(40)}),
+            );
+        }
+        chain.designate(&private, &key, Some("next-watch"));
+        let read = |story: &str| {
+            json!({"change": "read_merged", "story": story, "commit": "d".repeat(40),
+                   "note": "a merge of main since"})
+        };
+        chain.push_as("next-watch", read("RAL-1"));
+        chain.push_as("someone", read("RAL-2"));
+        let ledger = Ledger::replay(&chain.records).unwrap();
+        let report = verifications(&ledger, &chain.hashes, Some(&key));
+        let rows = report["verifications"].as_array().unwrap();
+        let merged_read = |story: &str| {
+            rows.iter()
+                .find(|r| r["story"] == story && r["verdict"] == "read_merged")
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(merged_read("RAL-1")["reader"], "watchman");
+        assert_eq!(merged_read("RAL-1")["by"], "next-watch");
+        assert_eq!(merged_read("RAL-1")["commit"], "d".repeat(40));
+        assert_eq!(merged_read("RAL-2")["reader"], "other");
+        assert!(ledger.story("RAL-2").unwrap().commit_mismatch().is_none());
     }
 
     #[test]

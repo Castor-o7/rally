@@ -657,6 +657,21 @@ enum Command {
         #[arg(long)]
         commit: String,
     },
+    /// Record that you read the commit merged for a Verified story, when it isn't one the
+    /// verification covers (RAL-85), such as a head that took a merge of main after the read. It's
+    /// your own read, shown beside the verification; anyone who isn't an author can write it,
+    /// including a watchman after the one who verified.
+    ReadMerged {
+        story: String,
+        /// The full hash of the story's latest recorded merge.
+        #[arg(long)]
+        commit: String,
+        #[arg(long)]
+        note: String,
+        /// Your own team (RAL-57).
+        #[arg(long, env = "RALLY_TEAM")]
+        team: Option<String>,
+    },
     /// Annotate an earlier record, which stays in the history, and optionally set the state.
     Correct {
         story: String,
@@ -3354,6 +3369,19 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             Kind::Declared,
             json!({"change": "merge", "story": story, "commit": commit}),
         ),
+        Command::ReadMerged {
+            story,
+            commit,
+            note,
+            team,
+        } => {
+            let mut body =
+                json!({"change": "read_merged", "story": story, "commit": commit, "note": note});
+            if let Some(team) = team {
+                body["team"] = json!(team);
+            }
+            (Kind::Verified, body)
+        }
         Command::Correct {
             story,
             corrects,
