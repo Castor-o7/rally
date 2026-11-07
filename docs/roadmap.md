@@ -244,6 +244,9 @@ The bones. Everything later reads from this.
   behind them, with no comparison or ranking of teams.
 - [ ] **RAL-24: Bring in other projects.** Open question 4 in the design. Done when: the decision is
   recorded, and Muster, catapp, ParadoxDetector and any other team on the board can be tracked by it.
+  Decided by the operator on 2026-11-06: Rally is the source of truth for every project in `web/projects.json`,
+  and the hand-kept board retires (design, open question 4). The ledger already tracks MUS, MAR, CAT and DSM
+  stories.
 - [ ] **RAL-9: Replace the hand-kept table.** Depends on RAL-24. The current table is
   `~/Documents/Caster/muster-board.md` on the operator's Mac. Done when: its contents are imported, the
   watchman no longer needs it, and Muster's `docs/board.md` points to Rally.
