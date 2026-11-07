@@ -740,6 +740,20 @@ pub struct Rally {
     pub teams: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closed: Option<Closure>,
+    /// Who recorded under which ledger team while the rally was open (RAL-108): for each team,
+    /// each declared name (folded) with its first and last record and the pairing credentials it
+    /// used. It's the evidence that ties a restarted session's new nickname to the listed one it
+    /// succeeds. Declared, like the names themselves.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub recorded_as: BTreeMap<String, BTreeMap<String, RecordedSpan>>,
+}
+
+/// One declared name's records under one team during a rally (RAL-108).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RecordedSpan {
+    pub first: u64,
+    pub last: u64,
+    pub credentials: BTreeSet<String>,
 }
 
 /// One declared state of a team.
@@ -1674,7 +1688,41 @@ impl Ledger {
     pub fn apply(&mut self, seq: u64, record: &Record) -> Result<(), LedgerError> {
         self.apply_record(seq, record)?;
         self.last_at_ms = record.at_ms();
+        self.note_rally_member(seq, record);
         Ok(())
+    }
+
+    /// RAL-108: while a rally is open, note the declared name of each record that names a team,
+    /// under that team. Only records after the rally opened, and only ones that applied.
+    fn note_rally_member(&mut self, seq: u64, record: &Record) {
+        let Some(rally) = self
+            .rallies
+            .last_mut()
+            .filter(|rally| rally.closed.is_none() && seq > rally.seq)
+        else {
+            return;
+        };
+        let (Some(team), Some(name)) = (
+            record.body()["team"].as_str(),
+            record.source().declared_name.as_deref(),
+        ) else {
+            return;
+        };
+        let (team, name) = (name_key(team), name_key(name));
+        if !team.is_empty() && !name.is_empty() {
+            let span = rally
+                .recorded_as
+                .entry(team)
+                .or_default()
+                .entry(name)
+                .or_insert_with(|| RecordedSpan {
+                    first: seq,
+                    last: seq,
+                    credentials: BTreeSet::new(),
+                });
+            span.last = seq;
+            span.credentials.insert(record.source().credential.clone());
+        }
     }
 
     fn apply_record(&mut self, seq: u64, record: &Record) -> Result<(), LedgerError> {
@@ -1864,6 +1912,7 @@ impl Ledger {
                     projects,
                     teams,
                     closed: None,
+                    recorded_as: BTreeMap::new(),
                 });
                 self.last_seq = seq;
                 return Ok(());
@@ -3673,6 +3722,49 @@ mod tests {
             ledger.check(3, &rec(Kind::Declared, end)),
             Err(LedgerError::InvalidStandingTarget(1))
         );
+    }
+
+    /// RAL-108: while a rally is open, the ledger keeps who recorded under which team, so a
+    /// session restarted under a new nickname can be tied to the one the rally listed.
+    #[test]
+    fn an_open_rally_keeps_who_recorded_for_each_team() {
+        let as_name = |name: &str, body: serde_json::Value| record(Kind::Declared, name, body);
+        let state = |team: &str| json!({"change": "team_state", "team": team, "status": "working"});
+        let mut ledger = Ledger::default();
+        // Before it opens: not kept.
+        ledger
+            .apply(1, &as_name("early", state("watchman")))
+            .unwrap();
+        let open = json!({"change": "open_rally", "name": "x", "projects": ["RAL"],
+                          "teams": ["frank-crocodile"]});
+        ledger.apply(2, &as_name("josh", open)).unwrap();
+        ledger
+            .apply(3, &as_name("Frank-Crocodile ", state("Watchman")))
+            .unwrap();
+        ledger
+            .apply(4, &as_name("mellow-weevil", state("watchman")))
+            .unwrap();
+        ledger
+            .apply(5, &as_name("mellow-weevil", state("watchman")))
+            .unwrap();
+        // A record that names no team adds nothing.
+        ledger.apply(6, &ready()).unwrap();
+        let close = json!({"change": "close_rally", "note": "done"});
+        ledger.apply(7, &as_name("josh", close)).unwrap();
+        // After it closes: not kept.
+        ledger
+            .apply(8, &as_name("late", state("watchman")))
+            .unwrap();
+        let rally = &ledger.rallies()[0];
+        let names: Vec<&str> = rally.recorded_as["watchman"]
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(names, ["frank-crocodile", "mellow-weevil"]);
+        assert_eq!(rally.recorded_as.len(), 1);
+        let mellow = &rally.recorded_as["watchman"]["mellow-weevil"];
+        assert_eq!((mellow.first, mellow.last), (4, 5));
+        assert_eq!(mellow.credentials.iter().collect::<Vec<_>>(), ["a1"]);
     }
 
     #[test]

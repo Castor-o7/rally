@@ -524,6 +524,95 @@ pub fn current_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Va
     value
 }
 
+/// Who is in an open rally (RAL-108), by nickname, folded. It's the sessions the operator listed
+/// when the rally opened, and nobody else unless specified, apart from one exception: a listed
+/// session restarted under a new nickname. A new name joins as a listed name's successor only when
+/// all of these hold:
+/// - the listed name is no longer on Muster's roster;
+/// - the new name recorded for a team the listed name recorded for during the rally;
+/// - its first record for that team came after the listed name's last;
+/// - it used one of the same pairing credentials (the operator's machine).
+///
+/// Each name has at most one successor: the earliest. A successor can have its own when it
+/// restarts in turn. With no roster to read, nobody is known to have stopped, so only the listed
+/// names count. Returns the members, and each succession as (successor, listed name, team).
+pub fn rally_members(
+    open: &Value,
+    on_roster: Option<&BTreeSet<String>>,
+) -> (BTreeSet<String>, Vec<(String, String, String)>) {
+    let fold = |name: &str| name.trim().to_lowercase();
+    let listed: Vec<String> = open["teams"]
+        .as_array()
+        .map(|teams| teams.iter().filter_map(Value::as_str).map(fold).collect())
+        .unwrap_or_default();
+    let mut members: BTreeSet<String> = listed.iter().cloned().collect();
+    let mut successions = Vec::new();
+    let (Some(on_roster), Some(recorded)) = (on_roster, open["recorded_as"].as_object()) else {
+        return (members, successions);
+    };
+    // (team, name) -> (first, last, credentials)
+    fn span<'a>(team: &'a Value, name: &str) -> Option<(u64, u64, BTreeSet<&'a str>)> {
+        let span = &team[name];
+        let credentials = span["credentials"]
+            .as_array()
+            .map(|c| c.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        Some((span["first"].as_u64()?, span["last"].as_u64()?, credentials))
+    }
+    let mut heads = listed;
+    while let Some(head) = heads.pop() {
+        if on_roster.contains(&head) {
+            continue;
+        }
+        let mut best: Option<(u64, String, String)> = None;
+        for (team_name, team) in recorded {
+            let Some((_, last, credentials)) = span(team, &head) else {
+                continue;
+            };
+            let Some(names) = team.as_object() else {
+                continue;
+            };
+            for name in names.keys() {
+                if members.contains(name) {
+                    continue;
+                }
+                let Some((first, _, theirs)) = span(team, name) else {
+                    continue;
+                };
+                if first > last
+                    && !credentials.is_disjoint(&theirs)
+                    && best
+                        .as_ref()
+                        .is_none_or(|(b, n, _)| (first, name) < (*b, n))
+                {
+                    best = Some((first, name.clone(), fold(team_name)));
+                }
+            }
+        }
+        if let Some((_, name, team)) = best {
+            members.insert(name.clone());
+            successions.push((name.clone(), head, team));
+            heads.push(name);
+        }
+    }
+    (members, successions)
+}
+
+/// The nicknames on a roster the viewer shaped, or `None` when it couldn't be read.
+fn roster_names(roster: &Value) -> Option<BTreeSet<String>> {
+    if roster["available"] != json!(true) {
+        return None;
+    }
+    let sessions = roster["sessions"].as_array()?;
+    Some(
+        sessions
+            .iter()
+            .filter_map(|s| s["nickname"].as_str())
+            .map(|n| n.trim().to_lowercase())
+            .collect(),
+    )
+}
+
 /// The board of a rally someone opened (RAL-76): its projects and teams as declared, and only what
 /// was recorded since it opened. A listed team also takes in the ledger team of each listed
 /// session's Muster project, so `rally` comes with the session working on it.
@@ -533,11 +622,14 @@ fn opened_rally(open: &Value, roster: &Value) -> Value {
         .as_array()
         .map(|teams| teams.iter().filter_map(Value::as_str).map(fold).collect())
         .unwrap_or_default();
+    let (members, successions) = rally_members(open, roster_names(roster).as_ref());
     let mut teams: BTreeSet<String> = listed.iter().cloned().collect();
+    // A successor's team is the listed session's, so it comes onto the board too.
+    teams.extend(successions.iter().map(|(_, _, team)| team.clone()));
     if let Some(sessions) = roster["sessions"].as_array() {
         for session in sessions {
             let nickname = session["nickname"].as_str().map(fold);
-            if nickname.is_some_and(|n| listed.contains(&n))
+            if nickname.is_some_and(|n| members.contains(&n))
                 && let Some(project) = session["project"].as_str()
             {
                 teams.insert(fold(project));
@@ -556,6 +648,11 @@ fn opened_rally(open: &Value, roster: &Value) -> Value {
         "teams": open["teams"],
         "teams_listed": !listed.is_empty(),
         "active_teams": teams,
+        "members": members,
+        "successors": successions
+            .iter()
+            .map(|(name, of, team)| json!({"name": name, "succeeds": of, "team": team}))
+            .collect::<Vec<_>>(),
         "rule": "This rally's board: its projects and teams as declared when it opened, and only \
                  what was recorded since. Earlier work is kept in the ledger and under past rallies.",
     })
@@ -2484,6 +2581,93 @@ mod tests {
             &current_rally(&rally_projects(), &held, &on),
             "RAL"
         ));
+    }
+
+    /// RAL-108: who's in a rally is the sessions listed when it opened, and nobody else unless
+    /// specified; a listed session restarted under a new nickname continues as its successor.
+    #[test]
+    fn only_a_listed_sessions_restart_joins_the_rally() {
+        let span = |first: u64, last: u64, credential: &str| json!({"first": first, "last": last, "credentials": [credential]});
+        let open = json!({"seq": 914, "name": "x", "projects": ["RAL"],
+        "teams": ["frank-crocodile", "plush-tortoise"],
+        "recorded_as": {
+            "watchman": {
+                "frank-crocodile": span(915, 920, "murph"),
+                // The restart: recorded for the same team after frank-crocodile's last record.
+                "mellow-weevil": span(925, 990, "murph"),
+                // Later still, but mellow-weevil was first, so it's the successor.
+                "late-lark": span(995, 995, "murph"),
+            },
+            "rally": {
+                "plush-tortoise": span(916, 1000, "murph"),
+                // Started later and recording for `rally`, while plush-tortoise is still open.
+                "cobalt-glen": span(1001, 1002, "murph"),
+            },
+        }});
+        let roster: BTreeSet<String> = [
+            "mellow-weevil",
+            "plush-tortoise",
+            "cobalt-glen",
+            "late-lark",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let (members, successions) = rally_members(&open, Some(&roster));
+        assert_eq!(
+            members.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["frank-crocodile", "mellow-weevil", "plush-tortoise"]
+        );
+        assert_eq!(
+            successions,
+            [(
+                "mellow-weevil".into(),
+                "frank-crocodile".into(),
+                "watchman".into()
+            )]
+        );
+        // While the listed name is still on the roster, it hasn't restarted: nobody succeeds it.
+        let mut both = roster.clone();
+        both.insert("frank-crocodile".into());
+        assert_eq!(rally_members(&open, Some(&both)).0.len(), 2);
+        // Without a roster, nobody is known to have stopped.
+        assert_eq!(rally_members(&open, None).0.len(), 2);
+        // Another machine's credential isn't the operator's session restarting.
+        let mut other = open.clone();
+        other["recorded_as"]["watchman"]["mellow-weevil"] = span(925, 990, "elsewhere");
+        other["recorded_as"]["watchman"]["late-lark"] = span(995, 995, "elsewhere");
+        assert_eq!(rally_members(&other, Some(&roster)).0.len(), 2);
+        // A successor that restarts in turn has its own successor.
+        let mut again = open.clone();
+        again["recorded_as"]["watchman"]["late-lark"] = span(995, 999, "murph");
+        let roster_after: BTreeSet<String> = ["late-lark", "plush-tortoise"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let (members, _) = rally_members(&again, Some(&roster_after));
+        assert!(members.contains("late-lark") && members.contains("mellow-weevil"));
+        // The board: the listed nicknames unchanged, the successor named beside its listed one.
+        let shaped = rally_roster(json!([
+            {"nickname": "mellow-weevil", "project": "Caster"},
+            {"nickname": "plush-tortoise", "project": "rally"},
+            {"nickname": "cobalt-glen", "project": "src"},
+        ]));
+        let rally = opened_rally(&open, &shaped);
+        assert_eq!(rally["teams"], json!(["frank-crocodile", "plush-tortoise"]));
+        assert_eq!(
+            rally["successors"],
+            json!([{"name": "mellow-weevil", "succeeds": "frank-crocodile", "team": "watchman"}])
+        );
+        let in_rally = rally["members"].as_array().unwrap();
+        assert!(!in_rally.contains(&json!("cobalt-glen")));
+        let active = rally["active_teams"].as_array().unwrap();
+        for team in ["watchman", "rally", "caster"] {
+            assert!(active.contains(&json!(team)), "{team}");
+        }
+        assert!(
+            !active.contains(&json!("src")),
+            "cobalt-glen's project isn't brought in"
+        );
     }
 
     #[test]
