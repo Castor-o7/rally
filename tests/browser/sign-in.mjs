@@ -46,7 +46,8 @@ let finished = false;
 function finish(code, value) {
   if (finished) return;
   finished = true;
-  if (value !== undefined) console.log(JSON.stringify(value));
+  // Where the profile was, so a test can check nothing of it survives the run (RAL-97).
+  if (value !== undefined) console.log(JSON.stringify({ ...value, profiles: [profile, sandboxed].filter(Boolean) }));
   let cleaned = false;
   const done = () => {
     if (cleaned) return;
