@@ -485,6 +485,12 @@ word.
   `commit_differs` counts it and RAL-67's also-reads; `verified_commits` lists it; it's dropped with the
   verification; `rally verifications` labels it by the designation, gated by nothing; with tests and
   docs/evidence.md.
+- [ ] **RAL-87: Say when a watchman's digest has stopped.** From the DiscoSim rally's issues log (§2.7) and
+  mellow-weevil's digest dying on a 429 on 2026-11-06 with nothing noticing. Done when: each `rally digest` pass
+  records when it ran and when a digest last went; `rally brief` and `rally stalls` with `--digest-quiet-after
+  <window>` flag each designated watchman, or one named with `--digest-watchman`, whose digest has no pass recorded,
+  no pass within the window, or records waiting longer than the window with none sent, and not one whose ledger is
+  merely quiet; the window has no default, since it's the operator's to agree; with tests.
 - [ ] **RAL-80: Viewer sign-ins survive a restart.** From the DiscoSim rally's issues log (§3.4, 2026-11-06):
   sessions were held only in memory, so adding `--summaries`, or any restart or deploy, signed the operator out.
   Chosen over a SIGHUP reload of the projects and summaries, which would spare only config changes, not a deploy or

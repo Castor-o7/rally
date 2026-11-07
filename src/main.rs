@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use serde_json::{Value, json};
 
 use rally::access::{Pairing, StateDir, write_private};
@@ -59,6 +59,24 @@ struct Cli {
     entered_by: Option<String>,
     #[command(subcommand)]
     command: Command,
+}
+
+/// Whether each watchman's `rally digest` looks stopped (RAL-87), for `brief` and `stalls`.
+#[derive(Args, Clone, Debug)]
+struct DigestCheck {
+    /// Warn when a watchman's digest has had no pass on this machine for this long, or records have
+    /// waited this long with no digest sent, such as 15m. No length has been agreed with the
+    /// operator, so it has no default, and without it nothing is checked.
+    #[arg(long, env = "RALLY_DIGEST_QUIET_AFTER", value_parser = parse_window)]
+    digest_quiet_after: Option<u64>,
+    /// The digest's state, as `rally digest --state-file`. Defaults to digest.json beside the
+    /// pairing.
+    #[arg(long)]
+    digest_state_file: Option<PathBuf>,
+    /// A watchman to check when none can be checked as designated, as `rally digest --watchman`.
+    /// Declared.
+    #[arg(long)]
+    digest_watchman: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -323,7 +341,10 @@ enum Command {
     /// session is still on Muster's roster), submissions waiting, open blockers, questions to the
     /// operator and who each holds up, and the handover list, each fact with its kind and age
     /// (RAL-22a). It confers no authority.
-    Brief,
+    Brief {
+        #[command(flatten)]
+        digest: DigestCheck,
+    },
     /// Submissions waiting for a reader, oldest first, with the evidence and any requested reads'
     /// commits to read (RAL-51).
     Waiting,
@@ -589,6 +610,8 @@ enum Command {
         /// anything under it, is stopped or a zombie (RAL-75). Repeatable. Linux only.
         #[arg(long)]
         lock: Vec<PathBuf>,
+        #[command(flatten)]
+        digest: DigestCheck,
     },
     /// Wake idle teams with their next story (RAL-54): for each team in the projects list with
     /// sessions mapped to it, idle (or its claim quiet) with a ready story, send one digest through
@@ -1524,12 +1547,79 @@ fn new_story(
 /// One pass of `rally wake` (RAL-54).
 /// One `rally stalls` report (RAL-7). Gathers what `rally wake` does, plus each team's open
 /// blockers, and leaves the judgement to `rally::stall`.
+/// RAL-87: whether each watchman in `watchmen` (a designation report's list) has a digest that
+/// looks stopped, from the state `rally digest` keeps on this machine.
+fn digest_check(check: &DigestCheck, watchmen: &Value, config: &Path, now_ms: i64) -> Value {
+    let Some(window_ms) = check.digest_quiet_after else {
+        return json!({"checked": false, "reason": "give --digest-quiet-after, with the window the \
+                      operator agreed, to check whether each watchman's digest is running"});
+    };
+    let mut names: Vec<(String, &str)> = watchmen
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|w| Some((w["name"].as_str()?.to_owned(), "designated")))
+        .collect();
+    if names.is_empty()
+        && let Some(name) = &check.digest_watchman
+    {
+        names.push((name.clone(), "named with --digest-watchman (declared)"));
+    }
+    let file = check
+        .digest_state_file
+        .clone()
+        .unwrap_or_else(|| config.with_file_name("digest.json"));
+    let mut value = json!({"checked": true, "window_ms": window_ms, "state_file": file});
+    if names.is_empty() {
+        value["warnings"] = json!([]);
+        value["note"] = json!("no watchman is designated or named, so there's no digest to check");
+        return value;
+    }
+    let state: Option<std::collections::BTreeMap<String, rally::digest::Kept>> =
+        match std::fs::read_to_string(&file) {
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(state) => Some(state),
+                Err(error) => {
+                    value["state_unreadable"] = json!(error.to_string());
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+    value["warnings"] = json!(rally::digest::quiet_warnings(
+        &names,
+        state.as_ref(),
+        window_ms,
+        now_ms
+    ));
+    value
+}
+
+/// The designation report: the host's own, unchecked, or the service's.
+fn designation_value(
+    location: Option<&Location>,
+    config: &Path,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    if let Some(location) = location {
+        return Ok(Store::open_read_only(location)?.designation_report(None)?);
+    }
+    let pairing = read_pairing(config)?;
+    reply_value(&client::request(
+        &pairing,
+        "GET",
+        "/v1/designation",
+        None,
+        &[],
+    )?)
+}
+
 fn stalls_pass(
     projects: Option<&Path>,
     location: Option<&Location>,
     config: &Path,
     quiet_after: Option<u64>,
     locks: &[PathBuf],
+    digest: &DigestCheck,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let text = match projects {
         Some(path) => std::fs::read_to_string(path)?,
@@ -1647,6 +1737,28 @@ fn stalls_pass(
         report["locks"] = json!(seen);
     }
     report["last_record_ms"] = json!(last_record_ms);
+    // A watchman whose digest has stopped is a stall of its own (RAL-87), the one of 2026-11-06.
+    if digest.digest_quiet_after.is_some() {
+        match designation_value(location, config) {
+            Ok(designation) => {
+                let checked = digest_check(digest, &designation["watchmen"], config, now_ms);
+                if let (Some(prompts), Some(warnings)) = (
+                    report["prompts"].as_array_mut(),
+                    checked["warnings"].as_array(),
+                ) {
+                    prompts.extend(warnings.iter().map(|warning| {
+                        let mut row = warning.clone();
+                        row["row"] = json!("digest_quiet");
+                        row
+                    }));
+                }
+                report["digest"] = checked;
+            }
+            Err(error) => {
+                errors.push(json!({"digest": format!("the designation couldn't be read: {error}")}))
+            }
+        }
+    }
     if !errors.is_empty() {
         report["errors"] = json!(errors);
     }
@@ -1791,6 +1903,8 @@ fn digest_pass(
                 }
             }
             let mut row = json!({"watchman": watch.name, "how": how});
+            // `step` and `sent` start what's kept afresh, so carry when a digest last went (RAL-87).
+            let last_sent_ms = kept.last_sent_ms;
             match rally::digest::step(&mut kept, &recs, watch, times, now_ms) {
                 Decision::Nothing => row["decision"] = json!("nothing new"),
                 Decision::Batching { due_in_ms } => {
@@ -1842,6 +1956,13 @@ fn digest_pass(
                     }
                 }
             }
+            // Only a pass that got this far counts as one (RAL-87); a failed one returns above.
+            kept.last_pass_ms = Some(now_ms);
+            kept.last_sent_ms = if row["decision"] == "sent" {
+                Some(now_ms)
+            } else {
+                last_sent_ms
+            };
             Ok((kept, row))
         };
         let (kept, row) = turn()?;
@@ -3190,6 +3311,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             projects,
             quiet_after,
             lock,
+            digest,
         } => {
             let config = config_path(cli.config)?;
             return stalls_pass(
@@ -3198,6 +3320,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 &config,
                 quiet_after,
                 &lock,
+                &digest,
             );
         }
         Command::Wake {
@@ -3311,7 +3434,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             return Ok(serde_json::to_string_pretty(&read_past(&backend, as_of)?)?);
         }
-        Command::Brief => {
+        Command::Brief { digest } => {
             let mut report = if let Some(location) = &location {
                 // On the host, without the service's key: designations can't be checked.
                 Store::open_read_only(location)?.brief_report(None, now_ms()?)?
@@ -3332,6 +3455,9 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 })
                 .flatten();
             rally::brief::mark_sessions(&mut report, roster.as_ref());
+            let now = report["now_ms"].as_i64().unwrap_or_default();
+            report["digest"] =
+                digest_check(&digest, &report["watchmen"], &config_path(cli.config)?, now);
             return Ok(report.to_string());
         }
         Command::Waiting => {
