@@ -32,11 +32,22 @@ jobs:
           --health-retries 30
     env:
       RALLY_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:54329/postgres
+      # The viewer's sign-in is driven through the runner's own Chrome (RAL-84), and can't be
+      # skipped here. --no-sandbox because Ubuntu's AppArmor stops Chrome's sandbox on the runner;
+      # it only ever opens the test's own loopback viewer.
+      RALLY_TEST_CHROME: google-chrome --no-sandbox
+      RALLY_TEST_BROWSER_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # The browser test's script needs Node 22's global WebSocket; the runner's default is older.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Chrome is there
+        run: google-chrome --version
       # Tests that stop Postgres start a scratch cluster of their own with initdb and pg_ctl, and
       # the socket test reads lsof.
       - name: Postgres binaries and lsof
