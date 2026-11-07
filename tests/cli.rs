@@ -1232,6 +1232,55 @@ fn the_gate_refuses_a_range_naming_a_sent_back_story_and_passes_once_it_is_verif
     assert!(error.contains("isn't a commit range"), "{error}");
 }
 
+/// `rally view` (RAL-82) keeps its own files, and never touches the pairings beside them: the
+/// read-only `viewer.json` above all, which an earlier draft would have overwritten.
+#[test]
+fn rally_view_never_touches_the_pairings_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = dir.path().join("client.json");
+    let viewer = dir.path().join("viewer.json");
+    std::fs::write(
+        &client,
+        br#"{"address":"a","fingerprint":"f","token":"t1"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &viewer,
+        br#"{"address":"a","fingerprint":"f","token":"t2"}"#,
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rally"))
+        .arg("--config")
+        .arg(&client)
+        .args([
+            "view",
+            "--stop",
+            "--bind",
+            "127.0.0.1:7398",
+            "--projects",
+            "/p.json",
+        ])
+        .env_remove("RALLY_DB")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("no viewer was running"));
+    assert_eq!(
+        std::fs::read(&viewer).unwrap(),
+        br#"{"address":"a","fingerprint":"f","token":"t2"}"#
+    );
+    assert_eq!(
+        std::fs::read(&client).unwrap(),
+        br#"{"address":"a","fingerprint":"f","token":"t1"}"#
+    );
+    let saved = std::fs::read_to_string(dir.path().join("view-settings.json")).unwrap();
+    assert!(saved.contains("127.0.0.1:7398") && saved.contains("/p.json"));
+}
+
 /// RAL-79, modelled on DSM-37: parts are submitted and read as they land, the gate passes what a
 /// verified part's read covers, and the close waits for every part.
 #[test]

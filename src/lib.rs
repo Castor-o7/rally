@@ -23,6 +23,7 @@ pub mod server;
 pub mod session;
 pub mod stall;
 pub mod store;
+pub mod view;
 pub mod views;
 pub mod wake;
 pub mod web;

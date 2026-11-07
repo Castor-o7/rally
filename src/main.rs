@@ -18,6 +18,7 @@ use rally::ledger::{State, TeamStatus};
 use rally::record::{Kind, Record, Source};
 use rally::server::{self, RateLimit};
 use rally::store::{Head, Location, Store};
+use rally::view;
 use rally::views::{self, Page};
 use rally::web::{
     self, BackupWatch, DEFAULT_PROJECTS, LedgerReader, LocalSummaries, PastReader, Project,
@@ -205,6 +206,43 @@ enum Command {
         /// How long a one-time code works, in seconds.
         #[arg(long, default_value_t = 60, hide = true)]
         code_seconds: u64,
+    },
+    /// Open the viewer in your browser, signed in, starting it first if it isn't running (RAL-82).
+    /// It's restarted when it runs another build or other settings. Settings given here are
+    /// remembered in view-settings.json beside the pairing, so next time `rally view` alone is enough.
+    /// The viewer keeps running after this ends; its output is in view.log there.
+    View {
+        /// Restart it even if it's current, including a viewer started by hand with `rally web`.
+        #[arg(long, conflicts_with = "stop")]
+        restart: bool,
+        /// Stop it, including a viewer started by hand, and open nothing.
+        #[arg(long)]
+        stop: bool,
+        /// Start or restart it, and print the address to open instead of opening a browser.
+        #[arg(long)]
+        no_open: bool,
+        /// Where it listens. Remembered; defaults to 127.0.0.1:7300.
+        #[arg(long)]
+        bind: Option<String>,
+        /// As for `rally web`. Remembered.
+        #[arg(long)]
+        projects: Option<PathBuf>,
+        /// As for `rally web`. Remembered.
+        #[arg(long)]
+        backup_dir: Option<PathBuf>,
+        /// As for `rally web`, PREFIX=FOLDER. Repeatable; given at all, it replaces the saved list.
+        #[arg(long = "summaries", value_name = "PREFIX=FOLDER")]
+        summaries: Vec<String>,
+        /// As for `rally web`. Remembered.
+        #[arg(long, value_name = "FOLDER")]
+        watchman_summaries: Option<PathBuf>,
+        /// As for `rally web`. Remembered.
+        #[arg(long)]
+        key_file: Option<PathBuf>,
+        /// The browser to open it in, such as `flatpak run com.google.Chrome`, instead of the
+        /// desktop's default (xdg-open).
+        #[arg(long)]
+        browser: Option<String>,
     },
     /// On the service's host, add a machine and write its pair code to a private file.
     AddMachine {
@@ -2410,6 +2448,110 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
     Box::new(move || read().map_err(|error| error.to_string()))
 }
 
+/// `rally view` (RAL-82): makes sure the viewer runs this build with these settings, then opens it.
+fn view_command(
+    config: &Path,
+    given: &view::Settings,
+    restart: bool,
+    stop: bool,
+    no_open: bool,
+    browser: Option<String>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    // Not viewer.json: that name is the viewer's read-only pairing, beside client.json.
+    let saved_path = config.with_file_name(view::SETTINGS_FILE);
+    let run_path = config.with_file_name(view::RUN_FILE);
+    let log = config.with_file_name(view::LOG_FILE);
+    let saved: view::Settings = view::read_json(&saved_path)?.unwrap_or_default();
+    let settings = saved.merged(given);
+    if settings != saved {
+        view::write_json(&saved_path, &settings)?;
+    }
+    let bind = settings.bind().to_owned();
+    let exe = std::env::current_exe()?;
+    let build = view::build_of(&exe)?;
+    let running: Option<view::Running> =
+        view::read_json(&run_path)?.filter(|r: &view::Running| view::alive(r.pid));
+    let ours = running.as_ref().map(|r| r.pid);
+    let by_hand: Vec<u32> = view::find_viewers(&bind)
+        .into_iter()
+        .filter(|pid| Some(*pid) != ours)
+        .collect();
+    let mut notes: Vec<String> = Vec::new();
+    let reason = if stop {
+        Some("you asked to stop it")
+    } else if restart {
+        Some("you asked to restart it")
+    } else {
+        running
+            .as_ref()
+            .and_then(|r| view::why_restart(r, &build, &settings))
+    };
+    let mut current = running;
+    if let Some(reason) = reason {
+        if let Some(r) = current.take() {
+            view::stop(r.pid)?;
+            notes.push(format!("stopped the viewer (process {}): {reason}", r.pid));
+        }
+        let _ = std::fs::remove_file(&run_path);
+        if stop || restart {
+            for pid in &by_hand {
+                view::stop(*pid)?;
+                notes.push(format!(
+                    "stopped a viewer started by hand (process {pid}): {reason}"
+                ));
+            }
+        }
+    }
+    if stop {
+        if notes.is_empty() {
+            notes.push("no viewer was running".into());
+        }
+        return Ok(json!({"stopped": notes}).to_string());
+    }
+    if current.is_none() {
+        if view::answering(&bind) {
+            if by_hand.is_empty() || restart {
+                return Err(format!(
+                    "something other than a Rally viewer answers at {bind}: stop it, or use --bind"
+                )
+                .into());
+            }
+            notes.push(format!(
+                "a viewer started by hand serves {bind}, so it's opened as it is; \
+                 `rally view --restart` replaces it with this build and the saved settings"
+            ));
+        } else {
+            // The viewer reads with the read-only pairing when there is one.
+            let pairing = view::viewer_pairing(config);
+            let global = vec!["--config".to_owned(), pairing.display().to_string()];
+            let pid = view::start(&exe, &global, &settings, &log)?;
+            view::write_json(
+                &run_path,
+                &view::Running {
+                    pid,
+                    build: build.clone(),
+                    settings: settings.clone(),
+                },
+            )?;
+            notes.push(format!("started the viewer (process {pid}) at {bind}"));
+        }
+    }
+    let key_file = settings
+        .key_file
+        .clone()
+        .unwrap_or_else(|| config.with_file_name("web-key"));
+    let login: Value = serde_json::from_str(&web_login(&bind, &key_file)?)?;
+    let url = login["open"].as_str().ok_or("the viewer gave no address")?;
+    let opened = !no_open && view::open(url, browser.as_deref()).is_ok();
+    let mut out = json!({"viewer": format!("http://{bind}/"), "opened": opened, "notes": notes,
+                         "log": log});
+    if !opened {
+        out["open"] = json!(url);
+        out["note"] = login["note"].clone();
+    }
+    Ok(out.to_string())
+}
+
 /// `rally web --login`: asks the running viewer for a one-time code, showing the key in a header
 /// over loopback, never in a URL or an argument, and prints the address to open (RAL-29).
 fn web_login(bind: &str, key_file: &Path) -> Result<String, Box<dyn std::error::Error>> {
@@ -2870,6 +3012,49 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     code_ttl: std::time::Duration::from_secs(code_seconds),
                 },
             );
+        }
+        Command::View {
+            restart,
+            stop,
+            no_open,
+            bind,
+            projects,
+            backup_dir,
+            summaries,
+            watchman_summaries,
+            key_file,
+            browser,
+        } => {
+            if location.is_some() {
+                return Err(
+                    "rally view reads through the pairing; on the host, use rally web --db".into(),
+                );
+            }
+            let config = config_path(cli.config)?;
+            let absolute = |path: Option<PathBuf>| -> Option<PathBuf> {
+                path.map(|p| {
+                    let p = expand_home(&p);
+                    std::path::absolute(&p).unwrap_or(p)
+                })
+            };
+            let given = view::Settings {
+                bind,
+                projects: absolute(projects),
+                backup_dir: absolute(backup_dir),
+                summaries: summaries
+                    .into_iter()
+                    .map(|pair| match pair.split_once('=') {
+                        Some((prefix, folder)) => format!(
+                            "{prefix}={}",
+                            absolute(Some(folder.into())).unwrap_or_default().display()
+                        ),
+                        None => pair,
+                    })
+                    .collect(),
+                watchman_summaries: absolute(watchman_summaries),
+                key_file: absolute(key_file),
+            };
+            return view_command(&config, &given, restart, stop, no_open, browser);
         }
         Command::Backup { to, max_age_hours } => {
             if location.is_some() {

@@ -43,6 +43,7 @@ Where you use Rally:
   `rally designation` for who the watchman is. A new watchman can start from `rally brief`, which gathers
   the rally (the open one, or one suggested from the roster with the command to open it), each team's
   state, open claims, waiting submissions, blockers and questions to the operator in one read.
+- **Open the viewer**: `rally view` starts it if needed and opens it signed in; `--restart` and `--stop` too.
 - **Open and close a rally**: `rally open-rally --name "..." --project <PREFIX>... --team <team>...` starts a
   clean board for the viewer, and `rally close-rally --note "..."` keeps it as a past rally. `rally rallies` lists them.
   Only the operator or the watchman opens or closes a rally; the service enforces it with `--rally-openers`.
