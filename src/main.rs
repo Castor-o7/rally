@@ -2468,7 +2468,7 @@ fn view_command(
     }
     let bind = settings.bind().to_owned();
     let exe = std::env::current_exe()?;
-    let build = view::build_of(&exe)?;
+    let build = view::build_id(env!("RALLY_COMMIT"), &exe)?;
     let running: Option<view::Running> =
         view::read_json(&run_path)?.filter(|r: &view::Running| view::alive(r.pid));
     let ours = running.as_ref().map(|r| r.pid);
@@ -2477,14 +2477,15 @@ fn view_command(
         .filter(|pid| Some(*pid) != ours)
         .collect();
     let mut notes: Vec<String> = Vec::new();
-    let reason = if stop {
-        Some("you asked to stop it")
+    let reason: Option<std::borrow::Cow<str>> = if stop {
+        Some("you asked to stop it".into())
     } else if restart {
-        Some("you asked to restart it")
+        Some("you asked to restart it".into())
     } else {
         running
             .as_ref()
             .and_then(|r| view::why_restart(r, &build, &settings))
+            .map(std::borrow::Cow::Owned)
     };
     let mut current = running;
     if let Some(reason) = reason {
