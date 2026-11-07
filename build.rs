@@ -26,6 +26,11 @@ fn commit() {
             .filter(|out| out.status.success())
             .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
     };
+    // Any source change can make a clean checkout dirty, without touching git's own files. A
+    // directory here is scanned whole.
+    for path in ["src", "web", "macos", "Cargo.toml", "Cargo.lock", "build.rs"] {
+        println!("cargo:rerun-if-changed={path}");
+    }
     for path in ["HEAD", "index"] {
         if let Some(file) = git(&["rev-parse", "--git-path", path]) {
             println!("cargo:rerun-if-changed={file}");
