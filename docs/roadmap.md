@@ -355,7 +355,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   the page names each successor beside the one it succeeds. The listed nicknames are unchanged, and there's no new
   record kind. Tests show the restarted watchman rejoining, and a later unrelated session recording for `rally` not
   joining.
-- [ ] **RAL-110: The operator adds or removes a session in an open rally.** Requested by the operator on 2026-11-06,
+- [x] **RAL-110: The operator adds or removes a session in an open rally.** Merged in #179 (a70e313). Requested by the operator on 2026-11-06,
   completing RAL-108's "unless otherwise specified" and settling its shared-credential limit: the ledger can't tell a
   restart from a new agent on the same machine, so the operator decides. Done when: `rally rally-session add|remove
   <nickname> --note` records a declared `rally_session`, only while a rally is open, and the service takes it only
@@ -421,7 +421,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   `current_task_at` (still not the operator's address), and the roster's columns are Team (the session's
   nickname), Directory (`~` for the home folder, the whole path in its title), Project (and branch), Machine,
   Status (busy or idle, and wake), Working on (and when it was set) and Last action (its age and tool).
-- [ ] **RAL-109: The viewer encodes the writeup's path in its commit-time read.** From mellow-weevil's read of
+- [x] **RAL-109: The viewer encodes the writeup's path in its commit-time read.** Merged in #178 (5823dbc). From mellow-weevil's read of
   RAL-104: `written_at` put the writeup's file name into `gh api repos/R/commits?path=<file>` unencoded. Today
   the name is always `YYYY-MM-DD.md` under a fixed folder, but a name with `&`, `#`, `+`, `%` or a space would
   have ended the value or added a parameter. Done when: the path is percent-encoded as one query value (RFC 3986
@@ -593,7 +593,7 @@ word.
   by mellow-weevil's pick. Done when: `rally gate <base>..<new>` also refuses when `<new>` doesn't contain the
   current tip of `<base>` (after a fetch of `origin/<base>`), saying to merge the base in first; it works without
   GitHub branch protection, which is the operator's setting; with a CLI test on two branches.
-- [ ] **RAL-105: The digest names verified stories whose open PR has fallen behind its base.** Found in RAL-102's
+- [x] **RAL-105: The digest names verified stories whose open PR has fallen behind its base.** Merged in #174 (6a06f7f). Found in RAL-102's
   work and filed at mellow-weevil's suggestion: a story verified at a head that no longer contains its base's tip
   can't merge until the base is merged in and the new head read, and nothing told its author. Done when: when a
   digest is rendered, each Verified story not yet merged whose open pull request's head is a commit verified, in
