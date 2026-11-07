@@ -279,6 +279,14 @@ pub fn rally_section(
         .cloned()
         .unwrap_or_default();
     let open = rallies.map(|r| r["open"].clone()).filter(Value::is_object);
+    // Who is on the roster now, for RAL-108's succession: unknown without a roster.
+    let roster_names: Option<std::collections::BTreeSet<String>> = roster.map(|_| {
+        sessions
+            .iter()
+            .filter_map(|s| s["nickname"].as_str())
+            .map(fold)
+            .collect()
+    });
     let rows: Vec<Value> = sessions
         .iter()
         .map(|session| {
@@ -291,7 +299,7 @@ pub fn rally_section(
                 "working_on": session["declared"]["current_task"],
             });
             if let Some(open) = &open {
-                let (members, _) = crate::web::rally_members(open);
+                let (members, _) = crate::web::rally_members(open, roster_names.as_ref());
                 row["in_rally"] = json!(members.contains(&fold(nickname)));
             }
             row
@@ -448,13 +456,20 @@ mod tests {
         assert!(out.get("suggested").is_none());
         assert_eq!(out["sessions"][0]["in_rally"], true);
         assert_eq!(out["sessions"][3]["in_rally"], false);
-        // RAL-108: cobalt-glen recorded for the team the listed name did, so it's in too.
+        // RAL-108: cobalt-glen recorded for muster after the listed robust-warbler, but
+        // robust-warbler is still on the roster, so cobalt-glen isn't its restart.
+        let span =
+            |first: u64, last: u64| json!({"first": first, "last": last, "credentials": ["m"]});
         let rallies = json!({"open": {"seq": 628, "name": "0x5", "projects": ["MUS"],
-            "teams": ["Robust-Warbler"],
-            "recorded_as": {"muster": ["robust-warbler", "cobalt-glen"]}}});
+        "teams": ["Robust-Warbler", "frank-crocodile"],
+        "recorded_as": {
+            "muster": {"robust-warbler": span(630, 640), "cobalt-glen": span(650, 651)},
+            "watchman": {"frank-crocodile": span(631, 632), "wise-leopard": span(660, 661)},
+        }}});
         let out = rally_section(Some(&rallies), Some(&rally_roster()), &rally_projects());
-        assert_eq!(out["sessions"][3]["in_rally"], true);
-        assert_eq!(out["sessions"][2]["in_rally"], false);
+        assert_eq!(out["sessions"][3]["in_rally"], false);
+        // frank-crocodile is off the roster, and wise-leopard took up its team after it: a restart.
+        assert_eq!(out["sessions"][2]["in_rally"], true);
         // Without the service's rallies or the roster, it says so.
         let older = rally_section(None, None, &rally_projects());
         assert!(older["note"].is_string() && older["sessions_note"].is_string());

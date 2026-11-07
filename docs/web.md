@@ -122,13 +122,23 @@ declared state. That covers the ledger's figures and evidence, the declared team
 and the watchman's writeup if it's older than the rally. A listed session brings in the ledger team of its Muster
 project, so `--team plush-tortoise` brings `rally` too. Track records stay all-time, and say so.
 
-A rally lists sessions by their Muster nickname, and a session restarted under a new nickname keeps its place
-(RAL-108). While a rally is open, the ledger keeps who recorded under which ledger team (`recorded_as` in
-`rally rallies`). A nickname that records for a team that a listed nickname also recorded for, or that is itself
-listed, is in the rally too, and the page names it under "Joined since". So when the watchman restarts as
-mellow-weevil, it rejoins with its first record for `watchman`. It's one step only: a name vouched for only by
-another joined name isn't taken in. The names are declared, like every name in Rally. The rally's own list doesn't
-change.
+A rally lists sessions by their Muster nickname. By the operator's ruling of 2026-11-06, the rally takes in the
+agents the operator started that are open and available when it opens, and nobody else unless specified (RAL-108).
+The one exception is a listed session restarted under a new nickname, which continues as that session's successor.
+While a rally is open, the ledger keeps, for each ledger team, the declared names that recorded for it, with their
+first and last records and pairing credentials (`recorded_as` in `rally rallies`). A new nickname succeeds a listed
+one when all of these hold:
+
+- the listed nickname is no longer on Muster's roster;
+- the new nickname recorded for a team the listed one recorded for;
+- its first record for that team came after the listed one's last;
+- it used the same pairing credential.
+
+Each nickname has at most one successor, the earliest, and a successor can have its own when it restarts in turn.
+So when the watchman restarts as mellow-weevil, it rejoins with its first record for `watchman`, and the page shows
+"mellow-weevil after frank-crocodile". A session started later that records for `rally` while the rally's `rally`
+session is still open doesn't join. With no roster to read, only the listed nicknames count. The names and the
+roster are declared, so a succession is a reading, not proof. The rally's own list doesn't change.
 
 Nothing is removed. The ledger is append-only and hash-chained, and deleting records would fail its check, so a
 closed rally is kept whole. The page lists past rallies, and each opens as its own board (`#/rally/<record that

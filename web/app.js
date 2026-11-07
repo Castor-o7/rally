@@ -237,11 +237,11 @@ function rallyLine(rally, otherStories) {
     box.append(head);
     box.append(el("p", "figure", "Projects: " + prefixes.join(", ")
       + ((rally.teams || []).length ? " · Teams: " + rally.teams.join(", ") : "")));
-    // Nicknames that joined since it opened, by recording for a listed session's team (RAL-108).
-    const listed = (rally.teams || []).map((n) => String(n).trim().toLowerCase());
-    const joined = (rally.members || []).filter((n) => !listed.includes(n));
-    if (joined.length) {
-      box.append(el("p", "muted", "Joined since, by recording for a listed session's team: " + joined.join(", ")));
+    // A listed session restarted under a new nickname, shown beside the one it succeeds (RAL-108).
+    const successors = rally.successors || [];
+    if (successors.length) {
+      box.append(el("p", "muted", "Restarted since it opened (declared): "
+        + successors.map((s) => s.name + " after " + s.succeeds + " (" + s.team + ")").join(", ")));
     }
     box.append(el("p", "muted", "Opened " + when(rally.opened_at_ms) + ", at record " + rally.since_seq
       + (rally.opened_by ? ", by " + rally.opened_by : "") + ". " + rally.rule));

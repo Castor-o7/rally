@@ -723,11 +723,20 @@ pub struct Rally {
     pub teams: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closed: Option<Closure>,
-    /// Who recorded under which ledger team while the rally was open (RAL-108): each team's
-    /// declared names, folded. It's what ties a restarted session's new nickname to the one the
-    /// rally listed, when both record for the same team. Declared, like the names themselves.
+    /// Who recorded under which ledger team while the rally was open (RAL-108): for each team,
+    /// each declared name (folded) with its first and last record and the pairing credentials it
+    /// used. It's the evidence that ties a restarted session's new nickname to the listed one it
+    /// succeeds. Declared, like the names themselves.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub recorded_as: BTreeMap<String, BTreeSet<String>>,
+    pub recorded_as: BTreeMap<String, BTreeMap<String, RecordedSpan>>,
+}
+
+/// One declared name's records under one team during a rally (RAL-108).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RecordedSpan {
+    pub first: u64,
+    pub last: u64,
+    pub credentials: BTreeSet<String>,
 }
 
 /// One declared state of a team.
@@ -1683,7 +1692,18 @@ impl Ledger {
         };
         let (team, name) = (name_key(team), name_key(name));
         if !team.is_empty() && !name.is_empty() {
-            rally.recorded_as.entry(team).or_default().insert(name);
+            let span = rally
+                .recorded_as
+                .entry(team)
+                .or_default()
+                .entry(name)
+                .or_insert_with(|| RecordedSpan {
+                    first: seq,
+                    last: seq,
+                    credentials: BTreeSet::new(),
+                });
+            span.last = seq;
+            span.credentials.insert(record.source().credential.clone());
         }
     }
 
@@ -3710,11 +3730,14 @@ mod tests {
             .unwrap();
         let rally = &ledger.rallies()[0];
         let names: Vec<&str> = rally.recorded_as["watchman"]
-            .iter()
+            .keys()
             .map(String::as_str)
             .collect();
         assert_eq!(names, ["frank-crocodile", "mellow-weevil"]);
         assert_eq!(rally.recorded_as.len(), 1);
+        let mellow = &rally.recorded_as["watchman"]["mellow-weevil"];
+        assert_eq!((mellow.first, mellow.last), (4, 5));
+        assert_eq!(mellow.credentials.iter().collect::<Vec<_>>(), ["a1"]);
     }
 
     #[test]
