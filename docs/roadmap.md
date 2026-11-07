@@ -482,6 +482,15 @@ word.
   out again. Done when: `rally new-story` also reads the prefix's roadmap in each open pull request, read-only
   through the service's GitHub token, and never hands out a number used there; when GitHub can't be read it says
   so rather than guessing; with a test for an ID in an open pull request and one for an unreadable GitHub.
+- [ ] **RAL-85: Record a read of the merged commit.** From mellow-weevil's re-read of RAL-81 on 2026-11-06: the
+  merged head a4e6f90 took a merge of main after the verify at 6949b93, and `annotate --also-read` takes only the
+  original verifier's credential and name, so the successor watchman couldn't record its read and `commit_differs`
+  stayed. Done when: `rally read-merged <STORY> --commit <latest merged commit> --note ...` records a verified-kind
+  read of its own, beside the verification, by any verifier who isn't an author, the original verifier included;
+  it's refused unless the story is Verified and the commit is its latest recorded merge and not already covered;
+  `commit_differs` counts it and RAL-67's also-reads; `verified_commits` lists it; it's dropped with the
+  verification; `rally verifications` labels it by the designation, gated by nothing; with tests and
+  docs/evidence.md.
 - [ ] **RAL-80: Viewer sign-ins survive a restart.** From the DiscoSim rally's issues log (§3.4, 2026-11-06):
   sessions were held only in memory, so adding `--summaries`, or any restart or deploy, signed the operator out.
   Chosen over a SIGHUP reload of the projects and summaries, which would spare only config changes, not a deploy or
@@ -490,6 +499,14 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
+- [ ] **RAL-86: Long-running digest and wake log a failed pass, back off, and keep going.** From the watchman
+  (mellow-weevil), 2026-11-06: `rally digest --every` exited with `refused (429): too many checks and past-state
+  reads` right after a successful send. Reserved by silken-beetle, built by eager-cobra. Done when: with `--every`,
+  a failed pass that can clear with time (429, 408, 5xx, the service or Muster unreachable) is logged as one JSON
+  line and waited out, doubling up to 16 times `--every` and honouring `Retry-After`, and the loop goes on; it exits
+  only on bad configuration, no pairing, or a refusal that won't clear; the digest keeps each watchman's head as
+  its turn ends, so a pass failing part-way neither sends a digest twice nor skips one; `docs/digest.md` and
+  `docs/wake.md` say so; with a test of a fake service answering 429 then 200.
 - [ ] **RAL-81: Progress from the ledger when a roadmap has no checkboxes.** From the DiscoSim rally's issues log
   (§3.5, 2026-11-06): DiscoSim's roadmap is a table, so the overview read 0 ticks all rally. Done when: a roadmap
   that's read and has no checkboxes shows its progress from the ledger's states, Verified of the stories the ledger

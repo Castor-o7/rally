@@ -676,6 +676,21 @@ enum Command {
         #[arg(long)]
         commit: String,
     },
+    /// Record that you read the commit merged for a Verified story, when it isn't one the
+    /// verification covers (RAL-85), such as a head that took a merge of main after the read. It's
+    /// your own read, shown beside the verification; anyone who isn't an author can write it,
+    /// including a watchman after the one who verified.
+    ReadMerged {
+        story: String,
+        /// The full hash of the story's latest recorded merge.
+        #[arg(long)]
+        commit: String,
+        #[arg(long)]
+        note: String,
+        /// Your own team (RAL-57).
+        #[arg(long, env = "RALLY_TEAM")]
+        team: Option<String>,
+    },
     /// Annotate an earlier record, which stays in the history, and optionally set the state.
     Correct {
         story: String,
@@ -1638,6 +1653,25 @@ fn stalls_pass(
     Ok(serde_json::to_string_pretty(&report)?)
 }
 
+/// `--every` for `digest` and `wake` (RAL-86): each report and each failed pass on its own line,
+/// backing off through failures that clear with time, until one that won't, which is returned.
+fn run_every(
+    every_ms: u64,
+    preflight: impl FnMut() -> Result<(), Box<dyn std::error::Error>>,
+    pass: impl FnMut() -> Result<String, Box<dyn std::error::Error>>,
+) -> Box<dyn std::error::Error> {
+    rally::retry::run(
+        every_ms,
+        preflight,
+        pass,
+        |line| {
+            println!("{}", escape_for_terminal(line));
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        },
+        |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
+    )
+}
+
 /// The most pages of records one digest pass reads.
 const DIGEST_PAGES: usize = 20;
 
@@ -1731,36 +1765,54 @@ fn digest_pass(
         .map_or(0, |elapsed| elapsed.as_millis() as i64);
     let muster = rally::wake::muster_available();
     let mut rows = Vec::new();
-    for watch in &watchmen {
-        let key = watch.name.trim().to_lowercase();
-        let mut kept = match state.get(&key) {
-            Some(kept) => kept.clone(),
-            // A first run starts at the current head, so it doesn't send the whole history.
-            None => rally::digest::start_at(export(u64::MAX)?["head"]["seq"].as_u64().unwrap_or(0)),
-        };
-        let mut recs = Vec::new();
-        let mut after = kept.head;
-        for _ in 0..DIGEST_PAGES {
-            let page = export(after)?;
-            let got = rally::digest::records(&page);
-            let Some(last) = got.last().map(|r| r.seq) else {
-                break;
+    // Each watchman's progress is kept as soon as its own turn ends, so a read that fails for a
+    // later watchman can't lose an earlier one's send and have it sent twice (RAL-86).
+    let failed = rally::digest::keep_each(&watchmen, &mut state, |watch, before| {
+        let turn = || -> Result<(Kept, Value), Box<dyn std::error::Error>> {
+            let mut kept = match before {
+                Some(kept) => kept.clone(),
+                // A first run starts at the current head, so it doesn't send the whole history.
+                None => {
+                    rally::digest::start_at(export(u64::MAX)?["head"]["seq"].as_u64().unwrap_or(0))
+                }
             };
-            recs.extend(got);
-            after = last;
-            if page.get("next").is_none() {
-                break;
+            let mut recs = Vec::new();
+            let mut after = kept.head;
+            for _ in 0..DIGEST_PAGES {
+                let page = export(after)?;
+                let got = rally::digest::records(&page);
+                let Some(last) = got.last().map(|r| r.seq) else {
+                    break;
+                };
+                recs.extend(got);
+                after = last;
+                if page.get("next").is_none() {
+                    break;
+                }
             }
-        }
-        let mut row = json!({"watchman": watch.name, "how": how});
-        match rally::digest::step(&mut kept, &recs, watch, times, now_ms) {
-            Decision::Nothing => row["decision"] = json!("nothing new"),
-            Decision::Batching { due_in_ms } => {
-                row["decision"] = json!("batching");
-                row["due_in_s"] = json!(due_in_ms / 1000);
-                if report_only {
-                    // Nothing is kept, so show what the digest would say now.
-                    let to = recs.last().map_or(kept.head, |r| r.seq);
+            let mut row = json!({"watchman": watch.name, "how": how});
+            match rally::digest::step(&mut kept, &recs, watch, times, now_ms) {
+                Decision::Nothing => row["decision"] = json!("nothing new"),
+                Decision::Batching { due_in_ms } => {
+                    row["decision"] = json!("batching");
+                    row["due_in_s"] = json!(due_in_ms / 1000);
+                    if report_only {
+                        // Nothing is kept, so show what the digest would say now.
+                        let to = recs.last().map_or(kept.head, |r| r.seq);
+                        let waiting = get("/v1/waiting")?;
+                        let stories = all_stories()?;
+                        let reads = rally::digest::Reads {
+                            waiting: &waiting,
+                            handover: &handover,
+                            stories: &stories,
+                            landed: &web::pr_head,
+                        };
+                        row["preview"] = json!(rally::digest::render(
+                            kept.head, to, &recs, watch, &reads, now_ms
+                        ));
+                    }
+                }
+                Decision::Send { from, to } => {
                     let waiting = get("/v1/waiting")?;
                     let stories = all_stories()?;
                     let reads = rally::digest::Reads {
@@ -1769,46 +1821,42 @@ fn digest_pass(
                         stories: &stories,
                         landed: &web::pr_head,
                     };
-                    row["preview"] = json!(rally::digest::render(
-                        kept.head, to, &recs, watch, &reads, now_ms
-                    ));
-                }
-            }
-            Decision::Send { from, to } => {
-                let waiting = get("/v1/waiting")?;
-                let stories = all_stories()?;
-                let reads = rally::digest::Reads {
-                    waiting: &waiting,
-                    handover: &handover,
-                    stories: &stories,
-                    landed: &web::pr_head,
-                };
-                let digest = rally::digest::render(from, to, &recs, watch, &reads, now_ms);
-                if report_only {
-                    row["decision"] = json!("due (report only: not sent)");
-                    row["digest"] = json!(digest);
-                } else if !muster {
-                    row["decision"] = json!("due, but muster-shim isn't on this machine");
-                } else {
-                    match rally::wake::MusterShim.send(&watch.name, &digest) {
-                        Ok(()) => {
-                            rally::digest::sent(&mut kept, to);
-                            row["decision"] = json!("sent");
-                            row["covered"] = json!(format!("{}–{to}", from + 1));
-                        }
-                        Err(error) => {
-                            row["decision"] = json!("due, but sending failed");
-                            row["error"] = json!(error);
+                    let digest = rally::digest::render(from, to, &recs, watch, &reads, now_ms);
+                    if report_only {
+                        row["decision"] = json!("due (report only: not sent)");
+                        row["digest"] = json!(digest);
+                    } else if !muster {
+                        row["decision"] = json!("due, but muster-shim isn't on this machine");
+                    } else {
+                        match rally::wake::MusterShim.send(&watch.name, &digest) {
+                            Ok(()) => {
+                                rally::digest::sent(&mut kept, to);
+                                row["decision"] = json!("sent");
+                                row["covered"] = json!(format!("{}–{to}", from + 1));
+                            }
+                            Err(error) => {
+                                row["decision"] = json!("due, but sending failed");
+                                row["error"] = json!(error);
+                            }
                         }
                     }
                 }
             }
-        }
-        state.insert(key, kept);
+            Ok((kept, row))
+        };
+        let (kept, row) = turn()?;
         rows.push(row);
-    }
+        Ok(kept)
+    });
     if !report_only {
-        write_private(state_file, serde_json::to_string_pretty(&state)?.as_bytes())?;
+        // Fatal if it fails: the next pass would reload the old heads and send again (RAL-86).
+        rally::retry::keep_or_exit(
+            state_file,
+            write_private(state_file, serde_json::to_string_pretty(&state)?.as_bytes()),
+        )?;
+    }
+    if let Some(error) = failed {
+        return Err(error);
     }
     Ok(json!({"at_ms": now_ms, "watchmen": rows}).to_string())
 }
@@ -1949,9 +1997,14 @@ fn wake_pass(
     report["sender"] = json!(sender.map_or("none: report only", |s| s.name()));
     report["untrusted_text"] = json!(views::UNTRUSTED_TEXT);
     if let Some(parent) = state_file.parent() {
-        std::fs::create_dir_all(parent)?;
+        rally::retry::keep_or_exit(state_file, std::fs::create_dir_all(parent))?;
     }
-    std::fs::write(state_file, serde_json::to_string_pretty(&state)?)?;
+    // Fatal if it fails: the next pass would reload the old times and wake the teams again
+    // (RAL-86).
+    rally::retry::keep_or_exit(
+        state_file,
+        std::fs::write(state_file, serde_json::to_string_pretty(&state)?),
+    )?;
     std::fs::write(
         state_file.with_file_name("wake-status.json"),
         serde_json::to_string_pretty(&report)?,
@@ -2001,8 +2054,8 @@ fn reply_value(reply: &client::Reply) -> Result<Value, Box<dyn std::error::Error
     if (200..300).contains(&reply.status) {
         Ok(value)
     } else {
-        let reason = value["error"].as_str().unwrap_or("no reason given");
-        Err(format!("refused ({}): {reason}", reply.status).into())
+        // Typed, so a long-running loop can tell a refusal that clears with time (RAL-86).
+        Err(Box::new(rally::retry::Refused::of(reply)))
     }
 }
 
@@ -3164,21 +3217,32 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 quiet_after_ms: quiet_after,
                 interval_ms: interval,
             };
-            loop {
-                let report = wake_pass(
+            let pass = || {
+                wake_pass(
                     projects.as_deref(),
                     location.as_ref(),
                     &config,
                     &state_file,
                     times,
                     report_only,
-                )?;
-                let Some(every) = every else {
-                    return Ok(report);
-                };
-                println!("{}", escape_for_terminal(&report));
-                std::thread::sleep(std::time::Duration::from_millis(every));
-            }
+                )
+            };
+            let Some(every) = every else {
+                return pass();
+            };
+            // What must hold for a pass to be worth trying: a readable projects list and a
+            // pairing or database (RAL-86). Anything else that fails is waited out.
+            let preflight = || -> Result<(), Box<dyn std::error::Error>> {
+                if let Some(path) = projects.as_deref() {
+                    let text = std::fs::read_to_string(path)
+                        .map_err(|e| format!("can't read {}: {e}", path.display()))?;
+                    serde_json::from_str::<Vec<Project>>(&text)
+                        .map_err(|e| format!("{} isn't a projects list: {e}", path.display()))?;
+                }
+                Backend::choose(location.as_ref(), &config, false)?;
+                Ok(())
+            };
+            return Err(run_every(every, preflight, pass));
         }
         Command::Digest {
             quiet,
@@ -3194,21 +3258,24 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 quiet_ms: quiet,
                 max_ms: max,
             };
-            loop {
-                let report = digest_pass(
+            let pass = || {
+                digest_pass(
                     location.as_ref(),
                     &config,
                     &state_file,
                     times,
                     watchman.as_deref(),
                     report_only,
-                )?;
-                let Some(every) = every else {
-                    return Ok(report);
-                };
-                println!("{}", escape_for_terminal(&report));
-                std::thread::sleep(std::time::Duration::from_millis(every));
-            }
+                )
+            };
+            let Some(every) = every else {
+                return pass();
+            };
+            let preflight = || -> Result<(), Box<dyn std::error::Error>> {
+                Backend::choose(location.as_ref(), &config, false)?;
+                Ok(())
+            };
+            return Err(run_every(every, preflight, pass));
         }
         Command::NewStory {
             prefix,
@@ -3420,6 +3487,19 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             Kind::Declared,
             json!({"change": "merge", "story": story, "commit": commit}),
         ),
+        Command::ReadMerged {
+            story,
+            commit,
+            note,
+            team,
+        } => {
+            let mut body =
+                json!({"change": "read_merged", "story": story, "commit": commit, "note": note});
+            if let Some(team) = team {
+                body["team"] = json!(team);
+            }
+            (Kind::Verified, body)
+        }
         Command::Correct {
             story,
             corrects,
