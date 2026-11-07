@@ -111,6 +111,66 @@ pub fn is_ancestor(repo: &Path, a: &str, b: &str) -> bool {
         .is_ok_and(|out| out.status.success())
 }
 
+/// The base and head of a range written `base..head` or `base...head`, with an empty side meaning
+/// `HEAD`, as git reads it. `None` for any other range, such as a single commit, which has no base.
+pub fn ends(range: &str) -> Option<(&str, &str)> {
+    let (base, head) = range.split_once("...").or_else(|| range.split_once(".."))?;
+    Some((
+        if base.is_empty() { "HEAD" } else { base },
+        if head.is_empty() { "HEAD" } else { head },
+    ))
+}
+
+/// The full hash of the commit `rev` names in the checkout at `repo`, with the same guards as
+/// [`commits`].
+pub fn resolve(repo: &Path, rev: &str) -> Result<String, String> {
+    if rev.is_empty() || rev.starts_with('-') || rev.chars().any(char::is_whitespace) {
+        return Err(format!("{rev:?} isn't a commit"));
+    }
+    let out = Command::new("git")
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "--no-pager",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &format!("{rev}^{{commit}}"),
+        ])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| format!("git couldn't be run: {e}"))?;
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if !out.status.success() || sha.is_empty() {
+        return Err(format!("git couldn't find the commit {rev:?}"));
+    }
+    Ok(sha)
+}
+
+/// RAL-103: refuse the finding `found` if its head doesn't contain its base's tip, by
+/// `ancestor(base, head)` as [`judge_with`] takes it. Such a head is a stale branch: moving a
+/// branch to it, or merging it, would drop the base's newer commits, which the range doesn't list.
+/// Both commits are named under `stale`.
+pub fn refuse_stale(
+    found: &mut Value,
+    base: &str,
+    head: &str,
+    ancestor: &dyn Fn(&str, &str) -> bool,
+) {
+    if ancestor(base, head) {
+        return;
+    }
+    found["ok"] = json!(false);
+    found["stale"] = json!({
+        "base": base,
+        "head": head,
+        "why": "the head doesn't contain the base's tip: bring the branch up to date with its base first",
+    });
+}
+
 /// Every story ID `text` names as a whole word, as [`crate::evidence::names`] would match it:
 /// `RAL-5` in "fix (RAL-5)", but not in `XRAL-5`, `RAL-50` or `ral-5`.
 pub fn ids(text: &str) -> BTreeSet<String> {
@@ -477,6 +537,39 @@ mod tests {
         assert_eq!(found["stories"]["RAL-67"]["allowed"], true);
         let allow = BTreeSet::from(["RAL-67".to_owned(), "RAL-68".to_owned()]);
         assert_eq!(judge("x..y", &commits, &stories, &allow)["ok"], true);
+    }
+
+    #[test]
+    fn a_ranges_ends_are_its_base_and_head() {
+        assert_eq!(
+            ends("19cc9d1..origin/main"),
+            Some(("19cc9d1", "origin/main"))
+        );
+        assert_eq!(ends("a...b"), Some(("a", "b")));
+        assert_eq!(ends("main.."), Some(("main", "HEAD")));
+        assert_eq!(ends("..b"), Some(("HEAD", "b")));
+        assert_eq!(ends("origin/main"), None);
+    }
+
+    /// RAL-103: a head that contains its base's tip passes; a stale one is refused, naming both.
+    #[test]
+    fn a_head_without_its_bases_tip_is_refused() {
+        let stories = ledger(&[("RAL-1", "verified")]);
+        let commits = [commit("h", "feat: one (RAL-1)")];
+        let ancestor = |a: &str, b: &str| a == b || (a == "base" && b == "fresh");
+
+        let mut found = judge("base..fresh", &commits, &stories, &none());
+        refuse_stale(&mut found, "base", "fresh", &ancestor);
+        assert_eq!(found["ok"], true, "{found}");
+        assert!(found.get("stale").is_none());
+
+        let mut found = judge("base..old", &commits, &stories, &none());
+        refuse_stale(&mut found, "base", "old", &ancestor);
+        assert_eq!(found["ok"], false);
+        assert_eq!(found["stale"]["base"], "base");
+        assert_eq!(found["stale"]["head"], "old");
+        // The stories are still judged and shown.
+        assert_eq!(found["stories"]["RAL-1"]["state"], "verified");
     }
 
     #[test]
