@@ -203,6 +203,22 @@ The bones. Everything later reads from this.
   each merge's landed head is checked against every commit the verify names or has had added, and a verify at a
   pull request's squash commit counts as covering that pull request's head; RAL-22 is fixed by annotating 7fc4bef
   onto its verify, record 179, and a push after the read still flags, each with a test.
+- [ ] **RAL-72: Make `rally show` easy to scan, and say what a refused ID or submit needs.** From the DiscoSim
+  rally's issues log (docs/muster/2026-11-06-discosim-rally-issues.md §2.3, §2.4, §8): a grep for `"state"` in
+  `rally show` found a nested "claimed" for stories that were verified, `rally ready DSM-45b` was refused without
+  saying why, and plucky-aspen's resubmit after a send-back got a bare 409. Done when: `rally show --brief` gives
+  one top-level state per story and no history; `rally show --field state` (or team, submitted_by,
+  verified_commit, merged_commit) prints that value alone, and for the list one `ID<tab>value` line per story; a
+  refused story ID says the form is capital letters, a hyphen and a number with no leading zero or suffix, and
+  points at `rally new-story`; a submit of a sent-back, released or never-claimed story says to re-claim first,
+  with the command; each with a test.
+- [ ] **RAL-70: Gate a branch move on the stories it carries.** From the DiscoSim rally's issues log, §2.5: on
+  2026-11-06 `main` was moved to f979331 while DSM-42 had been sent back by a peer. Assigned by frank-crocodile.
+  Done when: `rally gate <range>` lists every story the range's commits name (subject, a merge's pull request title,
+  or a trailer) with its ledger state, and exits non-zero if any is sent back, unverified or claimed, or isn't in
+  the ledger under a prefix the ledger uses; `--allow <STORY>` lets one the range only mentions pass, listed; it
+  reads only commit messages and runs nothing from the checkout; documented in `docs/gate.md`; with a test of a
+  range refused for a sent-back story and passed once it's verified.
 - [x] **RAL-21: Keep each team's track record as plain facts.** Done when: the watchman can read each
   team's stories verified, stories sent back and what was missing, and problems reported, with no points,
   scores, weights or ranking.
@@ -284,6 +300,21 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.
+- [ ] **RAL-73: A one-time login code survives the browser's preload.** From the DiscoSim rally issues log of
+  2026-11-06, §3.1: Josh's pasted login links kept reporting the code as bad, most likely because Chrome
+  preloaded the address and spent the single-use code before the visit. Done when: opening a code's address
+  shows a "Sign in" button and spends nothing, and only the button's same-origin POST spends the code; a test
+  shows a prefetched GET (`Sec-Purpose: prefetch`, `Purpose: prefetch`) and a plain one leave the code working,
+  once; the page's own policy allows its form and nothing else, while every other page still allows no form; it
+  shows nothing offered in the address that isn't a code; another site's form POST is refused; and
+  `docs/web.md` says so.
+- [ ] **RAL-74: The viewer reads `~/.config/rally/projects.json` by default.** From the DiscoSim rally issues
+  log of 2026-11-06, §3.3: the built-in `web/projects.json` lists RAL, MUS, CAT, CHOMP and PDX only, so a whole
+  rally ran with no DiscoSim page until the viewer was restarted with `--projects`. Done when: without
+  `--projects`, `rally web` reads `projects.json` beside the pairing (`~/.config/rally/projects.json`, or
+  beside `--config`) when it exists, and the built-in list when it doesn't; `--projects` still wins; the first
+  line says which list was read; a file that's there but broken is an error, never a quiet fall back; tests
+  cover each case and don't read the operator's own config; and `docs/web.md` says so.
 
 ## Phase 5: Rally into Levi
 
@@ -407,6 +438,16 @@ word.
   out again. Done when: `rally new-story` also reads the prefix's roadmap in each open pull request, read-only
   through the service's GitHub token, and never hands out a number used there; when GitHub can't be read it says
   so rather than guessing; with a test for an ID in an open pull request and one for an unreadable GitHub.
+- [ ] **RAL-71: Evidence can be corrected.** From the DiscoSim rally's issues log (§2.2, 2026-11-06): DSM-41's
+  evidence named `Castor-o7/DiscoteSim`, a typo, and DSM-54's wasn't `owner/repo@<full commit>`, and the only fix
+  for either was a send-back, since a resubmit in review is refused. Done when: `rally submit` refuses evidence
+  that isn't `owner/repo@<full commit>`, or whose repository isn't the one the projects list gives the story's
+  prefix, saying what to write, unless `--not-checkable` is given; `rally amend <STORY> --team <team> --evidence
+  ...` lets the submitter, and only the submitter, replace the evidence of a story in review without a send-back,
+  checked the same way, recorded in the story's history as an amendment beside the original, and checked by
+  Rally as the latest submission; once amended, a verify or send-back naming another commit than the amended
+  evidence's is refused, saying which record amended it; an amendment that changes nothing is refused; a resubmit
+  in review says to amend; with a test for each.
 - [x] **RAL-56: A rule for picking the next story that a team can follow alone.** Merged in #106 (6aa5622). From the operator's question of
   2026-11-05. The operator added: "if the operator doesn't respond within a certain reasonable window of time then
   shelve the item. don't just inherently skip operator interaction items please". Done when: `rally next --team

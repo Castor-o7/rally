@@ -249,6 +249,76 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
     Ok(value)
 }
 
+/// The fields `rally show --field` can print (RAL-72), all from [`brief`].
+pub const BRIEF_FIELDS: &[&str] = &[
+    "state",
+    "team",
+    "submitted_by",
+    "verified_commit",
+    "merged_commit",
+];
+
+/// `rally show --brief` (RAL-72): [`stories`]' output with one top-level state per story and no
+/// history, so a search for `"state"` can't find a nested one. One story's brief is flat; the
+/// list's maps each ID to its state and team.
+pub fn brief(value: &Value) -> Value {
+    let pick = |from: &Value| {
+        let mut row = Map::new();
+        for field in BRIEF_FIELDS {
+            if let Some(found) = from.get(*field).filter(|found| !found.is_null()) {
+                row.insert((*field).to_owned(), found.clone());
+            }
+        }
+        row
+    };
+    let mut out = json!({"untrusted_text": value["untrusted_text"], "as_of": value["as_of"]});
+    if let Some(detail) = value.get("detail") {
+        out["story"] = value["story"].clone();
+        for (field, found) in pick(detail) {
+            out[field] = found;
+        }
+        if let Some(reads) = detail.get("requested_reads").and_then(Value::as_array) {
+            out["requested_reads"] = json!(reads.len());
+        }
+    } else if let Some(rows) = value.get("stories").and_then(Value::as_object) {
+        let rows: Map<String, Value> = rows
+            .iter()
+            .map(|(id, row)| (id.clone(), Value::Object(pick(row))))
+            .collect();
+        out["stories"] = Value::Object(rows);
+        if let Some(next) = value.get("next") {
+            out["next"] = next.clone();
+        }
+    }
+    out
+}
+
+/// `rally show --field <name>` (RAL-72): one field of [`brief`] as plain text, for scripts. One
+/// story gives its value alone; the list gives a line of `ID<tab>value` per story. A field the
+/// story doesn't have, such as the team of a ready story, is empty.
+pub fn field(value: &Value, name: &str) -> Result<String, String> {
+    if !BRIEF_FIELDS.contains(&name) {
+        return Err(format!(
+            "there's no field {name:?}; the fields are {}",
+            BRIEF_FIELDS.join(", ")
+        ));
+    }
+    let text = |found: Option<&Value>| match found {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    };
+    let brief = brief(value);
+    if let Some(rows) = brief.get("stories").and_then(Value::as_object) {
+        let lines: Vec<String> = rows
+            .iter()
+            .map(|(id, row)| format!("{id}\t{}", text(row.get(name))))
+            .collect();
+        return Ok(lines.join("\n"));
+    }
+    Ok(text(brief.get(name)))
+}
+
 /// A story's latest submission's evidence, declared and clipped, with Rally's own check of it,
 /// observed, when there is one (RAL-27).
 fn latest_evidence(story: &crate::ledger::Story) -> Option<Value> {
@@ -1403,6 +1473,42 @@ mod tests {
         // The first page is the newest, and still says what's current.
         let value = teams(&ledger, Some("rally"), &Page::default()).unwrap();
         assert_eq!(value["detail"]["current"]["seq"], total);
+    }
+
+    /// RAL-72: the brief has one top-level state, and `--field` prints it alone.
+    #[test]
+    fn a_brief_has_one_state_per_story_and_a_field_prints_alone() {
+        let records = vec![
+            record(json!({"change": "ready", "story": "RAL-1"})),
+            record(json!({"change": "claim", "story": "RAL-1", "team": "rally"})),
+            record(json!({"change": "ready", "story": "RAL-2"})),
+        ];
+        let ledger = Ledger::replay(&records).unwrap();
+        let one = stories(&ledger, Some("RAL-1"), &Page::default()).unwrap();
+        let shown = brief(&one);
+        assert_eq!(shown["story"], "RAL-1");
+        assert_eq!(shown["state"], "claimed");
+        assert_eq!(shown["team"], "rally");
+        assert!(shown.get("history").is_none() && shown.get("detail").is_none());
+        // Only one "state" anywhere in it.
+        assert_eq!(shown.to_string().matches("\"state\"").count(), 1);
+        assert_eq!(field(&one, "state").unwrap(), "claimed");
+        assert_eq!(field(&one, "merged_commit").unwrap(), "");
+
+        let all = stories(&ledger, None, &Page::default()).unwrap();
+        let shown = brief(&all);
+        assert_eq!(
+            shown["stories"]["RAL-1"],
+            json!({"state": "claimed", "team": "rally"})
+        );
+        assert_eq!(shown["stories"]["RAL-2"], json!({"state": "ready"}));
+        assert_eq!(
+            field(&all, "state").unwrap(),
+            "RAL-1\tclaimed\nRAL-2\tready"
+        );
+        assert_eq!(field(&all, "team").unwrap(), "RAL-1\trally\nRAL-2\t");
+        let refused = field(&all, "status").unwrap_err();
+        assert!(refused.contains("state, team"), "{refused}");
     }
 
     #[test]

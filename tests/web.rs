@@ -5,7 +5,7 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 
 use rally::scratch_pg::{self, Database};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 struct Viewer {
     child: Child,
@@ -40,11 +40,13 @@ fn rally() -> Command {
     command
 }
 
-/// `rally` on this test's own scratch ledger.
+/// `rally` on this test's own scratch ledger, with its pairing in the test's folder, so nothing
+/// beside the operator's own pairing (such as `~/.config/rally/projects.json`) is read.
 fn on(db: &Database, dir: &std::path::Path) -> Command {
     let mut command = rally();
     command.arg("--db").arg(&db.url);
     command.arg("--head-file").arg(dir.join("ledger.head"));
+    command.env("RALLY_CONFIG", dir.join("client.json"));
     command
 }
 
@@ -137,12 +139,32 @@ fn login(viewer: &Viewer) -> String {
     open.split_once(&viewer.address).unwrap().1.to_owned()
 }
 
-/// Signs in as a browser would: opens the code's address and keeps the session cookie.
+/// Signs in as a browser would: opens the code's address, presses "Sign in", and keeps the
+/// session cookie.
 fn sign_in(viewer: &Viewer) -> String {
     let path = login(viewer);
     let (status, text) = bare(viewer, "GET", &path, &viewer.address, "");
+    assert_eq!(status, 200, "{text}");
+    let (status, text) = press_sign_in(viewer, &path, "");
     assert_eq!(status, 303, "{text}");
     session_from(&text)
+}
+
+/// The code in a `/?code=` path.
+fn code_of(path: &str) -> &str {
+    path.split_once("code=").unwrap().1
+}
+
+/// The sign-in page's button: a same-origin form POST of the path's code, with any extra headers.
+fn press_sign_in(viewer: &Viewer, path: &str, extra: &str) -> (u16, String) {
+    let body = format!("code={}", code_of(path));
+    let headers = format!(
+        "Origin: http://{}\r\nSec-Fetch-Site: same-origin\r\n\
+         Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n{extra}",
+        viewer.address,
+        body.len()
+    );
+    bare_with_body(viewer, "POST", "/", &viewer.address, &headers, &body)
 }
 
 fn session_from(text: &str) -> String {
@@ -164,10 +186,22 @@ fn raw(viewer: &Viewer, method: &str, path: &str, host: &str, extra: &str) -> (u
 
 /// A request with only the headers given.
 fn bare(viewer: &Viewer, method: &str, path: &str, host: &str, extra: &str) -> (u16, String) {
+    bare_with_body(viewer, method, path, host, extra, "")
+}
+
+/// Like `bare`, with a body after the headers.
+fn bare_with_body(
+    viewer: &Viewer,
+    method: &str,
+    path: &str,
+    host: &str,
+    extra: &str,
+    body: &str,
+) -> (u16, String) {
     let mut stream = TcpStream::connect(&viewer.address).unwrap();
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n{extra}\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n{extra}\r\n{body}"
     )
     .unwrap();
     let mut text = String::new();
@@ -460,7 +494,7 @@ fn a_one_time_code_becomes_a_strict_session_cookie_once() {
     let viewer = start();
     let host = viewer.address.clone();
     let path = login(&viewer);
-    let (status, text) = bare(&viewer, "GET", &path, &host, "");
+    let (status, text) = press_sign_in(&viewer, &path, "");
     assert_eq!(status, 303);
     let lower = text.to_lowercase();
     assert!(lower.contains("location: /\r\n"), "{text}");
@@ -482,7 +516,7 @@ fn a_one_time_code_becomes_a_strict_session_cookie_once() {
     assert_eq!(status, 200);
     assert!(!page.contains(&viewer.key));
     // A code works once.
-    assert_eq!(bare(&viewer, "GET", &path, &host, "").0, 401);
+    assert_eq!(press_sign_in(&viewer, &path, "").0, 401);
 }
 
 #[test]
@@ -490,7 +524,99 @@ fn an_expired_code_is_refused() {
     let viewer = start_with_codes("[]", None, 1);
     let path = login(&viewer);
     std::thread::sleep(std::time::Duration::from_millis(1_200));
-    assert_eq!(bare(&viewer, "GET", &path, &viewer.address, "").0, 401);
+    assert_eq!(press_sign_in(&viewer, &path, "").0, 401);
+}
+
+/// RAL-73: Chrome fetched the code's address while it was pasted, and that spent the code before
+/// the operator's visit. Opening the address, prefetched or not, now only shows the button.
+#[test]
+fn opening_a_codes_address_spends_nothing_and_only_the_button_signs_in() {
+    let viewer = start();
+    let path = login(&viewer);
+    for extra in [
+        "Sec-Purpose: prefetch\r\nSec-Fetch-Site: none\r\n",
+        "Purpose: prefetch\r\n",
+        "Sec-Purpose: prefetch;prerender\r\nSec-Fetch-Site: none\r\n",
+        "Sec-Fetch-Site: none\r\n",
+        "",
+    ] {
+        let (status, text) = bare(&viewer, "GET", &path, &viewer.address, extra);
+        assert_eq!(status, 200, "{extra}: {text}");
+        let lower = text.to_lowercase();
+        assert!(!lower.contains("set-cookie"), "{extra}: {text}");
+        assert!(lower.contains("text/html"), "{text}");
+        assert!(
+            text.contains(r#"<form method="post" action="/">"#),
+            "{text}"
+        );
+        assert!(text.contains(code_of(&path)), "{text}");
+        // Its policy lets only its own form post, back to this page.
+        assert!(lower.contains("form-action 'self'"), "{text}");
+        assert!(lower.contains("default-src 'none'"), "{text}");
+        assert!(lower.contains("frame-ancestors 'none'"), "{text}");
+        assert!(!lower.contains("script-src"), "{text}");
+    }
+    // After all that, the code still works, once.
+    let (status, text) = press_sign_in(&viewer, &path, "");
+    assert_eq!(status, 303, "{text}");
+    assert_eq!(press_sign_in(&viewer, &path, "").0, 401);
+    // Every other page still allows no form at all.
+    let (_, page) = get(&viewer, "/");
+    assert!(page.to_lowercase().contains("form-action 'none'"), "{page}");
+}
+
+#[test]
+fn the_sign_in_page_shows_nothing_but_a_code() {
+    let viewer = start();
+    // A request line can't hold a raw `<`, so attacks arrive percent-encoded; none is decoded.
+    for offered in [
+        "%3Cscript%3Ealert(1)%3C/script%3E".to_owned(),
+        format!("{}%22%3E%3Cb%3E", "a".repeat(64)),
+        "a".repeat(63),
+        "g".repeat(64),
+    ] {
+        let path = format!("/?code={offered}");
+        let (status, text) = bare(&viewer, "GET", &path, &viewer.address, "");
+        assert_eq!(status, 401, "{offered}: {text}");
+        assert!(
+            !text.contains("<form") && !text.contains(&offered),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn another_site_cant_press_the_button() {
+    let viewer = start();
+    let path = login(&viewer);
+    let body = format!("code={}", code_of(&path));
+    for from in [
+        "Origin: http://evil.example\r\nSec-Fetch-Site: cross-site\r\n",
+        "Origin: null\r\n",
+        "Sec-Fetch-Site: same-site\r\n",
+    ] {
+        let extra = format!(
+            "{from}Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n",
+            body.len()
+        );
+        let (status, text) = bare_with_body(&viewer, "POST", "/", &viewer.address, &extra, &body);
+        assert_eq!(status, 403, "{from}: {text}");
+        assert!(!text.to_lowercase().contains("set-cookie"), "{text}");
+    }
+    // Refused before it was looked at, the code still works.
+    assert_eq!(press_sign_in(&viewer, &path, "").0, 303);
+}
+
+#[test]
+fn a_huge_sign_in_body_is_refused() {
+    let viewer = start();
+    let body = format!("code={}", "a".repeat(4096));
+    let extra = format!(
+        "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    let (status, text) = bare_with_body(&viewer, "POST", "/", &viewer.address, &extra, &body);
+    assert_eq!(status, 413, "{text}");
 }
 
 #[test]
@@ -564,4 +690,69 @@ fn a_request_the_browser_marks_as_from_another_site_is_refused_even_with_the_key
             "{site}"
         );
     }
+}
+
+/// The viewer's first line, from `rally web` started on `dir` with `args`, and the child to stop.
+fn first_line(db: &Database, dir: &std::path::Path, args: &[&str]) -> (std::process::Child, Value) {
+    let mut child = on(db, dir)
+        .args(["web", "--bind", "127.0.0.1:0", "--key-file"])
+        .arg(dir.join("web-key"))
+        .args(args)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    (child, serde_json::from_str(&line).unwrap())
+}
+
+/// RAL-74: a whole rally ran with no DiscoSim page, because the viewer only read its built-in list
+/// unless `--projects` was given. Now `projects.json` beside the pairing is read by default.
+#[test]
+fn the_projects_beside_the_pairing_are_read_by_default() {
+    let db = scratch_pg::shared().database();
+    // With none there, the built-in list.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut child, started) = first_line(&db, dir.path(), &[]);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(started["projects"], "built-in", "{started}");
+
+    // With one there, that one.
+    let dir = tempfile::tempdir().unwrap();
+    let own = dir.path().join("projects.json");
+    std::fs::write(&own, "[]").unwrap();
+    let (mut child, started) = first_line(&db, dir.path(), &[]);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(started["projects"], json!(own), "{started}");
+
+    // --projects still wins over it.
+    let other = dir.path().join("other.json");
+    std::fs::write(&other, "[]").unwrap();
+    let (mut child, started) =
+        first_line(&db, dir.path(), &["--projects", other.to_str().unwrap()]);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(started["projects"], json!(other), "{started}");
+}
+
+#[test]
+fn a_broken_default_projects_file_is_an_error_not_the_built_in_list() {
+    let db = scratch_pg::shared().database();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("projects.json"), "{not a list").unwrap();
+    let output = on(&db, dir.path())
+        .args(["web", "--bind", "127.0.0.1:0", "--key-file"])
+        .arg(dir.path().join("web-key"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("projects.json") && stderr.contains("isn't a projects list"),
+        "{stderr}"
+    );
 }
