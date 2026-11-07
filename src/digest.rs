@@ -1133,6 +1133,16 @@ mod tests {
         assert!(digest.contains("Waiting for you (0)"), "{digest}");
         assert!(!digest.contains("Merged"), "{digest}");
         assert!(!digest.contains("Blockers"), "{digest}");
+        // RAL-52: the handover list is carried only until it's empty.
+        assert!(!digest.contains("Peer-verified"), "{digest}");
+        let reread = json!({"stories": [{"story": "CAT-1", "verified_by": "x", "commit": "c",
+                                         "status": "re-read by the watchman at record 5"}]});
+        let reads = Reads {
+            handover: &reread,
+            ..reads
+        };
+        let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
+        assert!(!digest.contains("Peer-verified"), "{digest}");
     }
 
     #[test]
