@@ -37,6 +37,8 @@ jobs:
       # it only ever opens the test's own loopback viewer.
       RALLY_TEST_CHROME: google-chrome --no-sandbox
       RALLY_TEST_BROWSER_REQUIRED: "1"
+      # The socket test must read lsof here, not only /proc (RAL-107).
+      RALLY_TEST_LSOF_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
