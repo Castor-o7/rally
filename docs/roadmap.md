@@ -462,6 +462,12 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
+- [ ] **RAL-81: Progress from the ledger when a roadmap has no checkboxes.** From the DiscoSim rally's issues log
+  (§3.5, 2026-11-06): DiscoSim's roadmap is a table, so the overview read 0 ticks all rally. Done when: a roadmap
+  that's read and has no checkboxes shows its progress from the ledger's states, Verified of the stories the ledger
+  tracks under its prefix, labelled as the ledger's, on its card and its project page; a roadmap with boxes, one not
+  yet read, or a prefix the ledger doesn't track, doesn't; it's kept out of the boxes across projects, which say
+  which projects were left out; with a test.
 - [ ] **RAL-71: Evidence can be corrected.** From the DiscoSim rally's issues log (§2.2, 2026-11-06): DSM-41's
   evidence named `Castor-o7/DiscoteSim`, a typo, and DSM-54's wasn't `owner/repo@<full commit>`, and the only fix
   for either was a send-back, since a resubmit in review is refused. Done when: `rally submit` refuses evidence

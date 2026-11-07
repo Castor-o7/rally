@@ -440,6 +440,8 @@ function renderRoadmaps(projects, now, rally) {
         boxes.ticked / boxes.total,
         boxes.ticked + " of " + boxes.total + " ticked",
       ));
+    } else if (fromLedger(project)) {
+      card.append(ledgerFigure(fromLedger(project)));
     } else {
       card.append(figure("Roadmap ticks", "not available", null));
     }
@@ -684,6 +686,8 @@ function renderProject(status, prefix, now) {
     roadmap.append(figure("Ticked · a tick here means: " + project.tick_meaning,
       project.boxes.ticked + " of " + project.boxes.total, project.boxes.ticked / project.boxes.total,
       project.boxes.ticked + " of " + project.boxes.total + " ticked"));
+  } else if (fromLedger(project)) {
+    roadmap.append(ledgerFigure(fromLedger(project)));
   }
   const open = stories.filter((s) => !s.ticked);
   const done = stories.filter((s) => s.ticked);
@@ -742,6 +746,18 @@ function renderProject(status, prefix, now) {
   root.append(ledger, day, facts);
 }
 
+// A roadmap with no checkboxes, such as a table, takes its progress from the ledger (RAL-81).
+function fromLedger(project) {
+  return (project.progress && project.progress.from_ledger) || null;
+}
+
+function ledgerFigure(part) {
+  return figure("Progress from the ledger · this roadmap has no checkboxes, so it's Verified of the stories the ledger tracks",
+    part.percent + "% (" + part.verified + " of " + part.tracked + ")",
+    part.tracked ? part.verified / part.tracked : 0,
+    part.verified + " of " + part.tracked + " verified");
+}
+
 // The end of the overview: totals across projects, then the watchman's writeup of the whole muster.
 function renderMuster(status, now) {
   const root = document.getElementById("muster");
@@ -752,6 +768,11 @@ function renderMuster(status, now) {
   const total = read.reduce((sum, p) => sum + p.boxes.total, 0);
   root.append(figure("Roadmap boxes across " + read.length + " projects · ticks mean different things in each",
     ticked + " of " + total, total ? ticked / total : 0, ticked + " of " + total + " ticked"));
+  const unboxed = current.filter((p) => fromLedger(p)).map((p) => p.prefix);
+  if (unboxed.length) {
+    root.append(el("p", "muted", "No checkboxes in " + unboxed.join(", ")
+      + ", so not counted here; their progress is the ledger's Verified."));
+  }
   const verified = current.map((p) => p.verified).filter((v) => v && v.available);
   if (verified.length) {
     const done = verified.reduce((sum, v) => sum + v.verified, 0);
