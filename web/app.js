@@ -42,10 +42,30 @@ function counted(n, one, many) {
   return n + " " + (n === 1 ? one : many);
 }
 
+// `text` is a string, or an array of strings and nodes (such as `ago`'s), appended in order.
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
+  if (Array.isArray(text)) node.append(...text);
+  else if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+// An age that keeps itself current (RAL-90): the ticker below rewrites it every second from
+// its timestamp, so "12s ago" doesn't stand still until the next poll.
+function ago(ms, now) {
+  const node = el("span", "age", age(ms, now === undefined ? Date.now() : now));
+  if (ms !== undefined && ms !== null) node.dataset.ts = String(ms);
+  return node;
+}
+
+// A 40-hex commit as its first 7, with the whole of it in the title (RAL-90). `owner/repo@<commit>`
+// evidence shows as `owner/repo@abc1234`; anything else is left as it was written.
+function shortCommit(text) {
+  const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)@([0-9a-f]{40})$/.exec(String(text));
+  if (!match) return null;
+  const node = el("code", "commit", match[1] + "@" + match[2].slice(0, 7));
+  node.title = String(text);
   return node;
 }
 
@@ -89,9 +109,12 @@ function table(headers, rows) {
   for (const row of rows) {
     const tr = el("tr");
     for (const cell of row) {
-      const td = el("td", cell.className || "");
-      if (cell.label) td.append(el("span", "label", cell.label), " ");
-      td.append(cell.text === undefined ? String(cell) : cell.text);
+      const plain = typeof cell !== "object" || cell === null || cell instanceof Node || Array.isArray(cell);
+      const td = el("td", plain ? "" : cell.className || "");
+      if (!plain && cell.label) td.append(el("span", "label", cell.label), " ");
+      const content = plain ? cell : cell.text;
+      if (Array.isArray(content)) td.append(...content);
+      else td.append(content instanceof Node ? content : String(content));
       tr.append(td);
     }
     tbody.append(tr);
@@ -107,12 +130,12 @@ function renderBackup(root, backup, now) {
     root.append(el("p", "warning", "⚠ Backup overdue: " + (backup.reason || "none has been made")));
     return;
   }
-  const where = "record " + backup.seq + ", saved " + age(backup.saved_at_ms, now);
+  const where = () => ["record " + backup.seq + ", saved ", ago(backup.saved_at_ms, now)];
   if (backup.overdue) {
-    root.append(el("p", "warning", "⚠ Backup overdue: the last reached " + where
-      + ", and more than " + backup.max_age_hours + " hours is overdue"));
+    root.append(el("p", "warning", ["⚠ Backup overdue: the last reached ", ...where(),
+      ", and more than " + backup.max_age_hours + " hours is overdue"]));
   } else {
-    root.append(el("p", "muted", "Backed up on this machine to " + where));
+    root.append(el("p", "muted", ["Backed up on this machine to ", ...where()]));
   }
 }
 
@@ -131,8 +154,8 @@ function renderLedger(ledger, backup, now, untrusted, rally) {
     root.append(el("p", "warning", "⚠ This viewer is using a credential that can write. Pair it with a read-only one."));
   }
   if (stale) {
-    root.append(el("p", "warning", "⚠ Not read since " + age(ledger.read_at_ms, now)
-      + ", so everything here may be out of date"));
+    root.append(el("p", "warning", ["⚠ Not read since ", ago(ledger.read_at_ms, now),
+      ", so everything here may be out of date"]));
   }
   if (check) {
     // A green pass is only shown while the reading behind it is fresh.
@@ -141,8 +164,8 @@ function renderLedger(ledger, backup, now, untrusted, rally) {
         : "✕ The ledger failed its check"));
     for (const problem of check.problems || []) root.append(el("p", "warning", problem));
     for (const note of check.notes || []) root.append(el("p", "muted", note));
-    root.append(el("p", "muted", "Record " + check.head.seq + ", read " + age(ledger.read_at_ms, now)
-      + ". This check can't show a rewrite of the whole host without a saved head."));
+    root.append(el("p", "muted", ["Record " + check.head.seq + ", read ", ago(ledger.read_at_ms, now),
+      ". This check can't show a rewrite of the whole host without a saved head."]));
   }
   if (check && !check.ok) {
     root.append(el("p", "muted", "Its contents aren't shown, because they can't be trusted."));
@@ -275,13 +298,18 @@ function evidenceGroup(stories, untrusted, now) {
     rows.map(([id, story]) => {
       const evidence = story.evidence;
       const check = evidence.check;
+      const short = shortCommit(evidence.text);
       return [
-        id,
-        { text: story.state.replace("_", " "), label: story.state === "verified" ? "verified" : "declared" },
-        age(evidence.at_ms, now),
-        { text: evidence.text, label: "declared", className: "text" },
+        { text: id, className: "nowrap" },
+        // A verified state is itself the watchman's record, so it isn't labelled "verified"
+        // a second time; a state still in review is only declared (RAL-96).
+        { text: statePill(story.state), label: story.state === "verified" ? undefined : "declared",
+          className: "nowrap" },
+        { text: ago(evidence.at_ms, now), className: "nowrap" },
+        short ? { text: short, label: "declared", className: "nowrap" }
+          : { text: evidence.text, label: "declared", className: "text" },
         check
-          ? { text: checkWords(check) + " (" + age(check.at_ms, now) + ")", label: "observed", className: "text" }
+          ? { text: [checkWords(check) + " (", ago(check.at_ms, now), ")"], label: "observed", className: "text" }
           : { text: "not checked yet", className: "muted" },
       ];
     })));
@@ -525,9 +553,8 @@ function renderRoadmaps(projects, now, rally) {
     }
     const source = el("p", "source muted");
     const stale = project.read_at_ms && now - project.read_at_ms > STALE_MS;
-    source.textContent = project.repo + " " + project.path
-      + (project.commit ? " at " + project.commit.slice(0, 7) : "")
-      + ", read " + age(project.read_at_ms, now);
+    source.append(project.repo + " " + project.path
+      + (project.commit ? " at " + project.commit.slice(0, 7) : "") + ", read ", ago(project.read_at_ms, now));
     card.append(source);
     if (stale) card.append(el("p", "warning", "⚠ This is out of date"));
     if (project.error) card.append(el("p", "warning", "⚠ Last read failed: " + project.error));
@@ -568,7 +595,7 @@ function renderTeams(status, now) {
       team.story || "",
       { text: team.note || "", className: "text" },
       team.source.credential + " credential, declaring " + team.source.declared_name,
-      age(team.at_ms, now),
+      { text: ago(team.at_ms, now), className: "nowrap" },
     ])));
   } else {
     group.append(el("p", "muted", rallyKnown(status.rally)
@@ -583,15 +610,16 @@ function renderTeams(status, now) {
   if (roster.available) {
     const rows = roster.sessions.filter((session) => sessionInRally(status.rally, session)).sort((a, b) =>
       String(a.project).localeCompare(String(b.project)));
-    live.append(table(["Team", "Session", "Machine", "Can be woken", "Working on", "Activity", "Last active"],
+    // Who each team is, where it was started, what it's on and when it last acted (RAL-99).
+    live.append(table(["Team", "Directory", "Project", "Machine", "Status", "Working on", "Last action"],
       rows.map((session) => [
-        session.project || "",
-        session.nickname || "",
-        { text: session.machine || "", label: "attested" },
-        { text: session.wake || "", label: session.wake_observed ? "observed" : "declared" },
-        { text: session.current_task || "", label: "declared", className: "text" },
-        { text: session.activity || "", label: "declared" },
-        { text: age(session.last_activity_at, now), label: "declared" },
+        { text: session.nickname || "", className: "nowrap" },
+        { text: rosterDirectory(session.cwd), label: "declared" },
+        { text: rosterProject(session.project, session.git_branch), label: "declared" },
+        { text: session.machine || "", label: "attested", className: "nowrap" },
+        { text: rosterStatus(session), className: "nowrap" },
+        { text: rosterWorkingOn(session, now), label: "declared", className: "text" },
+        { text: rosterLastAction(session, now), label: "declared", className: "nowrap" },
       ])));
     if (now - roster.read_at_ms > LIVE_STALE_MS) {
       live.append(el("p", "warning figure", "⚠ This roster is out of date"));
@@ -601,8 +629,8 @@ function renderTeams(status, now) {
       live.append(el("p", "muted figure", counted(hidden, "other session on the roster isn't", "other sessions on the roster aren't")
         + " in this rally."));
     }
-    live.append(el("p", "muted figure", "Read " + age(roster.read_at_ms, now)
-      + ". “Can be woken” is a best guess, and none of this proves a session is alive."));
+    live.append(el("p", "muted figure", ["Read ", ago(roster.read_at_ms, now),
+      ". “wake” is a best guess, and none of this proves a session is alive."]));
   } else {
     live.append(el("p", "muted", "Not available yet: " + roster.reason));
   }
@@ -621,13 +649,13 @@ function trackGroup(ledger, now, rally) {
       : rallyKnown(rally) ? "No team in this rally has a track record yet." : "No team has a track record yet."));
     return group;
   }
-  const when = (ms) => (ms ? age(ms, now) : "never");
+  const when = (ms) => (ms ? ago(ms, now) : "never");
   group.append(table(["Team", "Verifications", "Send-backs", "Problems reported", "Open"],
     tracks.map(([name, t]) => [
       name,
-      { text: t.verifications + ", last " + when(t.last_verification_at_ms), label: "verified" },
-      { text: t.send_backs + ", last " + when(t.last_send_back_at_ms), label: "verified" },
-      { text: t.problems_reported + ", last " + when(t.last_problem_at_ms), label: "declared" },
+      { text: [t.verifications + ", last ", when(t.last_verification_at_ms)], label: "verified" },
+      { text: [t.send_backs + ", last ", when(t.last_send_back_at_ms)], label: "verified" },
+      { text: [t.problems_reported + ", last ", when(t.last_problem_at_ms)], label: "declared" },
       { text: String(t.problems_open), label: "declared" },
     ])));
   if (ledger.track_records_truncated === true) {
@@ -635,7 +663,7 @@ function trackGroup(ledger, now, rally) {
   }
   if (ledger.plain_facts) group.append(el("p", "muted figure", ledger.plain_facts));
   if (ledger.problems_reported_are) group.append(el("p", "muted figure", ledger.problems_reported_are));
-  group.append(el("p", "muted figure", "Read " + age(ledger.read_at_ms, now) + ", with the ledger."));
+  group.append(el("p", "muted figure", ["Read ", ago(ledger.read_at_ms, now), ", with the ledger."]));
   return group;
 }
 
@@ -653,8 +681,8 @@ function summaryBlock(summary, notice, now) {
     wrap.append(el("p", "muted", notice));
     wrap.append(el("pre", "summary", summary.text));
     wrap.append(el("p", "source muted", summary.local
-      ? "Read from the local file " + summary.file + ", " + age(summary.read_at_ms, now)
-      : summary.file + " at " + String(summary.commit).slice(0, 7) + ", read " + age(summary.read_at_ms, now)));
+      ? ["Read from the local file " + summary.file + ", ", ago(summary.read_at_ms, now)]
+      : [summary.file + " at " + String(summary.commit).slice(0, 7) + ", read ", ago(summary.read_at_ms, now)]));
   }
   if (summary.error) wrap.append(el("p", "warning", "⚠ Last read failed: " + summary.error));
   return wrap;
@@ -683,8 +711,8 @@ function progressPanel(progress, untrusted, now) {
   if (!progress.roadmap.available) {
     panel.append(el("p", "warning", "⚠ The roadmap couldn't be read: " + progress.roadmap.reason));
   } else if (progress.roadmap.last_read_failed) {
-    panel.append(el("p", "warning", "⚠ The last roadmap read failed (" + progress.roadmap.last_read_failed
-      + "), so this uses the one from " + age(progress.roadmap.read_at_ms, now)));
+    panel.append(el("p", "warning", ["⚠ The last roadmap read failed (" + progress.roadmap.last_read_failed
+      + "), so this uses the one from ", ago(progress.roadmap.read_at_ms, now)]));
   }
   if (!progress.ledger.available) {
     panel.append(el("p", "warning", "⚠ The ledger couldn't be read: " + progress.ledger.reason));
@@ -762,8 +790,8 @@ function renderProject(status, prefix, now) {
   if (project.blame && project.blame.error) {
     roadmap.append(el("p", "warning", "⚠ Couldn't read the dates: " + project.blame.error));
   }
-  roadmap.append(el("p", "source muted", project.repo + " " + project.path
-    + (project.commit ? " at " + project.commit.slice(0, 7) : "") + ", read " + age(project.read_at_ms, now)));
+  roadmap.append(el("p", "source muted", [project.repo + " " + project.path
+    + (project.commit ? " at " + project.commit.slice(0, 7) : "") + ", read ", ago(project.read_at_ms, now)]));
   if (project.error) roadmap.append(el("p", "warning", "⚠ Last read failed: " + project.error));
 
   root.append(roadmap);
@@ -793,8 +821,8 @@ function renderProject(status, prefix, now) {
       + status.untrusted_text));
     facts.append(table(["PR", "Title", "Merged"], merged.prs.map((pr) => [
       "#" + pr.number, { text: pr.title, className: "text" }, pr.merged_at.slice(0, 10)])));
-    facts.append(el("p", "source muted", "Read " + age(merged.read_at_ms, now)
-      + ". Dated ticks aren't shown yet."));
+    facts.append(el("p", "source muted", ["Read ", ago(merged.read_at_ms, now),
+      ". Dated ticks aren't shown yet."]));
   } else {
     facts.append(el("p", "muted", "No merged pull requests read yet."));
   }
@@ -883,15 +911,130 @@ window.addEventListener("hashchange", () => {
   window.scrollTo(0, 0); // a new page starts at its top
 });
 
-async function refresh() {
+// When the page last drew what it read, for the live indicator, or why it couldn't (RAL-90).
+let drawnAt = null;
+let freshnessProblem = null;
+
+// "● Live · updated 3s ago", amber once a poll is late and red once the data is stale; or the
+// problem, while there is one.
+function showFreshness(now) {
   const freshness = document.getElementById("freshness");
+  if (!freshness) return;
+  if (freshnessProblem) {
+    freshness.className = "muted freshness stale";
+    if (freshness.textContent !== freshnessProblem) freshness.textContent = freshnessProblem;
+    return;
+  }
+  if (drawnAt === null) return;
+  const late = now - drawnAt;
+  const state = late > LIVE_STALE_MS ? "stale" : late > 45000 ? "late" : "live";
+  // It's a live region, so only a change of state is announced; the ticking age is hidden from it.
+  const words = { live: "Live", late: "Live, a poll is late", stale: "⚠ Not updated for a while" }[state];
+  let ticking = freshness.querySelector(".ticking");
+  if (freshness.dataset.state !== state || !ticking) {
+    freshness.dataset.state = state;
+    freshness.className = "muted freshness " + state;
+    ticking = el("span", "ticking");
+    ticking.setAttribute("aria-hidden", "true");
+    freshness.replaceChildren(el("span", "dot", "●"), " " + words, ticking);
+  }
+  const text = " · updated " + age(drawnAt, now);
+  if (ticking.textContent !== text) ticking.textContent = text;
+}
+
+// Every second, each age and the live indicator are worked out again, without redrawing anything.
+function tick() {
+  const now = Date.now();
+  for (const node of document.querySelectorAll(".age[data-ts]")) {
+    const text = age(Number(node.dataset.ts), now);
+    if (node.textContent !== text) node.textContent = text;
+  }
+  showFreshness(now);
+}
+
+// A session's start directory, with the home folder as ~ and the whole path in its title (RAL-99).
+function rosterDirectory(cwd) {
+  if (!cwd) return el("span", "muted", "unknown");
+  const short = String(cwd).replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, "~");
+  const code = el("code", "path", short);
+  code.title = String(cwd);
+  return code;
+}
+
+// The project (its repository's name) and, when known, the branch checked out.
+function rosterProject(name, branch) {
+  const span = el("span");
+  span.append(name || "none");
+  if (branch) span.append(" ", el("span", "muted", "(" + branch + ")"));
+  return span;
+}
+
+// Busy or idle, as the session declares it, and whether a message would wake it,
+// observed only when the daemon holds its wait.
+function rosterStatus(session) {
+  const span = el("span", "status");
+  span.append(session.activity || "unknown");
+  if (session.wake) {
+    span.append(el("br"), el("span", "muted", "wake: " + session.wake + (session.wake_observed ? " (observed)" : "")));
+  }
+  return span;
+}
+
+// The declared task, and how long ago it was set when the shim says.
+function rosterWorkingOn(session, now) {
+  const span = el("span");
+  span.append(session.current_task || "");
+  if (session.current_task && session.current_task_at) {
+    span.append(" ", el("span", "muted", ["· set ", ago(session.current_task_at, now)]));
+  }
+  return span;
+}
+
+// When the session last did anything, and the last tool it called.
+function rosterLastAction(session, now) {
+  const span = el("span");
+  span.append(ago(session.last_activity_at, now));
+  if (session.last_tool) span.append(el("br"), el("span", "muted", session.last_tool));
+  return span;
+}
+
+// A story's state as a dot in the bar's colour and its name (RAL-96).
+function statePill(state) {
+  const pill = el("span", "state-pill");
+  pill.append(el("span", "dot s-" + state), state.replace("_", " "));
+  return pill;
+}
+
+// Which collapsible sections are open, by their summary text, so the 30-second
+// redraw doesn't snap them shut (RAL-96).
+function openSections() {
+  return new Set([...document.querySelectorAll("details[open] > summary")].map((s) => s.textContent));
+}
+
+function reopen(open) {
+  for (const summary of document.querySelectorAll("details > summary")) {
+    if (open.has(summary.textContent)) summary.parentElement.open = true;
+  }
+}
+
+// A redraw would lose what someone is typing or has selected; the next refresh
+// draws what this one read (RAL-96).
+function busyReading() {
+  const active = document.activeElement;
+  if (active && active.matches("input, textarea, select")) return true;
+  const selection = window.getSelection();
+  return Boolean(selection && !selection.isCollapsed);
+}
+
+async function refresh() {
   let status;
   try {
     const response = await fetch("/api/status", { cache: "no-store" });
     if (!response.ok) throw new Error("status " + response.status);
     status = await response.json();
   } catch (error) {
-    freshness.textContent = "⚠ Can't reach the viewer, so this may be out of date";
+    freshnessProblem = "⚠ Can't reach the viewer, so this may be out of date";
+    showFreshness(Date.now());
     // Don't leave an earlier green check standing when nothing can back it up.
     const ledger = document.getElementById("ledger");
     ledger.replaceChildren(el("p", "warning", "⚠ The viewer isn't answering, so the ledger's state is unknown"));
@@ -900,12 +1043,20 @@ async function refresh() {
   try {
     const now = Date.now();
     lastStatus = status;
-    show(status, now);
-    freshness.textContent = "Updated " + new Date(now).toLocaleTimeString();
+    // "Updated" says when the page was last drawn, so it moves only when it is.
+    if (!busyReading()) {
+      const open = openSections();
+      show(status, now);
+      reopen(open);
+      drawnAt = now;
+    }
+    freshnessProblem = null;
   } catch (error) {
-    freshness.textContent = "⚠ This page couldn't display what it read, so it may be out of date";
+    freshnessProblem = "⚠ This page couldn't display what it read, so it may be out of date";
   }
+  showFreshness(Date.now());
 }
 
 refresh();
 setInterval(refresh, 30000);
+setInterval(tick, 1000);

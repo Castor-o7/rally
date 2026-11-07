@@ -52,6 +52,14 @@ kept. Sessions made under another key are dropped at start, and `--new-key` remo
 It needs `gh` signed in to read roadmap files, and reads them every 5 minutes. The ledger and roster are read
 every 30 seconds.
 
+The page polls every 30 seconds, and between polls every "12s ago" keeps counting on its own, so an age is always
+current (RAL-90). The line under the title says "● Live · updated 3s ago": the dot turns amber once a poll is more
+than 45 seconds late, and the line turns red after 3 minutes, or when the viewer can't be reached. Only a change
+of that state is announced to a screen reader, not each second. Verified is green and In review amber. A commit
+in evidence written as `owner/repo@<40 hex>` shows as `owner/repo@<first 7>`, with the whole of it in its
+tooltip, and IDs and ages stay on one line. Colours and that shortening can still change when the look is
+agreed with the operator (RAL-26).
+
 ## How to read the figures
 
 - **Roadmap ticks** are counted from each project's roadmap file, with the file, commit and read time
@@ -67,7 +75,11 @@ every 30 seconds.
 - **Verified** comes only from the ledger, and is never worked out from ticks. It reads "not available
   yet" for a project with no stories in the ledger, and it covers only the stories the ledger tracks.
 - **Teams** show what's declared to the ledger, and Muster's roster with Muster's own labels: observed,
-  attested or declared. "Can be woken" is observed only when the daemon sees a wait, and it's a best guess, and nothing here proves a session is alive.
+  attested or declared. The roster lists each team's session (RAL-99) with the directory it was started in
+  (home folder as `~`, the whole path on hover), its project and branch, its machine, its status (busy or idle,
+  and whether a message would wake it, observed only when the daemon sees a wait: a best guess), what it says
+  it's working on and when that was set, and its last action with the tool it called. Nothing here proves a
+  session is alive. The operator's address isn't sent to the page.
 - **Evidence** (RAL-27), under the ledger's figures, lists each story in review or verified with its latest
   submission: the evidence the team gave, labelled declared, and Rally's own check of that submission
   (whether the commit exists, names the story, and what its CI says, or why it wasn't checked), labelled

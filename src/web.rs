@@ -1073,8 +1073,16 @@ pub fn shape_roster(value: &Value, read_at_ms: u64) -> Value {
                 // Only `waiting` comes from the daemon. The other wake values are declared.
                 "wake_observed": session["wake"] == "waiting",
                 "current_task": declared["current_task"],
+                // When the task was set, from a shim that reports it (MUS-101).
+                "current_task_at": declared["current_task_at"],
                 "activity": declared["activity"],
                 "last_activity_at": declared["last_activity_at"],
+                "last_tool": declared["last_tool"],
+                // Where the session was started, and its checkout's branch (RAL-99): the operator
+                // asked to see which directory each team is in. The page is the operator's own,
+                // behind sign-in, so a path is shown to no one else. The operator's address isn't.
+                "cwd": declared["cwd"],
+                "git_branch": declared["git_branch"],
             })
         })
         .collect();
@@ -2569,7 +2577,8 @@ mod tests {
         }]});
         let shaped = shape_roster(&roster, 9);
         let text = shaped.to_string();
-        assert!(!text.contains("/secret"), "{text}");
+        // The directory is shown (RAL-99); the operator's address still isn't.
+        assert_eq!(shaped["sessions"][0]["cwd"], "/secret");
         assert!(!text.contains("example.com"), "{text}");
         assert_eq!(shaped["sessions"][0]["machine"], "a1");
         assert_eq!(shaped["sessions"][0]["nickname"], "x");
@@ -2687,6 +2696,23 @@ mod tests {
         assert!(allowed_hosts("[::1]:7300".parse().unwrap()).is_ok());
         assert!(allowed_hosts("192.168.1.5:7300".parse().unwrap()).is_err());
         assert!(allowed_hosts("0.0.0.0:7300".parse().unwrap()).is_err());
+    }
+
+    /// RAL-90: Verified, the state a story ends in, is green, and In review amber, in both schemes.
+    #[test]
+    fn the_status_colours_follow_meaning() {
+        for (verified, in_review) in [("#1baf7a", "#eda100"), ("#199e70", "#c98500")] {
+            assert!(
+                APP_CSS.contains(&format!("--s-verified: {verified};")),
+                "{verified}"
+            );
+            assert!(
+                APP_CSS.contains(&format!("--s-in_review: {in_review};")),
+                "{in_review}"
+            );
+        }
+        // The ages are kept current by a ticker, not by redrawing.
+        assert!(APP_JS.contains("setInterval(tick, 1000)"));
     }
 
     #[test]
