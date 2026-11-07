@@ -142,10 +142,21 @@ const after = await evaluate(`(async () => {
 })()`);
 // A test can look further at the signed-in board: RALLY_BROWSER_PROBE names a file holding one
 // JavaScript expression, which may be async, evaluated in the page; its value is printed as `probe`.
+// With RALLY_BROWSER_SCHEMES, a comma-separated list such as "light,dark", the probe runs once under
+// each emulated prefers-color-scheme as well, printed as `probes` by scheme (RAL-91).
 let probe;
+let probes;
 if (process.env.RALLY_BROWSER_PROBE) {
   const { readFileSync } = await import("node:fs");
-  probe = await evaluate(readFileSync(process.env.RALLY_BROWSER_PROBE, "utf8"));
+  const expression = readFileSync(process.env.RALLY_BROWSER_PROBE, "utf8");
+  probe = await evaluate(expression);
+  if (process.env.RALLY_BROWSER_SCHEMES) {
+    probes = {};
+    for (const scheme of process.env.RALLY_BROWSER_SCHEMES.split(",")) {
+      await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] });
+      probes[scheme] = await evaluate(expression);
+    }
+  }
 }
 clearTimeout(timer);
-finish(0, { codePage, after, probe });
+finish(0, { codePage, after, probe, probes });

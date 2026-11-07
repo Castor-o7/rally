@@ -355,7 +355,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   the page names each successor beside the one it succeeds. The listed nicknames are unchanged, and there's no new
   record kind. Tests show the restarted watchman rejoining, and a later unrelated session recording for `rally` not
   joining.
-- [ ] **RAL-110: The operator adds or removes a session in an open rally.** Requested by the operator on 2026-11-06,
+- [x] **RAL-110: The operator adds or removes a session in an open rally.** Merged in #179 (a70e313). Requested by the operator on 2026-11-06,
   completing RAL-108's "unless otherwise specified" and settling its shared-credential limit: the ledger can't tell a
   restart from a new agent on the same machine, so the operator decides. Done when: `rally rally-session add|remove
   <nickname> --note` records a declared `rally_session`, only while a rally is open, and the service takes it only
@@ -421,13 +421,13 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   `current_task_at` (still not the operator's address), and the roster's columns are Team (the session's
   nickname), Directory (`~` for the home folder, the whole path in its title), Project (and branch), Machine,
   Status (busy or idle, and wake), Working on (and when it was set) and Last action (its age and tool).
-- [ ] **RAL-109: The viewer encodes the writeup's path in its commit-time read.** From mellow-weevil's read of
+- [x] **RAL-109: The viewer encodes the writeup's path in its commit-time read.** Merged in #178 (5823dbc). From mellow-weevil's read of
   RAL-104: `written_at` put the writeup's file name into `gh api repos/R/commits?path=<file>` unencoded. Today
   the name is always `YYYY-MM-DD.md` under a fixed folder, but a name with `&`, `#`, `+`, `%` or a space would
   have ended the value or added a parameter. Done when: the path is percent-encoded as one query value (RFC 3986
   unreserved characters and `/` kept), the commit is checked as hex before the call, and a unit test covers
   names with those characters.
-- [ ] **RAL-104: The rally report belongs to the open rally and carries its major events.** Asked for by Josh
+- [x] **RAL-104: The rally report belongs to the open rally and carries its major events.** Merged in #177 (9f1271e). Asked for by Josh
   on 2026-11-06. When "rally 0x5" opened (record 914), the report box still showed the writeup from the rally
   before it. The overview matches the watchman's writeup to a rally by its day file's date, so a rally opened
   later the same day inherits the earlier one's writeup. Josh also wants the report to be more than an end-of-day
@@ -593,7 +593,7 @@ word.
   by mellow-weevil's pick. Done when: `rally gate <base>..<new>` also refuses when `<new>` doesn't contain the
   current tip of `<base>` (after a fetch of `origin/<base>`), saying to merge the base in first; it works without
   GitHub branch protection, which is the operator's setting; with a CLI test on two branches.
-- [ ] **RAL-105: The digest names verified stories whose open PR has fallen behind its base.** Found in RAL-102's
+- [x] **RAL-105: The digest names verified stories whose open PR has fallen behind its base.** Merged in #174 (6a06f7f). Found in RAL-102's
   work and filed at mellow-weevil's suggestion: a story verified at a head that no longer contains its base's tip
   can't merge until the base is merged in and the new head read, and nothing told its author. Done when: when a
   digest is rendered, each Verified story not yet merged whose open pull request's head is a commit verified, in
@@ -642,6 +642,14 @@ word.
   only changes of state; Verified is green and In review amber, in both schemes; evidence of the form
   `owner/repo@<40 hex>` shows its first 7 with the whole in the title, and other evidence as written; IDs, states
   and ages don't wrap; a headless Chrome test shows each, and fails on the page before it.
+- [ ] **RAL-91: The viewer's bars are coloured by what they measure.** The open half of RAL-91 (cobalt-glen's "the
+  viewer's status colours follow meaning"), assigned by mellow-weevil: every bar's fill was one blue (`--fill`),
+  whatever it measured. Done when: each Verified bar and each Progress from the ledger is one bar of Verified green,
+  In review amber and Sent back pink over the stories tracked, in RAL-90's state colours, with a title on each
+  segment and a legend; ticks, which aren't a ledger state, have a neutral `--ticked` colour of their own, and the
+  legend under each tick figure says what it means, so green only ever means Verified; the viewer's data gives the
+  in-review and sent-back counts beside Verified; and a headless Chrome test reads every bar's computed colour in
+  the light and dark schemes, and fails on the page before.
 - [x] **RAL-88: The viewer's cross-site refusal says how to sign in instead.** Merged in #162 (0ab6344). From the DiscoSim rally's issues
   log, §3.2: the Claude-in-Chrome extension's navigation is marked cross-site, so the viewer answered "other sites
   can't read this page", which is right but says nothing about what to do. Assigned by mellow-weevil. Done when:
