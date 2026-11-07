@@ -493,6 +493,11 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
+- [ ] **RAL-88: The viewer's cross-site refusal says how to sign in instead.** From the DiscoSim rally's issues
+  log, §3.2: the Claude-in-Chrome extension's navigation is marked cross-site, so the viewer answered "other sites
+  can't read this page", which is right but says nothing about what to do. Assigned by mellow-weevil. Done when:
+  the refusal is unchanged (403, same rule) and its text adds: run `rally web --login` in a terminal and open the
+  address from there or the address bar, not from another page or an extension; with a test of the text.
 - [ ] **RAL-86: Long-running digest and wake log a failed pass, back off, and keep going.** From the watchman
   (mellow-weevil), 2026-11-06: `rally digest --every` exited with `refused (429): too many checks and past-state
   reads` right after a successful send. Reserved by silken-beetle, built by eager-cobra. Done when: with `--every`,

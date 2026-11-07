@@ -197,7 +197,10 @@ why.
   which a browser always sends, and with the key.
 - **Other sites can't read it.** Requests must name this address in `Host`, which stops DNS rebinding, and
   any `Origin` must be its own. A request the browser marks as from another site (`Sec-Fetch-Site` other than
-  `same-origin` or `none`) is refused, even with the cookie. There are no CORS headers.
+  `same-origin` or `none`) is refused, even with the cookie. There are no CORS headers. The refusal says how to
+  get in instead (RAL-88): run `rally web --login` in a terminal and open the address from there or the address
+  bar, since a link opened from another page or a browser extension (such as Claude in Chrome) is marked as from
+  another site, and correctly refused.
 - **Recorded text can't run.** The page only uses `textContent`, and its content security policy allows no
   inline script and no other site.
 - **No write path.** It has no way to change anything. With `--db` its Postgres connection is read-only, and it should use a
