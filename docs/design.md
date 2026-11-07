@@ -89,9 +89,12 @@ clears it.
 catapp#78 merged before a requested read arrived. So anyone can ask for a read of a story at a commit
 (`request_read`, RAL-32), in any state, since the ask can come before the submission. The request stays
 on the story, visible to whoever merges, until a verify or send-back answers it, a verifier's correction
-into Verified or Sent back answers it, or the requester or a verifier withdraws it. A merge recorded while
+into Verified or Sent back answers it, or the requester or a verifier withdraws it. On a story already
+Verified, which can't be verified again, the verifier's also-read or read of the merged commit answers
+every open request whose commit the verification then covers (RAL-106). A merge recorded while
 a request is open doesn't close it: the request then shows the commit that was merged before its read,
-so the story carries what happened.
+so the story carries what happened, unless the verification in force already covers the commit it asked
+about.
 
 An open request blocks a merge, and the read must cover the head being merged: the muster's rule in
 Muster's `docs/board.md`, which the operator told Rally to record on 2026-11-04. Rally can't stop a
