@@ -1029,7 +1029,41 @@ fn in_browser(viewer: &Viewer, chrome: &str, probe: Option<&str>) -> Value {
     let printed = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{printed}\n{stderr}");
-    serde_json::from_str(printed.trim()).unwrap_or_else(|_| panic!("{printed}"))
+    let seen: Value = serde_json::from_str(printed.trim()).unwrap_or_else(|_| panic!("{printed}"));
+    nothing_of_the_browser_survives(&seen);
+    seen
+}
+
+/// RAL-97: once the script has ended, no profile it used is left, under the host's /tmp or a
+/// flatpak sandbox's, and no browser still runs on one. Each run under flatpak once left a whole
+/// headless Chrome and a 170 MB profile in $XDG_RUNTIME_DIR, until that tmpfs filled (2026-11-06).
+fn nothing_of_the_browser_survives(seen: &Value) {
+    let profiles = seen["profiles"]
+        .as_array()
+        .expect("the script names its profiles");
+    assert!(!profiles.is_empty(), "{seen}");
+    for profile in profiles {
+        let profile = profile.as_str().unwrap();
+        assert!(
+            !std::path::Path::new(profile).exists(),
+            "{profile} was left behind"
+        );
+        // A browser on it has the profile's own name in its command line, wherever it was put.
+        let name = std::path::Path::new(profile)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let still = Command::new("pgrep")
+            .args(["-f", "--", &name])
+            .output()
+            .unwrap();
+        assert!(
+            still.stdout.is_empty(),
+            "a browser still runs on {name}: {}",
+            String::from_utf8_lossy(&still.stdout)
+        );
+    }
 }
 
 /// RAL-84: sign in through the button in a real headless Chrome, as the operator does. RAL-83's
