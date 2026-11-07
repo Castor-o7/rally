@@ -39,6 +39,29 @@ const APP_JS: &str = include_str!("../web/app.js");
 const APP_CSS: &str = include_str!("../web/app.css");
 const SIGN_IN: &str = include_str!("../web/sign-in.html");
 
+/// A fingerprint of the page code this viewer serves (RAL-112): the first 16 hex digits of the
+/// SHA-256 of its index page, script and stylesheet. The page is stamped with it and every status
+/// carries it, so a tab left open across a restart onto new page code sees the change and reloads.
+pub fn page_code() -> &'static str {
+    static CODE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        for part in [INDEX, APP_JS, APP_CSS] {
+            hash.update((part.len() as u64).to_le_bytes());
+            hash.update(part.as_bytes());
+        }
+        hex::encode(hash.finalize())[..16].to_owned()
+    });
+    &CODE
+}
+
+/// The index page, stamped with its page code (RAL-112).
+fn index_page() -> &'static str {
+    static PAGE: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| INDEX.replace("PAGE_CODE", page_code()));
+    &PAGE
+}
+
 /// The projects shown by default.
 pub const DEFAULT_PROJECTS: &str = include_str!("../web/projects.json");
 
@@ -1616,7 +1639,7 @@ pub async fn serve(
     let router = Router::new()
         .route(
             "/",
-            get(|| async { page("text/html; charset=utf-8", INDEX) }),
+            get(|| async { page("text/html; charset=utf-8", index_page()) }),
         )
         .route("/app.js", get(|| async { page("text/javascript", APP_JS) }))
         .route("/app.css", get(|| async { page("text/css", APP_CSS) }))
@@ -1880,6 +1903,7 @@ async fn status(State(app): State<Arc<App>>) -> Response {
         .unwrap_or_else(|| json!({"watched": false}));
     Json(json!({
         "untrusted_text": UNTRUSTED_TEXT,
+        "page_code": page_code(),
         "ledger": ledger,
         "roster": roster,
         "backup": backup,

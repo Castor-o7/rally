@@ -201,6 +201,19 @@ While a rally is open, the report box at the end of the overview shows only what
   page says so, and doesn't show the writeup as this rally's. A commit's time is the committer's clock, so a
   writeup committed from a machine whose clock is far off can land on the wrong side of the opening.
 
+## A tab open across a restart reloads itself (RAL-112)
+
+The page draws whatever `/api/status` sends, but its own code is loaded once, when the tab opens. So a tab left
+open while the viewer restarted onto a new build kept drawing new data with old code. On 2026-11-06 that showed the
+DiscoSim writeup in rally 0x5's report box, long after RAL-104 had hidden it, until a new window was opened.
+
+The viewer now takes a fingerprint of the page code it serves: the first 16 hex digits of the SHA-256 of its index
+page, script and stylesheet. It stamps that into the page (`<meta name="rally-page-code">`), and every status carries
+it as `page_code`. When a status names other code than the tab runs, the tab reloads itself once to run it. It waits
+while you're typing or have text selected, and reloads at most once for each code (kept in the tab's
+`sessionStorage`), so a mismatch that persists can't make it reload forever. A tab opened before this change has no
+fingerprint, so it needs one last reload by hand.
+
 ## Labels, once per column (RAL-93)
 
 Every fact on the page is labelled with how it's known. A table column whose cells are all known the same way
