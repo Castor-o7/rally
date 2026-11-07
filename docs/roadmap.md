@@ -615,6 +615,10 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
+- [ ] **RAL-113: `drawPatched` says a kept node keeps its first listener.** From mellow-weevil's read of RAL-89:
+  a node the patch keeps keeps the listeners from its first draw, so a handler that closed over render-time data
+  would act on stale data. Done when: a comment above `drawPatched` says a handler in a patched section must read
+  what it needs when it runs. Comment only.
 - [ ] **RAL-89: The viewer refreshes without flashing or closing what's open.** From robust-warbler's visual review
   of the viewer on 2026-11-06, item 1: each poll rebuilt every section with `replaceChildren`. RAL-96 (#167) kept
   open sections open and skipped the redraw while someone types or selects. Done when: a refresh draws each section
