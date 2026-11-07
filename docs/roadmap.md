@@ -370,6 +370,21 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   beside `--config`) when it exists, and the built-in list when it doesn't; `--projects` still wins; the first
   line says which list was read; a file that's there but broken is an error, never a quiet fall back; tests
   cover each case and don't read the operator's own config; and `docs/web.md` says so.
+- [x] **RAL-96: The viewer keeps what the reader opened, and shows a state once.** From Josh's review of the
+  viewer in Chrome on 2026-11-06 (robust-warbler, watched over several refreshes): every 30-second poll rebuilt
+  each section, so every open section closed each time (4 of 4, three cycles running), and a verified story's
+  state read "verified verified". Done, on RAL-90's ticking ages: the refresh keeps open sections open; it skips
+  its redraw while someone types in a field or has text selected, and "updated" moves only when the page is
+  drawn; a state shows once, as a dot in its bar colour and its name, labelled declared while in review; and
+  `sign-in.mjs` closes Chrome over DevTools and removes its profile even under flatpak, where each run had left a
+  headless Chrome and a 173 MB profile in the runtime directory until it filled. A headless test shows an open
+  section surviving a refresh, and fails without the fix.
+- [x] **RAL-99: The roster says where each team is.** Asked for by Josh on 2026-11-06: the roster no longer
+  said which Muster session was in which directory, because the viewer dropped `cwd`, keeping the page to what it
+  showed since #24. Done: `shape_roster` passes each session's `cwd`, `git_branch`, `last_tool` and
+  `current_task_at` (still not the operator's address), and the roster's columns are Team (the session's
+  nickname), Directory (`~` for the home folder, the whole path in its title), Project (and branch), Machine,
+  Status (busy or idle, and wake), Working on (and when it was set) and Last action (its age and tool).
 
 ## Phase 5: Rally into Levi
 
@@ -530,6 +545,13 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
+- [ ] **RAL-90: The viewer's ages tick, with a live indicator; Verified green; short commits; no wrapped IDs.**
+  From robust-warbler's visual review of the viewer on 2026-11-06 (items 2, 4, 6 and 7), assigned by mellow-weevil.
+  Done when: every age on the page counts on between polls without anything being redrawn; a "Live · updated Ns
+  ago" line replaces "Updated hh:mm:ss", amber when a poll is late and red when stale or unreachable, announcing
+  only changes of state; Verified is green and In review amber, in both schemes; evidence of the form
+  `owner/repo@<40 hex>` shows its first 7 with the whole in the title, and other evidence as written; IDs, states
+  and ages don't wrap; a headless Chrome test shows each, and fails on the page before it.
 - [x] **RAL-88: The viewer's cross-site refusal says how to sign in instead.** Merged in #162 (0ab6344). From the DiscoSim rally's issues
   log, §3.2: the Claude-in-Chrome extension's navigation is marked cross-site, so the viewer answered "other sites
   can't read this page", which is right but says nothing about what to do. Assigned by mellow-weevil. Done when:
