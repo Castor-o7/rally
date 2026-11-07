@@ -461,6 +461,15 @@ pub fn verified_for(prefix: &str, ledger: &Value) -> Value {
 /// The story states in which a team still holds a story: it claimed it and hasn't been verified.
 const HELD_STATES: [&str; 3] = ["claimed", "in_review", "sent_back"];
 
+/// Whether a story row counts as held on the board: its state, or a part still in review (RAL-79),
+/// which keeps a multi-part story visible while its parts are read.
+fn held(story: &Value) -> bool {
+    HELD_STATES.contains(&story["state"].as_str().unwrap_or(""))
+        || story["parts_in_review"]
+            .as_array()
+            .is_some_and(|parts| !parts.is_empty())
+}
+
 /// Which projects are in the current rally (RAL-69): those with a story held by a team that's on
 /// Muster's roster now. A team is on the roster when a session's nickname is the team's name, or a
 /// session matches the team's `sessions` in the project list, as `rally wake` matches them; a team's
@@ -548,7 +557,7 @@ pub fn board(rally: &Value, ledger: &Value) -> Value {
                 .iter()
                 .filter(|(id, story)| {
                     let prefix = id.split_once('-').map(|(p, _)| p).unwrap_or("");
-                    let held = HELD_STATES.contains(&story["state"].as_str().unwrap_or(""));
+                    let held = held(story);
                     prefixes.contains(&prefix)
                         && (held || story["last"].as_u64().is_some_and(|last| last > since))
                 })
@@ -615,7 +624,7 @@ fn derived_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Value 
         }
     }
     for (id, story) in stories {
-        let held = HELD_STATES.contains(&story["state"].as_str().unwrap_or(""));
+        let held = held(story);
         let Some(team) = story["team"].as_str().filter(|_| held) else {
             continue;
         };
@@ -2140,6 +2149,17 @@ mod tests {
         let rally = current_rally(&rally_projects(), &older, &roster);
         assert!(rally.get("opened").is_none());
         assert_eq!(rally["rallies_unavailable"], "404");
+    }
+
+    #[test]
+    fn a_story_with_a_part_in_review_stays_on_the_board() {
+        // Released while part 2 waits for its read: the part keeps it held (RAL-79).
+        let ledger = json!({"stories": {
+            "RAL-79": {"state": "ready", "team": "rally", "last": 10, "parts_in_review": [2]},
+            "RAL-5": {"state": "verified", "team": "rally", "last": 50, "parts": "2/2 verified"},
+        }, "teams": {"rally": {"seq": 3}}});
+        let rally = json!({"since_seq": 105, "prefixes": ["RAL"], "active_teams": ["rally"]});
+        assert_eq!(board(&rally, &ledger)["stories"], json!(["RAL-79"]));
     }
 
     #[test]

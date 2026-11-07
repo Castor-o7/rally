@@ -558,7 +558,7 @@ pub fn handover(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -
                         .any(|w| w.scope.covers(team, submitted))
                     && matches!(
                         entry.change,
-                        Change::Verify { .. }
+                        Change::Verify { part: None, .. }
                             | Change::Correct {
                                 state: Some(State::Verified),
                                 ..

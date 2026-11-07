@@ -38,6 +38,23 @@ An ID-shaped word whose prefix the ledger has never used, such as `SHA-256` or `
 files it on the roadmap does, or a part of a multi-part story (§2.1) that the watchman has read. It's listed under
 `allowed`, and isn't refused. The flag is recorded nowhere: say why in the merge or the ledger.
 
+## Verified parts (RAL-79)
+
+A story that isn't Verified still passes for each commit that a verified part's read covers (`docs/parts.md`). A
+part's read, the `--commit` of `rally verify <ID> --part k`, covers:
+
+- that commit;
+- **its ancestors.** A read of part k is taken to cover the commits before it on that branch, such as part k's own
+  earlier commits and the parts before it. The check is `git merge-base --is-ancestor` in `--repo`.
+- **a merge commit whose merged-in parents** (all but the first) are covered, as a pull request's merge of the
+  branch read is.
+
+The story is refused if any commit naming it isn't covered: work pushed after the last part's read still needs
+that part read, or `--allow`. Covered commits are listed under `covered_by_parts`, with the story's `parts`.
+Coverage is per story. An ancestor that names a *different* story doesn't pass because of this one's part: that
+story is still judged on its own state and parts. A part merged by squash isn't an ancestor of the commit read, so it
+still needs `--allow`.
+
 ## What it doesn't check
 
 - That the commit verified is the one in the range. `rally show <STORY>` gives `verified_commit` and

@@ -1086,3 +1086,150 @@ fn the_gate_refuses_a_range_naming_a_sent_back_story_and_passes_once_it_is_verif
     );
     assert!(error.contains("isn't a commit range"), "{error}");
 }
+
+/// RAL-79, modelled on DSM-37: parts are submitted and read as they land, the gate passes what a
+/// verified part's read covers, and the close waits for every part.
+#[test]
+fn a_multi_part_story_is_read_part_by_part_and_gated_by_its_reads() {
+    let db = Ledger::new();
+    let repo = db.dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "start"]);
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    git(
+        &repo,
+        &["commit", "-q", "--allow-empty", "-m", "DSM-37: scaffolding"],
+    );
+    git(
+        &repo,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "DSM-37 part 1: the long bar",
+        ],
+    );
+    let p1 = git(&repo, &["rev-parse", "HEAD"]);
+    let repo_arg = repo.to_str().unwrap();
+    let gate = |db: &Ledger| {
+        rally(
+            db,
+            "watch",
+            &["gate", &format!("{base}..HEAD"), "--repo", repo_arg],
+        )
+    };
+    let ev = |c: &str| format!("Castor-o7/discosim@{c}");
+
+    ok(&db, "author", &["ready", "DSM-37"]);
+    ok(&db, "author", &["claim", "DSM-37", "--team", "discosim"]);
+    let e1 = ev(&p1);
+    ok(
+        &db,
+        "author",
+        &[
+            "submit",
+            "DSM-37",
+            "--team",
+            "discosim",
+            "--evidence",
+            &e1,
+            "--not-checkable",
+            "--part",
+            "1",
+            "--of",
+            "3",
+        ],
+    );
+    let waiting = ok(&db, "watch", &["waiting"]);
+    assert_eq!(waiting["waiting"][0]["part_of"], "part 1/3", "{waiting}");
+    assert!(!gate(&db).status.success(), "part 1 isn't read yet");
+
+    ok(
+        &db,
+        "watch",
+        &[
+            "verify", "DSM-37", "--part", "1", "--commit", &p1, "--note", "read",
+        ],
+    );
+    let brief = ok(&db, "watch", &["show", "DSM-37", "--brief"]);
+    assert_eq!(brief["state"], "claimed");
+    assert_eq!(brief["parts"], "1/3 verified");
+    // p1 and the commit before it are covered by the read of part 1.
+    let passed = gate(&db);
+    assert!(
+        passed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&passed.stderr)
+    );
+
+    git(
+        &repo,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "DSM-37 part 2: merch",
+        ],
+    );
+    let p2 = git(&repo, &["rev-parse", "HEAD"]);
+    let error = String::from_utf8(gate(&db).stderr).unwrap();
+    assert!(error.contains("DSM-37"), "part 2 is past the read: {error}");
+
+    let e2 = ev(&p2);
+    ok(
+        &db,
+        "author",
+        &[
+            "submit",
+            "DSM-37",
+            "--team",
+            "discosim",
+            "--evidence",
+            &e2,
+            "--not-checkable",
+            "--part",
+            "2",
+        ],
+    );
+    ok(
+        &db,
+        "watch",
+        &[
+            "verify", "DSM-37", "--part", "2", "--commit", &p2, "--note", "read",
+        ],
+    );
+    assert!(gate(&db).status.success());
+
+    // The close: a plain submit, whose verify waits for no open part, and the story is Verified.
+    ok(
+        &db,
+        "author",
+        &[
+            "submit",
+            "DSM-37",
+            "--team",
+            "discosim",
+            "--evidence",
+            &e2,
+            "--not-checkable",
+        ],
+    );
+    ok(
+        &db,
+        "watch",
+        &[
+            "verify",
+            "DSM-37",
+            "--commit",
+            &p2,
+            "--note",
+            "all parts read",
+        ],
+    );
+    let brief = ok(&db, "watch", &["show", "DSM-37", "--brief"]);
+    assert_eq!(brief["state"], "verified");
+    assert_eq!(brief["parts"], "2/3 verified");
+}

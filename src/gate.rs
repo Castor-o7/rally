@@ -22,6 +22,8 @@ const MAX_ID_BYTES: usize = 32;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     pub sha: String,
+    /// Its parents' full hashes, first parent first.
+    pub parents: Vec<String>,
     pub message: String,
 }
 
@@ -46,7 +48,7 @@ pub fn commits(repo: &Path, range: &str) -> Result<Vec<Commit>, String> {
             "--no-pager",
             "log",
             "--no-color",
-            "--format=%H%x00%B%x00",
+            "--format=%H%x00%P%x00%B%x00",
             &limit,
             "--end-of-options",
             range,
@@ -64,13 +66,16 @@ pub fn commits(repo: &Path, range: &str) -> Result<Vec<Commit>, String> {
     let text = String::from_utf8_lossy(&out.stdout);
     let mut fields = text.split('\0');
     let mut found = Vec::new();
-    while let (Some(sha), Some(message)) = (fields.next(), fields.next()) {
+    while let (Some(sha), Some(parents), Some(message)) =
+        (fields.next(), fields.next(), fields.next())
+    {
         let sha = sha.trim();
         if sha.is_empty() {
             break;
         }
         found.push(Commit {
             sha: sha.to_owned(),
+            parents: parents.split_whitespace().map(str::to_owned).collect(),
             message: message.to_owned(),
         });
     }
@@ -80,6 +85,35 @@ pub fn commits(repo: &Path, range: &str) -> Result<Vec<Commit>, String> {
         ));
     }
     Ok(found)
+}
+
+/// Whether commit `a` is `b` or an ancestor of it in the checkout at `repo`, by
+/// `git merge-base --is-ancestor`, with the same guards as [`commits`]. An error, such as a commit
+/// the checkout doesn't have, counts as no (RAL-79).
+pub fn is_ancestor(repo: &Path, a: &str, b: &str) -> bool {
+    let full = |c: &str| matches!(c.len(), 40 | 64) && c.bytes().all(|x| x.is_ascii_hexdigit());
+    if !full(a) || !full(b) {
+        return false;
+    }
+    if a.eq_ignore_ascii_case(b) {
+        return true;
+    }
+    Command::new("git")
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "--no-pager",
+            "merge-base",
+            "--is-ancestor",
+            "--end-of-options",
+            a,
+            b,
+        ])
+        .current_dir(repo)
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 /// Every story ID `text` names as a whole word, as [`crate::evidence::names`] would match it:
@@ -165,18 +199,42 @@ pub fn judge(
     stories: &Map<String, Value>,
     allow: &BTreeSet<String>,
 ) -> Value {
+    judge_with(range, commits, stories, allow, &|commit, read| {
+        commit == read
+    })
+}
+
+/// Whether `commit` is covered by a read of `read`, given whether one commit is the other or an
+/// ancestor of it: a verified part's read covers the commits before it on its branch, and a merge
+/// whose merged-in parents are covered (RAL-79).
+fn covered(commit: &Commit, read: &str, ancestor: &dyn Fn(&str, &str) -> bool) -> bool {
+    ancestor(&commit.sha, read)
+        || (commit.parents.len() > 1 && commit.parents[1..].iter().all(|p| ancestor(p, read)))
+}
+
+/// [`judge`], where `ancestor(a, b)` says whether commit `a` is `b` or an ancestor of it, as
+/// `git merge-base --is-ancestor` does. A story that isn't verified still passes for a commit a
+/// verified part's read covers (RAL-79): its `part_commits`, as `rally show` lists them.
+pub fn judge_with(
+    range: &str,
+    commits: &[Commit],
+    stories: &Map<String, Value>,
+    allow: &BTreeSet<String>,
+    ancestor: &dyn Fn(&str, &str) -> bool,
+) -> Value {
     let prefixes: BTreeSet<&str> = stories.keys().map(|id| prefix(id)).collect();
-    let mut named: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    let mut named: BTreeMap<String, Vec<&Commit>> = BTreeMap::new();
     for commit in commits {
         for id in ids(&naming(&commit.message)) {
-            named.entry(id).or_default().push(&commit.sha);
+            named.entry(id).or_default().push(commit);
         }
     }
     let mut shown = Map::new();
     let mut refused = Vec::new();
     let mut other = Map::new();
     let mut allowed = Vec::new();
-    for (id, shas) in named {
+    for (id, named_by) in named {
+        let shas: Vec<&str> = named_by.iter().map(|c| c.sha.as_str()).collect();
         if allow.contains(&id) {
             let state = stories.get(&id).map(|row| row["state"].clone());
             shown.insert(
@@ -189,7 +247,20 @@ pub fn judge(
         match stories.get(&id) {
             Some(row) => {
                 let state = row["state"].as_str().unwrap_or("unknown");
-                if state != "verified" {
+                // Commits a verified part's read covers pass on their own (RAL-79).
+                let reads: Vec<&str> = row["part_commits"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                let by_parts: Vec<&str> = named_by
+                    .iter()
+                    .filter(|c| reads.iter().any(|read| covered(c, read, ancestor)))
+                    .map(|c| c.sha.as_str())
+                    .collect();
+                let all_by_parts = by_parts.len() == named_by.len();
+                if state != "verified" && !all_by_parts {
                     let why = match state {
                         "sent_back" => "sent back",
                         "in_review" => "submitted but not verified",
@@ -199,7 +270,14 @@ pub fn judge(
                     };
                     refused.push(json!({"story": id, "state": state, "why": why}));
                 }
-                shown.insert(id, json!({"state": state, "commits": shas}));
+                let mut entry = json!({"state": state, "commits": shas});
+                if !by_parts.is_empty() {
+                    entry["covered_by_parts"] = json!(by_parts);
+                }
+                if let Some(parts) = row.get("parts") {
+                    entry["parts"] = parts.clone();
+                }
+                shown.insert(id, entry);
             }
             None if prefixes.contains(prefix(&id)) => {
                 refused.push(json!({"story": id, "state": null, "why": "not in the ledger"}));
@@ -237,8 +315,48 @@ mod tests {
     fn commit(sha: &str, message: &str) -> Commit {
         Commit {
             sha: sha.into(),
+            parents: Vec::new(),
             message: message.into(),
         }
+    }
+
+    /// RAL-79: a claimed story's commits pass when a verified part's read covers them, as itself,
+    /// an ancestor, or a merge of a covered branch; one it doesn't cover still refuses.
+    #[test]
+    fn a_verified_parts_read_covers_its_commits_and_its_ancestors() {
+        let stories: Map<String, Value> = [(
+            "DSM-37".to_owned(),
+            json!({"state": "claimed", "parts": "1/4 verified", "part_commits": ["p1"]}),
+        )]
+        .into_iter()
+        .collect();
+        // a0 is before p1 on its branch; m merges p1's branch; late came after the read.
+        let ancestor = |a: &str, b: &str| a == b || (a == "a0" && b == "p1");
+        let merge = Commit {
+            sha: "m".into(),
+            parents: vec!["main".into(), "p1".into()],
+            message: "Merge pull request #9\n\nDSM-37 part 1".into(),
+        };
+        let covered = [
+            commit("p1", "DSM-37 part 1: bar"),
+            commit("a0", "DSM-37: start"),
+            merge,
+        ];
+        let found = judge_with("x..y", &covered, &stories, &BTreeSet::new(), &ancestor);
+        assert_eq!(found["ok"], true, "{found}");
+        assert_eq!(
+            found["stories"]["DSM-37"]["covered_by_parts"],
+            json!(["p1", "a0", "m"])
+        );
+        assert_eq!(found["stories"]["DSM-37"]["parts"], "1/4 verified");
+
+        let late = [
+            commit("p1", "DSM-37 part 1"),
+            commit("late", "DSM-37 part 2"),
+        ];
+        let found = judge_with("x..y", &late, &stories, &BTreeSet::new(), &ancestor);
+        assert_eq!(found["ok"], false);
+        assert_eq!(found["refused"][0]["story"], "DSM-37");
     }
 
     fn none() -> BTreeSet<String> {
