@@ -973,3 +973,49 @@ fn a_past_rally_opens_as_its_own_board() {
             .is_none()
     );
 }
+
+/// RAL-84: sign in through the button in a real headless Chrome, as the operator does. RAL-83's
+/// bug, Chrome's own `Origin: null` under a no-referrer page, passed every curl-driven test here.
+/// It runs when `RALLY_TEST_CHROME` names a Chrome command (for example `google-chrome`, or
+/// `flatpak run com.google.Chrome`), with Node 22 or later on the path; CI sets it, and sets
+/// `RALLY_TEST_BROWSER_REQUIRED` so it can't be skipped there.
+#[test]
+fn a_real_browser_signs_in_through_the_button() {
+    let Some(chrome) = std::env::var("RALLY_TEST_CHROME")
+        .ok()
+        .filter(|command| !command.trim().is_empty())
+    else {
+        assert!(
+            std::env::var_os("RALLY_TEST_BROWSER_REQUIRED").is_none(),
+            "RALLY_TEST_BROWSER_REQUIRED is set, but RALLY_TEST_CHROME names no browser"
+        );
+        eprintln!("skipped: set RALLY_TEST_CHROME to sign in through a real browser (RAL-84)");
+        return;
+    };
+    let viewer = start();
+    let url = format!("http://{}{}", viewer.address, login(&viewer));
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser/sign-in.mjs");
+    let output = Command::new("node")
+        .arg(&script)
+        .arg(&url)
+        .args(chrome.split_whitespace())
+        .output()
+        .expect("node is needed to drive the browser");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{printed}\n{stderr}");
+    let seen: Value = serde_json::from_str(printed.trim()).unwrap_or_else(|_| panic!("{printed}"));
+    // Opening the address showed the button and spent nothing.
+    assert_eq!(seen["codePage"]["button"], true, "{seen}");
+    assert_eq!(seen["codePage"]["referrer"], "same-origin", "{seen}");
+    // Pressing it signed the browser in: the board, and its data, are served.
+    assert_eq!(seen["after"]["path"], "/", "{seen}");
+    assert_eq!(seen["after"]["status"], 200, "{seen}");
+    assert!(
+        !seen["after"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("other sites can't read this page"),
+        "{seen}"
+    );
+}

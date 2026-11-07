@@ -325,6 +325,12 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   once; the page's own policy allows its form and nothing else, while every other page still allows no form; it
   shows nothing offered in the address that isn't a code; another site's form POST is refused; and
   `docs/web.md` says so.
+- [ ] **RAL-84: CI signs in to the viewer through a real headless browser.** From the watchman's finding of
+  RAL-83 on 2026-11-06: every sign-in test was curl-driven and sent a real `Origin`, so none caught Chrome's own
+  `Origin: null` under a no-referrer page, and the button failed for the operator every time. Done when: a viewer
+  test opens a one-time code's address in headless Chrome, presses Sign in, and sees the board and `/api/status`
+  served; it fails on a viewer with RAL-83's bug; it runs when `RALLY_TEST_CHROME` names a browser and is skipped
+  otherwise; CI installs what it needs and can't skip it; and the README says how to run it.
 - [ ] **RAL-74: The viewer reads `~/.config/rally/projects.json` by default.** From the DiscoSim rally issues
   log of 2026-11-06, §3.3: the built-in `web/projects.json` lists RAL, MUS, CAT, CHOMP and PDX only, so a whole
   rally ran with no DiscoSim page until the viewer was restarted with `--projects`. Done when: without

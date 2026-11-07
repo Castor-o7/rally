@@ -151,6 +151,16 @@ use a server instead, as CI does, set `RALLY_TEST_POSTGRES_URL` to an administra
 `postgres://postgres@127.0.0.1:54329/postgres`; each test makes and drops a database of its own there. Tests
 refuse port 5432, so they can't meet a Postgres someone is using.
 
+One viewer test signs in through a real headless Chrome (RAL-84), since a curl-driven test sends whatever headers
+it's written with and can't catch what a browser does on its own. It runs when `RALLY_TEST_CHROME` names a Chrome
+command, with Node 22 or later on `PATH`, and is skipped otherwise; CI runs it, and sets
+`RALLY_TEST_BROWSER_REQUIRED` so a missing browser fails rather than skips:
+
+```bash
+RALLY_TEST_CHROME=google-chrome cargo test --test web a_real_browser
+RALLY_TEST_CHROME="flatpak run com.google.Chrome" cargo test --test web a_real_browser   # on Murph
+```
+
 ## Status
 
 Rally runs on the operator's machines and isn't deployed yet. Work follows the [roadmap](docs/roadmap.md). Next:
