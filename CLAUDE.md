@@ -28,6 +28,8 @@ Where you use Rally:
 - **Ask for a read** before a merge: `rally request-read <STORY> --commit <full commit> --note "..."`.
   An open request blocks the merge, and the read must cover the head being merged.
 - **Record a merge**: `rally merge <STORY> --commit <full commit>`.
+- **A story in parts**: `rally submit <STORY> --part k [--of n] ...`, then a verify or send-back
+  `--part k` for each; close it with a plain submit and verify. See docs/parts.md.
 - **Before moving a branch**: `rally gate <base>..<new>` refuses if a story the commits name is
   sent back or unverified.
 - **Say what you're waiting on**: `rally block --team <team> [--story <STORY>] [--on-story <STORY> |
@@ -43,6 +45,7 @@ Where you use Rally:
 - **Open the viewer**: `rally view` starts it if needed and opens it signed in; `--restart` and `--stop` too.
 - **Open and close a rally**: `rally open-rally --name "..." --project <PREFIX>... --team <team>...` starts a
   clean board for the viewer, and `rally close-rally --note "..."` keeps it as a past rally. `rally rallies` lists them.
+  Only the operator or the watchman opens or closes a rally; the service enforces it with `--rally-openers`.
 - **Record what's standing**: `rally hold`, `rally condition` and `rally grant` (with `--direct` or
   `--relayed-by`), ended with `rally end-standing <N> --note "why"`. Declared only: a recorded grant
   confers no authority, so approvals still come from the operator directly.

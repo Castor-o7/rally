@@ -360,6 +360,19 @@ pub fn progress(prefix: &str, roadmap: &Value, ledger: &Value) -> Value {
             states.insert(state.into(), json!(count + 1));
         }
     }
+    // A roadmap read with no checkboxes, such as DiscoSim's table, has no ticks to count, so its
+    // progress comes from the ledger's states instead (RAL-81): Verified of the stories the ledger
+    // tracks under this prefix. Ticks and Verified mean different things, so it's labelled as the
+    // ledger's, and only stands in where there are no boxes at all.
+    let no_boxes = roadmap_stories.is_some() && roadmap["boxes"]["total"].as_u64() == Some(0);
+    if no_boxes && !tracked.is_empty() {
+        let verified = states.get("verified").and_then(Value::as_u64).unwrap_or(0);
+        let total = tracked.len() as u64;
+        value["from_ledger"] = json!({
+            "kind": "verified", "as_of": ledger["as_of"],
+            "verified": verified, "tracked": total, "percent": verified * 100 / total,
+        });
+    }
     value["states"] = Value::Object(states);
     value["tracked"] = json!(tracked.len());
 
@@ -462,6 +475,15 @@ pub fn verified_for(prefix: &str, ledger: &Value) -> Value {
 /// The story states in which a team still holds a story: it claimed it and hasn't been verified.
 const HELD_STATES: [&str; 3] = ["claimed", "in_review", "sent_back"];
 
+/// Whether a story row counts as held on the board: its state, or a part still in review (RAL-79),
+/// which keeps a multi-part story visible while its parts are read.
+fn held(story: &Value) -> bool {
+    HELD_STATES.contains(&story["state"].as_str().unwrap_or(""))
+        || story["parts_in_review"]
+            .as_array()
+            .is_some_and(|parts| !parts.is_empty())
+}
+
 /// Which projects are in the current rally (RAL-69): those with a story held by a team that's on
 /// Muster's roster now. A team is on the roster when a session's nickname is the team's name, or a
 /// session matches the team's `sessions` in the project list, as `rally wake` matches them; a team's
@@ -489,8 +511,15 @@ pub fn current_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Va
                 .collect::<Vec<_>>())
             .unwrap_or_default()
     );
+    // An older service is said plainly; any other failure is a warning, since an open rally may
+    // be missing from the board (RAL-77).
     if ledger["rallies"]["available"] == json!(false) {
-        value["rallies_unavailable"] = ledger["rallies"]["reason"].clone();
+        let reason = ledger["rallies"]["reason"].clone();
+        if ledger["rallies"]["older_service"] == json!(true) {
+            value["rallies_unavailable"] = reason;
+        } else {
+            value["rallies_error"] = reason;
+        }
     }
     value
 }
@@ -549,7 +578,7 @@ pub fn board(rally: &Value, ledger: &Value) -> Value {
                 .iter()
                 .filter(|(id, story)| {
                     let prefix = id.split_once('-').map(|(p, _)| p).unwrap_or("");
-                    let held = HELD_STATES.contains(&story["state"].as_str().unwrap_or(""));
+                    let held = held(story);
                     prefixes.contains(&prefix)
                         && (held || story["last"].as_u64().is_some_and(|last| last > since))
                 })
@@ -616,7 +645,7 @@ fn derived_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Value 
         }
     }
     for (id, story) in stories {
-        let held = HELD_STATES.contains(&story["state"].as_str().unwrap_or(""));
+        let held = held(story);
         let Some(team) = story["team"].as_str().filter(|_| held) else {
             continue;
         };
@@ -1299,11 +1328,62 @@ fn page(content_type: &'static str, body: &'static str) -> Response {
     ([(header::CONTENT_TYPE, content_type)], body).into_response()
 }
 
-/// Which past moment to show: a record number (RAL-28).
+/// Which past moment to show: a record number (RAL-28), or a closed rally by the record that
+/// opened it, shown as its own board as it stood when it closed (RAL-77).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PastQuery {
-    as_of: u64,
+    as_of: Option<u64>,
+    rally: Option<u64>,
+}
+
+/// The closed rally opened at record `opened`, from the rallies the viewer last read.
+pub fn closed_rally(ledger: &Value, opened: u64) -> Result<Value, String> {
+    let rally = ledger["rallies"]["rallies"]
+        .as_array()
+        .and_then(|all| all.iter().find(|r| r["seq"].as_u64() == Some(opened)))
+        .ok_or_else(|| format!("no rally was opened at record {opened}"))?;
+    if !rally["closed"].is_object() {
+        return Err(format!(
+            "the rally opened at record {opened} is still open; it's the board now"
+        ));
+    }
+    Ok(rally.clone())
+}
+
+/// A closed rally's own board (RAL-77): what `board` shows for it, on the ledger as it stood at
+/// its close. The roster then isn't kept, so its teams are those it named and those holding its
+/// stories then.
+pub fn past_board(record: &Value, past: &Value) -> Value {
+    let mut rally = opened_rally(record, &json!({}));
+    let held: BTreeSet<String> = board(&rally, past)["stories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|id| past["stories"][id.as_str()?]["team"].as_str())
+        .map(|team| team.trim().to_lowercase())
+        .collect();
+    let mut teams: BTreeSet<String> = rally["active_teams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|team| team.as_str().map(str::to_owned))
+        .collect();
+    teams.extend(held);
+    rally["active_teams"] = json!(teams);
+    rally["board"] = board(&rally, past);
+    rally["opened"] = json!(false);
+    rally["closed"] = json!(true);
+    rally["closed_seq"] = record["closed"]["seq"].clone();
+    rally["closed_at_ms"] = record["closed"]["at_ms"].clone();
+    rally["note"] = record["closed"]["note"].clone();
+    rally["closed_by"] = record["closed"]["source"]["declared_name"].clone();
+    rally["rule"] = json!(
+        "This rally's board as it stood when it closed: its projects, the stories recorded for \
+         them while it was open or still held then, and the teams it named or that held them. \
+         The roster of the time isn't kept."
+    );
+    rally
 }
 
 /// Whether a past moment can be shown, given the newest record the viewer has read: a record
@@ -1327,16 +1407,44 @@ async fn past_view(
     query: Result<axum::extract::Query<PastQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
     let Ok(axum::extract::Query(query)) = query else {
-        return (StatusCode::BAD_REQUEST, "as_of must be a record number").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "as_of and rally are record numbers: as_of a moment, rally the record that opened one",
+        )
+            .into_response();
     };
-    let newest = app
-        .snapshot
-        .lock()
-        .expect("no panics")
-        .ledger
-        .as_ref()
-        .and_then(|ledger| ledger["as_of"].as_u64());
-    let seq = match past_moment(query.as_of, newest) {
+    if query.rally.is_some() == query.as_of.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "ask for one of as_of, a record number, or rally, the record that opened one",
+        )
+            .into_response();
+    }
+    let (newest, rally) = {
+        let snapshot = app.snapshot.lock().expect("no panics");
+        let ledger = snapshot.ledger.as_ref();
+        let newest = ledger.and_then(|ledger| ledger["as_of"].as_u64());
+        let rally = match (query.rally, ledger) {
+            (None, _) => None,
+            (Some(_), None) => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the rallies haven't been read yet",
+                )
+                    .into_response();
+            }
+            (Some(opened), Some(ledger)) => match closed_rally(ledger, opened) {
+                Ok(rally) => Some(rally),
+                Err(reason) => return (StatusCode::NOT_FOUND, reason).into_response(),
+            },
+        };
+        (newest, rally)
+    };
+    let as_of = match &rally {
+        Some(rally) => rally["closed"]["seq"].as_u64().unwrap_or(0),
+        None => query.as_of.unwrap_or(0),
+    };
+    let seq = match past_moment(as_of, newest) {
         Ok(seq) => seq,
         Err(reason) => return (StatusCode::BAD_REQUEST, reason).into_response(),
     };
@@ -1348,7 +1456,12 @@ async fn past_view(
     })
     .await;
     match read {
-        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Ok(mut value)) => {
+            if let Some(rally) = rally {
+                value["rally"] = past_board(&rally, &value);
+            }
+            Json(value).into_response()
+        }
         Ok(Err(None)) => (
             StatusCode::TOO_MANY_REQUESTS,
             "another past moment is being read; try again in a moment",
@@ -1448,11 +1561,13 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
     } else {
         next.run(request).await
     };
-    // Only the sign-in page has a form; every other answer gets the policy that allows none.
-    let policy = if response.extensions().get::<SignInPage>().is_some() {
-        SIGN_IN_CSP
+    // Only the sign-in page has a form; every other answer gets the policy that allows none. Its
+    // referrer policy is same-origin, not no-referrer: under no-referrer a browser sends
+    // `Origin: null` with the form's POST, which `origin_allowed` rightly refuses (RAL-83).
+    let (policy, referrer) = if response.extensions().get::<SignInPage>().is_some() {
+        (SIGN_IN_CSP, SIGN_IN_REFERRER)
     } else {
-        CSP
+        (CSP, "no-referrer")
     };
     let headers = response.headers_mut();
     headers.insert(
@@ -1465,12 +1580,14 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
     );
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
+    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static(referrer));
     response
 }
+
+/// The sign-in page's referrer policy, in its header and its `<meta>`. A form POST under
+/// `no-referrer` carries `Origin: null`, which is refused, so the button never worked in Chrome
+/// (RAL-83). `same-origin` sends the real origin to this page only, and nothing to other sites.
+const SIGN_IN_REFERRER: &str = "same-origin";
 
 /// The cookie that carries a session.
 const COOKIE: &str = "rally_view";
@@ -2013,6 +2130,43 @@ mod tests {
         assert!(damaged["reason"].as_str().unwrap().contains("torn"));
     }
 
+    /// RAL-81: a roadmap with no checkboxes takes its progress from the ledger's states; one with
+    /// boxes, or not yet read, or with nothing in the ledger, doesn't.
+    #[test]
+    fn a_roadmap_without_boxes_takes_its_progress_from_the_ledger() {
+        let ledger = json!({
+            "available": true, "as_of": 40,
+            "stories": {
+                "DSM-1": {"state": "verified"}, "DSM-2": {"state": "verified"},
+                "DSM-3": {"state": "in_review"}, "DSM-4": {"state": "claimed"},
+                "RAL-1": {"state": "verified"},
+            },
+            "blockers": [],
+        });
+        let table = "| ID | Story |\n|---|---|\n| DSM-1 | one |\n";
+        let (boxes, _) = parse_roadmap(table);
+        assert_eq!(boxes.total, 0);
+        let roadmap =
+            json!({"boxes": boxes, "stories": parse_stories(table, "DSM"), "read_at_ms": 1});
+        let value = progress("DSM", &roadmap, &ledger);
+        assert_eq!(
+            value["from_ledger"],
+            json!({"kind": "verified", "as_of": 40, "verified": 2, "tracked": 4, "percent": 50})
+        );
+        assert_eq!(value["states"]["in_review"], 1);
+
+        // Boxes, even none ticked, are the roadmap's own progress.
+        let boxed = "- [ ] **DSM-1: one.**\n";
+        let roadmap =
+            json!({"boxes": parse_roadmap(boxed).0, "stories": parse_stories(boxed, "DSM")});
+        assert!(progress("DSM", &roadmap, &ledger)["from_ledger"].is_null());
+        // A roadmap not read yet has no boxes to judge, and a prefix the ledger doesn't track has
+        // nothing to count.
+        assert!(progress("DSM", &json!({}), &ledger)["from_ledger"].is_null());
+        let unread = json!({"boxes": boxes, "stories": [], "read_at_ms": 1});
+        assert!(progress("CAT", &unread, &ledger)["from_ledger"].is_null());
+    }
+
     #[test]
     fn progress_counts_states_finds_unblocked_ready_stories_and_unverified_ticks() {
         let roadmap = json!({
@@ -2272,10 +2426,89 @@ mod tests {
         assert_eq!(rally["past"][0]["closed_seq"], 39);
         // Without the service's rallies (older than RAL-76), it falls back and says why.
         let older = json!({"available": true, "stories": {},
-                           "rallies": {"available": false, "reason": "404"}});
+                           "rallies": {"available": false, "older_service": true, "reason": "404"}});
         let rally = current_rally(&rally_projects(), &older, &roster);
         assert!(rally.get("opened").is_none());
         assert_eq!(rally["rallies_unavailable"], "404");
+        assert!(rally.get("rallies_error").is_none());
+        // Any other failure isn't taken for an older service (RAL-77).
+        for reason in [
+            "refused (401): that isn't a token",
+            "the service couldn't be reached",
+        ] {
+            let failed = json!({"available": true, "stories": {},
+                                "rallies": {"available": false, "older_service": false, "reason": reason}});
+            let rally = current_rally(&rally_projects(), &failed, &roster);
+            assert!(rally.get("rallies_unavailable").is_none(), "{rally}");
+            assert_eq!(rally["rallies_error"], reason);
+        }
+    }
+
+    /// RAL-77: a past rally opens as its own board, as the ledger stood when it closed.
+    #[test]
+    fn a_past_rally_is_its_own_board_as_it_stood_when_it_closed() {
+        let ledger = json!({"rallies": {"rallies": [
+            {"seq": 40, "name": "Friday", "projects": ["RAL"]},
+            {"seq": 10, "at_ms": 1, "name": "DiscoSim", "projects": ["DSM"], "teams": ["crafty-wolverine"],
+             "source": {"declared_name": "frank-crocodile"},
+             "closed": {"seq": 39, "at_ms": 8, "note": "stood down",
+                        "source": {"declared_name": "frank-crocodile"}}},
+        ]}});
+        assert!(
+            closed_rally(&ledger, 40)
+                .unwrap_err()
+                .contains("still open")
+        );
+        assert!(closed_rally(&ledger, 11).unwrap_err().contains("no rally"));
+        let record = closed_rally(&ledger, 10).unwrap();
+        // The ledger at record 39, the close.
+        let then = json!({"stories": {
+            "DSM-22": {"state": "claimed", "team": "crafty-wolverine", "last": 30},
+            "DSM-48": {"state": "verified", "team": "silken-birch", "last": 20},
+            "DSM-1": {"state": "verified", "team": "old-team", "last": 5},
+            "RAL-9": {"state": "claimed", "team": "rally", "last": 25},
+        }, "teams": {
+            "crafty-wolverine": {"status": "working"},
+            "silken-birch": {"status": "resting"},
+            "old-team": {"status": "resting"},
+            "rally": {"status": "working"},
+        }});
+        let rally = past_board(&record, &then);
+        assert_eq!(rally["name"], "DiscoSim");
+        assert_eq!(rally["closed"], true);
+        assert_eq!(rally["opened"], false);
+        assert_eq!(rally["closed_seq"], 39);
+        assert_eq!(rally["note"], "stood down");
+        assert_eq!(rally["closed_by"], "frank-crocodile");
+        // Its project's stories recorded while it was open or held then; not before, not others.
+        let mut stories: Vec<&str> = rally["board"]["stories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        stories.sort_unstable();
+        assert_eq!(stories, ["DSM-22", "DSM-48"]);
+        // The team it named, and the team holding one of its stories then.
+        let mut teams: Vec<&str> = rally["board"]["teams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        teams.sort_unstable();
+        assert_eq!(teams, ["crafty-wolverine", "silken-birch"]);
+    }
+
+    #[test]
+    fn a_story_with_a_part_in_review_stays_on_the_board() {
+        // Released while part 2 waits for its read: the part keeps it held (RAL-79).
+        let ledger = json!({"stories": {
+            "RAL-79": {"state": "ready", "team": "rally", "last": 10, "parts_in_review": [2]},
+            "RAL-5": {"state": "verified", "team": "rally", "last": 50, "parts": "2/2 verified"},
+        }, "teams": {"rally": {"seq": 3}}});
+        let rally = json!({"since_seq": 105, "prefixes": ["RAL"], "active_teams": ["rally"]});
+        assert_eq!(board(&rally, &ledger)["stories"], json!(["RAL-79"]));
     }
 
     #[test]
@@ -2466,6 +2699,15 @@ mod tests {
         for banned in ["<script", "style=", "http://", "https://"] {
             assert!(!SIGN_IN.contains(banned), "sign-in page: {banned}");
         }
+        // Its referrer policy lets the form's POST carry its real origin (RAL-73): under
+        // no-referrer Chrome sends `Origin: null`, which the guard refuses (RAL-83).
+        assert!(
+            SIGN_IN.contains(&format!(
+                r#"<meta name="referrer" content="{SIGN_IN_REFERRER}">"#
+            )),
+            "the sign-in page's referrer policy"
+        );
+        assert!(!SIGN_IN.contains("no-referrer"));
         // The code is the only thing put into it, once, as a form value.
         assert_eq!(SIGN_IN.matches("{{CODE}}").count(), 1);
         assert!(SIGN_IN.contains(r#"method="post" action="/""#));

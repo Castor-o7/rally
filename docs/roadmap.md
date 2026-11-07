@@ -226,6 +226,15 @@ The bones. Everything later reads from this.
   holder is a zombie, naming each process's pid, state, working directory and the session guessed from it; a held
   lock with a running holder gives none; documented in `docs/stalls.md`; with a test that stops a real
   `flock`-held shell and finds it.
+- [ ] **RAL-79: Multi-part stories.** From the DiscoSim rally's issues log, §2.1: DSM-37 was verified at part 1
+  and Rally had no way to record parts 2–4, so rule 11 (submit once, at the last part) hid long stories for hours.
+  Assigned by frank-crocodile. Done when: `rally submit <ID> --part k [--of n]` records each part as it lands
+  while the story stays claimed; a watchman or peer verifies or sends back each part, and a part is amended alone
+  under RAL-71's rule; the final close is today's submit and verify, refused while a part is open, and marks the
+  story Verified; `rally gate` passes a commit a verified part's read covers, itself or an ancestor, without
+  `--allow`, and never a merge after the read; `rally show --brief` gives parts verified / total; `rally waiting`, the digest and the viewer
+  board show a part in review; a story with no parts behaves exactly as today; the rollback hazard is in
+  `docs/service.md`; documented in `docs/parts.md`; with ledger and CLI tests.
 - [x] **RAL-21: Keep each team's track record as plain facts.** Done when: the watchman can read each
   team's stories verified, stories sent back and what was missing, and problems reported, with no points,
   scores, weights or ranking.
@@ -309,6 +318,16 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   isn't running, restarts it when it runs another build or other settings, or on `--restart`, including one started
   by hand; waits until it answers; and opens it signed in. Its settings are remembered, `--stop` stops it, and tests
   cover the settings, the restart rule and finding a viewer by its command line.
+- [ ] **RAL-77: Rallies, after RAL-76: who may open one, past rallies as their own board, dates, and errors.** From
+  the watchman's read of #149 (RAL-76), filed by plush-tortoise. Done when: with the service's `--rally-openers`
+  set, only the credentials it lists, or the credential bound to a signed watchman designation, can open or close
+  a rally, and others get a 403 naming the rule; unset, any paired credential may, and each answer and
+  `rally rallies` say to set it; a past rally opens as its own board (its projects, the stories recorded for them
+  while it was open or held then, and its teams) as the ledger stood at its close, not the whole ledger at that
+  record; the overview compares the watchman's writeup's day file with the rally's opening as local dates, not a
+  local one with a UTC one; a `/v1/rallies` read that fails for any reason but an older service (a refused token,
+  a network error) shows as a warning, not as "an older service"; `docs/service.md` says what `--rally-openers`
+  does and can't do; and tests cover each.
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.
@@ -320,6 +339,12 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   once; the page's own policy allows its form and nothing else, while every other page still allows no form; it
   shows nothing offered in the address that isn't a code; another site's form POST is refused; and
   `docs/web.md` says so.
+- [ ] **RAL-83: The Sign in button works in Chrome.** RAL-73's sign-in page set `<meta name="referrer"
+  content="no-referrer">`, under which Chrome sends `Origin: null` with the form's POST; the guard refuses
+  `Origin: null`, so the button always answered "other sites can't read this page". Found live by the watchman
+  on 2026-11-06 and confirmed in headless Chrome. Done when: the sign-in page's referrer policy is `same-origin`
+  in its header and its `<meta>`, every other page stays `no-referrer`, `Origin: null` is still refused, a test
+  asserts both, and `docs/web.md` says why.
 - [ ] **RAL-74: The viewer reads `~/.config/rally/projects.json` by default.** From the DiscoSim rally issues
   log of 2026-11-06, §3.3: the built-in `web/projects.json` lists RAL, MUS, CAT, CHOMP and PDX only, so a whole
   rally ran with no DiscoSim page until the viewer was restarted with `--projects`. Done when: without
@@ -458,6 +483,12 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
+- [ ] **RAL-81: Progress from the ledger when a roadmap has no checkboxes.** From the DiscoSim rally's issues log
+  (§3.5, 2026-11-06): DiscoSim's roadmap is a table, so the overview read 0 ticks all rally. Done when: a roadmap
+  that's read and has no checkboxes shows its progress from the ledger's states, Verified of the stories the ledger
+  tracks under its prefix, labelled as the ledger's, on its card and its project page; a roadmap with boxes, one not
+  yet read, or a prefix the ledger doesn't track, doesn't; it's kept out of the boxes across projects, which say
+  which projects were left out; with a test.
 - [ ] **RAL-71: Evidence can be corrected.** From the DiscoSim rally's issues log (§2.2, 2026-11-06): DSM-41's
   evidence named `Castor-o7/DiscoteSim`, a typo, and DSM-54's wasn't `owner/repo@<full commit>`, and the only fix
   for either was a send-back, since a resubmit in review is refused. Done when: `rally submit` refuses evidence

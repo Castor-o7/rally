@@ -63,8 +63,19 @@ fn start_with(projects_json: &str, fake_gh: Option<&str>) -> Viewer {
 
 /// Like `start_with`, with codes that last `code_seconds`.
 fn start_with_codes(projects_json: &str, fake_gh: Option<&str>, code_seconds: u64) -> Viewer {
+    start_after(projects_json, fake_gh, code_seconds, |_, _| {})
+}
+
+/// Like `start_with_codes`, after `setup` has written to the ledger.
+fn start_after(
+    projects_json: &str,
+    fake_gh: Option<&str>,
+    code_seconds: u64,
+    setup: impl FnOnce(&Database, &std::path::Path),
+) -> Viewer {
     let dir = tempfile::tempdir().unwrap();
     let db = scratch_pg::shared().database();
+    setup(&db, dir.path());
     let projects = dir.path().join("projects.json");
     std::fs::write(&projects, projects_json).unwrap();
     let bin = dir.path().join("bin");
@@ -552,6 +563,14 @@ fn opening_a_codes_address_spends_nothing_and_only_the_button_signs_in() {
         assert!(text.contains(code_of(&path)), "{text}");
         // Its policy lets only its own form post, back to this page.
         assert!(lower.contains("form-action 'self'"), "{text}");
+        // And its form's POST carries this page's origin: under no-referrer, Chrome sends
+        // `Origin: null`, which is refused, so the button never worked (RAL-83).
+        assert!(lower.contains("referrer-policy: same-origin\r\n"), "{text}");
+        assert!(
+            text.contains(r#"<meta name="referrer" content="same-origin">"#),
+            "{text}"
+        );
+        assert!(!lower.contains("no-referrer"), "{text}");
         assert!(lower.contains("default-src 'none'"), "{text}");
         assert!(lower.contains("frame-ancestors 'none'"), "{text}");
         assert!(!lower.contains("script-src"), "{text}");
@@ -592,7 +611,10 @@ fn another_site_cant_press_the_button() {
     let body = format!("code={}", code_of(&path));
     for from in [
         "Origin: http://evil.example\r\nSec-Fetch-Site: cross-site\r\n",
+        // What a browser sends under no-referrer, or from a sandboxed or opaque page: still
+        // refused, which is why the sign-in page mustn't be no-referrer (RAL-83).
         "Origin: null\r\n",
+        "Origin: null\r\nSec-Fetch-Site: same-origin\r\n",
         "Sec-Fetch-Site: same-site\r\n",
     ] {
         let extra = format!(
@@ -868,5 +890,97 @@ fn a_broken_default_projects_file_is_an_error_not_the_built_in_list() {
     assert!(
         stderr.contains("projects.json") && stderr.contains("isn't a projects list"),
         "{stderr}"
+    );
+}
+
+/// The body of a response, after its headers.
+fn body_of(text: &str) -> &str {
+    text.split_once("\r\n\r\n").map_or("", |(_, body)| body)
+}
+
+/// RAL-77: a past rally opens as its own board, as the ledger stood when it closed, rather than
+/// as the whole ledger at that record.
+#[test]
+fn a_past_rally_opens_as_its_own_board() {
+    let viewer = start_after("[]", None, 60, |db, dir| {
+        let write = |args: &[&str]| {
+            let out = on(db, dir)
+                .args(["--credential", "a1", "--as", "frank-crocodile"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        write(&["ready", "DSM-1"]);
+        write(&["claim", "--team", "crafty-wolverine", "DSM-1"]);
+        write(&["ready", "RAL-1"]);
+        write(&["claim", "--team", "rally", "RAL-1"]);
+        write(&[
+            "open-rally",
+            "--name",
+            "DiscoSim",
+            "--project",
+            "DSM",
+            "--team",
+            "crafty-wolverine",
+        ]);
+        write(&["ready", "DSM-2"]);
+        write(&["claim", "--team", "silken-birch", "DSM-2"]);
+        write(&["close-rally", "--note", "stood down"]);
+        // After the close: not on its board.
+        write(&["ready", "DSM-3"]);
+    });
+    let mut opened = None;
+    for _ in 0..200 {
+        let (_, text) = get(&viewer, "/api/status");
+        if let Ok(status) = serde_json::from_str::<Value>(body_of(&text))
+            && let Some(seq) = status["rally"]["past"][0]["opened_seq"].as_u64()
+        {
+            opened = Some(seq);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let opened = opened.expect("the rallies were never read");
+    let (status, text) = get(&viewer, &format!("/api/past?rally={opened}"));
+    assert_eq!(status, 200, "{text}");
+    let past: Value = serde_json::from_str(body_of(&text)).unwrap();
+    let rally = &past["rally"];
+    assert_eq!(rally["name"], "DiscoSim", "{past}");
+    assert_eq!(rally["closed"], true);
+    assert_eq!(rally["note"], "stood down");
+    assert_eq!(past["as_of"], rally["closed_seq"], "it stands at the close");
+    assert!(
+        past["stories"].get("DSM-3").is_none(),
+        "nothing after the close"
+    );
+    let mut stories: Vec<&str> = rally["board"]["stories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    stories.sort_unstable();
+    // DSM-1 was in flight when it opened; RAL-1 isn't its project's.
+    assert_eq!(stories, ["DSM-1", "DSM-2"], "{rally}");
+    // The open rally, or one that never was, has no past board.
+    assert_eq!(
+        get(&viewer, &format!("/api/past?rally={}", opened + 1)).0,
+        404
+    );
+    assert_eq!(get(&viewer, "/api/past?rally=1&as_of=1").0, 400);
+    assert_eq!(get(&viewer, "/api/past").0, 400);
+    // A record number still shows the whole ledger then, with no board.
+    let (status, text) = get(&viewer, &format!("/api/past?as_of={opened}"));
+    assert_eq!(status, 200, "{text}");
+    assert!(
+        serde_json::from_str::<Value>(body_of(&text))
+            .unwrap()
+            .get("rally")
+            .is_none()
     );
 }

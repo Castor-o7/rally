@@ -140,6 +140,11 @@ enum Command {
         /// requests' roadmaps in for `new-story` (RAL-68). Requests can't widen it.
         #[arg(long, env = "RALLY_GITHUB_OWNERS", default_value = rally::evidence::DEFAULT_OWNERS)]
         github_owners: String,
+        /// The credentials, comma-separated, that may open or close a rally (RAL-77), besides
+        /// one a designated watchman is bound to. Unset, any paired credential may, and each
+        /// answer says so. See docs/service.md.
+        #[arg(long, env = "RALLY_RALLY_OPENERS")]
+        rally_openers: Option<String>,
         /// The longest a submission's CI is waited for before its check is recorded as pending.
         #[arg(long, default_value = "30m", value_parser = parse_window)]
         evidence_ci_wait: u64,
@@ -403,6 +408,13 @@ enum Command {
         /// work outside GitHub. The service still checks what it can, and records what it couldn't.
         #[arg(long)]
         not_checkable: bool,
+        /// For a multi-part story (RAL-79): the part this is, numbered from 1.
+        #[arg(long)]
+        part: Option<u32>,
+        /// How many parts the story has, declared (RAL-79): with --part, or on the closing submit
+        /// of a story in parts, to say how many it ended with.
+        #[arg(long)]
+        of: Option<u32>,
     },
     /// Correct the evidence of a story you submitted that's still in review (RAL-71), without a
     /// send-back. Checked as `submit` is, and recorded in the story's history as an amendment.
@@ -423,6 +435,12 @@ enum Command {
         /// Skip this command's check of the evidence's form and repository.
         #[arg(long)]
         not_checkable: bool,
+        /// For a multi-part story (RAL-79): the part this is, numbered from 1.
+        #[arg(long)]
+        part: Option<u32>,
+        /// On the close of a story in parts, how many parts it ended with (RAL-79).
+        #[arg(long)]
+        of: Option<u32>,
     },
     /// Confirm someone else's submitted story, naming the commit you read.
     Verify {
@@ -435,6 +453,9 @@ enum Command {
         /// Your own team, so `waiting` can spread reads across teams (RAL-57).
         #[arg(long, env = "RALLY_TEAM")]
         team: Option<String>,
+        /// For a multi-part story (RAL-79): the part this is, numbered from 1.
+        #[arg(long)]
+        part: Option<u32>,
     },
     /// Return someone else's submitted story, saying what's missing.
     SendBack {
@@ -447,6 +468,9 @@ enum Command {
         /// Your own team, so `waiting` can spread reads across teams (RAL-57).
         #[arg(long, env = "RALLY_TEAM")]
         team: Option<String>,
+        /// For a multi-part story (RAL-79): the part this is, numbered from 1.
+        #[arg(long)]
+        part: Option<u32>,
     },
     /// Say what your team, or one of its stories, is waiting on. Prints the blocker's record number.
     Block {
@@ -1302,6 +1326,8 @@ fn submission(
     evidence: &str,
     untested: Option<String>,
     amend: bool,
+    part: Option<u32>,
+    of: Option<u32>,
 ) -> (Kind, Value) {
     let mut body = json!({"change": "submit", "story": story, "team": team, "evidence": evidence});
     if let Some(untested) = untested {
@@ -1309,6 +1335,12 @@ fn submission(
     }
     if amend {
         body["amend"] = json!(true);
+    }
+    if let Some(part) = part {
+        body["part"] = json!(part);
+    }
+    if let Some(of) = of {
+        body["of"] = json!(of);
     }
     (Kind::Declared, body)
 }
@@ -2155,6 +2187,31 @@ fn read_past(backend: &Backend, seq: u64) -> Result<Value, Box<dyn std::error::E
     Ok(value)
 }
 
+/// The rallies, for the viewer (RAL-76). A service older than RAL-76 has none to give, and says
+/// so with a 404 for the route; anything else that goes wrong (a refused token, a network error,
+/// a busy service) is an error, never taken for an older service (RAL-77).
+fn read_rallies(backend: &Backend) -> Value {
+    let unavailable = |older: bool, reason: String| json!({"available": false, "older_service": older, "reason": reason});
+    match backend {
+        Backend::File(_) => backend
+            .read_value("/v1/rallies", None, &Page::default(), views::rallies)
+            .unwrap_or_else(|error| unavailable(false, error.to_string())),
+        Backend::Service(pairing) => {
+            match client::request(pairing, "GET", "/v1/rallies", None, &[]) {
+                Err(error) => {
+                    unavailable(false, format!("the service couldn't be reached: {error}"))
+                }
+                Ok(reply) if reply.status == 404 => unavailable(
+                    true,
+                    "the service has no /v1/rallies (it's older than RAL-76)".into(),
+                ),
+                Ok(reply) => reply_value(&reply)
+                    .unwrap_or_else(|error| unavailable(false, error.to_string())),
+            }
+        }
+    }
+}
+
 /// Reads the ledger's stories, teams and check, from its database or through the service.
 fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
     let read = move || -> Result<Value, Box<dyn std::error::Error>> {
@@ -2195,10 +2252,7 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
             &Page::default(),
             |ledger, page| views::track_records(ledger, None, page),
         )?;
-        // The rallies (RAL-76). A service older than RAL-76 has none to give, which the page says.
-        let rallies = backend
-            .read_value("/v1/rallies", None, &Page::default(), views::rallies)
-            .unwrap_or_else(|error| json!({"available": false, "reason": error.to_string()}));
+        let rallies = read_rallies(&backend);
         Ok(json!({
             "rallies": rallies,
             "as_of": stories["as_of"],
@@ -2449,20 +2503,30 @@ fn run_service(
     bind: &str,
     state_dir: &Path,
     limit: RateLimit,
-    operator_key: Option<rally::designation::OperatorKey>,
-    operator_times: rally::store::OperatorTimes,
+    rules: server::Rules,
     evidence: rally::evidence::Settings,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let state = StateDir::open(state_dir)?;
+    // A listed credential that isn't paired can't open anything; say so, rather than refuse to
+    // start over a pairing revoked since.
+    for opener in rules.rally_openers.iter().flatten() {
+        if !matches!(state.paired(opener), Ok(Some(_))) {
+            eprintln!("rally: --rally-openers names {opener}, which isn't paired");
+        }
+    }
     let evidence_checked = evidence.token.is_some();
     let (_, _, fingerprint) = state.certificate()?;
     let listener = TcpListener::bind(bind)?;
     let listening = json!({"listening": listener.local_addr()?.to_string(), "fingerprint": fingerprint,
-            "operator_key": operator_key.as_ref().map(rally::designation::OperatorKey::fingerprint),
-            "operator_window_ms": operator_times.window_ms,
-            "operator_away_after": operator_times.away_after,
-            "operator_away_ms": operator_times.away_ms,
-            "evidence_checked_with_token": evidence_checked});
+    "operator_key": rules.operator_key.as_ref().map(rally::designation::OperatorKey::fingerprint),
+    "operator_window_ms": rules.operator_times.map(|times| times.window_ms),
+    "operator_away_after": rules.operator_times.map(|times| times.away_after),
+    "operator_away_ms": rules.operator_times.map(|times| times.away_ms),
+    "evidence_checked_with_token": evidence_checked,
+    "rally_openers": rules.rally_openers.as_ref().map_or_else(
+        || json!("any paired credential: set --rally-openers"),
+        |openers| json!(openers),
+    )});
     println!("{listening}");
     std::io::Write::flush(&mut std::io::stdout())?;
     tokio::runtime::Runtime::new()?.block_on(server::serve(
@@ -2470,11 +2534,31 @@ fn run_service(
         location,
         state,
         limit,
-        operator_key,
-        Some(operator_times),
+        rules,
         Some(evidence),
     ))?;
     Ok(json!({"stopped": true}).to_string())
+}
+
+/// `--rally-openers` (RAL-77): unset is `None`, anyone; otherwise at least one credential name.
+fn parse_rally_openers(text: Option<&str>) -> Result<Option<Vec<String>>, String> {
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    let openers: Vec<String> = text
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if openers.is_empty() {
+        return Err(
+            "--rally-openers names no credential; leave it unset to let any \
+                    paired credential open a rally"
+                .into(),
+        );
+    }
+    Ok(Some(openers))
 }
 
 /// `rally init`: no ledger, service or credential involved.
@@ -2539,6 +2623,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             operator_away,
             github_token_file,
             github_owners,
+            rally_openers,
             evidence_ci_wait,
             evidence_poll,
         } => {
@@ -2626,11 +2711,14 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 &bind,
                 &state_dir,
                 limit,
-                operator_key,
-                rally::store::OperatorTimes {
-                    window_ms: operator_window,
-                    away_after: usize::try_from(operator_away_after).unwrap_or(usize::MAX),
-                    away_ms: operator_away,
+                server::Rules {
+                    operator_key,
+                    operator_times: Some(rally::store::OperatorTimes {
+                        window_ms: operator_window,
+                        away_after: usize::try_from(operator_away_after).unwrap_or(usize::MAX),
+                        away_ms: operator_away,
+                    }),
+                    rally_openers: parse_rally_openers(rally_openers.as_deref())?,
                 },
                 evidence,
             );
@@ -2893,8 +2981,13 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 return Err("the ledger has more stories than the gate reads: refused".into());
             }
             let stories = read["stories"].as_object().cloned().unwrap_or_default();
-            let found =
-                rally::gate::judge(&range, &commits, &stories, &allow.into_iter().collect());
+            let found = rally::gate::judge_with(
+                &range,
+                &commits,
+                &stories,
+                &allow.into_iter().collect(),
+                &|a, b| rally::gate::is_ancestor(&repo, a, b),
+            );
             let text = serde_json::to_string_pretty(&found)?;
             if found["ok"] == json!(true) {
                 return Ok(text);
@@ -3122,11 +3215,13 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             untested,
             projects,
             not_checkable,
+            part,
+            of,
         } => {
             if !not_checkable {
                 check_evidence(&story, &evidence, projects.as_deref())?;
             }
-            submission(&story, &team, &evidence, untested, false)
+            submission(&story, &team, &evidence, untested, false, part, of)
         }
         Command::Amend {
             story,
@@ -3135,22 +3230,28 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             untested,
             projects,
             not_checkable,
+            part,
+            of,
         } => {
             if !not_checkable {
                 check_evidence(&story, &evidence, projects.as_deref())?;
             }
-            submission(&story, &team, &evidence, untested, true)
+            submission(&story, &team, &evidence, untested, true, part, of)
         }
         Command::Verify {
             story,
             note,
             commit,
             team,
+            part,
         } => {
             let mut body =
                 json!({"change": "verify", "story": story, "note": note, "commit": commit});
             if let Some(team) = team {
                 body["team"] = json!(team);
+            }
+            if let Some(part) = part {
+                body["part"] = json!(part);
             }
             (Kind::Verified, body)
         }
@@ -3159,6 +3260,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             note,
             commit,
             team,
+            part,
         } => {
             let mut body = json!({"change": "send_back", "story": story, "note": note});
             if let Some(commit) = commit {
@@ -3166,6 +3268,9 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             if let Some(team) = team {
                 body["team"] = json!(team);
+            }
+            if let Some(part) = part {
+                body["part"] = json!(part);
             }
             (Kind::Verified, body)
         }
