@@ -37,6 +37,24 @@ the refusal says which record amended it and which commit to read. A send-back n
 The record is evidence, not a verdict. `ci: passed` is GitHub's word on that one commit. A reader still reads
 the work, and RAL-31 still compares the commit that's merged with the one that was read.
 
+## When the merged commit isn't the one read (RAL-85)
+
+`rally show` flags `commit_differs` when a Verified story's latest recorded merge isn't a commit its verification
+covers: the verified commit, the verifier's own also-reads (RAL-67), or a read of the merged commit. When the head
+that landed took something after the read, such as a merge of main, a reader who isn't one of the story's authors
+reads that head and records it:
+
+```sh
+rally read-merged <STORY> --commit <latest merged commit> --note "what changed since the verify" [--team <team>]
+```
+
+It's a verified-kind record of its own, under the reader's own name and credential, shown as `merged_reads` beside
+the verification rather than added to it, so a watchman after the one who verified can write it, and so can the
+verifier. It must name the story's latest recorded merge, which the verification mustn't already cover, and it's
+dropped with the verification when a new verdict replaces it. A read_merged is labelled, not gated: like a
+verify, any verifier who isn't an author can write one, and `rally verifications` labels it watchman, peer or
+other by the designation in force when it was written.
+
 ## When
 
 The check runs in the background after a submit, on a fixed pool of two workers, so a slow GitHub never adds

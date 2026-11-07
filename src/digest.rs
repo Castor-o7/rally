@@ -168,6 +168,27 @@ pub fn step(
     }
 }
 
+/// Runs `turn` for each watchman in order, given what was kept for it, and keeps what each turn
+/// returns as soon as it ends (RAL-86). On the first failure it stops and returns the error, with
+/// every earlier watchman's progress already kept, so a pass that fails part-way neither loses a
+/// digest that was sent, which would send it twice, nor skips one.
+pub fn keep_each<E>(
+    watchmen: &[Watchman],
+    state: &mut std::collections::BTreeMap<String, Kept>,
+    mut turn: impl FnMut(&Watchman, Option<&Kept>) -> Result<Kept, E>,
+) -> Option<E> {
+    for watch in watchmen {
+        let key = watch.name.trim().to_lowercase();
+        match turn(watch, state.get(&key)) {
+            Ok(kept) => {
+                state.insert(key, kept);
+            }
+            Err(error) => return Some(error),
+        }
+    }
+    None
+}
+
 /// After a digest up to `to` has gone: the next one starts after it.
 pub fn sent(kept: &mut Kept, to: u64) {
     *kept = Kept {
@@ -604,6 +625,43 @@ mod tests {
             Decision::Nothing
         );
         assert_eq!(kept.head, 203);
+    }
+
+    /// RAL-86: when a pass fails at the second watchman, the first's send is already kept, so the
+    /// next pass doesn't send it again; the second's is left as it was.
+    #[test]
+    fn a_pass_failing_part_way_keeps_what_the_earlier_watchmen_were_sent() {
+        let two = [
+            Watchman {
+                name: "Alpha".into(),
+                credential: None,
+            },
+            Watchman {
+                name: "beta".into(),
+                credential: None,
+            },
+        ];
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("beta".to_owned(), start_at(5));
+        let failed = keep_each(&two, &mut state, |watch, before| {
+            if watch.name == "beta" {
+                return Err("refused (429): too many checks and past-state reads");
+            }
+            assert!(before.is_none());
+            let mut kept = start_at(5);
+            sent(&mut kept, 9);
+            Ok(kept)
+        });
+        assert_eq!(
+            failed,
+            Some("refused (429): too many checks and past-state reads")
+        );
+        assert_eq!(state["alpha"].head, 9, "alpha's digest is kept as sent");
+        assert_eq!(
+            state["beta"],
+            start_at(5),
+            "beta's is untouched, so nothing is skipped"
+        );
     }
 
     #[test]

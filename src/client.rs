@@ -111,6 +111,9 @@ impl ServerCertVerifier for PinnedCertificate {
 pub struct Reply {
     pub status: u16,
     pub body: String,
+    /// How long the service asked the client to wait, from a `Retry-After` of whole seconds
+    /// (RAL-86). An HTTP date isn't read.
+    pub retry_after_ms: Option<u64>,
 }
 
 /// A TLS connection to the service, pinned to its certificate, with the handshake done.
@@ -267,9 +270,15 @@ fn parse_reply(raw: &[u8]) -> Result<Reply, Box<dyn std::error::Error>> {
     if body.len() != length {
         return Err("the service's reply was cut off".into());
     }
+    let retry_after_ms = head
+        .lines()
+        .find_map(|line| line.strip_prefix("retry-after:"))
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| seconds.saturating_mul(1000));
     Ok(Reply {
         status,
         body: String::from_utf8_lossy(body).into_owned(),
+        retry_after_ms,
     })
 }
 
@@ -319,6 +328,60 @@ mod tests {
             fingerprint: crate::access::fingerprint_of_der(&der),
             token: "t".into(),
         }
+    }
+
+    /// RAL-86: a fake service that refuses with 429 and `Retry-After`, then one that answers. The
+    /// loop logs the refusal, waits as asked, and carries on to the answer.
+    #[test]
+    fn a_429_with_retry_after_is_waited_out_and_the_next_pass_succeeds() {
+        use crate::retry::{Refused, run};
+        let body = r#"{"error":"too many checks and past-state reads"}"#;
+        let refusal = format!(
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let busy = fake_service(
+            Box::leak(refusal.into_bytes().into_boxed_slice()),
+            Duration::ZERO,
+            1,
+        );
+        let fine = fake_service(
+            b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}",
+            Duration::ZERO,
+            1,
+        );
+        let services = std::cell::RefCell::new(vec![busy, fine]);
+        let lines = std::cell::RefCell::new(Vec::new());
+        let waits = std::cell::RefCell::new(Vec::new());
+        let error = run(
+            30_000,
+            || Ok(()),
+            || {
+                if services.borrow().is_empty() {
+                    return Err(Box::new(crate::retry::Fatal("done".into())));
+                }
+                let pairing = services.borrow_mut().remove(0);
+                let reply = request(&pairing, "GET", "/v1/export", None, &[])?;
+                if reply.status == 200 {
+                    Ok(reply.body)
+                } else {
+                    Err(Box::new(Refused::of(&reply)))
+                }
+            },
+            |line| lines.borrow_mut().push(line.to_owned()),
+            |ms| waits.borrow_mut().push(ms),
+        );
+        assert_eq!(error.to_string(), "done");
+        assert_eq!(
+            *waits.borrow(),
+            [30_000, 30_000],
+            "Retry-After 7s is below the backoff"
+        );
+        let failed: serde_json::Value = serde_json::from_str(&lines.borrow()[0]).unwrap();
+        assert_eq!(failed["pass"], "failed");
+        assert_eq!(failed["retry_after_ms"], 7_000);
+        assert!(failed["error"].as_str().unwrap().contains("refused (429)"));
+        assert_eq!(lines.borrow()[1], "{}");
     }
 
     #[test]
