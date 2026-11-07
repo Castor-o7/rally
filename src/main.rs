@@ -461,6 +461,29 @@ enum Command {
         #[arg(long)]
         relayed_by: Option<String>,
     },
+    /// Open a rally (RAL-76): its name, the projects it works on by story prefix, and the teams
+    /// in it. The viewer's board starts clean from here; the ledger keeps everything before it.
+    OpenRally {
+        #[arg(long)]
+        name: String,
+        /// A story prefix the rally works on, such as RAL. Repeat for each.
+        #[arg(long = "project", required = true)]
+        projects: Vec<String>,
+        /// A team in the rally: a team name or a Muster session nickname. Repeat for each.
+        #[arg(long = "team")]
+        teams: Vec<String>,
+    },
+    /// Close the open rally, saying why (RAL-76). It's kept whole as a past rally.
+    CloseRally {
+        #[arg(long)]
+        note: String,
+    },
+    /// List the rallies, newest first, and the one that's open (RAL-76).
+    Rallies {
+        /// Show them as they stood after this record.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
     /// End a hold, condition or grant, saying why (RAL-64).
     EndStanding {
         /// Its record number, as `hold`, `condition`, `grant` or `brief` gave it.
@@ -1988,7 +2011,12 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
             &Page::default(),
             |ledger, page| views::track_records(ledger, None, page),
         )?;
+        // The rallies (RAL-76). A service older than RAL-76 has none to give, which the page says.
+        let rallies = backend
+            .read_value("/v1/rallies", None, &Page::default(), views::rallies)
+            .unwrap_or_else(|error| json!({"available": false, "reason": error.to_string()}));
         Ok(json!({
+            "rallies": rallies,
             "as_of": stories["as_of"],
             "as_of_at_ms": stories["as_of_at_ms"],
             "stories": stories["stories"],
@@ -2559,6 +2587,10 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 views::track_records(ledger, team.as_deref(), page)
             });
         }
+        Command::Rallies { as_of } => {
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
+            return backend.read("/v1/rallies", as_of, &Page::default(), views::rallies);
+        }
         Command::Blockers { all, as_of, after } => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             let path = if all {
@@ -2634,6 +2666,22 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             (Kind::Declared, body)
         }
+        Command::OpenRally {
+            name,
+            projects,
+            teams,
+        } => {
+            let projects: Vec<String> = projects.iter().map(|p| p.trim().to_uppercase()).collect();
+            let mut body = json!({"change": "open_rally", "name": name, "projects": projects});
+            if !teams.is_empty() {
+                body["teams"] = json!(teams);
+            }
+            (Kind::Declared, body)
+        }
+        Command::CloseRally { note } => (
+            Kind::Declared,
+            json!({"change": "close_rally", "note": note}),
+        ),
         Command::EndStanding { standing, note } => (
             Kind::Declared,
             json!({"change": "end_standing", "standing": standing, "note": note}),

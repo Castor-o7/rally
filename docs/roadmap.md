@@ -274,6 +274,13 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   their pages and are listed, collapsed, as not in this rally; when the roster or the ledger can't be read,
   everything is shown with a warning rather than hidden on a guess; and a test covers the rule. Adding a
   project the ledger knows but `projects.json` doesn't (DiscoSim) is RAL-74's.
+- [ ] **RAL-76: Open and close rallies, with a clean board for each.** Requested by the operator on 2026-11-06:
+  "When the rally closes from the previous session, the board should be cleared ... we log the old rally, store it,
+  and CLEAN the board so we can get a fresh start." Done when: `rally open-rally` records a rally's name, projects
+  and teams, and `rally close-rally` ends it, declared, one open at a time; the viewer's overview shows only the open
+  rally's projects, teams and what was recorded since it opened; past rallies are listed, each viewable as the ledger
+  stood when it closed; nothing is removed from the ledger; and tests cover the records, the service route and the
+  board.
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.

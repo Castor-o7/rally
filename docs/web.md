@@ -47,7 +47,7 @@ every 30 seconds.
   when the last one was. Counts and dates only: no scores or ranking.
 - **Ledger check** repeats `rally check`. It can't show a rewrite of the whole host without a saved head.
 
-## The current rally (RAL-69)
+## With no rally open (RAL-69)
 
 The overview shows only the projects in the current rally: those where a team on Muster's roster now holds a story
 (claimed, in review or sent back). A team is on the roster when a session's nickname is the team's name, or a session
@@ -59,6 +59,30 @@ Nothing is removed. Other projects are listed, collapsed, under "Not in this ral
 its records; `rally show` and past moments still show everything. If the roster or the ledger can't be read, the
 viewer can't tell, so it shows every project with a warning instead of hiding any. `/api/status` carries the reading
 as `rally` (`known`, `prefixes`, `held`, `active_teams`) and each project's `in_rally`.
+
+## Rallies (RAL-76)
+
+A rally is opened and closed in the ledger:
+
+```bash
+rally open-rally --name "Friday" --project MUS --project RAL --project MAR --team plush-tortoise --team wise-leopard
+rally rallies                          # the open rally and every past one
+rally close-rally --note "stood down"  # it becomes a past rally, kept whole
+```
+
+While a rally is open, the overview is its board: only its projects, only its teams, and only what was recorded
+since it opened. That covers the ledger's figures and evidence, the declared team states, the roster's sessions,
+and the watchman's writeup if it's older than the rally. A listed session brings in the ledger team of its Muster
+project, so `--team plush-tortoise` brings `rally` too. Track records stay all-time, and say so.
+
+Nothing is removed. The ledger is append-only and hash-chained, and deleting records would fail its check, so a
+closed rally is kept whole. The page lists past rallies, and each opens as the ledger stood when it closed (RAL-28).
+Projects outside the rally keep their pages. A project in the rally without an entry in `projects.json` is named
+in a warning.
+
+Opening and closing are declared, like every name in Rally, and the viewer shows who opened the rally. A second
+rally can't open while one is open. With no rally open, the viewer falls back to RAL-69's reading below. A service
+older than RAL-76 has no `/v1/rallies`, and the page says so.
 
 ## Project pages (RAL-43)
 

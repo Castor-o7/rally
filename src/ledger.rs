@@ -283,6 +283,17 @@ pub enum Change {
     },
     /// Anyone ends a hold, condition or grant in force, saying why (RAL-64).
     EndStanding { standing: u64, note: String },
+    /// Someone opens a rally (RAL-76): its name, the projects it works on by story prefix, and the
+    /// teams in it. The board the viewer shows starts clean here; nothing before it is removed
+    /// from the ledger. Declared. Refused while another rally is open.
+    OpenRally {
+        name: String,
+        projects: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        teams: Vec<String>,
+    },
+    /// Someone closes the open rally, saying why (RAL-76). It becomes a past rally, kept whole.
+    CloseRally { note: String },
 }
 
 impl Change {
@@ -295,6 +306,8 @@ impl Change {
             Self::Standing { story, .. } => story.as_deref().unwrap_or_default(),
             Self::Unblock { .. }
             | Self::EndStanding { .. }
+            | Self::OpenRally { .. }
+            | Self::CloseRally { .. }
             | Self::Shelve { .. }
             | Self::OperatorAway { .. }
             | Self::Designate { .. }
@@ -571,6 +584,21 @@ pub struct Closure {
     pub answer: Option<Answer>,
 }
 
+/// A rally (RAL-76): what it works on and who's in it, as declared when it was opened, and how it
+/// was closed, if it has been. The board shows only the open rally's work since it opened.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Rally {
+    pub seq: u64,
+    pub kind: Kind,
+    pub source: Source,
+    pub at_ms: i64,
+    pub name: String,
+    pub projects: Vec<String>,
+    pub teams: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closed: Option<Closure>,
+}
+
 /// One declared state of a team.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TeamEntry {
@@ -665,6 +693,12 @@ pub enum LedgerError {
     InvalidBlockerTarget(u64),
     /// An `end_standing` names a record that isn't a hold, condition or grant in force (RAL-64).
     InvalidStandingTarget(u64),
+    /// A rally is opened while another is open, which names the open one's record (RAL-76).
+    RallyAlreadyOpen(u64),
+    /// A rally is closed while none is open (RAL-76).
+    NoRallyOpen,
+    /// A rally's project isn't a story prefix, or it names none (RAL-76).
+    InvalidRallyProjects,
     /// A shelve names a blocker that isn't an open question to the operator about a story, held
     /// by the shelving team, or that's already shelved (RAL-56).
     InvalidShelf(u64, &'static str),
@@ -758,6 +792,15 @@ impl fmt::Display for LedgerError {
             Self::InvalidStandingTarget(seq) => {
                 write!(f, "record {seq} isn't a hold, condition or grant in force")
             }
+            Self::RallyAlreadyOpen(seq) => write!(
+                f,
+                "the rally opened at record {seq} is still open: close it first"
+            ),
+            Self::NoRallyOpen => write!(f, "no rally is open"),
+            Self::InvalidRallyProjects => write!(
+                f,
+                "a rally names at least one project, each a story prefix such as RAL"
+            ),
             Self::InvalidShelf(seq, why) => write!(f, "can't shelve on record {seq}: {why}"),
             Self::ReservedTeam => write!(
                 f,
@@ -836,6 +879,8 @@ pub struct Ledger {
     unanswered_shelves: Vec<(u64, i64)>,
     /// Every time the operator was treated as away, oldest first (RAL-56).
     aways: Vec<Away>,
+    /// Every rally, oldest first; only the last can be open (RAL-76).
+    rallies: Vec<Rally>,
 }
 
 /// A team's annotation of an earlier record (RAL-19). Declared, like the team's name.
@@ -1150,6 +1195,16 @@ impl Ledger {
         &self.standings
     }
 
+    /// Every rally, oldest first (RAL-76).
+    pub fn rallies(&self) -> &[Rally] {
+        &self.rallies
+    }
+
+    /// The rally that's open, if one is (RAL-76).
+    pub fn open_rally(&self) -> Option<&Rally> {
+        self.rallies.last().filter(|rally| rally.closed.is_none())
+    }
+
     /// Says whether a new record may be appended next, without changing anything: whether
     /// [`apply`](Self::apply) would accept it, and whether it meets the rules added since records
     /// were first written. Those apply to new records only, so a ledger written before them still
@@ -1170,6 +1225,8 @@ impl Ledger {
             last_seq: self.last_seq,
             unanswered_shelves: self.unanswered_shelves.clone(),
             aways: self.aways.clone(),
+            // Opening or closing a rally depends only on the last one (RAL-76).
+            rallies: self.rallies.last().cloned().into_iter().collect(),
             ..Self::default()
         };
         // A team's state never depends on what came before, and a change that doesn't parse is
@@ -1512,6 +1569,47 @@ impl Ledger {
                 self.last_seq = seq;
                 return Ok(());
             }
+            Change::OpenRally {
+                name,
+                projects,
+                teams,
+            } => {
+                require_kind(record, Kind::Declared)?;
+                if let Some(open) = self.open_rally() {
+                    return Err(LedgerError::RallyAlreadyOpen(open.seq));
+                }
+                self.rallies.push(Rally {
+                    seq,
+                    kind: record.kind(),
+                    source: record.source().clone(),
+                    at_ms: record.at_ms(),
+                    name,
+                    projects,
+                    teams,
+                    closed: None,
+                });
+                self.last_seq = seq;
+                return Ok(());
+            }
+            Change::CloseRally { note } => {
+                require_kind(record, Kind::Declared)?;
+                let open = self
+                    .rallies
+                    .last_mut()
+                    .filter(|rally| rally.closed.is_none())
+                    .ok_or(LedgerError::NoRallyOpen)?;
+                open.closed = Some(Closure {
+                    seq,
+                    kind: record.kind(),
+                    source: record.source().clone(),
+                    at_ms: record.at_ms(),
+                    backfilled: backfill,
+                    note,
+                    answer: None,
+                });
+                self.last_seq = seq;
+                return Ok(());
+            }
             Change::EndStanding { standing, note } => {
                 require_kind(record, Kind::Declared)?;
                 let open = self
@@ -1779,6 +1877,8 @@ fn transition(
         | Change::Unblock { .. }
         | Change::Standing { .. }
         | Change::EndStanding { .. }
+        | Change::OpenRally { .. }
+        | Change::CloseRally { .. }
         | Change::Shelve { .. }
         | Change::OperatorAway { .. }
         | Change::Designate { .. }
@@ -2060,6 +2160,8 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
             | Change::Unblock { .. }
             | Change::Standing { story: None, .. }
             | Change::EndStanding { .. }
+            | Change::OpenRally { .. }
+            | Change::CloseRally { .. }
             | Change::Shelve { .. }
             | Change::OperatorAway { .. }
             | Change::Designate { .. }
@@ -2155,7 +2257,18 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::Block { team, note, .. }
         | Change::Annotate { team, note, .. }
         | Change::Standing { team, note, .. } => &[("team", team), ("note", note)],
-        Change::Unblock { note, .. } | Change::EndStanding { note, .. } => &[("note", note)],
+        Change::Unblock { note, .. }
+        | Change::EndStanding { note, .. }
+        | Change::CloseRally { note } => &[("note", note)],
+        Change::OpenRally { name, projects, .. } => {
+            let prefix = |p: &String| {
+                !p.is_empty() && p.len() <= 16 && p.chars().all(|c| c.is_ascii_uppercase())
+            };
+            if projects.is_empty() || !projects.iter().all(prefix) {
+                return Err(LedgerError::InvalidRallyProjects);
+            }
+            &[("name", name)]
+        }
         Change::Submit { team, evidence, .. } => &[("team", team), ("evidence", evidence)],
         Change::EvidenceCheck { .. } => &[],
         Change::Verify { note, .. }
@@ -2301,8 +2414,13 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
         }
         Change::Unblock { note, .. }
         | Change::EndStanding { note, .. }
+        | Change::CloseRally { note }
         | Change::RequestRead { note, .. }
         | Change::WithdrawRead { note, .. } => text.push(("note", note)),
+        Change::OpenRally { name, teams, .. } => {
+            text.push(("note", name));
+            text.extend(teams.iter().map(|team| ("team", team.as_str())));
+        }
     }
     text
 }
@@ -2653,6 +2771,69 @@ mod tests {
             ledger.check(3, &rec(Kind::Declared, end)),
             Err(LedgerError::InvalidStandingTarget(1))
         );
+    }
+
+    #[test]
+    fn a_rally_opens_once_closes_once_and_keeps_what_came_before() {
+        let rec = |kind: Kind, body: serde_json::Value| {
+            let source = crate::record::Source {
+                credential: "a1".into(),
+                declared_name: (kind != Kind::Observed).then(|| "r".into()),
+            };
+            Record::new(kind, source, 1_000, body).unwrap()
+        };
+        let mut ledger = Ledger::default();
+        ledger.apply(1, &ready()).unwrap();
+        let close = json!({"change": "close_rally", "note": "done"});
+        assert_eq!(
+            ledger.check(2, &rec(Kind::Declared, close.clone())),
+            Err(LedgerError::NoRallyOpen)
+        );
+        // A rally names projects by story prefix, and has a name.
+        for body in [
+            json!({"change": "open_rally", "name": "x", "projects": []}),
+            json!({"change": "open_rally", "name": "x", "projects": ["ral"]}),
+            json!({"change": "open_rally", "name": "x", "projects": ["RAL-1"]}),
+            json!({"change": "open_rally", "name": " ", "projects": ["RAL"]}),
+        ] {
+            assert!(
+                ledger.check(2, &rec(Kind::Declared, body.clone())).is_err(),
+                "{body}"
+            );
+        }
+        let open = json!({"change": "open_rally", "name": "Friday", "projects": ["MUS", "RAL"],
+                          "teams": ["rally", "muster"]});
+        assert!(
+            ledger.check(2, &rec(Kind::Observed, open.clone())).is_err(),
+            "declared only"
+        );
+        ledger.check(2, &rec(Kind::Declared, open.clone())).unwrap();
+        ledger.apply(2, &rec(Kind::Declared, open.clone())).unwrap();
+        let rally = ledger.open_rally().unwrap();
+        assert_eq!((rally.seq, rally.name.as_str()), (2, "Friday"));
+        assert_eq!(rally.projects, ["MUS", "RAL"]);
+        assert_eq!(rally.teams, ["rally", "muster"]);
+        assert_eq!(
+            ledger.check(3, &rec(Kind::Declared, open.clone())),
+            Err(LedgerError::RallyAlreadyOpen(2))
+        );
+        ledger
+            .check(3, &rec(Kind::Declared, close.clone()))
+            .unwrap();
+        ledger
+            .apply(3, &rec(Kind::Declared, close.clone()))
+            .unwrap();
+        assert!(ledger.open_rally().is_none());
+        assert_eq!(ledger.rallies()[0].closed.as_ref().unwrap().seq, 3);
+        assert!(
+            ledger.story(STORY).is_some(),
+            "nothing before a rally is removed"
+        );
+        assert_eq!(
+            ledger.check(4, &rec(Kind::Declared, close)),
+            Err(LedgerError::NoRallyOpen)
+        );
+        ledger.check(4, &rec(Kind::Declared, open)).unwrap();
     }
 
     #[test]
