@@ -18,19 +18,18 @@ const LIVE_STALE_MS = 3 * 60 * 1000;
 function rallyKnown(rally) {
   return Boolean(rally && rally.known === true);
 }
-// An opened rally (RAL-76) also starts the board clean: only what was recorded since it opened.
-function since(rally, seq) {
-  return !(rally && rally.opened && typeof rally.since_seq === "number") || (seq || 0) > rally.since_seq;
-}
-function storyInRally(rally, id, story) {
+// An opened rally's board (RAL-76) is worked out by the viewer's server, which keeps work in
+// flight when the rally opened.
+function storyInRally(rally, id) {
   if (!rallyKnown(rally)) return true;
+  if (rally.board) return (rally.board.stories || []).includes(id);
   const prefix = String(id).split("-")[0];
-  return (rally.prefixes || []).includes(prefix) && since(rally, story && story.last);
+  return (rally.prefixes || []).includes(prefix);
 }
-function teamInRally(rally, name, entry) {
+function teamInRally(rally, name) {
   if (!rallyKnown(rally)) return true;
-  return (rally.active_teams || []).includes(String(name).trim().toLowerCase())
-    && (entry === undefined || since(rally, entry.seq));
+  if (rally.board) return (rally.board.teams || []).includes(name);
+  return (rally.active_teams || []).includes(String(name).trim().toLowerCase());
 }
 function sessionInRally(rally, session) {
   if (!(rally && rally.opened && rally.teams_listed)) return true;
@@ -149,7 +148,7 @@ function renderLedger(ledger, backup, now, untrusted, rally) {
       + "so only the first 4,000 of each are shown. Use rally show --after for the rest."));
   }
   const all = Object.entries(ledger.stories || {});
-  const stories = all.filter(([id, story]) => storyInRally(rally, id, story));
+  const stories = all.filter(([id]) => storyInRally(rally, id));
   root.append(rallyLine(rally, all.length - stories.length));
   if (stories.length === 0) {
     root.append(el("p", "muted", !all.length ? "No stories have been recorded yet."
@@ -503,7 +502,7 @@ function renderTeams(status, now) {
   root.replaceChildren();
   const ledger = status.ledger;
   const teams = Object.entries((ledger.available && ledger.teams) || {})
-    .filter(([name, team]) => teamInRally(status.rally, name, team));
+    .filter(([name]) => teamInRally(status.rally, name));
   const group = el("div", "group");
   group.append(el("h3", "", "Declared to the ledger"));
   if (teams.length) {

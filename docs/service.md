@@ -28,6 +28,9 @@ Records that end the rollback window, because a binary older than the one named 
 
 Before rolling back to a binary older than the story that added one, check that none has been written.
 
+Any paired credential that can write can open or close a rally (RAL-76): the records are declared, and the viewer
+shows who wrote them. Restricting them to the operator or the watchman is a follow-up.
+
 ## Setting it up
 
 On the host, with a Postgres database for the ledger that only this account can reach:

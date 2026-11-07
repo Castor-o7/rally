@@ -76,7 +76,9 @@ rally close-rally --note "stood down"  # it becomes a past rally, kept whole
 ```
 
 While a rally is open, the overview is its board: only its projects, only its teams, and only what was recorded
-since it opened. That covers the ledger's figures and evidence, the declared team states, the roster's sessions,
+since it opened, plus each of its projects' stories still held (claimed, in review or sent back) whenever that
+was, so work in flight when the rally opens stays on it. The rally's teams are shown whatever the age of their last
+declared state. That covers the ledger's figures and evidence, the declared team states, the roster's sessions,
 and the watchman's writeup if it's older than the rally. A listed session brings in the ledger team of its Muster
 project, so `--team plush-tortoise` brings `rally` too. Track records stay all-time, and say so.
 
@@ -85,7 +87,8 @@ closed rally is kept whole. The page lists past rallies, and each opens as the l
 Projects outside the rally keep their pages. A project in the rally without an entry in `projects.json` is named
 in a warning.
 
-Opening and closing are declared, like every name in Rally, and the viewer shows who opened the rally. A second
+Opening and closing are declared, like every name in Rally, and the viewer shows who opened the rally. For now any
+paired credential can open or close a rally; restricting it to the operator or the watchman is a follow-up. A second
 rally can't open while one is open. With no rally open, the viewer falls back to RAL-69's reading below. A service
 older than RAL-76 has no `/v1/rallies`, and the page says so.
 

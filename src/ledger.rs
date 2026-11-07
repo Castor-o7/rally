@@ -709,8 +709,10 @@ pub enum LedgerError {
     RallyAlreadyOpen(u64),
     /// A rally is closed while none is open (RAL-76).
     NoRallyOpen,
-    /// A rally's project isn't a story prefix, or it names none (RAL-76).
+    /// A rally's project isn't a story prefix, is named twice, or it names none (RAL-76).
     InvalidRallyProjects,
+    /// A rally names a team twice (RAL-76).
+    InvalidRallyTeams,
     /// A shelve names a blocker that isn't an open question to the operator about a story, held
     /// by the shelving team, or that's already shelved (RAL-56).
     InvalidShelf(u64, &'static str),
@@ -848,8 +850,9 @@ impl fmt::Display for LedgerError {
             Self::NoRallyOpen => write!(f, "no rally is open"),
             Self::InvalidRallyProjects => write!(
                 f,
-                "a rally names at least one project, each a story prefix such as RAL"
+                "a rally names at least one project, each once and a story prefix such as RAL"
             ),
+            Self::InvalidRallyTeams => write!(f, "a rally names each team once"),
             Self::InvalidShelf(seq, why) => write!(f, "can't shelve on record {seq}: {why}"),
             Self::ReservedTeam => write!(
                 f,
@@ -2420,12 +2423,25 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::Unblock { note, .. }
         | Change::EndStanding { note, .. }
         | Change::CloseRally { note } => &[("note", note)],
-        Change::OpenRally { name, projects, .. } => {
+        Change::OpenRally {
+            name,
+            projects,
+            teams,
+        } => {
             let prefix = |p: &String| {
                 !p.is_empty() && p.len() <= 16 && p.chars().all(|c| c.is_ascii_uppercase())
             };
-            if projects.is_empty() || !projects.iter().all(prefix) {
+            let distinct = projects.iter().collect::<BTreeSet<_>>().len() == projects.len();
+            if projects.is_empty() || !projects.iter().all(prefix) || !distinct {
                 return Err(LedgerError::InvalidRallyProjects);
+            }
+            // Each team once, however it's written, and none blank.
+            let folded: BTreeSet<String> = teams.iter().map(|t| t.trim().to_lowercase()).collect();
+            if teams.iter().any(|t| t.trim().is_empty()) {
+                return Err(LedgerError::EmptyField("team"));
+            }
+            if folded.len() != teams.len() {
+                return Err(LedgerError::InvalidRallyTeams);
             }
             &[("name", name)]
         }
@@ -3009,6 +3025,9 @@ mod tests {
             json!({"change": "open_rally", "name": "x", "projects": ["ral"]}),
             json!({"change": "open_rally", "name": "x", "projects": ["RAL-1"]}),
             json!({"change": "open_rally", "name": " ", "projects": ["RAL"]}),
+            json!({"change": "open_rally", "name": "x", "projects": ["RAL", "RAL"]}),
+            json!({"change": "open_rally", "name": "x", "projects": ["RAL"], "teams": [""]}),
+            json!({"change": "open_rally", "name": "x", "projects": ["RAL"], "teams": ["a", " A"]}),
         ] {
             assert!(
                 ledger.check(2, &rec(Kind::Declared, body.clone())).is_err(),
