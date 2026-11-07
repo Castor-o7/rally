@@ -435,6 +435,11 @@ features would be additive for Levi, which would change its defaults, and which 
    a name, for example "a1 credential, declaring gleaming-tench".
 4. **How do other projects join?** Stories stay in each project's roadmap file, which its team
    owns, and Rally tracks them by ID. Rally records their state and evidence, not their text.
+   **Decided by the operator on 2026-11-06 (RAL-24), relayed by the watchman, mellow-weevil:** "lets get rid of
+   the hand kept board. the old rally stuff can be stored in some kind of .md and let's move on. We should use
+   rally as the source of truth." Rally's ledger is the source of truth for every project in `web/projects.json`
+   (Rally, Muster, Marshal, catapp, CarChomp, ParadoxDetector, and DiscoSim through its own projects file). The
+   hand-kept board retires, and its last contents are archived rather than imported (RAL-9).
 5. **Who can see what, and how?** Rally's own web app, viewable from paired machines only at first
    (RAL-4). It's read-only, and phone viewing waits for RAL-34. A Rally view inside Muster would
    break the one-way dependency.

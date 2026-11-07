@@ -242,8 +242,11 @@ The bones. Everything later reads from this.
   roadmap, the watchman can see how many stories are in each state, which ready stories have nothing
   blocking them, which blockers hold up the most stories, and which roadmap ticks have no Verified
   behind them, with no comparison or ranking of teams.
-- [ ] **RAL-24: Bring in other projects.** Open question 4 in the design. Done when: the decision is
+- [x] **RAL-24: Bring in other projects.** Merged in #154 (69f5768). Open question 4 in the design. Done when: the decision is
   recorded, and Muster, catapp, ParadoxDetector and any other team on the board can be tracked by it.
+  Decided by the operator on 2026-11-06: Rally is the source of truth for every project in `web/projects.json`,
+  and the hand-kept board retires (design, open question 4). The ledger already tracks MUS, MAR, CAT and DSM
+  stories.
 - [ ] **RAL-9: Replace the hand-kept table.** Depends on RAL-24. The current table is
   `~/Documents/Caster/muster-board.md` on the operator's Mac. Done when: its contents are imported, the
   watchman no longer needs it, and Muster's `docs/board.md` points to Rally.
@@ -313,6 +316,11 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   rally's projects, teams and what was recorded since it opened; past rallies are listed, each viewable as the ledger
   stood when it closed; nothing is removed from the ledger; and tests cover the records, the service route and the
   board.
+- [x] **RAL-82: One command starts, restarts and opens the viewer.** Merged in #154 (69f5768). Requested by the operator on 2026-11-06:
+  "I should be able to run one command and just have it open." Done when: `rally view` starts the viewer if it
+  isn't running, restarts it when it runs another build or other settings, or on `--restart`, including one started
+  by hand; waits until it answers; and opens it signed in. Its settings are remembered, `--stop` stops it, and tests
+  cover the settings, the restart rule and finding a viewer by its command line.
 - [x] **RAL-77: Rallies, after RAL-76: who may open one, past rallies as their own board, dates, and errors.** Merged in #152 (2e9f3c7). From
   the watchman's read of #149 (RAL-76), filed by plush-tortoise. Done when: with the service's `--rally-openers`
   set, only the credentials it lists, or the credential bound to a signed watchman designation, can open or close
