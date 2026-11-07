@@ -28,8 +28,40 @@ Records that end the rollback window, because a binary older than the one named 
 
 Before rolling back to a binary older than the story that added one, check that none has been written.
 
-Any paired credential that can write can open or close a rally (RAL-76): the records are declared, and the viewer
-shows who wrote them. Restricting them to the operator or the watchman is a follow-up.
+### Who may open or close a rally (RAL-77)
+
+Only the operator or the watchman opens or closes a rally. The service enforces that with `--rally-openers`
+(env `RALLY_RALLY_OPENERS`), a comma-separated list of credentials:
+
+```bash
+rally serve ... --rally-openers watchman
+```
+
+With it set, `open-rally` and `close-rally` are accepted only from a listed credential, or from the credential a
+watchman in force is bound to by a signed designation (RAL-53, under `--secure`); any other gets a 403 naming the
+rule. The declared name doesn't count, only the connection's credential. A list naming no credential is refused at
+start, and a listed credential that isn't paired is reported on standard error. Writes straight to the database
+with `--db`, on the host, aren't checked, as no `--db` write is.
+
+Unset, any paired credential that can write may open or close one, as under RAL-76, so a deploy doesn't stop
+anyone opening a rally. Each such answer, and `rally rallies` through the service (`who_may_open`), says
+"any paired credential may open or close a rally: set --rally-openers on the service".
+
+What it can't do: a credential is a machine's pairing, not a session's. Every team on a machine writes as that
+machine's credential (on Murph, `murph`), so listing it would let every team on it open a rally. To make the rule
+mean "the watchman only", the operator pairs a dedicated credential for the watchman (`rally add-machine
+watchman`) and lists only that one. Even then it guards against mistakes, not a hostile session: any session
+running as the same Unix account could read that credential's token. Proof that the operator opened a rally
+would need an operator-signed record, as `designate` is, which isn't built.
+
+A watchman's scope (RAL-63) doesn't narrow this: a watchman designated for one team or one machine's submissions,
+bound to a credential, can still open or close a rally for everyone, since a rally isn't any one team's.
+
+A backfill (RAL-30) applies the entry inside it, so a backfilled `open-rally` or `close-rally` is held to the same
+rule.
+
+Rolling back past RAL-77 drops the check, so any credential can open a rally again; nothing it records needs a
+newer binary to read.
 
 ## Setting it up
 
