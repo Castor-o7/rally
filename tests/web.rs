@@ -1175,7 +1175,9 @@ fn the_board_keeps_its_ages_current_and_shows_commits_short() {
         stateCell: (() => {
           const pill = document.querySelector("#ledger .state-pill");
           const cell = pill?.closest("td");
-          return pill && { text: cell.textContent.trim(), dot: Boolean(pill.querySelector(".dot.s-in_review")) };
+          const header = cell && cell.closest("table").querySelectorAll("th")[cell.cellIndex];
+          return pill && { text: cell.textContent.trim(), dot: Boolean(pill.querySelector(".dot.s-in_review")),
+            header: header?.querySelector(".label")?.textContent || null };
         })(),
       };
     })()"##;
@@ -1213,7 +1215,10 @@ fn the_board_keeps_its_ages_current_and_shows_commits_short() {
     assert_eq!(probe["firstCellWraps"], "nowrap", "{probe}");
     assert_eq!(probe["ageCellWraps"], "nowrap", "{probe}");
     // RAL-96: the state shows once, as its coloured dot and name, labelled declared while in review.
-    assert_eq!(probe["stateCell"]["text"], "declared in review", "{probe}");
+    // With only in-review stories, the State column is all declared, so it says so in its header
+    // and not on the cell (RAL-93).
+    assert_eq!(probe["stateCell"]["text"], "in review", "{probe}");
+    assert_eq!(probe["stateCell"]["header"], "declared", "{probe}");
     assert_eq!(probe["stateCell"]["dot"], true, "{probe}");
 }
 
