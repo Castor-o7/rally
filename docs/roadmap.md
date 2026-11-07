@@ -314,6 +314,12 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   local one with a UTC one; a `/v1/rallies` read that fails for any reason but an older service (a refused token,
   a network error) shows as a warning, not as "an older service"; `docs/service.md` says what `--rally-openers`
   does and can't do; and tests cover each.
+- [ ] **RAL-78: A watchman's rally starts from the roster.** Requested by the operator on 2026-11-06: the watchman
+  is told which projects the rally works on, determined by the teams' directories, and sessions in no project (`src`)
+  assist the project teams. Done when: `rally brief` shows the open rally with each roster session marked in it or
+  not, or with none open, suggests one: the projects whose `sessions` in the project list match a roster session,
+  every session as a team, those in no project as assisting, and the `rally open-rally` command to run; it opens
+  nothing itself; and tests cover both.
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.

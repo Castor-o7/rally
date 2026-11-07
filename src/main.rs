@@ -3221,6 +3221,21 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 })
                 .flatten();
             rally::brief::mark_sessions(&mut report, roster.as_ref());
+            // The rally the watchman starts from (RAL-78), with the projects list the viewer uses.
+            let config = config_path(cli.config.clone())?;
+            let rallies = Backend::choose(location.as_ref(), &config, false)
+                .and_then(|backend| {
+                    backend.read_value("/v1/rallies", None, &Page::default(), views::rallies)
+                })
+                .ok();
+            let text = match default_projects_file(&config)? {
+                Some(path) => std::fs::read_to_string(path)?,
+                None => DEFAULT_PROJECTS.to_owned(),
+            };
+            let projects: Vec<Project> = serde_json::from_str(&text)
+                .map_err(|error| format!("the projects list isn't a list of projects: {error}"))?;
+            report["rally"] =
+                rally::brief::rally_section(rallies.as_ref(), roster.as_ref(), &projects);
             return Ok(report.to_string());
         }
         Command::Waiting => {

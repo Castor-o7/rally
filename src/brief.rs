@@ -221,6 +221,111 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
     })
 }
 
+/// The rally a watchman starts from (RAL-78). With a rally open: the rally, and each session on
+/// Muster's roster marked in it or not. With none open: the rally the roster suggests. A session's
+/// project comes only from the project list's `sessions` (its Muster project or nickname), never
+/// guessed from a name. Sessions working in no listed project, such as `src`, are there to assist the
+/// project teams, so they're teams of the rally but bring no project. Opening it stays the
+/// watchman's or the operator's call: this only says what to run.
+pub fn rally_section(
+    rallies: Option<&Value>,
+    roster: Option<&Value>,
+    projects: &[crate::web::Project],
+) -> Value {
+    let fold = |name: &str| name.trim().to_lowercase();
+    let project_of = |session: &Value| -> Option<String> {
+        let names = [&session["declared"]["project"], &session["nickname"]]
+            .into_iter()
+            .filter_map(Value::as_str)
+            .map(fold)
+            .collect::<Vec<_>>();
+        projects
+            .iter()
+            .find(|p| p.sessions.iter().any(|s| names.contains(&fold(s))))
+            .map(|p| p.prefix.clone())
+    };
+    let sessions: Vec<Value> = roster
+        .and_then(|r| r["sessions"].as_array().or_else(|| r.as_array()))
+        .cloned()
+        .unwrap_or_default();
+    let open = rallies.map(|r| r["open"].clone()).filter(Value::is_object);
+    let rows: Vec<Value> = sessions
+        .iter()
+        .map(|session| {
+            let nickname = session["nickname"].as_str().unwrap_or_default();
+            let mut row = json!({
+                "session": nickname,
+                "directory": session["declared"]["project"],
+                "project": project_of(session),
+                "activity": session["declared"]["activity"],
+                "working_on": session["declared"]["current_task"],
+            });
+            if let Some(open) = &open {
+                let teams: Vec<String> = open["teams"]
+                    .as_array()
+                    .map(|t| t.iter().filter_map(Value::as_str).map(fold).collect())
+                    .unwrap_or_default();
+                row["in_rally"] = json!(teams.contains(&fold(nickname)));
+            }
+            row
+        })
+        .collect();
+    let mut value = json!({"kind": "declared", "sessions": rows.clone()});
+    if roster.is_none() {
+        value["sessions_note"] =
+            json!("Muster's roster couldn't be read, so no sessions are shown.");
+    }
+    if rallies.is_none() {
+        value["note"] =
+            json!("The service doesn't list rallies (older than RAL-76), or couldn't be read.");
+        return value;
+    }
+    if let Some(open) = open {
+        value["open"] = open;
+        value["how"] = json!(
+            "This rally is open. Coordinate its teams on its projects' roadmaps; \
+            `rally close-rally --note \"...\"` ends it, and it's kept as a past rally."
+        );
+        return value;
+    }
+    let mut prefixes: Vec<String> = Vec::new();
+    for row in &rows {
+        if let Some(prefix) = row["project"].as_str()
+            && !prefixes.iter().any(|p| p == prefix)
+        {
+            prefixes.push(prefix.to_owned());
+        }
+    }
+    let teams: Vec<&str> = sessions
+        .iter()
+        .filter_map(|s| s["nickname"].as_str())
+        .collect();
+    let assisting: Vec<&str> = rows
+        .iter()
+        .filter(|r| r["project"].is_null())
+        .filter_map(|r| r["session"].as_str())
+        .collect();
+    let mut command = String::from("rally open-rally --name \"<name>\"");
+    for prefix in &prefixes {
+        command.push_str(&format!(" --project {prefix}"));
+    }
+    for team in &teams {
+        command.push_str(&format!(" --team {team}"));
+    }
+    value["open"] = Value::Null;
+    value["suggested"] = json!({
+        "projects": prefixes,
+        "teams": teams,
+        "assisting": assisting,
+        "command": if prefixes.is_empty() { Value::Null } else { json!(command) },
+        "how": "No rally is open. From the roster: these projects have a team working in their \
+                directory, and every session on the roster is a team of the rally; those in no \
+                listed project assist the project teams. Check it with the operator, drop any \
+                session that isn't part of this rally, and run the command.",
+    });
+    value
+}
+
 /// Marks each open claim with whether a live Muster session declares the claimant's name, as
 /// Muster's roster shows it (observed). With no roster, says that it couldn't be checked. A name
 /// on the roster is a nickname, which proves nothing about who made the claim.
@@ -260,6 +365,54 @@ pub fn mark_sessions(brief: &mut Value, roster: Option<&Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rally_roster() -> Value {
+        json!({"sessions": [
+            {"nickname": "robust-warbler", "declared": {"project": "muster", "activity": "busy"}},
+            {"nickname": "plush-tortoise", "declared": {"project": "rally", "activity": "busy",
+                                                         "current_task": "RAL-78"}},
+            {"nickname": "wise-leopard", "declared": {"project": "marshal"}},
+            {"nickname": "cobalt-glen", "declared": {"project": "src"}},
+        ]})
+    }
+
+    fn rally_projects() -> Vec<crate::web::Project> {
+        serde_json::from_str(crate::web::DEFAULT_PROJECTS).unwrap()
+    }
+
+    #[test]
+    fn with_no_rally_open_the_roster_suggests_one_from_the_teams_directories() {
+        let rallies = json!({"open": null, "rallies": []});
+        let out = rally_section(Some(&rallies), Some(&rally_roster()), &rally_projects());
+        assert!(out["open"].is_null());
+        let suggested = &out["suggested"];
+        assert_eq!(suggested["projects"], json!(["MUS", "RAL", "MAR"]));
+        assert_eq!(
+            suggested["assisting"],
+            json!(["cobalt-glen"]),
+            "src is no project"
+        );
+        assert_eq!(
+            suggested["command"],
+            "rally open-rally --name \"<name>\" --project MUS --project RAL --project MAR \
+             --team robust-warbler --team plush-tortoise --team wise-leopard --team cobalt-glen"
+        );
+        assert_eq!(out["sessions"][1]["working_on"], "RAL-78");
+    }
+
+    #[test]
+    fn with_a_rally_open_each_session_is_marked_in_it_or_not() {
+        let rallies = json!({"open": {"seq": 628, "name": "0x5", "projects": ["MUS"],
+                                      "teams": ["Robust-Warbler"]}});
+        let out = rally_section(Some(&rallies), Some(&rally_roster()), &rally_projects());
+        assert_eq!(out["open"]["name"], "0x5");
+        assert!(out.get("suggested").is_none());
+        assert_eq!(out["sessions"][0]["in_rally"], true);
+        assert_eq!(out["sessions"][3]["in_rally"], false);
+        // Without the service's rallies or the roster, it says so.
+        let older = rally_section(None, None, &rally_projects());
+        assert!(older["note"].is_string() && older["sessions_note"].is_string());
+    }
     use crate::designation::testing::{Chain, keypair};
 
     fn submitted(chain: &mut Chain, story: &str) {
