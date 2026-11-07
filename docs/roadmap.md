@@ -226,6 +226,15 @@ The bones. Everything later reads from this.
   holder is a zombie, naming each process's pid, state, working directory and the session guessed from it; a held
   lock with a running holder gives none; documented in `docs/stalls.md`; with a test that stops a real
   `flock`-held shell and finds it.
+- [ ] **RAL-79: Multi-part stories.** From the DiscoSim rally's issues log, §2.1: DSM-37 was verified at part 1
+  and Rally had no way to record parts 2–4, so rule 11 (submit once, at the last part) hid long stories for hours.
+  Assigned by frank-crocodile. Done when: `rally submit <ID> --part k [--of n]` records each part as it lands
+  while the story stays claimed; a watchman or peer verifies or sends back each part, and a part is amended alone
+  under RAL-71's rule; the final close is today's submit and verify, refused while a part is open, and marks the
+  story Verified; `rally gate` passes a commit a verified part's read covers, itself or an ancestor, without
+  `--allow`, and never a merge after the read; `rally show --brief` gives parts verified / total; `rally waiting`, the digest and the viewer
+  board show a part in review; a story with no parts behaves exactly as today; the rollback hazard is in
+  `docs/service.md`; documented in `docs/parts.md`; with ledger and CLI tests.
 - [x] **RAL-21: Keep each team's track record as plain facts.** Done when: the watchman can read each
   team's stories verified, stories sent back and what was missing, and problems reported, with no points,
   scores, weights or ranking.
@@ -331,6 +340,18 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   once; the page's own policy allows its form and nothing else, while every other page still allows no form; it
   shows nothing offered in the address that isn't a code; another site's form POST is refused; and
   `docs/web.md` says so.
+- [ ] **RAL-83: The Sign in button works in Chrome.** RAL-73's sign-in page set `<meta name="referrer"
+  content="no-referrer">`, under which Chrome sends `Origin: null` with the form's POST; the guard refuses
+  `Origin: null`, so the button always answered "other sites can't read this page". Found live by the watchman
+  on 2026-11-06 and confirmed in headless Chrome. Done when: the sign-in page's referrer policy is `same-origin`
+  in its header and its `<meta>`, every other page stays `no-referrer`, `Origin: null` is still refused, a test
+  asserts both, and `docs/web.md` says why.
+- [ ] **RAL-84: CI signs in to the viewer through a real headless browser.** From the watchman's finding of
+  RAL-83 on 2026-11-06: every sign-in test was curl-driven and sent a real `Origin`, so none caught Chrome's own
+  `Origin: null` under a no-referrer page, and the button failed for the operator every time. Done when: a viewer
+  test opens a one-time code's address in headless Chrome, presses Sign in, and sees the board and `/api/status`
+  served; it fails on a viewer with RAL-83's bug; it runs when `RALLY_TEST_CHROME` names a browser and is skipped
+  otherwise; CI installs what it needs and can't skip it; and the README says how to run it.
 - [ ] **RAL-74: The viewer reads `~/.config/rally/projects.json` by default.** From the DiscoSim rally issues
   log of 2026-11-06, §3.3: the built-in `web/projects.json` lists RAL, MUS, CAT, CHOMP and PDX only, so a whole
   rally ran with no DiscoSim page until the viewer was restarted with `--projects`. Done when: without

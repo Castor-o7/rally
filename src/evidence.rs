@@ -562,33 +562,49 @@ pub struct Job {
     pub submitted_at_ms: i64,
 }
 
-/// Every submission still in review whose latest submit has no evidence check yet.
+/// Every submission still in review whose latest submit has no evidence check yet: a story's,
+/// and each part's in review (RAL-79).
 pub fn unchecked(ledger: &crate::ledger::Ledger) -> Vec<Job> {
     use crate::ledger::{Change, State};
-    ledger
-        .stories()
-        .iter()
-        .filter(|(_, story)| story.state == State::InReview)
-        .filter_map(|(id, story)| {
-            let submit = story
+    let mut jobs = Vec::new();
+    for (id, story) in ledger.stories() {
+        let mut seqs: Vec<u64> = story
+            .parts
+            .values()
+            .filter(|part| part.state == State::InReview)
+            .map(|part| part.submitted_at)
+            .collect();
+        if story.state == State::InReview
+            && let Some(submit) = story
                 .history
                 .iter()
                 .rev()
-                .find(|entry| matches!(entry.change, Change::Submit { .. }))?;
+                .find(|entry| matches!(entry.change, Change::Submit { part: None, .. }))
+        {
+            seqs.push(submit.seq);
+        }
+        for seq in seqs {
+            let Some(submit) = story.history.iter().find(|entry| entry.seq == seq) else {
+                continue;
+            };
             let Change::Submit { evidence, .. } = &submit.change else {
-                return None;
+                continue;
             };
             let checked = story.history.iter().any(|entry| {
-                matches!(&entry.change, Change::EvidenceCheck { submit: s, .. } if *s == submit.seq)
+                matches!(&entry.change, Change::EvidenceCheck { submit: s, .. } if *s == seq)
             });
-            (!checked).then(|| Job {
-                story: id.clone(),
-                submit: submit.seq,
-                evidence: evidence.clone(),
-                submitted_at_ms: submit.at_ms,
-            })
-        })
-        .collect()
+            if !checked {
+                jobs.push(Job {
+                    story: id.clone(),
+                    submit: seq,
+                    evidence: evidence.clone(),
+                    submitted_at_ms: submit.at_ms,
+                });
+            }
+        }
+    }
+    jobs.sort_by_key(|job| job.submit);
+    jobs
 }
 
 /// After one check: record it, or check again later.
