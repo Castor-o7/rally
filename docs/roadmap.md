@@ -615,6 +615,12 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
+- [ ] **RAL-92: The viewer's tables are compact: short SHAs, no wrapped IDs, a wider page.** From robust-warbler's
+  visual review of the viewer on 2026-11-06, items 6 to 8. Short SHAs with the whole in the title and unwrapped IDs
+  and ages came with RAL-90 (#167); the copy button item 6 suggested isn't built. What was left was item 8: at
+  `max-width: 960px` about 40% of a 1500-pixel screen sat empty while the tables wrapped heavily. Done when: the
+  page uses up to 1200 pixels, never runs wider than the window, and a headless Chrome test on a 1500-pixel window
+  shows it, failing at 960.
 - [ ] **RAL-93: The viewer shows each state once, with provenance in a legend.** From robust-warbler's visual
   review of the viewer on 2026-11-06, item 5: declared, observed and attested chips sat on almost every cell.
   RAL-96 (#167) already shows a state once, as a dot and its name. Done when: a table column whose cells all carry

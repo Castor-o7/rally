@@ -26,6 +26,8 @@ const browser = spawn(chrome[0], [
   "--no-first-run",
   "--no-default-browser-check",
   "--disable-gpu",
+  // A desktop window, as the operator views it (RAL-92), rather than headless's 800x600.
+  "--window-size=1500,1000",
   "--remote-debugging-port=0",
   "--user-data-dir=" + profile,
   "about:blank",

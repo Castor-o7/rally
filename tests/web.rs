@@ -1538,3 +1538,25 @@ fn provenance_goes_in_the_header_unless_a_column_mixes_kinds() {
         "{probe}"
     );
 }
+
+/// RAL-92, in the browser: on a 1500-pixel window the page uses up to 1200 of it, rather than 960
+/// with 40% empty, and it never runs wider than the window.
+#[test]
+fn the_page_uses_a_wide_window() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start_after("[]", None, 60, |_, _| {});
+    let probe = r##"(async () => {
+      return {
+        window: window.innerWidth,
+        body: document.body.getBoundingClientRect().width,
+        maxWidth: getComputedStyle(document.body).maxWidth,
+        overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    assert_eq!(probe["window"], 1500, "{seen}");
+    assert_eq!(probe["maxWidth"], "1200px", "{probe}");
+    assert_eq!(probe["body"], 1200, "{probe}");
+    assert_eq!(probe["overflow"], false, "{probe}");
+}
