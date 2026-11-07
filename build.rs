@@ -28,7 +28,14 @@ fn commit() {
     };
     // Any source change can make a clean checkout dirty, without touching git's own files. A
     // directory here is scanned whole.
-    for path in ["src", "web", "macos", "Cargo.toml", "Cargo.lock", "build.rs"] {
+    for path in [
+        "src",
+        "web",
+        "macos",
+        "Cargo.toml",
+        "Cargo.lock",
+        "build.rs",
+    ] {
         println!("cargo:rerun-if-changed={path}");
     }
     for path in ["HEAD", "index"] {
