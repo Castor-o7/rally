@@ -425,8 +425,9 @@ The operator then ruled, as relayed by the watchman (grand-photon) the same nigh
   declared name, since a record doesn't name the verifier's team; and the board process in Muster's
   `docs/board.md` says the same, through a draft PR the watchman reads as the board's keeper.
 - [ ] **RAL-52: Hand a new watchman the peer-verified work.** Depends on RAL-51. Built in #99 (`rally
-  handover`) and approved by the watchman, apart from the digest, so it stays open on RAL-8, which waits on
-  MUS-43's design meeting with the operator. Done when: when a watchman is
+  handover`) and approved by the watchman, apart from the digest, which RAL-8 then built (#136, #137): its
+  "Peer-verified, awaiting your re-read (RAL-52)" section lists each story still awaiting the re-read and is left
+  out once none is, which a test now shows. Closed out on 2026-11-06 (RAL-52's own record). Done when: when a watchman is
   designated, Rally gives it one list of every story verified by a peer since the last designation, each with the
   commit read, who verified it, and whether and at what commit it merged; each stays marked "awaiting the
   watchman's re-read" until the watchman records its own verification, send-back or correction, none of which
