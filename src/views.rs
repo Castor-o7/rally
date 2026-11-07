@@ -1001,6 +1001,23 @@ pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
     })
 }
 
+/// Every rally, newest first, and the one that's open, if any (RAL-76). Rallies are few, so it
+/// isn't paged. Names, projects and teams were declared by whoever opened it.
+pub fn rallies(ledger: &Ledger, _page: &Page) -> Result<Value, String> {
+    let all: Vec<Value> = ledger
+        .rallies()
+        .iter()
+        .rev()
+        .map(|rally| json!(rally))
+        .collect();
+    Ok(json!({
+        "untrusted_text": UNTRUSTED_TEXT,
+        "as_of": ledger.last_seq(),
+        "open": ledger.open_rally(),
+        "rallies": all,
+    }))
+}
+
 /// Every team's declared state, a page at a time, or one team with a page of its history. `Err`
 /// holds what wasn't found.
 pub fn teams(ledger: &Ledger, team: Option<&str>, page: &Page) -> Result<Value, String> {

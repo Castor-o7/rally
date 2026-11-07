@@ -18,14 +18,23 @@ const LIVE_STALE_MS = 3 * 60 * 1000;
 function rallyKnown(rally) {
   return Boolean(rally && rally.known === true);
 }
+// An opened rally's board (RAL-76) is worked out by the viewer's server, which keeps work in
+// flight when the rally opened.
 function storyInRally(rally, id) {
   if (!rallyKnown(rally)) return true;
+  if (rally.board) return (rally.board.stories || []).includes(id);
   const prefix = String(id).split("-")[0];
   return (rally.prefixes || []).includes(prefix);
 }
 function teamInRally(rally, name) {
   if (!rallyKnown(rally)) return true;
+  if (rally.board) return (rally.board.teams || []).includes(name);
   return (rally.active_teams || []).includes(String(name).trim().toLowerCase());
+}
+function sessionInRally(rally, session) {
+  if (!(rally && rally.opened && rally.teams_listed)) return true;
+  const teams = rally.active_teams || [];
+  return [session.nickname, session.project].some((n) => n && teams.includes(String(n).trim().toLowerCase()));
 }
 
 function el(tag, className, text) {
@@ -142,8 +151,9 @@ function renderLedger(ledger, backup, now, untrusted, rally) {
   const stories = all.filter(([id]) => storyInRally(rally, id));
   root.append(rallyLine(rally, all.length - stories.length));
   if (stories.length === 0) {
-    root.append(el("p", "muted", all.length ? "No story in the ledger is held in this rally yet."
-      : "No stories have been recorded yet."));
+    root.append(el("p", "muted", !all.length ? "No stories have been recorded yet."
+      : rally && rally.opened ? "Nothing recorded for this rally's projects since it opened."
+        : "No story in the ledger is held in this rally yet."));
     root.append(pastForm(check ? check.head.seq : ledger.as_of));
     return;
   }
@@ -171,22 +181,55 @@ function renderLedger(ledger, backup, now, untrusted, rally) {
   root.append(pastForm(check ? check.head.seq : ledger.as_of));
 }
 
-// What's in the current rally and why, or why it couldn't be told (RAL-69).
+// What's in the current rally and why, or why it couldn't be told (RAL-69), and the past
+// rallies, each kept whole (RAL-76).
 function rallyLine(rally, otherStories) {
   const box = el("div", "group");
+  if (rally && rally.rallies_unavailable) {
+    box.append(el("p", "muted", "The service doesn't list rallies yet (" + rally.rallies_unavailable
+      + "), so what's in play is read from Muster's roster."));
+  }
   if (!rallyKnown(rally)) {
     box.append(el("p", "warning", "⚠ Can't tell which projects are in this rally: "
       + ((rally && rally.reason) || "the viewer didn't say.")));
     return box;
   }
   const prefixes = rally.prefixes || [];
-  const line = el("p", "figure");
-  line.append(el("span", "", prefixes.length
-    ? "In this rally: " + prefixes.join(", ") : "No project is in this rally yet"));
-  line.append(el("span", "label", "observed"));
-  box.append(line);
-  box.append(el("p", "muted", rally.rule
-    + (otherStories > 0 ? " " + otherStories + " stories from other projects aren't shown here." : "")));
+  if (rally.opened) {
+    const head = el("h3", "", "Rally: " + rally.name);
+    head.append(" ", el("span", "label", "declared"));
+    box.append(head);
+    box.append(el("p", "figure", "Projects: " + prefixes.join(", ")
+      + ((rally.teams || []).length ? " · Teams: " + rally.teams.join(", ") : "")));
+    box.append(el("p", "muted", "Opened " + when(rally.opened_at_ms) + ", at record " + rally.since_seq
+      + (rally.opened_by ? ", by " + rally.opened_by : "") + ". " + rally.rule));
+  } else {
+    const line = el("p", "figure");
+    line.append(el("span", "", prefixes.length
+      ? "In this rally: " + prefixes.join(", ") : "No project is in this rally yet"));
+    line.append(el("span", "label", "observed"));
+    box.append(line);
+    box.append(el("p", "muted", rally.rule));
+  }
+  if (otherStories > 0) {
+    box.append(el("p", "muted", otherStories + " earlier or other stories are kept in the ledger, not shown here."));
+  }
+  const past = rally.past || [];
+  if (past.length) {
+    const details = el("details", "sections");
+    details.append(el("summary", "", "Past rallies (" + past.length + ")"));
+    const list = el("ul", "story-list");
+    for (const r of past) {
+      const item = el("li");
+      const link = el("a", "", r.name);
+      link.href = "#/past/" + encodeURIComponent(r.closed_seq);
+      item.append(link, " ", el("span", "muted", (r.projects || []).join(", ") + " · "
+        + when(r.opened_at_ms) + " to " + when(r.closed_at_ms)));
+      list.append(item);
+    }
+    details.append(list);
+    box.append(details);
+  }
   return box;
 }
 
@@ -370,11 +413,16 @@ function currentPast() {
   return match ? Number(match[1]) : null;
 }
 
-function renderRoadmaps(projects, now) {
+function renderRoadmaps(projects, now, rally) {
   const root = document.getElementById("roadmaps");
   root.replaceChildren();
   const shown = projects.filter((p) => p.in_rally !== false);
   if (!shown.length) root.append(el("p", "muted", "No listed project is in this rally."));
+  const unlisted = (rallyKnown(rally) && rally.prefixes || []).filter((prefix) => !projects.some((p) => p.prefix === prefix));
+  if (unlisted.length) {
+    root.append(el("p", "warning", "⚠ In this rally without a roadmap in the viewer's project list: "
+      + unlisted.join(", ") + "."));
+  }
   for (const project of shown) {
     const card = el("article", "roadmap");
     const head = el("div", "roadmap-head");
@@ -433,7 +481,8 @@ function renderRoadmaps(projects, now) {
   if (others.length) {
     const details = el("details", "sections");
     details.append(el("summary", "", "Not in this rally (" + others.length + ")"));
-    details.append(el("p", "muted", "No team on Muster's roster holds one of their stories. "
+    details.append(el("p", "muted", (rally && rally.opened ? "Not named by this rally. "
+      : "No team on Muster's roster holds one of their stories. ")
       + "Their records are kept, and each still has its page."));
     const list = el("ul", "story-list");
     for (const project of others) {
@@ -476,7 +525,7 @@ function renderTeams(status, now) {
   const live = el("div", "group");
   live.append(el("h3", "", "On Muster's roster"));
   if (roster.available) {
-    const rows = [...roster.sessions].sort((a, b) =>
+    const rows = roster.sessions.filter((session) => sessionInRally(status.rally, session)).sort((a, b) =>
       String(a.project).localeCompare(String(b.project)));
     live.append(table(["Team", "Session", "Machine", "Can be woken", "Working on", "Activity", "Last active"],
       rows.map((session) => [
@@ -491,6 +540,8 @@ function renderTeams(status, now) {
     if (now - roster.read_at_ms > LIVE_STALE_MS) {
       live.append(el("p", "warning figure", "⚠ This roster is out of date"));
     }
+    const hidden = roster.sessions.length - rows.length;
+    if (hidden > 0) live.append(el("p", "muted figure", hidden + " other sessions on the roster aren't in this rally."));
     live.append(el("p", "muted figure", "Read " + age(roster.read_at_ms, now)
       + ". “Can be woken” is a best guess, and none of this proves a session is alive."));
   } else {
@@ -503,7 +554,7 @@ function renderTeams(status, now) {
 // are verified records; problems reported are blockers the team declared.
 function trackGroup(ledger, now, rally) {
   const group = el("div", "group");
-  group.append(el("h3", "", "Track records"));
+  group.append(el("h3", "", rally && rally.opened ? "Track records, across all rallies" : "Track records"));
   const tracks = Object.entries((ledger.available && ledger.track_records) || {})
     .filter(([name]) => teamInRally(rally, name));
   if (!tracks.length) {
@@ -710,7 +761,15 @@ function renderMuster(status, now) {
   }
   const writeup = el("div", "group");
   writeup.append(el("h3", "", "The watchman's writeup"));
-  writeup.append(summaryBlock(status.muster_summary, status.untrusted_text, now));
+  const summary = status.muster_summary || {};
+  const day = /([0-9]{4}-[0-9]{2}-[0-9]{2})\.md$/.exec(summary.file || "");
+  const rally = status.rally;
+  if (rally && rally.opened && day && day[1] < new Date(rally.opened_at_ms).toISOString().slice(0, 10)) {
+    writeup.append(el("p", "muted", "No writeup for this rally yet. The latest, " + summary.file
+      + ", is from before it opened."));
+  } else {
+    writeup.append(summaryBlock(status.muster_summary, status.untrusted_text, now));
+  }
   root.append(writeup);
 }
 
@@ -735,7 +794,7 @@ function show(status, now) {
     renderProject(status, prefix, now);
   } else {
     renderLedger(status.ledger, status.backup, now, status.untrusted_text, status.rally);
-    renderRoadmaps(status.projects, now);
+    renderRoadmaps(status.projects, now, status.rally);
     renderTeams(status, now);
     renderMuster(status, now);
   }

@@ -18,6 +18,15 @@
     "sessions": ["muster"]
   },
   {
+    "name": "Marshal",
+    "prefix": "MAR",
+    "repo": "Castor-o7/marshal",
+    "path": "docs/roadmap.md",
+    "tick_meaning": "Not stated here yet",
+    "team": "marshal",
+    "sessions": ["marshal"]
+  },
+  {
     "name": "catapp",
     "prefix": "CAT",
     "repo": "Castor-o7/catapp",

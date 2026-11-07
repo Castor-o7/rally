@@ -468,6 +468,116 @@ const HELD_STATES: [&str; 3] = ["claimed", "in_review", "sent_back"];
 /// only decides what the overview shows. Without a roster or a ledger it can't tell, and says so,
 /// and then the viewer shows everything.
 pub fn current_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Value {
+    let mut value = match ledger["rallies"]["open"].as_object() {
+        Some(_) => opened_rally(&ledger["rallies"]["open"], roster),
+        None => derived_rally(projects, ledger, roster),
+    };
+    // Past rallies, newest first, each kept whole and shown as the ledger stood when it closed.
+    value["past"] = json!(
+        ledger["rallies"]["rallies"]
+            .as_array()
+            .map(|all| all
+                .iter()
+                .filter(|rally| rally["closed"].is_object())
+                .map(|rally| json!({
+                    "name": rally["name"], "projects": rally["projects"],
+                    "opened_seq": rally["seq"], "opened_at_ms": rally["at_ms"],
+                    "closed_seq": rally["closed"]["seq"], "closed_at_ms": rally["closed"]["at_ms"],
+                    "note": rally["closed"]["note"],
+                }))
+                .collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
+    if ledger["rallies"]["available"] == json!(false) {
+        value["rallies_unavailable"] = ledger["rallies"]["reason"].clone();
+    }
+    value
+}
+
+/// The board of a rally someone opened (RAL-76): its projects and teams as declared, and only what
+/// was recorded since it opened. A listed team also takes in the ledger team of each listed
+/// session's Muster project, so `rally` comes with the session working on it.
+fn opened_rally(open: &Value, roster: &Value) -> Value {
+    let fold = |name: &str| name.trim().to_lowercase();
+    let listed: Vec<String> = open["teams"]
+        .as_array()
+        .map(|teams| teams.iter().filter_map(Value::as_str).map(fold).collect())
+        .unwrap_or_default();
+    let mut teams: BTreeSet<String> = listed.iter().cloned().collect();
+    if let Some(sessions) = roster["sessions"].as_array() {
+        for session in sessions {
+            let nickname = session["nickname"].as_str().map(fold);
+            if nickname.is_some_and(|n| listed.contains(&n))
+                && let Some(project) = session["project"].as_str()
+            {
+                teams.insert(fold(project));
+            }
+        }
+    }
+    json!({
+        "known": true,
+        "kind": "declared",
+        "opened": true,
+        "name": open["name"],
+        "since_seq": open["seq"],
+        "opened_at_ms": open["at_ms"],
+        "opened_by": open["source"]["declared_name"],
+        "prefixes": open["projects"],
+        "teams": open["teams"],
+        "teams_listed": !listed.is_empty(),
+        "active_teams": teams,
+        "rule": "This rally's board: its projects and teams as declared when it opened, and only \
+                 what was recorded since. Earlier work is kept in the ledger and under past rallies.",
+    })
+}
+
+/// What an opened rally's board shows (RAL-76): in its projects, each story recorded since it
+/// opened, and each story still held (claimed, in review or sent back) whenever that was, so work
+/// in flight when the rally opens stays on it; and each declared team the rally takes in, whatever
+/// the age of its last record.
+pub fn board(rally: &Value, ledger: &Value) -> Value {
+    let since = rally["since_seq"].as_u64().unwrap_or(0);
+    let prefixes: Vec<&str> = rally["prefixes"]
+        .as_array()
+        .map(|list| list.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let stories: Vec<&String> = ledger["stories"]
+        .as_object()
+        .map(|stories| {
+            stories
+                .iter()
+                .filter(|(id, story)| {
+                    let prefix = id.split_once('-').map(|(p, _)| p).unwrap_or("");
+                    let held = HELD_STATES.contains(&story["state"].as_str().unwrap_or(""));
+                    prefixes.contains(&prefix)
+                        && (held || story["last"].as_u64().is_some_and(|last| last > since))
+                })
+                .map(|(id, _)| id)
+                .collect()
+        })
+        .unwrap_or_default();
+    let active = rally["active_teams"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let teams: Vec<&String> = ledger["teams"]
+        .as_object()
+        .map(|teams| {
+            teams
+                .keys()
+                .filter(|name| {
+                    active
+                        .iter()
+                        .any(|a| a.as_str() == Some(&name.trim().to_lowercase()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({"stories": stories, "teams": teams})
+}
+
+/// With no rally open, RAL-69's reading of what's in play from Muster's roster.
+fn derived_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Value {
     if roster["available"] != json!(true) {
         return json!({"known": false, "reason": "Muster's roster couldn't be read, so every project is shown."});
     }
@@ -1254,7 +1364,10 @@ async fn status(State(app): State<Arc<App>>) -> Response {
         .roster
         .clone()
         .unwrap_or_else(|| json!({"available": false, "reason": "still reading it."}));
-    let rally = current_rally(&app.projects, &ledger, &roster);
+    let mut rally = current_rally(&app.projects, &ledger, &roster);
+    if rally["opened"] == json!(true) {
+        rally["board"] = board(&rally, &ledger);
+    }
     let projects: Vec<Value> = app
         .projects
         .iter()
@@ -1989,6 +2102,64 @@ mod tests {
             &current_rally(&rally_projects(), &held, &on),
             "RAL"
         ));
+    }
+
+    #[test]
+    fn an_opened_rally_decides_the_board_and_closed_ones_are_kept_as_past() {
+        let ledger = json!({"available": true, "stories": {
+            "DSM-2": {"state": "claimed", "team": "crafty-wolverine", "last": 3},
+        }, "rallies": {
+            "open": {"seq": 40, "at_ms": 9, "name": "Friday", "projects": ["MUS", "RAL", "MAR"],
+                     "teams": ["plush-tortoise", "Wise-Leopard"], "source": {"declared_name": "w"}},
+            "rallies": [
+                {"seq": 40, "name": "Friday", "projects": ["MUS", "RAL", "MAR"]},
+                {"seq": 10, "name": "DiscoSim", "projects": ["DSM"],
+                 "closed": {"seq": 39, "at_ms": 8, "note": "stood down"}},
+            ],
+        }});
+        let roster = rally_roster(json!([
+            {"nickname": "plush-tortoise", "project": "rally"},
+            {"nickname": "crafty-wolverine", "project": "Discoteque"},
+        ]));
+        let rally = current_rally(&rally_projects(), &ledger, &roster);
+        assert_eq!(rally["opened"], true);
+        assert_eq!(rally["since_seq"], 40);
+        assert_eq!(rally["prefixes"], json!(["MUS", "RAL", "MAR"]));
+        // A listed session brings its project's team; a held story elsewhere brings nothing.
+        assert_eq!(
+            rally["active_teams"],
+            json!(["plush-tortoise", "rally", "wise-leopard"])
+        );
+        assert!(in_rally(&rally, "RAL") && in_rally(&rally, "MAR"));
+        assert!(!in_rally(&rally, "DSM") && !in_rally(&rally, "PDX"));
+        assert_eq!(rally["past"][0]["name"], "DiscoSim");
+        assert_eq!(rally["past"][0]["closed_seq"], 39);
+        // Without the service's rallies (older than RAL-76), it falls back and says why.
+        let older = json!({"available": true, "stories": {},
+                           "rallies": {"available": false, "reason": "404"}});
+        let rally = current_rally(&rally_projects(), &older, &roster);
+        assert!(rally.get("opened").is_none());
+        assert_eq!(rally["rallies_unavailable"], "404");
+    }
+
+    #[test]
+    fn work_in_flight_when_a_rally_opens_stays_on_its_board() {
+        let ledger = json!({"stories": {
+            "RAL-80": {"state": "claimed", "team": "rally", "last": 100},
+            "MUS-103": {"state": "in_review", "team": "muster", "last": 90},
+            "RAL-5": {"state": "verified", "team": "rally", "last": 50},
+            "RAL-81": {"state": "ready", "last": 106},
+            "DSM-22": {"state": "claimed", "team": "crafty-wolverine", "last": 100},
+        }, "teams": {"rally": {"seq": 3}, "muster": {"seq": 4}, "catapp": {"seq": 200}}});
+        let rally = json!({"since_seq": 105, "prefixes": ["RAL", "MUS", "MAR"],
+                           "active_teams": ["rally", "muster", "plush-tortoise"]});
+        let board = board(&rally, &ledger);
+        assert_eq!(board["stories"], json!(["MUS-103", "RAL-80", "RAL-81"]));
+        assert_eq!(
+            board["teams"],
+            json!(["muster", "rally"]),
+            "listed teams stay, whatever their age"
+        );
     }
 
     #[test]

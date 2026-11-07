@@ -10,7 +10,7 @@ use rally::client::{Reply, request};
 use rally::scratch_pg::{self, Cluster, Database};
 use serde_json::{Value, json};
 
-const ROUTES: [(&str, &str); 14] = [
+const ROUTES: [(&str, &str); 15] = [
     ("POST", "/v1/records"),
     ("GET", "/v1/stories"),
     ("GET", "/v1/stories/RAL-13"),
@@ -25,6 +25,7 @@ const ROUTES: [(&str, &str); 14] = [
     ("GET", "/v1/brief"),
     ("GET", "/v1/teams/rally/record"),
     ("GET", "/v1/corrections?since=1"),
+    ("GET", "/v1/rallies"),
 ];
 
 struct Service<'a> {
@@ -619,6 +620,51 @@ fn the_command_works_end_to_end_through_the_service() {
     let then = cli(&config, "x", &["show", "RAL-13", "--as-of", "1"]);
     let then: Value = serde_json::from_slice(&then.stdout).unwrap();
     assert_eq!(then["detail"]["state"], "ready");
+}
+
+#[test]
+fn a_rally_opens_and_closes_through_the_service_and_is_kept() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let run = |args: &[&str]| {
+        let output = cli(&config, "w", args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    run(&["ready", "RAL-13"]);
+    let opened = &[
+        "open-rally",
+        "--name",
+        "Friday",
+        "--project",
+        "mus",
+        "--project",
+        "RAL",
+        "--team",
+        "plush-tortoise",
+    ];
+    run(opened);
+    let again = cli(&config, "w", opened);
+    assert!(String::from_utf8_lossy(&again.stderr).contains("still open"));
+    let rallies = run(&["rallies"]);
+    assert_eq!(rallies["open"]["name"], "Friday");
+    assert_eq!(rallies["open"]["projects"], json!(["MUS", "RAL"]));
+    assert_eq!(rallies["open"]["source"]["declared_name"], "w");
+    run(&["close-rally", "--note", "stood down"]);
+    let rallies = run(&["rallies"]);
+    assert!(rallies["open"].is_null());
+    assert_eq!(rallies["rallies"][0]["closed"]["note"], "stood down");
+    assert_eq!(
+        run(&["show", "RAL-13"])["detail"]["state"],
+        "ready",
+        "nothing is removed"
+    );
 }
 
 #[test]

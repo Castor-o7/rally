@@ -289,6 +289,7 @@ fn router(
         .route("/v1/stories", get(list_stories))
         .route("/v1/stories/{id}", get(one_story))
         .route("/v1/teams", get(list_teams))
+        .route("/v1/rallies", get(list_rallies))
         .route("/v1/blockers", get(open_blockers))
         .route("/v1/track-records", get(list_track_records))
         .route("/v1/track-records/{name}", get(one_track_record))
@@ -1253,6 +1254,15 @@ async fn list_teams(
         views::teams(ledger, None, page)
     })
     .await
+}
+
+/// Every rally, and the open one (RAL-76).
+async fn list_rallies(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    view(service, identity, query, views::rallies).await
 }
 
 /// Everything recorded about one team, with annotations beside each record (RAL-19).
