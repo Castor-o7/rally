@@ -1019,6 +1019,8 @@ function drawing(id) {
   return live;
 }
 
+// A kept node keeps the listeners from its first draw (RAL-113): a handler in a patched section must
+// read what it needs when it runs, never close over data or nodes from the render that made it.
 function drawPatched(id, render) {
   const live = document.getElementById(id);
   const draft = live.cloneNode(false);
