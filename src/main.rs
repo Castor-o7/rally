@@ -1983,12 +1983,15 @@ fn digest_pass(
                         let to = recs.last().map_or(kept.head, |r| r.seq);
                         let waiting = get("/v1/waiting")?;
                         let stories = stories_for(&mut stories_read)?;
+                        let behind =
+                            rally::digest::behind_base(&stories, &web::open_prs, &web::behind_by);
                         let reads = rally::digest::Reads {
                             waiting: &waiting,
                             handover: &handover,
                             stories: &stories,
                             landed: &web::pr_head,
                             ci: &ci.lines,
+                            behind: &behind,
                         };
                         row["preview"] = json!(rally::digest::render(
                             kept.head, to, &recs, watch, &reads, now_ms
@@ -1998,12 +2001,15 @@ fn digest_pass(
                 Decision::Send { from, to } => {
                     let waiting = get("/v1/waiting")?;
                     let stories = stories_for(&mut stories_read)?;
+                    let behind =
+                        rally::digest::behind_base(&stories, &web::open_prs, &web::behind_by);
                     let reads = rally::digest::Reads {
                         waiting: &waiting,
                         handover: &handover,
                         stories: &stories,
                         landed: &web::pr_head,
                         ci: &ci.lines,
+                        behind: &behind,
                     };
                     let digest = rally::digest::render(from, to, &recs, watch, &reads, now_ms);
                     if report_only {

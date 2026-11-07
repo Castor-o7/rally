@@ -115,6 +115,23 @@ What's pending is kept in the state file beside each watchman's head (`ci`, `ci_
 taken in once. Something urgent that couldn't be sent is told again on the next pass. It needs `gh` signed in on
 the machine running the digest, as the viewer does.
 
+## When a verified story's pull request falls behind its base (RAL-105)
+
+A story verified at a head that no longer contains its base's tip can't merge until its author merges the base in,
+and the new head is read. So when a digest is rendered (sent, or previewed with `--report-only`), it lists each
+such story in a "Verified, but behind their base (RAL-105)" section:
+
+- Only Verified stories not yet merged are asked about, and only through a pull request that's open in the
+  repository the story's evidence names, with its head at a commit verified. `gh pr list --repo <owner/repo>
+  --state open` reads them, once per repository, and `gh api repos/<owner/repo>/compare/<base>...<head>` says how
+  many commits of the base the head lacks. Both are read-only.
+- One behind is listed with the count, the pull request and its address, and what to do: merge the base in and have
+  the new head read. One up to date isn't listed.
+- A read that fails is said, never left silent.
+- At most 10 repositories are read per digest; any more are counted, not checked.
+
+This doesn't make a digest go sooner: it's part of the next one. It needs `gh` signed in, as RAL-102 does.
+
 ## When a pass fails (RAL-86)
 
 With `--every`, a pass that fails doesn't end the loop when the failure can clear with time: the service refusing
