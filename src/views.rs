@@ -192,6 +192,10 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
         if !detail.requested_reads.is_empty() {
             shown["requested_reads"] = json!(detail.requested_reads);
         }
+        if !detail.parts.is_empty() {
+            shown["parts"] = json!(parts_text(detail));
+            shown["part_list"] = json!(detail.parts);
+        }
         // Teams' annotations of this story's records, beside the record they annotate (RAL-19).
         let annotated: Map<String, Value> = detail
             .history
@@ -238,6 +242,29 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
             if let Some(evidence) = latest_evidence(story) {
                 row["evidence"] = evidence;
             }
+            // A multi-part story's parts (RAL-79): how many are verified, which are waiting for a
+            // read, and the commits its verified parts' readers read, which `rally gate` passes.
+            if !story.parts.is_empty() {
+                row["parts"] = json!(parts_text(story));
+                let in_review: Vec<u32> = story
+                    .parts
+                    .iter()
+                    .filter(|(_, part)| part.state == State::InReview)
+                    .map(|(k, _)| *k)
+                    .collect();
+                if !in_review.is_empty() {
+                    row["parts_in_review"] = json!(in_review);
+                }
+                let read: Vec<&String> = story
+                    .parts
+                    .values()
+                    .filter(|part| part.state == State::Verified)
+                    .filter_map(|part| part.verified_commit.as_ref())
+                    .collect();
+                if !read.is_empty() {
+                    row["part_commits"] = json!(read);
+                }
+            }
             (id.clone(), row)
         })
         .collect();
@@ -249,6 +276,15 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
     Ok(value)
 }
 
+/// A multi-part story's parts, as `2/4 verified` (RAL-79).
+pub fn parts_text(story: &crate::ledger::Story) -> String {
+    format!(
+        "{}/{} verified",
+        story.parts_verified(),
+        story.parts_total()
+    )
+}
+
 /// The fields `rally show --field` can print (RAL-72), all from [`brief`].
 pub const BRIEF_FIELDS: &[&str] = &[
     "state",
@@ -256,6 +292,7 @@ pub const BRIEF_FIELDS: &[&str] = &[
     "submitted_by",
     "verified_commit",
     "merged_commit",
+    "parts",
 ];
 
 /// `rally show --brief` (RAL-72): [`stories`]' output with one top-level state per story and no
@@ -322,11 +359,12 @@ pub fn field(value: &Value, name: &str) -> Result<String, String> {
 /// A story's latest submission's evidence, declared and clipped, with Rally's own check of it,
 /// observed, when there is one (RAL-27).
 fn latest_evidence(story: &crate::ledger::Story) -> Option<Value> {
+    // The story's own submission, not a part's (RAL-79).
     let submit = story
         .history
         .iter()
         .rev()
-        .find(|entry| matches!(entry.change, Change::Submit { .. }))?;
+        .find(|entry| matches!(entry.change, Change::Submit { part: None, .. }))?;
     let Change::Submit { evidence, .. } = &submit.change else {
         return None;
     };
@@ -683,6 +721,12 @@ fn tracks(ledger: &Ledger) -> BTreeMap<String, Track> {
             if !entry.corrected_by.is_empty() {
                 fact["corrected_by"] = json!(entry.corrected_by);
             }
+            // A part's read is credited too, and says which part (RAL-79).
+            if let Change::Verify { part: Some(k), .. } | Change::SendBack { part: Some(k), .. } =
+                &entry.change
+            {
+                fact["part"] = json!(k);
+            }
             let track = tracks.entry(team_key(team)).or_default();
             match state {
                 State::Verified => track.verified.push(fact),
@@ -876,16 +920,29 @@ pub fn waiting(ledger: &Ledger) -> Value {
 /// is designated: a team other than the author's, the one whose last read, recorded or suggested
 /// here, is oldest (RAL-57).
 pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
-    let mut rows: Vec<(u64, Value)> = ledger
-        .stories()
-        .iter()
-        .filter(|(_, story)| story.state == State::InReview)
-        .filter_map(|(id, story)| {
-            let submit = story
+    // Each submission waiting: a story in review, and each part in review (RAL-79), which waits
+    // while its story stays claimed.
+    let mut waiting: Vec<(&String, &crate::ledger::Story, Option<u32>, u64)> = Vec::new();
+    for (id, story) in ledger.stories() {
+        if story.state == State::InReview
+            && let Some(submit) = story
                 .history
                 .iter()
                 .rev()
-                .find(|entry| matches!(entry.change, Change::Submit { .. }))?;
+                .find(|entry| matches!(entry.change, Change::Submit { part: None, .. }))
+        {
+            waiting.push((id, story, None, submit.seq));
+        }
+        for (k, part) in &story.parts {
+            if part.state == State::InReview {
+                waiting.push((id, story, Some(*k), part.submitted_at));
+            }
+        }
+    }
+    let mut rows: Vec<(u64, Value)> = waiting
+        .into_iter()
+        .filter_map(|(id, story, part, seq)| {
+            let submit = story.history.iter().find(|entry| entry.seq == seq)?;
             let Change::Submit {
                 evidence, untested, ..
             } = &submit.change
@@ -909,13 +966,21 @@ pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
                     |read| json!({"seq": read.seq, "commit": read.commit, "by": read.requested_by}),
                 )
                 .collect();
+            let submitted_by = match part {
+                Some(k) => story.parts[&k].submitted_by.clone(),
+                None => story.submitted_by.clone(),
+            };
             let mut row = json!({
                 "story": id, "team": story.team, "submitted_seq": submit.seq,
-                "submitted_at_ms": submit.at_ms, "submitted_by": story.submitted_by,
+                "submitted_at_ms": submit.at_ms, "submitted_by": submitted_by,
                 "submitted_with": submit.source.credential,
                 "evidence": evidence, "untested": untested,
                 "evidence_check": evidence_check, "requested_reads": reads,
             });
+            if let Some(k) = part {
+                row["part"] = json!(k);
+                row["part_of"] = json!(format!("part {k}/{}", story.parts_total()));
+            }
             // Whose read a merge waits for: the watchmen whose scope covers the story (RAL-63).
             if let Readers::Watchmen(set) = readers {
                 let awaits: Vec<&String> = set

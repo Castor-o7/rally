@@ -370,6 +370,13 @@ enum Command {
         /// work outside GitHub. The service still checks what it can, and records what it couldn't.
         #[arg(long)]
         not_checkable: bool,
+        /// For a multi-part story (RAL-79): the part this is, numbered from 1.
+        #[arg(long)]
+        part: Option<u32>,
+        /// How many parts the story has, declared (RAL-79): with --part, or on the closing submit
+        /// of a story in parts, to say how many it ended with.
+        #[arg(long)]
+        of: Option<u32>,
     },
     /// Correct the evidence of a story you submitted that's still in review (RAL-71), without a
     /// send-back. Checked as `submit` is, and recorded in the story's history as an amendment.
@@ -390,6 +397,12 @@ enum Command {
         /// Skip this command's check of the evidence's form and repository.
         #[arg(long)]
         not_checkable: bool,
+        /// For a multi-part story (RAL-79): the part this is, numbered from 1.
+        #[arg(long)]
+        part: Option<u32>,
+        /// On the close of a story in parts, how many parts it ended with (RAL-79).
+        #[arg(long)]
+        of: Option<u32>,
     },
     /// Confirm someone else's submitted story, naming the commit you read.
     Verify {
@@ -402,6 +415,9 @@ enum Command {
         /// Your own team, so `waiting` can spread reads across teams (RAL-57).
         #[arg(long, env = "RALLY_TEAM")]
         team: Option<String>,
+        /// For a multi-part story (RAL-79): the part this is, numbered from 1.
+        #[arg(long)]
+        part: Option<u32>,
     },
     /// Return someone else's submitted story, saying what's missing.
     SendBack {
@@ -414,6 +430,9 @@ enum Command {
         /// Your own team, so `waiting` can spread reads across teams (RAL-57).
         #[arg(long, env = "RALLY_TEAM")]
         team: Option<String>,
+        /// For a multi-part story (RAL-79): the part this is, numbered from 1.
+        #[arg(long)]
+        part: Option<u32>,
     },
     /// Say what your team, or one of its stories, is waiting on. Prints the blocker's record number.
     Block {
@@ -1269,6 +1288,8 @@ fn submission(
     evidence: &str,
     untested: Option<String>,
     amend: bool,
+    part: Option<u32>,
+    of: Option<u32>,
 ) -> (Kind, Value) {
     let mut body = json!({"change": "submit", "story": story, "team": team, "evidence": evidence});
     if let Some(untested) = untested {
@@ -1276,6 +1297,12 @@ fn submission(
     }
     if amend {
         body["amend"] = json!(true);
+    }
+    if let Some(part) = part {
+        body["part"] = json!(part);
+    }
+    if let Some(of) = of {
+        body["of"] = json!(of);
     }
     (Kind::Declared, body)
 }
@@ -2769,8 +2796,13 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 return Err("the ledger has more stories than the gate reads: refused".into());
             }
             let stories = read["stories"].as_object().cloned().unwrap_or_default();
-            let found =
-                rally::gate::judge(&range, &commits, &stories, &allow.into_iter().collect());
+            let found = rally::gate::judge_with(
+                &range,
+                &commits,
+                &stories,
+                &allow.into_iter().collect(),
+                &|a, b| rally::gate::is_ancestor(&repo, a, b),
+            );
             let text = serde_json::to_string_pretty(&found)?;
             if found["ok"] == json!(true) {
                 return Ok(text);
@@ -2998,11 +3030,13 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             untested,
             projects,
             not_checkable,
+            part,
+            of,
         } => {
             if !not_checkable {
                 check_evidence(&story, &evidence, projects.as_deref())?;
             }
-            submission(&story, &team, &evidence, untested, false)
+            submission(&story, &team, &evidence, untested, false, part, of)
         }
         Command::Amend {
             story,
@@ -3011,22 +3045,28 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             untested,
             projects,
             not_checkable,
+            part,
+            of,
         } => {
             if !not_checkable {
                 check_evidence(&story, &evidence, projects.as_deref())?;
             }
-            submission(&story, &team, &evidence, untested, true)
+            submission(&story, &team, &evidence, untested, true, part, of)
         }
         Command::Verify {
             story,
             note,
             commit,
             team,
+            part,
         } => {
             let mut body =
                 json!({"change": "verify", "story": story, "note": note, "commit": commit});
             if let Some(team) = team {
                 body["team"] = json!(team);
+            }
+            if let Some(part) = part {
+                body["part"] = json!(part);
             }
             (Kind::Verified, body)
         }
@@ -3035,6 +3075,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             note,
             commit,
             team,
+            part,
         } => {
             let mut body = json!({"change": "send_back", "story": story, "note": note});
             if let Some(commit) = commit {
@@ -3042,6 +3083,9 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             if let Some(team) = team {
                 body["team"] = json!(team);
+            }
+            if let Some(part) = part {
+                body["part"] = json!(part);
             }
             (Kind::Verified, body)
         }
