@@ -245,8 +245,11 @@ The bones. Everything later reads from this.
 - [ ] **RAL-24: Bring in other projects.** Open question 4 in the design. Done when: the decision is
   recorded, and Muster, catapp, ParadoxDetector and any other team on the board can be tracked by it.
 - [ ] **RAL-9: Replace the hand-kept table.** Depends on RAL-24. The current table is
-  `~/Documents/Caster/muster-board.md` on the operator's Mac. Done when: its contents are imported, the
-  watchman no longer needs it, and Muster's `docs/board.md` points to Rally.
+  `~/Documents/Caster/muster-board.md` on the operator's Mac. Done when (changed by the operator on
+  2026-11-06, relayed by the watchman: archive the old table, don't import it): the table is archived
+  unchanged in Muster's `docs/board-archive-2026-11-06.md`, with Version 0's table section from
+  `docs/board.md`; the watchman no longer needs it; and Muster's `docs/board.md` says Rally's ledger is the
+  board, read in the viewer or with `rally show` and `rally brief`. Muster's part is Castor-o7/muster#194.
 
 ## Phase 4: The web app
 
