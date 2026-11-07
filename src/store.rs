@@ -942,6 +942,20 @@ impl Store {
         self.with_chain(|ledger, hashes| crate::designation::report(ledger, hashes, key))
     }
 
+    /// The credentials the watchmen now in force are bound to by signed designations (RAL-53),
+    /// for who may open a rally (RAL-77). A watchman designated by name only has none.
+    pub fn watchman_credentials(
+        &self,
+        key: &crate::designation::OperatorKey,
+    ) -> Result<Vec<String>, StoreError> {
+        self.with_chain(|ledger, hashes| {
+            crate::designation::in_force(ledger, hashes, Some(key))
+                .into_iter()
+                .filter_map(|watch| watch.credential)
+                .collect()
+        })
+    }
+
     /// Every verification and send-back, labelled watchman, peer or other by the designations in
     /// force when it was written (RAL-51).
     pub fn verifications_report(

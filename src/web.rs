@@ -511,8 +511,15 @@ pub fn current_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Va
                 .collect::<Vec<_>>())
             .unwrap_or_default()
     );
+    // An older service is said plainly; any other failure is a warning, since an open rally may
+    // be missing from the board (RAL-77).
     if ledger["rallies"]["available"] == json!(false) {
-        value["rallies_unavailable"] = ledger["rallies"]["reason"].clone();
+        let reason = ledger["rallies"]["reason"].clone();
+        if ledger["rallies"]["older_service"] == json!(true) {
+            value["rallies_unavailable"] = reason;
+        } else {
+            value["rallies_error"] = reason;
+        }
     }
     value
 }
@@ -1321,11 +1328,62 @@ fn page(content_type: &'static str, body: &'static str) -> Response {
     ([(header::CONTENT_TYPE, content_type)], body).into_response()
 }
 
-/// Which past moment to show: a record number (RAL-28).
+/// Which past moment to show: a record number (RAL-28), or a closed rally by the record that
+/// opened it, shown as its own board as it stood when it closed (RAL-77).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PastQuery {
-    as_of: u64,
+    as_of: Option<u64>,
+    rally: Option<u64>,
+}
+
+/// The closed rally opened at record `opened`, from the rallies the viewer last read.
+pub fn closed_rally(ledger: &Value, opened: u64) -> Result<Value, String> {
+    let rally = ledger["rallies"]["rallies"]
+        .as_array()
+        .and_then(|all| all.iter().find(|r| r["seq"].as_u64() == Some(opened)))
+        .ok_or_else(|| format!("no rally was opened at record {opened}"))?;
+    if !rally["closed"].is_object() {
+        return Err(format!(
+            "the rally opened at record {opened} is still open; it's the board now"
+        ));
+    }
+    Ok(rally.clone())
+}
+
+/// A closed rally's own board (RAL-77): what `board` shows for it, on the ledger as it stood at
+/// its close. The roster then isn't kept, so its teams are those it named and those holding its
+/// stories then.
+pub fn past_board(record: &Value, past: &Value) -> Value {
+    let mut rally = opened_rally(record, &json!({}));
+    let held: BTreeSet<String> = board(&rally, past)["stories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|id| past["stories"][id.as_str()?]["team"].as_str())
+        .map(|team| team.trim().to_lowercase())
+        .collect();
+    let mut teams: BTreeSet<String> = rally["active_teams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|team| team.as_str().map(str::to_owned))
+        .collect();
+    teams.extend(held);
+    rally["active_teams"] = json!(teams);
+    rally["board"] = board(&rally, past);
+    rally["opened"] = json!(false);
+    rally["closed"] = json!(true);
+    rally["closed_seq"] = record["closed"]["seq"].clone();
+    rally["closed_at_ms"] = record["closed"]["at_ms"].clone();
+    rally["note"] = record["closed"]["note"].clone();
+    rally["closed_by"] = record["closed"]["source"]["declared_name"].clone();
+    rally["rule"] = json!(
+        "This rally's board as it stood when it closed: its projects, the stories recorded for \
+         them while it was open or still held then, and the teams it named or that held them. \
+         The roster of the time isn't kept."
+    );
+    rally
 }
 
 /// Whether a past moment can be shown, given the newest record the viewer has read: a record
@@ -1349,16 +1407,44 @@ async fn past_view(
     query: Result<axum::extract::Query<PastQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
     let Ok(axum::extract::Query(query)) = query else {
-        return (StatusCode::BAD_REQUEST, "as_of must be a record number").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "as_of and rally are record numbers: as_of a moment, rally the record that opened one",
+        )
+            .into_response();
     };
-    let newest = app
-        .snapshot
-        .lock()
-        .expect("no panics")
-        .ledger
-        .as_ref()
-        .and_then(|ledger| ledger["as_of"].as_u64());
-    let seq = match past_moment(query.as_of, newest) {
+    if query.rally.is_some() == query.as_of.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "ask for one of as_of, a record number, or rally, the record that opened one",
+        )
+            .into_response();
+    }
+    let (newest, rally) = {
+        let snapshot = app.snapshot.lock().expect("no panics");
+        let ledger = snapshot.ledger.as_ref();
+        let newest = ledger.and_then(|ledger| ledger["as_of"].as_u64());
+        let rally = match (query.rally, ledger) {
+            (None, _) => None,
+            (Some(_), None) => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the rallies haven't been read yet",
+                )
+                    .into_response();
+            }
+            (Some(opened), Some(ledger)) => match closed_rally(ledger, opened) {
+                Ok(rally) => Some(rally),
+                Err(reason) => return (StatusCode::NOT_FOUND, reason).into_response(),
+            },
+        };
+        (newest, rally)
+    };
+    let as_of = match &rally {
+        Some(rally) => rally["closed"]["seq"].as_u64().unwrap_or(0),
+        None => query.as_of.unwrap_or(0),
+    };
+    let seq = match past_moment(as_of, newest) {
         Ok(seq) => seq,
         Err(reason) => return (StatusCode::BAD_REQUEST, reason).into_response(),
     };
@@ -1370,7 +1456,12 @@ async fn past_view(
     })
     .await;
     match read {
-        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Ok(mut value)) => {
+            if let Some(rally) = rally {
+                value["rally"] = past_board(&rally, &value);
+            }
+            Json(value).into_response()
+        }
         Ok(Err(None)) => (
             StatusCode::TOO_MANY_REQUESTS,
             "another past moment is being read; try again in a moment",
@@ -2331,10 +2422,78 @@ mod tests {
         assert_eq!(rally["past"][0]["closed_seq"], 39);
         // Without the service's rallies (older than RAL-76), it falls back and says why.
         let older = json!({"available": true, "stories": {},
-                           "rallies": {"available": false, "reason": "404"}});
+                           "rallies": {"available": false, "older_service": true, "reason": "404"}});
         let rally = current_rally(&rally_projects(), &older, &roster);
         assert!(rally.get("opened").is_none());
         assert_eq!(rally["rallies_unavailable"], "404");
+        assert!(rally.get("rallies_error").is_none());
+        // Any other failure isn't taken for an older service (RAL-77).
+        for reason in [
+            "refused (401): that isn't a token",
+            "the service couldn't be reached",
+        ] {
+            let failed = json!({"available": true, "stories": {},
+                                "rallies": {"available": false, "older_service": false, "reason": reason}});
+            let rally = current_rally(&rally_projects(), &failed, &roster);
+            assert!(rally.get("rallies_unavailable").is_none(), "{rally}");
+            assert_eq!(rally["rallies_error"], reason);
+        }
+    }
+
+    /// RAL-77: a past rally opens as its own board, as the ledger stood when it closed.
+    #[test]
+    fn a_past_rally_is_its_own_board_as_it_stood_when_it_closed() {
+        let ledger = json!({"rallies": {"rallies": [
+            {"seq": 40, "name": "Friday", "projects": ["RAL"]},
+            {"seq": 10, "at_ms": 1, "name": "DiscoSim", "projects": ["DSM"], "teams": ["crafty-wolverine"],
+             "source": {"declared_name": "frank-crocodile"},
+             "closed": {"seq": 39, "at_ms": 8, "note": "stood down",
+                        "source": {"declared_name": "frank-crocodile"}}},
+        ]}});
+        assert!(
+            closed_rally(&ledger, 40)
+                .unwrap_err()
+                .contains("still open")
+        );
+        assert!(closed_rally(&ledger, 11).unwrap_err().contains("no rally"));
+        let record = closed_rally(&ledger, 10).unwrap();
+        // The ledger at record 39, the close.
+        let then = json!({"stories": {
+            "DSM-22": {"state": "claimed", "team": "crafty-wolverine", "last": 30},
+            "DSM-48": {"state": "verified", "team": "silken-birch", "last": 20},
+            "DSM-1": {"state": "verified", "team": "old-team", "last": 5},
+            "RAL-9": {"state": "claimed", "team": "rally", "last": 25},
+        }, "teams": {
+            "crafty-wolverine": {"status": "working"},
+            "silken-birch": {"status": "resting"},
+            "old-team": {"status": "resting"},
+            "rally": {"status": "working"},
+        }});
+        let rally = past_board(&record, &then);
+        assert_eq!(rally["name"], "DiscoSim");
+        assert_eq!(rally["closed"], true);
+        assert_eq!(rally["opened"], false);
+        assert_eq!(rally["closed_seq"], 39);
+        assert_eq!(rally["note"], "stood down");
+        assert_eq!(rally["closed_by"], "frank-crocodile");
+        // Its project's stories recorded while it was open or held then; not before, not others.
+        let mut stories: Vec<&str> = rally["board"]["stories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        stories.sort_unstable();
+        assert_eq!(stories, ["DSM-22", "DSM-48"]);
+        // The team it named, and the team holding one of its stories then.
+        let mut teams: Vec<&str> = rally["board"]["teams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        teams.sort_unstable();
+        assert_eq!(teams, ["crafty-wolverine", "silken-birch"]);
     }
 
     #[test]

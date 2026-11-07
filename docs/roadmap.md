@@ -313,6 +313,16 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   rally's projects, teams and what was recorded since it opened; past rallies are listed, each viewable as the ledger
   stood when it closed; nothing is removed from the ledger; and tests cover the records, the service route and the
   board.
+- [ ] **RAL-77: Rallies, after RAL-76: who may open one, past rallies as their own board, dates, and errors.** From
+  the watchman's read of #149 (RAL-76), filed by plush-tortoise. Done when: with the service's `--rally-openers`
+  set, only the credentials it lists, or the credential bound to a signed watchman designation, can open or close
+  a rally, and others get a 403 naming the rule; unset, any paired credential may, and each answer and
+  `rally rallies` say to set it; a past rally opens as its own board (its projects, the stories recorded for them
+  while it was open or held then, and its teams) as the ledger stood at its close, not the whole ledger at that
+  record; the overview compares the watchman's writeup's day file with the rally's opening as local dates, not a
+  local one with a UTC one; a `/v1/rallies` read that fails for any reason but an older service (a refused token,
+  a network error) shows as a warning, not as "an older service"; `docs/service.md` says what `--rally-openers`
+  does and can't do; and tests cover each.
 - [ ] **RAL-34: View from a phone.** Not ready to claim until the operator wants it; they may. Depends
   on RAL-29. Done when: an unpaired device the operator names can read the ledger with a credential of
   its own that can be revoked alone, after its own threat review.
