@@ -11,7 +11,7 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 const [, , url, ...chrome] = process.argv;
 if (!url || !chrome.length) {
@@ -31,14 +31,41 @@ const browser = spawn(chrome[0], [
   "about:blank",
 ], { stdio: ["ignore", "ignore", "pipe"] });
 
+// Under `flatpak run <app>`, killing the launcher leaves the sandboxed Chrome running, and the
+// sandbox keeps its own /tmp, so a profile made under it lives in the runtime directory instead.
+// Each run used to leave a whole headless Chrome and a 170 MB profile behind there, until that
+// small tmpfs filled and Chrome couldn't start (2026-11-06). So ask Chrome to close itself, over
+// its DevTools endpoint, and remove the profile from wherever the sandbox put it.
+const flatpakApp = chrome[0] === "flatpak" ? chrome.find((arg) => /^[\w-]+(\.[\w-]+){2,}$/.test(arg)) : null;
+const sandboxed = flatpakApp && process.env.XDG_RUNTIME_DIR
+  ? join(process.env.XDG_RUNTIME_DIR, ".flatpak", flatpakApp, "tmp", basename(profile))
+  : null;
+let browserEndpoint = null;
+
 let finished = false;
 function finish(code, value) {
   if (finished) return;
   finished = true;
   if (value !== undefined) console.log(JSON.stringify(value));
-  browser.kill("SIGTERM");
-  try { rmSync(profile, { recursive: true, force: true }); } catch { /* the browser may still hold it */ }
-  process.exit(code);
+  let cleaned = false;
+  const done = () => {
+    if (cleaned) return;
+    cleaned = true;
+    browser.kill("SIGTERM");
+    for (const dir of [profile, sandboxed]) {
+      if (dir) try { rmSync(dir, { recursive: true, force: true }); } catch { /* still held */ }
+    }
+    process.exit(code);
+  };
+  if (!browserEndpoint || browser.exitCode !== null) return done();
+  // The launcher exits once Chrome has closed, so remove the profile only then, or Chrome writes
+  // it back while shutting down; give up waiting after a few seconds.
+  browser.once("exit", done);
+  setTimeout(done, 5000);
+  try {
+    const closer = new WebSocket(browserEndpoint);
+    closer.onopen = () => closer.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+  } catch { /* the timeout still cleans up */ }
 }
 const timer = setTimeout(() => finish(1, { error: "timed out" }), 45000);
 browser.on("exit", (status) => finish(1, { error: "the browser exited with " + status }));
@@ -49,7 +76,10 @@ const endpoint = await new Promise((resolve) => {
   browser.stderr.on("data", (chunk) => {
     text += chunk;
     const match = /DevTools listening on (ws:\/\/[^\s]+)/.exec(text);
-    if (match) resolve(new URL(match[1]));
+    if (match) {
+      browserEndpoint = match[1];
+      resolve(new URL(match[1]));
+    }
   });
 });
 
