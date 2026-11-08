@@ -288,6 +288,10 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   in headless Chrome. The ledger is now shown before the roster is read, since a roster command can take its
   whole 20-second limit to fail before the next is tried; the viewer's tests read no roster unless they pass
   one.
+- [ ] **RAL-119: A cutover inventory and runbook from Muster's daemon to Marshal's.** From the watchman on
+  2026-11-08, toward the operator's goal of moving with no interruption. Docs only, read-only. Done when:
+  [cutover.md](cutover.md) lists every place Muster is wired in on Murph (and what to confirm on a1), what each
+  needs on Marshal, what Marshal can't do yet, and a step order that never leaves a session unreachable, with rollback.
 - [x] **RAL-117: The viewer tries the roster source that last worked first.** From the watchman on 2026-11-08,
   after RAL-116: on Murph, `marshal-shim roster` took about 10 seconds to fail on every refresh before the
   fallback. Done when: after a fallback the next refresh asks the source that worked first; an earlier source
