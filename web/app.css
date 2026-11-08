@@ -1,11 +1,16 @@
+/* RAL-115: the viewer's "modern sci-fi magitech" look (docs/ideals.md, P6 to P10).
+   Styling is free to be expressive, but meaning colours are not: every state colour and --ticked keep
+   the exact values RAL-91's browser test reads, in both schemes, and provenance labels stay legible.
+   Everything here is same-origin, as the page's CSP requires: no web fonts, no images from elsewhere. */
 :root {
   color-scheme: light;
-  --page: #f4f4f1;
-  --surface: #fcfcfb;
-  --text: #0b0b0b;
-  --text-2: #52514e;
-  --line: #deddd8;
-  --track: #e8e7e2;
+  --page: #eef1f8;
+  --surface: rgba(255, 255, 255, 0.72);
+  --surface-solid: #fbfcff;
+  --text: #0c0f1d;
+  --text-2: #4a5068;
+  --line: #d6dbea;
+  --track: #e2e6f1;
   /* A ticked box in a roadmap (RAL-91). A tick isn't a ledger state, so it has a neutral colour of its
      own: never Verified's green, nor Ready's blue. */
   --ticked: #5f5e59;
@@ -16,16 +21,28 @@
   --s-sent_back: #e87ba4;
   --good: #008300;
   --bad: #c92f2e;
+  /* The arcane accents: decoration only, never a meaning. */
+  --arc-1: #6a4cff;
+  --arc-2: #00a6c8;
+  --arc-glow: rgba(106, 76, 255, 0.16);
+  --edge: rgba(106, 76, 255, 0.28);
+  --grid: rgba(60, 70, 120, 0.06);
+  --aurora-1: rgba(122, 92, 255, 0.18);
+  --aurora-2: rgba(0, 190, 220, 0.14);
+  --shadow: 0 1px 2px rgba(20, 24, 60, 0.06), 0 8px 28px rgba(40, 40, 120, 0.08);
+  --sans: "Inter", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, "Cascadia Mono", monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --page: #111110;
-    --surface: #1a1a19;
-    --text: #f0efec;
-    --text-2: #c3c2b7;
-    --line: #33332f;
-    --track: #2b2b28;
+    --page: #06070f;
+    --surface: rgba(17, 19, 38, 0.66);
+    --surface-solid: #10122a;
+    --text: #e9ebff;
+    --text-2: #a3a8c9;
+    --line: #262a4d;
+    --track: #1a1d38;
     --ticked: #a6a59c;
     --s-ready: #3987e5;
     --s-claimed: #d95926;
@@ -34,58 +51,165 @@
     --s-sent_back: #d55181;
     --good: #4cb04c;
     --bad: #e66767;
+    --arc-1: #9d86ff;
+    --arc-2: #3fe0ff;
+    --arc-glow: rgba(140, 110, 255, 0.28);
+    --edge: rgba(150, 125, 255, 0.34);
+    --grid: rgba(140, 150, 255, 0.045);
+    --aurora-1: rgba(110, 70, 255, 0.24);
+    --aurora-2: rgba(0, 200, 255, 0.13);
+    --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 10px 40px rgba(0, 0, 0, 0.45);
   }
 }
 * { box-sizing: border-box; }
+html { background: var(--page); }
 body {
+  position: relative;
   margin: 0 auto;
   max-width: 1200px;
-  padding: 24px 16px 64px;
-  background: var(--page);
+  padding: 28px 16px 64px;
+  /* The page colour is on html, so the field behind (body::before) shows through the column too. */
+  background: transparent;
   color: var(--text);
-  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 15px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
 }
+/* The field behind everything: two slow auroras over a faint grid, fixed to the window. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(900px 520px at 12% -8%, var(--aurora-1), transparent 70%),
+    radial-gradient(800px 600px at 100% 10%, var(--aurora-2), transparent 70%),
+    linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 32px 32px,
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0 / 32px 32px,
+    var(--page);
+}
+::selection { background: var(--arc-glow); }
+a { color: var(--arc-1); text-decoration-color: var(--edge); text-underline-offset: 3px; }
+a:hover { text-decoration-color: currentColor; }
+:focus-visible { outline: 2px solid var(--arc-2); outline-offset: 2px; border-radius: 4px; }
+
 header {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  align-items: flex-end;
-  gap: 8px 24px;
+  align-items: center;
+  gap: 12px 24px;
   margin-bottom: 8px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+  border-image: linear-gradient(90deg, var(--arc-1), var(--arc-2) 40%, transparent) 1;
 }
-h1 { margin: 0; font-size: 28px; letter-spacing: -0.02em; }
-h2 { margin: 32px 0 4px; font-size: 18px; }
-h3 { margin: 0; font-size: 15px; }
+.brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.sigil { flex: none; width: 46px; height: 46px; color: var(--arc-1); filter: drop-shadow(0 0 6px var(--arc-glow)); }
+.sigil .ring-outer { transform-origin: 50% 50%; animation: turn 48s linear infinite; }
+.sigil .ring-inner { transform-origin: 50% 50%; animation: turn 30s linear infinite reverse; color: var(--arc-2); }
+.eyebrow {
+  margin: 0 0 2px;
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--arc-2);
+}
+h1 {
+  margin: 0;
+  font: 700 30px/1.05 var(--sans);
+  letter-spacing: 0.04em;
+  background: linear-gradient(100deg, var(--text) 30%, var(--arc-1) 70%, var(--arc-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 36px 0 4px;
+  font: 600 13px/1.3 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+/* A rune before each section's name, and a fading rule after it. */
+h2::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  transform: rotate(45deg);
+  border: 1px solid var(--arc-2);
+  background: var(--arc-glow);
+  box-shadow: 0 0 8px var(--arc-2);
+}
+h2::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--edge), transparent); }
+h3 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: 0.01em; }
 p { margin: 0; }
 .muted { color: var(--text-2); font-size: 13px; }
+
+/* Panels are glass, edged in light, with corner brackets like a heads-up display. */
 .panel, .roadmap {
+  position: relative;
   margin-top: 12px;
-  padding: 16px;
+  padding: 18px;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(14px) saturate(140%);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
 }
+.panel::before, .roadmap::before, .panel::after, .roadmap::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+  border-color: var(--arc-2);
+  border-style: solid;
+  opacity: 0.7;
+}
+.panel::before, .roadmap::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; border-top-left-radius: 12px; }
+.panel::after, .roadmap::after { right: -1px; bottom: -1px; border-width: 0 1px 1px 0; border-bottom-right-radius: 12px; }
+.roadmap:hover, .panel:hover { border-color: var(--edge); box-shadow: var(--shadow), 0 0 0 1px var(--arc-glow), 0 0 32px var(--arc-glow); }
 .roadmap-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
-.figure { margin-top: 12px; }
+.roadmap-head h3 a, .roadmap-head a { font-size: 15px; text-decoration: none; }
+.roadmap-head > :last-child { font: 600 11px var(--mono); letter-spacing: 0.14em; color: var(--text-2); }
+.figure { margin-top: 14px; }
 .figure-label { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; font-size: 13px; }
-.figure-label strong { font-variant-numeric: tabular-nums; }
-.bar { display: flex; gap: 2px; height: 8px; margin-top: 4px; background: var(--track); border-radius: 4px; overflow: hidden; }
-/* Every fill says what it is (RAL-91): a tick, or a story state from the classes below. */
-.bar > div { min-width: 2px; }
+.figure-label strong { font: 600 12.5px var(--mono); font-variant-numeric: tabular-nums; }
+.bar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  margin-top: 6px;
+  background: var(--track);
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+/* Every fill says what it is (RAL-91): a tick, or a story state from the classes below. The sheen is a
+   shadow, never a background, so a fill's colour is exactly its meaning's. */
+.bar > div { min-width: 2px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28); transition: flex-grow 0.6s ease; }
 .ticked { background: var(--ticked) !important; }
 .bar > div:last-child { border-radius: 0 4px 4px 0; }
 .bar.tall { height: 14px; }
 .sections { margin-top: 12px; font-size: 13px; }
-.sections summary { cursor: pointer; color: var(--text-2); }
+summary { cursor: pointer; color: var(--text-2); }
+summary:hover { color: var(--arc-1); }
 .section-row { display: grid; grid-template-columns: minmax(0, 1fr) 96px 64px; gap: 12px; align-items: center; padding: 4px 0; }
 .section-row .bar { margin: 0; }
-.section-row span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.section-row span:last-child { text-align: right; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
 .section-name { overflow-wrap: anywhere; }
 .source { margin-top: 12px; overflow-wrap: anywhere; }
 .warning { color: var(--bad); font-weight: 600; }
-.good { color: var(--good); font-weight: 600; }
+.good { color: var(--good); font-weight: 600; text-shadow: 0 0 12px color-mix(in srgb, var(--good) 40%, transparent); }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 13px; }
-.legend i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; }
+.legend i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; }
 .s-ready { background: var(--s-ready) !important; }
 .s-claimed { background: var(--s-claimed) !important; }
 .s-in_review { background: var(--s-in_review) !important; }
@@ -93,41 +217,78 @@ p { margin: 0; }
 .s-sent_back { background: var(--s-sent_back) !important; }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: left; color: var(--text-2); font-weight: 500; }
-th, td { padding: 6px 12px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+th {
+  text-align: left;
+  color: var(--text-2);
+  font: 600 10.5px/1.4 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+th, td { padding: 7px 12px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+tbody tr { transition: background-color 0.2s ease; }
+tbody tr:hover { background: linear-gradient(90deg, var(--arc-glow), transparent 80%); }
 tr:last-child td { border-bottom: 0; }
 td.text { min-width: 180px; overflow-wrap: anywhere; }
 /* IDs, states and times stay on one line (RAL-90): the first column is always a story, team or record. */
 td.nowrap, td:first-child { white-space: nowrap; }
-code.commit { font: 12px ui-monospace, monospace; }
+td:first-child { font-family: var(--mono); font-size: 12.5px; }
+code.commit { font: 12px var(--mono); color: var(--arc-2); }
 /* A session's directory (RAL-99). */
-code.path { font: 12px ui-monospace, monospace; }
+code.path { font: 12px var(--mono); }
 /* A state as a dot in its bar colour and its name (RAL-96). */
 .state-pill { display: inline-flex; align-items: center; gap: 6px; }
-.state-pill .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
-/* The live indicator (RAL-90): green while polls arrive, amber once one is late, red once stale. */
-.freshness .dot { color: var(--good); }
-.freshness.late .dot { color: var(--s-in_review); }
-.freshness.stale { color: var(--bad); }
+.state-pill .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--surface-solid) 60%, transparent); }
+
+/* The live indicator (RAL-90): green while polls arrive, amber once one is late, red once stale.
+   While live, the dot breathes: the page is listening. */
+.freshness {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font: 12px var(--mono);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.freshness .dot { display: inline-block; color: var(--good); text-shadow: 0 0 8px var(--good); }
+.freshness.live { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
+.freshness.live .dot { animation: breathe 2.4s ease-in-out infinite; }
+.freshness.late .dot { color: var(--s-in_review); text-shadow: 0 0 8px var(--s-in_review); }
+.freshness.late { border-color: color-mix(in srgb, var(--s-in_review) 50%, var(--line)); }
+.freshness.stale { color: var(--bad); border-color: var(--bad); }
 /* Recorded text can hold direction characters, so keep them from reordering what's around them. */
 td, .section-name, .source { unicode-bidi: isolate; }
-.label { display: inline-block; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--text-2); font-size: 11px; }
+.label {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text-2);
+  background: color-mix(in srgb, var(--surface-solid) 70%, transparent);
+  font: 10.5px/1.6 var(--mono);
+  letter-spacing: 0.04em;
+}
 /* A rally's events (RAL-104): an incident's label in the warning colour, so it stands out from a notice. */
 ul.events { list-style: none; padding: 0; margin: 0; }
-ul.events li { padding: 6px 0; border-top: 1px solid var(--line); }
+ul.events li { padding: 8px 0 8px 12px; border-top: 1px solid var(--line); border-left: 2px solid var(--edge); }
+ul.events li.incident { border-left-color: var(--bad); }
 ul.events li p { margin: 2px 0 0; }
 ul.events li.incident > .label:first-child { color: var(--bad); border-color: var(--bad); }
-.group { margin-top: 16px; }
+.group { margin-top: 18px; }
 .group:first-child { margin-top: 0; }
 
 /* A project's page (RAL-43). */
-.back { display: inline-block; margin-bottom: 12px; font-size: 13px; color: var(--text-2); }
+.back { display: inline-block; margin-bottom: 12px; font: 12px var(--mono); letter-spacing: 0.06em; color: var(--text-2); }
+.back:hover { color: var(--arc-1); }
 .stories { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13px; }
-.stories li { padding: 4px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; unicode-bidi: isolate; }
+.stories li { padding: 5px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; unicode-bidi: isolate; }
 .stories li:last-child { border-bottom: 0; }
-.story-id { display: inline-block; min-width: 64px; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.summary { margin: 8px 0 0; padding: 12px; max-height: 480px; overflow: auto; overflow-wrap: anywhere;
-  unicode-bidi: isolate; background: var(--track); border-radius: 6px; font-size: 14px; }
+.story-id { display: inline-block; min-width: 72px; color: var(--arc-2); font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+.summary { margin: 8px 0 0; padding: 14px; max-height: 480px; overflow: auto; overflow-wrap: anywhere;
+  unicode-bidi: isolate; background: var(--track); border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
 /* A writeup's markdown, drawn as text nodes (RAL-94). */
 .writeup > :first-child { margin-top: 0; }
 .writeup p, .writeup ul, .writeup ol, .writeup blockquote, .writeup pre, .writeup .table-wrap { margin: 8px 0 0; }
@@ -135,21 +296,65 @@ ul.events li.incident > .label:first-child { color: var(--bad); border-color: va
 .writeup li > ul, .writeup li > ol { margin: 2px 0 0; }
 .writeup .md-heading { margin: 16px 0 0; font-size: 15px; }
 .writeup h4.md-heading { font-size: 16px; }
-.writeup blockquote { padding-left: 10px; border-left: 3px solid var(--line); color: var(--text-2); }
+.writeup blockquote { padding-left: 10px; border-left: 3px solid var(--edge); color: var(--text-2); }
 .writeup hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0 0; }
-.writeup code { font: 12.5px ui-monospace, monospace; padding: 0 3px; background: var(--surface); border-radius: 3px; }
-.writeup pre.md-code { padding: 8px; overflow-x: auto; background: var(--surface); border-radius: 4px; }
+.writeup code { font: 12.5px var(--mono); padding: 0 3px; background: var(--surface-solid); border-radius: 3px; }
+.writeup pre.md-code { padding: 8px; overflow-x: auto; background: var(--surface-solid); border-radius: 4px; }
 .writeup pre.md-code code { padding: 0; white-space: pre; }
 .writeup a { color: var(--s-ready); }
 .writeup table { font-size: 13px; }
+
+/* Fields and buttons: the one form, for a past moment. */
 .past-form { margin-top: 1rem; }
-.past-form input { width: 7em; margin: 0 0.25rem; font: inherit; }
-.past-form button { font: inherit; }
+input, button { font: 13px var(--mono); color: var(--text); }
+.past-form input {
+  width: 7em;
+  margin: 0 0.25rem;
+  padding: 4px 8px;
+  background: var(--surface-solid);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.past-form button, button {
+  padding: 4px 12px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--arc-glow), transparent);
+  cursor: pointer;
+  letter-spacing: 0.06em;
+}
+button:hover { border-color: var(--arc-2); box-shadow: 0 0 14px var(--arc-glow); }
 
 /* How each fact is known, said once for the page (RAL-93), so a column's label can sit in its header. */
-#provenance { margin-top: 32px; font-size: 13px; }
-#provenance h2 { font-size: 14px; margin: 0 0 6px; }
-.provenance-legend { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 0; }
+#provenance { margin-top: 40px; padding-top: 16px; font-size: 13px; border-top: 1px solid var(--line); }
+#provenance h2 { font-size: 11px; margin: 0 0 8px; }
+.provenance-legend { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 0 0 6px; }
 .provenance-legend div { display: flex; gap: 6px; align-items: baseline; }
 .provenance-legend dd { margin: 0; }
-th .label { font-weight: normal; margin-left: 2px; }
+th .label { font-weight: normal; margin-left: 2px; letter-spacing: 0.02em; text-transform: none; }
+
+/* A section fades up when it's first drawn; later polls patch it in place (RAL-89), so it never replays. */
+main > section { animation: rise 0.5s ease both; }
+main > section:nth-child(2) { animation-delay: 0.06s; }
+main > section:nth-child(3) { animation-delay: 0.12s; }
+main > section:nth-child(4) { animation-delay: 0.18s; }
+
+@keyframes turn { to { transform: rotate(360deg); } }
+@keyframes breathe {
+  0%, 100% { opacity: 1; text-shadow: 0 0 4px var(--good); }
+  50% { opacity: 0.55; text-shadow: 0 0 14px var(--good); }
+}
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* A phone: tighter panels, and the header's two lines stack. */
+@media (max-width: 600px) {
+  body { padding: 20px 12px 48px; }
+  .panel, .roadmap { padding: 14px; }
+  h1 { font-size: 26px; }
+  .sigil { width: 38px; height: 38px; }
+  .section-row { grid-template-columns: minmax(0, 1fr) 64px 56px; gap: 8px; }
+}
