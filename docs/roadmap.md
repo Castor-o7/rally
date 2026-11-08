@@ -311,6 +311,9 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   first that gives one, named in `roster.read_with` (`roster_read` in the brief); a message goes through the
   first that knows its recipient, named in `sent_by`, falling back only when the shim says nothing was sent or
   can't be run. `tests/shims.rs` covers all four commands in the three cases, and the stop case.
+- [ ] **RAL-121: The operator's three ideals are written down.** From the operator on 2026-11-08: "the three
+  ideals of rally are thusly: accuracy, verifiability, and reactivity". Done when: [ideals.md](ideals.md) quotes it
+  as decided, any gloss or grouping beyond the three words is marked proposed and asked of the operator, and it's merged.
 - [ ] **RAL-26: Agree the look with the operator.** Done when: the operator has approved a visual design
   covering the current and past views, on a phone as well as a desktop.
 - [x] **RAL-27: Show the current ledger.** Partly done: the viewer (RAL-43, cd346a1) shows each team's declared state, stories, blockers and their freshness, labelled. RAL-27's second round adds each story's latest evidence (declared) with Rally's check of it (observed), and each team's track record, with their ages. Done 2026-11-05: the operator saw it running on the 127.0.0.1:7300 viewer at 2614a14, with MUS-17's observed "commit exists" in the Evidence table (ledger annotation 190). Done when: the web app shows each team's state, stories,
