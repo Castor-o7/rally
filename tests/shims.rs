@@ -1,6 +1,7 @@
-//! RAL-120: `rally stalls`, `wake`, `brief` and `digest` read the roster and send through
-//! Marshal's shim or Muster's, the first that has one, so Rally keeps working on either daemon
-//! while the sessions move. Fake shims stand in for both and log what they were asked.
+//! RAL-120, RAL-126: `rally stalls`, `wake`, `brief` and `digest` read every shim's roster and
+//! show their union, and send through the first shim that knows the recipient, so Rally keeps
+//! working while sessions run on both daemons. Fake shims stand in for both and log what they
+//! were asked.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,8 +20,11 @@ struct Rig {
 enum Fake {
     /// A daemon with the team's session: a roster, and `tell` delivers.
     Has,
-    /// A daemon with no sessions: `roster` fails, and `tell` says nothing was sent.
+    /// A daemon with no sessions: an empty roster, as Marshal's live one gives, and `tell` says
+    /// nothing was sent.
     Empty,
+    /// A daemon that can't be reached: `roster` fails, and `tell` says nothing was sent.
+    Down,
     /// A roster, but `tell` delivers and then exits non-zero.
     DeliversThenFails,
 }
@@ -53,8 +57,9 @@ impl Rig {
     /// Writes an executable fake named `name` that answers as `fake`, and returns its path.
     fn fake(&self, case: &str, name: &str, fake: Fake) -> String {
         use std::os::unix::fs::PermissionsExt;
+        // Each fake's session is its own, so two populated rosters have two sessions.
         let roster = json!({"read_at": 1, "sessions": [{
-            "session_id": "0f0e0d0c-0000-0000-0000-000000000001",
+            "session_id": format!("{case}-{name}"),
             "nickname": "rally",
             "wake": "waiting",
             "declared": {"project": "rally", "activity": "idle", "current_task": null},
@@ -63,9 +68,14 @@ impl Rig {
         let (on_roster, on_tell) = match fake {
             Fake::Has => (format!("printf '%s' '{roster}'"), "exit 0".to_owned()),
             Fake::Empty => (
+                "printf '%s' '{\"read_at\": 1, \"sessions\": []}'".to_owned(),
+                "echo \"Error: no team or session named \\`$2\\` on the roster\" >&2; exit 1".to_owned(),
+            ),
+            Fake::Down => (
                 "echo 'Error: no roster within 10s: the daemon is unreachable or has no sessions' >&2; exit 1"
                     .to_owned(),
-                "echo \"Error: no team or session named \\`$2\\` on the roster\" >&2; exit 1".to_owned(),
+                "echo \"Error: couldn't register with the daemon within 10s; nothing was sent\" >&2; exit 1"
+                    .to_owned(),
             ),
             Fake::DeliversThenFails => (
                 format!("printf '%s' '{roster}'"),
@@ -167,36 +177,84 @@ fn path(p: &Path) -> &str {
     p.to_str().unwrap()
 }
 
-/// The three ways a machine can be during the move: Marshal has the sessions, only Muster is
-/// installed, or both are and Marshal's daemon has none yet. The command each is read or sent
-/// through.
-fn cases(rig: &Rig) -> Vec<(&'static str, Vec<String>, &'static str)> {
+/// A case: its name, the shims listed, the rosters it should read, the rosters its sessions come
+/// from, and the shim a message should go through.
+struct Case {
+    name: &'static str,
+    shims: Vec<String>,
+    read: Vec<&'static str>,
+    rows_from: Vec<&'static str>,
+    told_by: &'static str,
+}
+
+/// The ways a machine can be during the move: one daemon installed, Marshal's empty beside Muster's,
+/// both with sessions, and Marshal's down.
+fn cases(rig: &Rig) -> Vec<Case> {
     vec![
-        (
-            "only marshal-shim",
-            vec![
+        Case {
+            name: "only marshal-shim",
+            shims: vec![
                 rig.fake("a", "marshal-shim", Fake::Has),
                 rig.missing("muster-shim"),
             ],
-            "marshal-shim",
-        ),
-        (
-            "only muster-shim",
-            vec![
+            read: vec!["marshal-shim"],
+            rows_from: vec!["marshal-shim"],
+            told_by: "marshal-shim",
+        },
+        Case {
+            name: "only muster-shim",
+            shims: vec![
                 rig.missing("marshal-shim"),
                 rig.fake("b", "muster-shim", Fake::Has),
             ],
-            "muster-shim",
-        ),
-        (
-            "both, Marshal empty",
-            vec![
+            read: vec!["muster-shim"],
+            rows_from: vec!["muster-shim"],
+            told_by: "muster-shim",
+        },
+        Case {
+            name: "both, Marshal empty",
+            shims: vec![
                 rig.fake("c", "marshal-shim", Fake::Empty),
                 rig.fake("c", "muster-shim", Fake::Has),
             ],
-            "muster-shim",
-        ),
+            read: vec!["marshal-shim", "muster-shim"],
+            rows_from: vec!["muster-shim"],
+            told_by: "muster-shim",
+        },
+        Case {
+            name: "both populated",
+            shims: vec![
+                rig.fake("d", "marshal-shim", Fake::Has),
+                rig.fake("d", "muster-shim", Fake::Has),
+            ],
+            read: vec!["marshal-shim", "muster-shim"],
+            rows_from: vec!["marshal-shim", "muster-shim"],
+            told_by: "marshal-shim",
+        },
+        Case {
+            name: "Marshal down",
+            shims: vec![
+                rig.fake("f", "marshal-shim", Fake::Down),
+                rig.fake("f", "muster-shim", Fake::Has),
+            ],
+            read: vec!["muster-shim"],
+            rows_from: vec!["muster-shim"],
+            told_by: "muster-shim",
+        },
     ]
+}
+
+/// The last part of each path in a list, so `/tmp/x/a/marshal-shim` reads `marshal-shim`.
+fn names(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|v| {
+            let v = v.as_str().or_else(|| v["command"].as_str()).unwrap_or("");
+            v.rsplit('/').next().unwrap_or("").to_owned()
+        })
+        .collect()
 }
 
 fn ends_with(value: &Value, name: &str) -> bool {
@@ -204,69 +262,91 @@ fn ends_with(value: &Value, name: &str) -> bool {
 }
 
 #[test]
-fn stalls_reads_the_roster_through_whichever_shim_has_one() {
+fn stalls_shows_every_rosters_sessions_naming_each_source() {
     let rig = Rig::new();
     rig.write(&["ready", "RAL-1"]);
-    for (case, shims, source) in cases(&rig) {
+    let projects = rig.projects();
+    for case in cases(&rig) {
         rig.clear();
-        let report = rig.run(&shims, &["stalls"]);
-        assert_eq!(report["roster"]["available"], true, "{case}: {report}");
-        assert!(
-            ends_with(&report["roster"]["read_with"], source),
-            "{case}: {report}"
+        let report = rig.run(&case.shims, &["stalls", "--projects", path(&projects)]);
+        let name = case.name;
+        assert_eq!(report["roster"]["available"], true, "{name}: {report}");
+        assert_eq!(
+            names(&report["roster"]["read_with"]),
+            case.read,
+            "{name}: {report}"
         );
-        assert!(
-            rig.asked().contains(&format!("{source} roster")),
-            "{case}: {:?}",
-            rig.asked()
+        // Every roster was asked, whichever answered.
+        for shim in ["marshal-shim", "muster-shim"] {
+            let installed = case
+                .shims
+                .iter()
+                .any(|s| s.ends_with(shim) && !s.contains("not-installed"));
+            assert_eq!(
+                rig.asked().contains(&format!("{shim} roster")),
+                installed,
+                "{name}: {:?}",
+                rig.asked()
+            );
+        }
+        // A source that failed is listed as passed over.
+        let failed = names(&report["roster"]["passed_over"]);
+        assert_eq!(
+            failed.len(),
+            case.shims.len() - case.read.len(),
+            "{name}: {report}"
         );
+        // The team's rows name the rosters they came from.
+        let text = report.to_string();
+        for source in &case.rows_from {
+            assert!(
+                text.contains(&format!("{source}\"")),
+                "{name}: {source} in {report}"
+            );
+        }
     }
     // Neither has a roster: said, and only declared blockers are shown.
     let none = vec![
-        rig.fake("d", "marshal-shim", Fake::Empty),
+        rig.fake("g", "marshal-shim", Fake::Down),
         rig.missing("muster-shim"),
     ];
     let report = rig.run(&none, &["stalls"]);
     assert_eq!(report["roster"]["available"], false, "{report}");
-    assert_eq!(
-        report["roster"]["passed_over"].as_array().unwrap().len(),
-        2,
-        "{report}"
-    );
+    assert_eq!(names(&report["roster"]["passed_over"]).len(), 2, "{report}");
 }
 
 #[test]
-fn brief_reads_the_roster_through_whichever_shim_has_one() {
+fn brief_reads_every_roster() {
     let rig = Rig::new();
     rig.write(&["ready", "RAL-1"]);
-    for (case, shims, source) in cases(&rig) {
+    for case in cases(&rig) {
         rig.clear();
-        let report = rig.run(&shims, &["brief"]);
-        assert!(
-            ends_with(&report["roster_read"]["read_with"], source),
-            "{case}: {report}"
+        let report = rig.run(&case.shims, &["brief"]);
+        let name = case.name;
+        assert_eq!(
+            names(&report["roster_read"]["read_with"]),
+            case.read,
+            "{name}: {report}"
         );
-        assert!(
-            rig.asked().contains(&format!("{source} roster")),
-            "{case}: {:?}",
-            rig.asked()
+        assert_eq!(
+            names(&report["roster_read"]["passed_over"]).len(),
+            case.shims.len() - case.read.len(),
+            "{name}: {report}"
         );
     }
 }
 
 #[test]
-fn wake_reads_and_tells_through_whichever_shim_has_the_team() {
+fn wake_sees_every_rosters_sessions_and_tells_through_the_shim_that_has_the_team() {
     let rig = Rig::new();
     rig.write(&["ready", "RAL-1"]);
     let projects = rig.projects();
-    for (case, shims, source) in cases(&rig) {
+    for (n, case) in cases(&rig).into_iter().enumerate() {
         rig.clear();
-        let state = rig
-            .dir
-            .path()
-            .join(format!("wake-{source}-{}.json", case.len()));
+        let name = case.name;
+        let state = rig.dir.path().join(format!("wake-{n}.json"));
         let report = rig.run(
-            &shims,
+            &case.shims,
             &[
                 "wake",
                 "--projects",
@@ -277,27 +357,25 @@ fn wake_reads_and_tells_through_whichever_shim_has_the_team() {
                 path(&state),
             ],
         );
-        assert!(
-            ends_with(&report["roster"]["read_with"], source),
-            "{case}: {report}"
+        assert_eq!(
+            names(&report["roster"]["read_with"]),
+            case.read,
+            "{name}: {report}"
         );
         let team = &report["teams"].as_array().unwrap()[0];
-        assert!(ends_with(&team["sent_by"], source), "{case}: {report}");
+        assert!(
+            ends_with(&team["sent_by"], case.told_by),
+            "{name}: {report}"
+        );
         let asked = rig.asked();
-        assert!(
-            asked.contains(&format!("{source} tell")),
-            "{case}: {asked:?}"
-        );
-        // Told once, through one daemon.
+        let tells: Vec<&String> = asked.iter().filter(|a| a.ends_with(" tell")).collect();
+        // Sent once: through the shim that has the team, after any that said it hadn't.
         assert_eq!(
-            asked.iter().filter(|a| a.ends_with(" tell")).count(),
-            if case.starts_with("both") { 2 } else { 1 },
-            "{case}: {asked:?}"
+            tells.last().map(|t| t.as_str()),
+            Some(format!("{} tell", case.told_by).as_str()),
+            "{name}: {asked:?}"
         );
-        assert!(
-            !asked.contains(&"muster-shim tell".to_owned()) || source == "muster-shim",
-            "{case}: {asked:?}"
-        );
+        assert!(tells.len() <= 2, "{name}: {asked:?}");
     }
 }
 
@@ -339,18 +417,16 @@ fn a_shim_that_may_have_delivered_isnt_followed_by_a_second_send() {
 #[test]
 fn digest_tells_the_watchman_through_whichever_shim_has_it() {
     let rig = Rig::new();
-    for (case, shims, source) in cases(&rig) {
+    for (n, case) in cases(&rig).into_iter().enumerate() {
         rig.clear();
-        // A new record, older than the quiet period, after the last digest.
-        let state = rig
-            .dir
-            .path()
-            .join(format!("digest-{source}-{}.json", case.len()));
+        let name = case.name;
+        // A new record after the last digest.
+        let state = rig.dir.path().join(format!("digest-{n}.json"));
         std::fs::write(&state, r#"{"w": {"head": 0, "seen_to": 0}}"#).unwrap();
-        rig.write(&["ready", &format!("RAL-{}", 10 + case.len())]);
+        rig.write(&["ready", &format!("RAL-{}", 10 + n)]);
         let pass = || {
             rig.run(
-                &shims,
+                &case.shims,
                 &[
                     "digest",
                     "--quiet",
@@ -368,16 +444,16 @@ fn digest_tells_the_watchman_through_whichever_shim_has_it() {
         let first = pass();
         assert_eq!(
             first["watchmen"][0]["decision"], "batching",
-            "{case}: {first}"
+            "{name}: {first}"
         );
         std::thread::sleep(std::time::Duration::from_millis(1200));
         let report = pass();
         let row = &report["watchmen"][0];
-        assert_eq!(row["decision"], "sent", "{case}: {report}");
-        assert!(ends_with(&row["sent_by"], source), "{case}: {report}");
+        assert_eq!(row["decision"], "sent", "{name}: {report}");
+        assert!(ends_with(&row["sent_by"], case.told_by), "{name}: {report}");
         assert!(
-            rig.asked().contains(&format!("{source} tell")),
-            "{case}: {:?}",
+            rig.asked().contains(&format!("{} tell", case.told_by)),
+            "{name}: {:?}",
             rig.asked()
         );
     }

@@ -311,6 +311,19 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   first that gives one, named in `roster.read_with` (`roster_read` in the brief); a message goes through the
   first that knows its recipient, named in `sent_by`, falling back only when the shim says nothing was sent or
   can't be run. `tests/shims.rs` covers all four commands in the three cases, and the stop case.
+- [x] **RAL-126: Rally reads every roster source and shows their union.** From the watchman on 2026-11-08:
+  once MAR-57 made `marshal-shim roster` answer an empty roster at once, RAL-116 and RAL-120 took it as the
+  winner and never read Muster's, where every session was. Side-by-side running needs every source read. Done
+  when: the viewer, stalls, wake and brief all show the union; each row names its source; a source that fails
+  is listed as passed over; tests with one source empty, both populated, and one failing; and a headless
+  Chrome check. Done: `shims::roster` and the viewer's `read_roster_with` ask every command and merge with
+  `shims::merge`: each row carries `source`, and a session id on both keeps the more recently active row with
+  `also_on` naming the other. A failing command is asked again only every 5 minutes (RAL-117's memory, now per
+  command), unless nothing else answers. `tests/shims.rs` runs stalls, wake, brief and digest with one shim
+  installed, Marshal empty, both populated and Marshal down;
+  `the_roster_is_every_sources_union_and_says_which_were_read` and
+  `the_roster_shows_every_source_and_keeps_each_sources_labels` (headless Chrome) cover the viewer. Sending is
+  unchanged.
 - [x] **RAL-122: A design note on carrying unread Muster mail to Marshal at the cutover.** Merged in #199 (bc6c5a2). From the watchman on
   2026-11-08, for [cutover.md](cutover.md)'s "message history carried over" gap. Docs only. Done when:
   [mail-carryover.md](mail-carryover.md) says how mail is kept on both daemons, measures what's unread, sets out the
