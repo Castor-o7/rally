@@ -69,11 +69,13 @@ agreed with the operator (RAL-26).
 ## The look (RAL-115)
 
 The viewer's style is "modern sci-fi magitech", from the operator on 2026-11-08, and serves the dashboard pillar of
-[ideals.md](ideals.md) (P6 to P10): glass panels with corner brackets over a faint grid and two slow auroras, section
+[ideals.md](ideals.md) (P6 to P10): smoked-glass panels with corner brackets over a faint grid and two slow auroras, section
 names in spaced monospace capitals after a small rune, and a live indicator that breathes while polls arrive. The
 decoration has colours of its own (`--arc-1`, `--arc-2`), which never stand for a meaning: every state colour and
 `--ticked` keep the values RAL-91's test reads, and a bar's sheen is a shadow, so its background is exactly its
-meaning's colour. Motion stops under `prefers-reduced-motion`. Everything is served by the viewer itself, as the
+meaning's colour. Motion stops under `prefers-reduced-motion`. And it must stay light (RAL-118): no `backdrop-filter`, which
+recomputed a blur under every panel on every scrolled frame; no filter on anything that moves; and every endless
+animation only turns or fades a box of its own, which the compositor does without the page repainting. Everything is served by the viewer itself, as the
 page's CSP requires, so there are no web fonts: the font stacks name ones the machine may have, and fall back to the
 system's. A section fades up only when it's first drawn; a poll patches it in place (RAL-89), so it never replays.
 
