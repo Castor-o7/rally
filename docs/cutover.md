@@ -48,7 +48,8 @@ same as rows 1, 2 and 4.
 | Per-machine pairing | MAR-24 (after MAR-23) | No gate, so the roster has no `attested` or `observed` facts, and Rally's viewer shows declared and recorded only (RAL-116) |
 | Nickname kept across a restart | MAR-9, verified, merging 2026-11-08 | Until it's merged, a restarted session gets a new nickname. Rally already records a restart with `rally rally-session add --succeeds` (RAL-108) |
 | Message history and unread mail carried over | None yet | Muster's messages are in the `muster` database and Marshal's in `marshal`. Nothing copies them. Unread mail on Muster at the switch has to be read there first |
-| Unread mail across a Marshal daemon restart | Muster's MUS-47, being ported (eager-cobra) | MAR-14's conformance suite, with its restart cells, is merged. Until the port lands, read unread mail before restarting Marshal's daemon |
+| Unread mail across a Marshal daemon restart | MAR-14, merged | Postgres keeps it, and MAR-14's restart cells show it. Still checked on Murph in step 1 |
+| A restarted session's unread mail follows it to its successor | Muster's MUS-47, being ported (eager-cobra), on top of MAR-9 | Until it lands, a session reads its unread mail before it restarts |
 | A message never offered twice | MAR-3, merged | Done |
 | Idle overnight wake on Marshal's hooks | MAR-5 | Not yet shown on Murph. Run it before moving every session |
 | A daemon write before the session is ready, retried | MAR-43, verified, merging 2026-11-08 | Once merged, nothing to do |
