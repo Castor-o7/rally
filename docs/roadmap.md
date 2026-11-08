@@ -270,6 +270,20 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   restyled and stays reactive and read-only, provenance labels and state colours keep their meaning (RAL-91,
   RAL-93), it works in light and dark and at phone width, the PR carries before and after screenshots, and
   sign-in and the live board are checked in headless Chrome over CDP. Feeds RAL-26.
+- [x] **RAL-116: The viewer reads Marshal's roster, falling back to Muster's.** From the watchman on
+  2026-11-08, split from RAL-38's findings: Muster is frozen, and the viewer read only `muster-shim roster`.
+  Done when: a test feeds each schema and checks the labels and ages come out as the source names them; with
+  no sessions on Marshal it falls back, and the page says so; it's checked in headless Chrome over CDP.
+  RAL-38's claim, done-when and the cutover of sessions to Marshal's daemon stay with the operator. Done:
+  `rally web --roster-from` (or `RALLY_ROSTER_FROM`) lists the commands to try, `marshal-shim,muster-shim` by
+  default, and the panel says which it read and why it passed any over. `shape_roster` keeps each source's
+  labels (Muster's attested, declared and observed; Marshal's declared and recorded), shows the daemon's
+  connection and wait under that label, and adds when the session connected and when it last called a tool.
+  `each_roster_keeps_its_own_labels_and_ages` and `the_roster_falls_back_and_says_which_it_read` cover both
+  schemas and the fallback, and `the_roster_falls_back_to_musters_and_keeps_each_sources_labels` checks both
+  in headless Chrome. The ledger is now shown before the roster is read, since a roster command can take its
+  whole 20-second limit to fail before the next is tried; the viewer's tests read no roster unless they pass
+  one.
 - [ ] **RAL-26: Agree the look with the operator.** Done when: the operator has approved a visual design
   covering the current and past views, on a phone as well as a desktop.
 - [x] **RAL-27: Show the current ledger.** Partly done: the viewer (RAL-43, cd346a1) shows each team's declared state, stories, blockers and their freshness, labelled. RAL-27's second round adds each story's latest evidence (declared) with Rally's check of it (observed), and each team's track record, with their ages. Done 2026-11-05: the operator saw it running on the 127.0.0.1:7300 viewer at 2614a14, with MUS-17's observed "commit exists" in the Evidence table (ledger annotation 190). Done when: the web app shows each team's state, stories,
