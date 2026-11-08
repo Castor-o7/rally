@@ -43,7 +43,7 @@ same as rows 1, 2 and 4.
 | TLS | MAR-23 (waits on myko#129) | a1 can't join until then. Marshal listens on Murph only (above) |
 | Per-machine pairing | MAR-24 (after MAR-23) | No gate, so the roster has no `attested` or `observed` facts, and Rally's viewer shows declared and recorded only (RAL-116) |
 | Nickname kept across a restart | MAR-9, verified, merging 2026-11-08 | Until it's merged, a restarted session gets a new nickname. Rally already records a restart with `rally rally-session add --succeeds` (RAL-108) |
-| Message history and unread mail carried over | None yet | Muster's messages are in the `muster` database and Marshal's in `marshal`. Nothing copies them. Unread mail on Muster at the switch has to be read there first |
+| Message history and unread mail carried over | RAL-122, decided: option A | Nothing copies mail between the `muster` and `marshal` databases. Each session reads its Muster mail before it moves, and the Marshal team runs a check before each move and before step 7 ([mail-carryover.md](mail-carryover.md)) |
 | Unread mail across a Marshal daemon restart | MAR-14, merged | Postgres keeps it, and MAR-14's restart cells show it. Still checked on Murph in step 1 |
 | A restarted session's unread mail follows it to its successor | Muster's MUS-47, being ported (eager-cobra), on top of MAR-9 | Until it lands, a session reads its unread mail before it restarts |
 | A message never offered twice | MAR-3, merged | Done |
@@ -66,6 +66,10 @@ the two while they're mixed.
    unread mail survives `systemctl --user restart marshal-daemon`.
 2. **Rally reads both.** Land a Rally story so `rally wake` and `rally digest` take `--roster-from` and a
    `tell` command like the viewer (row 6). The viewer already prefers Marshal (RAL-116).
+   **Before every move in steps 3 and 4 (RAL-122, option A):** the session reads and acks its Muster inbox,
+   then the Marshal team runs the read-only check in [mail-carryover.md](mail-carryover.md). Anything unread to a
+   session that has already moved is relayed by hand with `marshal-shim tell <new nickname>`, quoting its sender
+   and when it was sent.
 3. **Move the watchman and lamplighter first.** They relay for everyone during the move. Each moves by
    restarting its session with Marshal's wiring (project-local, as in step 1), announcing the new nickname
    on Muster first with a `broadcast`, and on Marshal after.
@@ -75,7 +79,8 @@ the two while they're mixed.
    `~/.claude/settings.json` and `~/.claude.json`, keeping a copy of each file. New sessions start on Marshal.
 6. **a1, at the official swap.** The operator decided a1 and macOS testing, MAR-35 included, happen at the
    official swap to Marshal, once MAR-23 and MAR-24 let a1 reach the daemon.
-7. **Retire Muster.** Only after a full day with no traffic on Muster: stop `muster-daemon.service`, but
+7. **Retire Muster.** First the Marshal team runs the mail check a last time, and relays anything left. Then,
+   only after a full day with no traffic on Muster: stop `muster-daemon.service`, but
    don't disable it, and keep its database and binaries for rollback. End the hold in Rally.
 
 ## Rollback
