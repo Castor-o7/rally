@@ -58,6 +58,11 @@ The web app comes after this.
 - [x] **RAL-10: Write the threat model.** Before any service exists. Done when: `docs/` says what the
   ledger holds, who could want to read or alter it, how the service and web app could be attacked, what
   must never be recorded, and what Rally doesn't defend against, and the operator has agreed it.
+- [ ] **RAL-114: Write down Rally's design ideals.** From the operator on 2026-11-08, relayed by the watchman,
+  mellow-weevil. Done when: [ideals.md](ideals.md) quotes the operator's statement verbatim as its anchor,
+  marks everything beyond it as decided (with where it was decided) or proposed, the README links it, it's
+  merged, and the operator has signed off on the wording, or the proposed parts are open questions to the
+  operator in Rally.
 
 ## Phase 1: The ledger
 
@@ -260,6 +265,11 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
 
 - [x] **RAL-25: Give the ledger a read-only API.** Done when: it's documented, it uses RAL-13's access
   control, and a test shows no request through it can change the ledger.
+- [ ] **RAL-115: The viewer has a modern sci-fi magitech look.** From the operator on 2026-11-08, relayed by
+  the watchman: a sleek, reactive dashboard ([ideals.md](ideals.md), P6 to P10). Done when: the viewer is
+  restyled and stays reactive and read-only, provenance labels and state colours keep their meaning (RAL-91,
+  RAL-93), it works in light and dark and at phone width, the PR carries before and after screenshots, and
+  sign-in and the live board are checked in headless Chrome over CDP. Feeds RAL-26.
 - [ ] **RAL-26: Agree the look with the operator.** Done when: the operator has approved a visual design
   covering the current and past views, on a phone as well as a desktop.
 - [x] **RAL-27: Show the current ledger.** Partly done: the viewer (RAL-43, cd346a1) shows each team's declared state, stories, blockers and their freshness, labelled. RAL-27's second round adds each story's latest evidence (declared) with Rally's check of it (observed), and each team's track record, with their ages. Done 2026-11-05: the operator saw it running on the 127.0.0.1:7300 viewer at 2614a14, with MUS-17's observed "commit exists" in the Evidence table (ledger annotation 190). Done when: the web app shows each team's state, stories,
