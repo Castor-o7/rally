@@ -301,7 +301,8 @@ enum Command {
         harness: Option<String>,
     },
     /// Send each designated watchman one batched digest when the ledger changes, and nothing when
-    /// it hasn't (RAL-8). See docs/digest.md. Reads only; sends through `muster-shim tell`.
+    /// it hasn't (RAL-8). See docs/digest.md. Reads only; sends through `marshal-shim` or
+    /// `muster-shim tell`, the first of RALLY_ROSTER_FROM that knows the watchman (RAL-120).
     Digest {
         /// Q: a digest goes once no new record has come for this long, such as 2m.
         #[arg(long = "quiet", env = "RALLY_DIGEST_QUIET", value_parser = parse_window)]
@@ -685,8 +686,8 @@ enum Command {
     },
     /// Wake idle teams with their next story (RAL-54): for each team in the projects list with
     /// sessions mapped to it, idle (or its claim quiet) with a ready story, send one digest through
-    /// Muster, at most once per interval. Without `muster-shim`, or with --report-only, it only
-    /// reports. See docs/wake.md.
+    /// Marshal or Muster, at most once per interval. Without `marshal-shim` or `muster-shim` (as
+    /// RALLY_ROSTER_FROM lists them), or with --report-only, it only reports. See docs/wake.md.
     Wake {
         /// The projects, with each one's `team` and `sessions`, instead of the defaults.
         #[arg(long)]
@@ -1702,16 +1703,8 @@ fn stalls_pass(
     let teams = backend.read_value("/v1/teams", None, &Page::default(), |ledger, page| {
         views::teams(ledger, None, page)
     })?;
-    let roster = rally::wake::muster_available()
-        .then(|| {
-            std::process::Command::new("muster-shim")
-                .arg("roster")
-                .output()
-                .ok()
-                .filter(|out| out.status.success())
-                .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
-        })
-        .flatten();
+    // From Marshal's daemon or Muster's, whichever has one (RAL-120).
+    let (roster, roster_read) = rally::shims::roster_or_note(&rally::shims::from_env());
     let empty = serde_json::Map::new();
     let stories = read.stories["stories"].as_object().unwrap_or(&empty);
     let open: Vec<&Value> = read
@@ -1793,10 +1786,14 @@ fn stalls_pass(
             prompts.retain(|row| row["row"] == "declared_blocked");
         }
         report["every_team_waiting"] = Value::Null;
-        report["roster"] = json!({"available": false, "note": "muster-shim's roster couldn't be \
-            read, so only declared blockers are shown"});
+        report["roster"] = json!({"available": false, "note": "no shim's roster could be read, so \
+            only declared blockers are shown"});
     } else {
         report["roster"] = json!({"available": true});
+    }
+    // Which shim the roster came from, and why any before it didn't give one (RAL-120).
+    for field in ["read_with", "passed_over"] {
+        report["roster"][field] = roster_read[field].clone();
     }
     if !locks.is_empty() {
         // The kernel's account of each lock, which needs no roster: shown with or without it.
@@ -1868,7 +1865,6 @@ fn digest_pass(
     report_only: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use rally::digest::{Decision, Kept, Watchman};
-    use rally::wake::Sender;
     let backend = Backend::choose(location, config, false)?;
     let get = |path: &str| -> Result<Value, Box<dyn std::error::Error>> {
         match &backend {
@@ -1943,7 +1939,8 @@ fn digest_pass(
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as i64);
-    let muster = rally::wake::muster_available();
+    let shims = rally::shims::from_env();
+    let can_send = rally::shims::available(&shims);
     let mut rows = Vec::new();
     // Each watchman's progress is kept as soon as its own turn ends, so a read that fails for a
     // later watchman can't lose an earlier one's send and have it sent twice (RAL-86).
@@ -2047,13 +2044,17 @@ fn digest_pass(
                     if report_only {
                         row["decision"] = json!("due (report only: not sent)");
                         row["digest"] = json!(digest);
-                    } else if !muster {
-                        row["decision"] = json!("due, but muster-shim isn't on this machine");
+                    } else if !can_send {
+                        row["decision"] = json!(format!(
+                            "due, but none of {} is on this machine",
+                            shims.join(", ")
+                        ));
                     } else {
-                        match rally::wake::MusterShim.send(&watch.name, &digest) {
-                            Ok(()) => {
+                        match rally::shims::tell(&shims, &watch.name, &digest) {
+                            Ok(through) => {
                                 rally::digest::sent(&mut kept, to);
                                 row["decision"] = json!("sent");
+                                row["sent_by"] = json!(through);
                                 row["covered"] = json!(format!("{}–{to}", from + 1));
                             }
                             Err(error) => {
@@ -2114,19 +2115,12 @@ fn wake_pass(
     let teams = backend.read_value("/v1/teams", None, &Page::default(), |ledger, page| {
         views::teams(ledger, None, page)
     })?;
-    // Muster is optional: without it, teams are only reported.
-    let muster = rally::wake::muster_available();
-    let sender: Option<&dyn Sender> = (muster && !report_only).then_some(&rally::wake::MusterShim);
-    let roster = if muster {
-        std::process::Command::new("muster-shim")
-            .arg("roster")
-            .output()
-            .ok()
-            .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
-            .unwrap_or(Value::Null)
-    } else {
-        Value::Null
-    };
+    // Muster or Marshal is optional: without either, teams are only reported (RAL-120).
+    let shims = rally::wake::Shims(rally::shims::from_env());
+    let can_send = rally::shims::available(&shims.0);
+    let sender: Option<&dyn Sender> = (can_send && !report_only).then_some(&shims);
+    let (roster, roster_read) = rally::shims::roster_or_note(&shims.0);
+    let roster = roster.unwrap_or(Value::Null);
     let mut state: Value = std::fs::read_to_string(state_file)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
@@ -2193,8 +2187,8 @@ fn wake_pass(
         if let Decision::Wake(digest) = &decision {
             match sender {
                 Some(sender) => match sender.send(team, digest) {
-                    Ok(()) => {
-                        row["sent_by"] = json!(sender.name());
+                    Ok(through) => {
+                        row["sent_by"] = json!(through);
                         state["teams"][&key]["last_woken_ms"] = json!(now_ms);
                         let mut all = seen.clone();
                         all.extend(fresh);
@@ -2227,7 +2221,8 @@ fn wake_pass(
             list.push(row.clone());
         }
     }
-    report["sender"] = json!(sender.map_or("none: report only", |s| s.name()));
+    report["sender"] = json!(sender.map_or_else(|| "none: report only".to_owned(), |s| s.name()));
+    report["roster"] = roster_read;
     report["untrusted_text"] = json!(views::UNTRUSTED_TEXT);
     if let Some(parent) = state_file.parent() {
         rally::retry::keep_or_exit(state_file, std::fs::create_dir_all(parent))?;
@@ -3758,18 +3753,11 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 let reply = client::request(&pairing, "GET", "/v1/brief", None, &[])?;
                 reply_value(&reply)?
             };
-            // Muster is optional: without it, claims say their sessions couldn't be checked.
-            let roster = rally::wake::muster_available()
-                .then(|| {
-                    std::process::Command::new("muster-shim")
-                        .arg("roster")
-                        .output()
-                        .ok()
-                        .filter(|out| out.status.success())
-                        .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
-                })
-                .flatten();
+            // Muster or Marshal is optional: without either, claims say their sessions couldn't be
+            // checked. The roster comes from whichever daemon has one (RAL-120).
+            let (roster, roster_read) = rally::shims::roster_or_note(&rally::shims::from_env());
             rally::brief::mark_sessions(&mut report, roster.as_ref());
+            report["roster_read"] = roster_read;
             // The rally the watchman starts from (RAL-78), with the projects list the viewer uses.
             let config = config_path(cli.config.clone())?;
             let rallies = Backend::choose(location.as_ref(), &config, false)

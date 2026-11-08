@@ -1,9 +1,10 @@
 //! `rally wake`: wake an idle team with its next story (RAL-54).
 //!
-//! The decision is a pure function of what was read: each team's sessions on Muster's roster, its
+//! The decision is a pure function of what was read: each team's sessions on the roster, its
 //! pick from `rally next`'s rule, its declared state, when it was last woken, the times agreed with
 //! the operator, and now. Reading the roster, the roadmaps and the ledger, and sending through
-//! `muster-shim tell`, happen around it, so it can be tested without any of them.
+//! `marshal-shim` or `muster-shim tell` ([`crate::shims`]), happen around it, so it can be tested
+//! without any of them.
 
 use std::collections::BTreeMap;
 
@@ -136,44 +137,27 @@ pub fn decide(team: &Team, times: Times, now_ms: i64) -> Decision {
     Decision::Wake(digest)
 }
 
-/// How a digest reaches a team. Muster is one way, and optional: without a sender, `rally wake`
+/// Sends a team its digest. Rally sends through Muster or Marshal ([`Shims`]); without one, it
 /// only reports. Another harness's messaging, such as Prime Agent's, can be another sender.
 pub trait Sender {
     /// A short name for the report.
-    fn name(&self) -> &'static str;
-    /// Sends `message` to `team`.
-    fn send(&self, team: &str, message: &str) -> Result<(), String>;
+    fn name(&self) -> String;
+    /// Sends `message` to `team`, and says what it was sent through.
+    fn send(&self, team: &str, message: &str) -> Result<String, String>;
 }
 
-/// Sends through `muster-shim tell <team> <message>`.
-pub struct MusterShim;
+/// Sends through the first shim in the list that knows the team: `<shim> tell <team> <message>`,
+/// as [`crate::shims::tell`] rules (RAL-120).
+pub struct Shims(pub Vec<String>);
 
-impl Sender for MusterShim {
-    fn name(&self) -> &'static str {
-        "muster"
+impl Sender for Shims {
+    fn name(&self) -> String {
+        self.0.join(", then ")
     }
 
-    fn send(&self, team: &str, message: &str) -> Result<(), String> {
-        let output = std::process::Command::new("muster-shim")
-            .args(["tell", team, message])
-            .output()
-            .map_err(|e| format!("muster-shim: {e}"))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "muster-shim tell failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ))
-        }
+    fn send(&self, team: &str, message: &str) -> Result<String, String> {
+        crate::shims::tell(&self.0, team, message)
     }
-}
-
-/// Whether `muster-shim` is on this machine's `PATH`.
-pub fn muster_available() -> bool {
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| dir.join("muster-shim").is_file())
-    })
 }
 
 /// A team's sessions on Muster's roster, by an explicit list of Muster project names or session

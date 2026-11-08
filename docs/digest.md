@@ -31,7 +31,8 @@ so a digest goes at most that long after it's due. Each watchman's head and cloc
 
 ## How it's delivered
 
-- One Muster direct message to each designated watchman, through `muster-shim`, as `rally wake` sends.
+- One direct message to each designated watchman, through `marshal-shim` or `muster-shim`, whichever knows it, as
+  `rally wake` sends (RAL-120), named in the row's `sent_by`.
 - Until RAL-63, that's the one watchman in force. With RAL-63, each watchman in force gets the changes in its
   scope (a host or a team), sent to the session holding that watchman's credential (RAL-53).
 - With no watchman designated, nothing is sent: teams verify one another then (`rally waiting`). While the
