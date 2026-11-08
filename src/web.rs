@@ -829,7 +829,7 @@ pub fn board(rally: &Value, ledger: &Value) -> Value {
 /// With no rally open, RAL-69's reading of what's in play from Muster's roster.
 fn derived_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Value {
     if roster["available"] != json!(true) {
-        return json!({"known": false, "reason": "Muster's roster couldn't be read, so every project is shown."});
+        return json!({"known": false, "reason": "The roster couldn't be read, so every project is shown."});
     }
     let Some(stories) = ledger["stories"]
         .as_object()
@@ -885,7 +885,7 @@ fn derived_rally(projects: &[Project], ledger: &Value, roster: &Value) -> Value 
         "prefixes": prefixes.keys().collect::<Vec<_>>(),
         "held": prefixes,
         "active_teams": active,
-        "rule": "A project is in this rally when a team on Muster's roster now holds one of its stories \
+        "rule": "A project is in this rally when a team on the roster now holds one of its stories \
                  (claimed, in review or sent back). Other projects keep their records and pages.",
     })
 }
@@ -1400,51 +1400,127 @@ fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-/// Reads the roster, keeping only fields the page shows and Muster's own labels for them.
-fn read_roster() -> Value {
-    let unavailable = |reason: &str| json!({"available": false, "reason": reason});
-    let mut command = Command::new("muster-shim");
-    command.arg("roster");
-    let output = match run_with_timeout(command, COMMAND_LIMIT) {
-        Ok(output) => output,
-        Err(error) => {
-            return unavailable(&format!(
-                "muster-shim couldn't read the roster ({error}). This machine may need the \
-                 rollout of Muster's MUS-44."
-            ));
-        }
-    };
-    match serde_json::from_slice::<Value>(&output) {
-        Ok(value) => shape_roster(&value, now_ms()),
-        Err(_) => unavailable("muster-shim's roster couldn't be read."),
-    }
+/// The commands the roster is read with, in order, by default (RAL-116): Marshal's, then Muster's,
+/// which is frozen but still where the sessions are until they move to Marshal's daemon.
+pub const DEFAULT_ROSTER_FROM: [&str; 2] = ["marshal-shim", "muster-shim"];
+
+/// Reads the roster with the first of `from` that gives one, keeping only fields the page shows
+/// and the source's own labels for them. Each command is run as `<command> roster`. The result
+/// says which one was read, and why any before it weren't (RAL-116).
+fn read_roster(from: &[String]) -> Value {
+    read_roster_with(from, |command| {
+        let mut run = Command::new(command);
+        run.arg("roster");
+        run_with_timeout(run, COMMAND_LIMIT)
+    })
 }
 
-/// Keeps only the fields the page shows, in Muster's categories. A later format that drops a field
+/// [`read_roster`] with the command runner given, so a test can stand in for the shims.
+pub fn read_roster_with(
+    from: &[String],
+    mut run: impl FnMut(&str) -> Result<Vec<u8>, String>,
+) -> Value {
+    let mut passed_over = Vec::new();
+    for command in from {
+        let reason = match run(command) {
+            Err(error) => format!("couldn't be read ({error})"),
+            Ok(output) => match serde_json::from_slice::<Value>(&output) {
+                Err(_) => "couldn't be read: it wasn't JSON".to_owned(),
+                Ok(value) => {
+                    let mut shaped = shape_roster(&value, now_ms());
+                    if shaped["available"] == json!(true) {
+                        shaped["source"] = json!(command);
+                        shaped["passed_over"] = json!(passed_over);
+                        return shaped;
+                    }
+                    shaped["reason"]
+                        .as_str()
+                        .unwrap_or("has an unknown format")
+                        .to_owned()
+                }
+            },
+        };
+        passed_over.push(json!({"command": command, "reason": reason}));
+    }
+    let tried: Vec<String> = passed_over
+        .iter()
+        .map(|p| {
+            format!(
+                "{}'s roster {}",
+                p["command"].as_str().unwrap_or(""),
+                p["reason"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    json!({
+        "available": false,
+        "reason": if tried.is_empty() {
+            "no roster command is set.".to_owned()
+        } else {
+            format!("{}.", tried.join("; "))
+        },
+        "passed_over": passed_over,
+    })
+}
+
+/// Keeps only the fields the page shows, under the source's own labels (RAL-116). Muster's
+/// `muster-shim roster` splits each session into `attested`, `declared` and `observed`; Marshal's
+/// `marshal-shim roster` into `declared` and `recorded`, with the machine declared. Each shaped
+/// session says which label each of its facts came under. A later format that drops a field
 /// leaves it blank rather than guessed.
 pub fn shape_roster(value: &Value, read_at_ms: u64) -> Value {
     let list = value["sessions"].as_array().or_else(|| value.as_array());
     let Some(list) = list else {
-        return json!({"available": false, "reason": "muster-shim's roster has an unknown format."});
+        return json!({"available": false, "reason": "has an unknown format"});
     };
     let sessions: Vec<Value> = list
         .iter()
         .map(|session| {
             let declared = &session["declared"];
-            let attested = &session["attested"];
+            // The machine is attested on Muster's roster, and declared on Marshal's.
+            let (machine, machine_label) = if session["attested"].is_object() {
+                (&session["attested"]["machine"], "attested")
+            } else {
+                (&declared["machine"], "declared")
+            };
+            // What the daemon itself holds about the session's connection and wait: Muster calls
+            // it observed, Marshal recorded.
+            let (connection, connection_label) = if session["observed"].is_object() {
+                (&session["observed"], "observed")
+            } else {
+                (&session["recorded"], "recorded")
+            };
+            let connection = connection.is_object().then(|| {
+                json!({
+                    "label": connection_label,
+                    "bound_to_connection": connection["bound_to_connection"],
+                    "waiting": connection["waiting"],
+                    "waiting_until": connection["waiting_until"],
+                })
+            });
+            // Only `waiting` comes from the daemon, from that same block. The other wake values
+            // are worked out from what the session declared.
+            let wake_label = if session["wake"] == "waiting" {
+                connection_label
+            } else {
+                "declared"
+            };
             json!({
                 "project": declared["project"],
                 "nickname": session["nickname"],
-                "machine": attested["machine"],
+                "machine": machine,
+                "machine_label": machine_label,
                 "wake": session["wake"],
-                // Only `waiting` comes from the daemon. The other wake values are declared.
-                "wake_observed": session["wake"] == "waiting",
+                "wake_label": wake_label,
+                "connection": connection,
                 "current_task": declared["current_task"],
                 // When the task was set, from a shim that reports it (MUS-101).
                 "current_task_at": declared["current_task_at"],
                 "activity": declared["activity"],
                 "last_activity_at": declared["last_activity_at"],
                 "last_tool": declared["last_tool"],
+                "last_tool_at": declared["last_tool_at"],
+                "connected_at": declared["connected_at"],
                 // Where the session was started, and its checkout's branch (RAL-99): the operator
                 // asked to see which directory each team is in. The page is the operator's own,
                 // behind sign-in, so a path is shown to no one else. The operator's address isn't.
@@ -1476,6 +1552,8 @@ struct App {
     backup: Option<BackupWatch>,
     /// Reads a past state. Held by one read at a time, since each is a replay (RAL-28).
     past: Mutex<PastReader>,
+    /// The commands the roster is read with, first that gives one (RAL-116).
+    roster_from: Vec<String>,
 }
 
 /// Folders on this machine holding day summaries, which the operator's rule keeps out of git, so
@@ -1616,6 +1694,7 @@ pub async fn serve(
     past: PastReader,
     backup: Option<BackupWatch>,
     local: LocalSummaries,
+    roster_from: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let address = listener.local_addr()?;
     let sessions_file = sessions_file(&sign_in.key_file);
@@ -1632,6 +1711,7 @@ pub async fn serve(
         code_ttl: sign_in.code_ttl,
         backup,
         past: Mutex::new(past),
+        roster_from,
     });
     let refresher = app.clone();
     std::thread::spawn(move || refresh_forever(&refresher, &ledger));
@@ -1692,7 +1772,7 @@ fn refresh_forever(app: &App, ledger: &LedgerReader) {
             }
             Err(reason) => json!({"available": false, "reason": reason}),
         };
-        let roster = read_roster();
+        let roster = read_roster(&app.roster_from);
         let backup = app.backup.as_ref().map(|watch| {
             let saved = crate::backup::saved(&watch.dir).map_err(|e| e.to_string());
             backup_status(saved, now_ms() as i64, watch.max_age_hours)
@@ -3240,14 +3320,135 @@ mod tests {
         assert!(!text.contains("example.com"), "{text}");
         assert_eq!(shaped["sessions"][0]["machine"], "a1");
         assert_eq!(shaped["sessions"][0]["nickname"], "x");
-        assert_eq!(shaped["sessions"][0]["wake_observed"], true);
+        assert_eq!(shaped["sessions"][0]["wake_label"], "observed");
         let declared_wake = json!({"sessions": [{"wake": "channel", "declared": {}}]});
         assert_eq!(
-            shape_roster(&declared_wake, 9)["sessions"][0]["wake_observed"],
-            false
+            shape_roster(&declared_wake, 9)["sessions"][0]["wake_label"],
+            "declared"
         );
         assert_eq!(shaped["sessions"][0]["current_task"], "RAL-1");
         assert_eq!(shape_roster(&json!("nope"), 9)["available"], false);
+    }
+
+    /// `muster-shim roster` as Muster prints it: attested, declared and observed (MUS-44).
+    fn muster_roster() -> Value {
+        json!({"read_at": 100, "sessions": [{
+            "session_id": "s1",
+            "nickname": "plush-tortoise",
+            "wake": "waiting",
+            "attested": {"machine": "Murph", "operator": "someone@example.com"},
+            "declared": {"project": "rally", "activity": "busy", "connected_at": 10,
+                         "last_activity_at": 50, "last_tool": "send_message", "last_tool_at": 40,
+                         "current_task": "RAL-116", "current_task_at": 30},
+            "observed": {"bound_to_connection": true, "waiting": true, "waiting_until": 900},
+        }]})
+    }
+
+    /// `marshal-shim roster` as Marshal prints it: declared and recorded, with the machine and
+    /// operator declared, and no `current_task_at`.
+    fn marshal_roster() -> Value {
+        json!({"read_at": 100, "sessions": [{
+            "session_id": "s2",
+            "nickname": "wise-leopard",
+            "wake": "channel",
+            "recorded": {"bound_to_connection": false, "waiting": false, "waiting_until": null},
+            "declared": {"machine": "Murph", "operator": "someone@example.com",
+                         "project": "marshal", "activity": "idle", "connected_at": 11,
+                         "last_activity_at": 51, "last_tool": "Bash", "last_tool_at": 41,
+                         "current_task": "MAR-16"},
+        }]})
+    }
+
+    #[test]
+    fn each_roster_keeps_its_own_labels_and_ages() {
+        // Muster's: the machine attested, the wait and connection observed.
+        let muster = &shape_roster(&muster_roster(), 9)["sessions"][0];
+        assert_eq!(muster["machine"], "Murph");
+        assert_eq!(muster["machine_label"], "attested");
+        assert_eq!(muster["wake_label"], "observed");
+        assert_eq!(
+            muster["connection"],
+            json!({"label": "observed", "bound_to_connection": true, "waiting": true,
+                   "waiting_until": 900})
+        );
+        assert_eq!(
+            (
+                &muster["connected_at"],
+                &muster["last_tool_at"],
+                &muster["current_task_at"]
+            ),
+            (&json!(10), &json!(40), &json!(30))
+        );
+        // Marshal's: the machine declared, the connection recorded, and a wake it didn't record
+        // is declared.
+        let marshal = &shape_roster(&marshal_roster(), 9)["sessions"][0];
+        assert_eq!(marshal["machine"], "Murph");
+        assert_eq!(marshal["machine_label"], "declared");
+        assert_eq!(marshal["wake_label"], "declared");
+        assert_eq!(marshal["connection"]["label"], "recorded");
+        assert_eq!(marshal["connection"]["bound_to_connection"], false);
+        assert_eq!(
+            (&marshal["connected_at"], &marshal["last_tool_at"]),
+            (&json!(11), &json!(41))
+        );
+        // A time Marshal doesn't report is left blank, not guessed.
+        assert!(marshal["current_task_at"].is_null());
+        // A wait Marshal recorded is labelled recorded.
+        let mut waiting = marshal_roster();
+        waiting["sessions"][0]["wake"] = json!("waiting");
+        assert_eq!(
+            shape_roster(&waiting, 9)["sessions"][0]["wake_label"],
+            "recorded"
+        );
+        // Neither source's operator address is passed on.
+        for roster in [muster_roster(), marshal_roster()] {
+            let text = shape_roster(&roster, 9).to_string();
+            assert!(!text.contains("example.com"), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_roster_falls_back_and_says_which_it_read() {
+        let from = vec!["marshal-shim".to_owned(), "muster-shim".to_owned()];
+        // Marshal's daemon has no sessions yet: marshal-shim fails, so Muster's is read.
+        let mut asked = Vec::new();
+        let roster = read_roster_with(&from, |command| {
+            asked.push(command.to_owned());
+            match command {
+                "marshal-shim" => Err("exit status 1: no roster within 10s".to_owned()),
+                _ => Ok(muster_roster().to_string().into_bytes()),
+            }
+        });
+        assert_eq!(asked, ["marshal-shim", "muster-shim"]);
+        assert_eq!(roster["available"], true);
+        assert_eq!(roster["source"], "muster-shim");
+        assert_eq!(roster["passed_over"][0]["command"], "marshal-shim");
+        let why = roster["passed_over"][0]["reason"].as_str().unwrap();
+        assert!(why.contains("no roster within 10s"), "{why}");
+        // With Marshal's roster read, Muster's isn't asked, and nothing was passed over.
+        let mut asked = Vec::new();
+        let roster = read_roster_with(&from, |command| {
+            asked.push(command.to_owned());
+            Ok(marshal_roster().to_string().into_bytes())
+        });
+        assert_eq!(asked, ["marshal-shim"]);
+        assert_eq!(roster["source"], "marshal-shim");
+        assert_eq!(roster["passed_over"], json!([]));
+        // Output that isn't a roster is passed over too.
+        let roster = read_roster_with(&from, |command| match command {
+            "marshal-shim" => Ok(b"{\"nope\": 1}".to_vec()),
+            _ => Ok(b"not json".to_vec()),
+        });
+        assert_eq!(roster["available"], false);
+        let reason = roster["reason"].as_str().unwrap();
+        assert!(
+            reason.contains("marshal-shim's roster has an unknown format"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("muster-shim's roster couldn't be read"),
+            "{reason}"
+        );
     }
 
     #[cfg(unix)]

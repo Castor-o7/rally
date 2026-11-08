@@ -206,6 +206,11 @@ enum Command {
         /// How long a one-time code works, in seconds.
         #[arg(long, default_value_t = 60, hide = true)]
         code_seconds: u64,
+        /// The commands to read the roster with, comma-separated, each run as `<command> roster`;
+        /// the first that gives one is shown, and the page says which (RAL-116).
+        #[arg(long, env = "RALLY_ROSTER_FROM", value_delimiter = ',',
+              default_values_t = web::DEFAULT_ROSTER_FROM.map(String::from))]
+        roster_from: Vec<String>,
     },
     /// Open the viewer in your browser, signed in, starting it first if it isn't running (RAL-82).
     /// It's restarted when it runs another build or other settings. Settings given here are
@@ -2669,6 +2674,7 @@ fn run_viewer(
     backup: Option<BackupWatch>,
     local: LocalSummaries,
     sign_in: web::SignIn,
+    roster_from: Vec<String>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let key_file = sign_in.key_file.as_path();
     let projects_from = projects
@@ -2738,6 +2744,7 @@ fn run_viewer(
         past,
         backup,
         local,
+        roster_from,
     ))?;
     Ok(json!({"stopped": true}).to_string())
 }
@@ -3025,6 +3032,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             login,
             new_key,
             code_seconds,
+            roster_from,
         } => {
             let config = config_path(cli.config)?;
             let key_file = key_file.unwrap_or_else(|| config.with_file_name("web-key"));
@@ -3081,6 +3089,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     key_file,
                     code_ttl: std::time::Duration::from_secs(code_seconds),
                 },
+                roster_from,
             );
         }
         Command::View {

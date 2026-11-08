@@ -291,11 +291,11 @@ function rallyLine(rally, otherStories) {
   const box = el("div", "group");
   if (rally && rally.rallies_unavailable) {
     box.append(el("p", "muted", "The service doesn't list rallies yet (" + rally.rallies_unavailable
-      + "), so what's in play is read from Muster's roster."));
+      + "), so what's in play is read from the roster."));
   } else if (rally && rally.rallies_error) {
     // Not an older service: a rally may be open that this board can't show (RAL-77).
     box.append(el("p", "warning", "⚠ The rallies couldn't be read (" + rally.rallies_error
-      + "), so an open rally may be missing; what's in play is read from Muster's roster meanwhile."));
+      + "), so an open rally may be missing; what's in play is read from the roster meanwhile."));
   }
   if (!rallyKnown(rally)) {
     box.append(el("p", "warning", "⚠ Can't tell which projects are in this rally: "
@@ -655,7 +655,7 @@ function renderRoadmaps(projects, now, rally) {
     const details = el("details", "sections");
     details.append(el("summary", "", "Not in this rally (" + others.length + ")"));
     details.append(el("p", "muted", (rally && rally.opened ? "Not named by this rally. "
-      : "No team on Muster's roster holds one of their stories. ")
+      : "No team on the roster holds one of their stories. ")
       + "Their records are kept, and each still has its page."));
     const list = el("ul", "story-list");
     for (const project of others) {
@@ -695,18 +695,20 @@ function renderTeams(status, now) {
 
   const roster = status.roster;
   const live = el("div", "group");
-  live.append(el("h3", "", "On Muster's roster"));
+  live.append(el("h3", "", "On the roster"));
   if (roster.available) {
+    live.append(rosterSource(roster));
     const rows = roster.sessions.filter((session) => sessionInRally(status.rally, session)).sort((a, b) =>
       String(a.project).localeCompare(String(b.project)));
-    // Who each team is, where it was started, what it's on and when it last acted (RAL-99).
+    // Who each team is, where it was started, what it's on and when it last acted (RAL-99), each
+    // fact under the label its source gives it (RAL-116).
     live.append(table(["Team", "Directory", "Project", "Machine", "Status", "Working on", "Last action"],
       rows.map((session) => [
-        { text: session.nickname || "", className: "nowrap" },
+        { text: rosterTeam(session, now), className: "nowrap" },
         { text: rosterDirectory(session.cwd), label: "declared" },
         { text: rosterProject(session.project, session.git_branch), label: "declared" },
-        { text: session.machine || "", label: "attested", className: "nowrap" },
-        { text: rosterStatus(session), className: "nowrap" },
+        { text: session.machine || "", label: session.machine_label || "declared", className: "nowrap" },
+        { text: rosterStatus(session, now), className: "nowrap" },
         { text: rosterWorkingOn(session, now), label: "declared", className: "text" },
         { text: rosterLastAction(session, now), label: "declared", className: "nowrap" },
       ])));
@@ -1321,11 +1323,49 @@ function rosterProject(name, branch) {
 
 // Busy or idle, as the session declares it, and whether a message would wake it,
 // observed only when the daemon holds its wait.
-function rosterStatus(session) {
+// Which command the roster was read with, and why any tried before it weren't (RAL-116).
+function rosterSource(roster) {
+  const line = el("p", "muted figure", "Read with " + (roster.source || "an unnamed command") + " roster.");
+  for (const passed of roster.passed_over || []) {
+    line.append(" ", el("span", "roster-fallback", passed.command + "'s roster " + passed.reason + ", so it fell back."));
+  }
+  return line;
+}
+
+// A fact with its label beside it, for a cell holding facts under more than one label.
+function labelled(label, ...content) {
+  const span = el("span");
+  span.append(el("span", "label", label), " ", ...content);
+  return span;
+}
+
+// The team's nickname, and when its session connected, as the session declared it.
+function rosterTeam(session, now) {
+  const span = el("span");
+  span.append(session.nickname || "");
+  if (session.connected_at) {
+    span.append(el("br"), el("span", "muted", [labelled("declared", "connected ", ago(session.connected_at, now))]));
+  }
+  return span;
+}
+
+// What the session says it's doing, its wake, and what the daemon holds about its connection
+// and wait, each under its source's label: Muster's observed, Marshal's recorded (RAL-116).
+function rosterStatus(session, now) {
   const span = el("span", "status");
-  span.append(session.activity || "unknown");
+  span.append(labelled("declared", session.activity || "unknown"));
   if (session.wake) {
-    span.append(el("br"), el("span", "muted", "wake: " + session.wake + (session.wake_observed ? " (observed)" : "")));
+    span.append(el("br"), el("span", "muted", [labelled(session.wake_label || "declared", "wake: " + session.wake)]));
+  }
+  const connection = session.connection;
+  if (connection) {
+    const facts = [connection.bound_to_connection ? "bound to a connection" : "not bound to a connection"];
+    if (connection.waiting && connection.waiting_until) {
+      facts.push(", waiting until ", el("span", "", new Date(connection.waiting_until).toLocaleTimeString()));
+    } else if (connection.waiting) {
+      facts.push(", waiting");
+    }
+    span.append(el("br"), el("span", "muted", [labelled(connection.label, ...facts)]));
   }
   return span;
 }
@@ -1344,7 +1384,11 @@ function rosterWorkingOn(session, now) {
 function rosterLastAction(session, now) {
   const span = el("span");
   span.append(ago(session.last_activity_at, now));
-  if (session.last_tool) span.append(el("br"), el("span", "muted", session.last_tool));
+  if (session.last_tool) {
+    const tool = el("span", "muted", session.last_tool);
+    if (session.last_tool_at) tool.append(" · ", ago(session.last_tool_at, now));
+    span.append(el("br"), tool);
+  }
   return span;
 }
 
