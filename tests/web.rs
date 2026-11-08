@@ -37,6 +37,9 @@ fn rally() -> Command {
     ] {
         command.env_remove(name);
     }
+    // The viewer's tests don't read this machine's roster: one that wants one passes
+    // --roster-from, which takes precedence (RAL-116).
+    command.env("RALLY_ROSTER_FROM", "rally-test-has-no-roster");
     command
 }
 
@@ -2084,4 +2087,144 @@ fn a_refresh_keeps_every_unchanged_node_and_fixes_what_changed() {
     assert_eq!(probe["fixed"], true, "the stale text stayed: {probe}");
     assert_eq!(probe["focused"], true, "{probe}");
     assert_eq!(probe["typed"], "7", "{probe}");
+}
+
+/// Writes an executable `name` in `dir` that prints `stdout` and exits with `code`, standing in
+/// for a shim's `roster`.
+fn fake_roster_command(dir: &std::path::Path, name: &str, stdout: &str, code: i32) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    let body = stdout.replace('\'', "'\\''");
+    std::fs::write(
+        &path,
+        format!("#!/bin/sh\nprintf '%s' '{body}'\nexit {code}\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.display().to_string()
+}
+
+/// What the roster panel shows once a roster has been read: its text, and each label in the table.
+const ROSTER_PROBE: &str = r##"(async () => {
+  const deadline = Date.now() + 20000;
+  const panel = () => [...document.querySelectorAll("#teams .group")]
+    .find((g) => g.querySelector("h3")?.textContent === "On the roster");
+  while (Date.now() < deadline && !(panel()?.textContent || "").includes("Read with")) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  const group = panel();
+  return {
+    text: group ? group.textContent : null,
+    headers: group ? [...group.querySelectorAll("th")].map((th) => th.textContent) : [],
+    labels: group ? [...group.querySelectorAll("td .label")].map((l) => l.textContent) : [],
+    fallbacks: group ? group.querySelectorAll(".roster-fallback").length : 0,
+  };
+})()"##;
+
+/// RAL-116, in the browser: with no sessions on Marshal's daemon, `marshal-shim roster` fails, so
+/// Muster's is read and the page says so, with Muster's own labels; with Marshal's read, the page
+/// shows Marshal's labels and no fallback.
+#[test]
+fn the_roster_falls_back_to_musters_and_keeps_each_sources_labels() {
+    let Some(chrome) = browser() else { return };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let muster = serde_json::json!({"sessions": [{
+        "nickname": "plush-tortoise", "wake": "waiting",
+        "attested": {"machine": "Murph", "operator": "someone@example.com"},
+        "declared": {"project": "rally", "activity": "busy", "connected_at": now - 3_600_000,
+                     "last_activity_at": now - 5_000, "last_tool": "send_message",
+                     "last_tool_at": now - 7_000, "current_task": "RAL-116"},
+        "observed": {"bound_to_connection": true, "waiting": true, "waiting_until": now + 60_000},
+    }]})
+    .to_string();
+    let viewer = start_after_with(
+        "[]",
+        None,
+        60,
+        |_, _| {},
+        |dir| {
+            let marshal = fake_roster_command(dir, "marshal-shim", "", 1);
+            let muster = fake_roster_command(dir, "muster-shim", &muster, 0);
+            vec!["--roster-from".into(), format!("{marshal},{muster}")]
+        },
+    );
+    let seen = in_browser(&viewer, &chrome, Some(ROSTER_PROBE));
+    let probe = &seen["probe"];
+    let text = probe["text"].as_str().unwrap_or_default();
+    assert!(text.contains("muster-shim roster."), "{probe}");
+    assert!(
+        text.contains("marshal-shim's roster couldn't be read"),
+        "{probe}"
+    );
+    assert!(text.contains("it reported a failure"), "{probe}");
+    assert!(text.contains("fell back"), "{probe}");
+    assert_eq!(probe["fallbacks"], 1, "{probe}");
+    assert!(!text.contains("example.com"), "{probe}");
+    // Muster's labels: the machine attested (said once, in its header), the wait and connection
+    // observed, and the times as ages.
+    let headers = probe["headers"].to_string();
+    assert!(headers.contains("Machine attested"), "{probe}");
+    let labels = probe["labels"].to_string();
+    assert!(
+        labels.contains("observed") && labels.contains("declared"),
+        "{probe}"
+    );
+    assert!(
+        text.contains("bound to a connection, waiting until"),
+        "{probe}"
+    );
+    assert!(text.contains("connected 1h ago"), "{probe}");
+    let tool = text.split("send_message · ").nth(1).unwrap_or_default();
+    assert!(
+        tool.starts_with(|c: char| c.is_ascii_digit()) && tool.contains("s ago"),
+        "{probe}"
+    );
+
+    let marshal = serde_json::json!({"sessions": [{
+        "nickname": "wise-leopard", "wake": "waiting",
+        "declared": {"machine": "Murph", "operator": "someone@example.com", "project": "marshal",
+                     "activity": "idle", "connected_at": now - 120_000,
+                     "last_activity_at": now - 5_000, "current_task": "MAR-16"},
+        "recorded": {"bound_to_connection": false, "waiting": true, "waiting_until": now + 60_000},
+    }]})
+    .to_string();
+    let viewer = start_after_with(
+        "[]",
+        None,
+        60,
+        |_, _| {},
+        |dir| {
+            let marshal = fake_roster_command(dir, "marshal-shim", &marshal, 0);
+            vec![
+                "--roster-from".into(),
+                format!("{marshal},muster-shim-is-never-asked"),
+            ]
+        },
+    );
+    let seen = in_browser(&viewer, &chrome, Some(ROSTER_PROBE));
+    let probe = &seen["probe"];
+    let text = probe["text"].as_str().unwrap_or_default();
+    assert!(text.contains("marshal-shim roster."), "{probe}");
+    assert_eq!(probe["fallbacks"], 0, "{probe}");
+    assert!(!text.contains("muster-shim"), "{probe}");
+    // Marshal's labels: the machine declared, the wait and connection recorded; never observed
+    // or attested, which are Muster's words.
+    let labels = probe["labels"].to_string();
+    assert!(labels.contains("recorded"), "{probe}");
+    assert!(
+        !labels.contains("observed") && !labels.contains("attested"),
+        "{probe}"
+    );
+    assert!(
+        !probe["headers"].to_string().contains("attested"),
+        "{probe}"
+    );
+    assert!(
+        text.contains("not bound to a connection, waiting until"),
+        "{probe}"
+    );
+    assert!(text.contains("connected 2m ago"), "{probe}");
 }

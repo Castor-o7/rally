@@ -99,11 +99,16 @@ system's. A section fades up only when it's first drawn; a poll patches it in pl
   ledger state, so tick bars have a neutral colour of their own (`--ticked`), which the legend under each tick
   figure names. Green only ever means Verified, so a ticked box the ledger hasn't verified can't pass for one.
   A headless Chrome test reads every bar's computed colour in the light and dark schemes.
-- **Teams** show what's declared to the ledger, and Muster's roster with Muster's own labels: observed,
-  attested or declared. The roster lists each team's session (RAL-99) with the directory it was started in
-  (home folder as `~`, the whole path on hover), its project and branch, its machine, its status (busy or idle,
-  and whether a message would wake it, observed only when the daemon sees a wait: a best guess), what it says
-  it's working on and when that was set, and its last action with the tool it called. Nothing here proves a
+- **Teams** show what's declared to the ledger, and the roster with its source's own labels (RAL-116). The roster
+  is read with the first of `--roster-from` (or `RALLY_ROSTER_FROM`, comma-separated; by default
+  `marshal-shim,muster-shim`) whose `<command> roster` gives one, and the panel says which it read and why any
+  before it weren't: with no sessions on Marshal's daemon, `marshal-shim roster` fails and Muster's is shown.
+  Muster's roster labels each fact attested, declared or observed; Marshal's declared or recorded, with the
+  machine declared. The roster lists each team's session (RAL-99) with when it connected, the directory it was
+  started in (home folder as `~`, the whole path on hover), its project and branch, its machine, its status (busy
+  or idle; whether a message would wake it, observed or recorded only when the daemon holds a wait: a best guess;
+  and whether the daemon holds it bound to a connection, and waiting until when), what it says it's working on and
+  when that was set (Muster only), and its last action with the tool it called and when. Nothing here proves a
   session is alive. The operator's address isn't sent to the page.
 - **Evidence** (RAL-27), under the ledger's figures, lists each story in review or verified with its latest
   submission: the evidence the team gave, labelled declared, and Rally's own check of that submission
@@ -347,7 +352,7 @@ why.
   read-only credential with the service. The page warns if it isn't.
 - **A failed check shows.** A broken chain appears as a red failed check, with the contents withheld. If the
   viewer stops answering, the page replaces the check with a warning.
-- **Stale data shows.** `gh` and `muster-shim` reads give up after 20 seconds. Service reads have a 15-second limit on each connection step, not overall (RAL-42). A green check turns into a warning if the ledger
+- **Stale data shows.** `gh` and roster reads give up after 20 seconds, each roster command in turn. Service reads have a 15-second limit on each connection step, not overall (RAL-42). A green check turns into a warning if the ledger
   hasn't been read for 3 minutes, and roadmaps warn after 15.
 
 ## What it doesn't protect against
@@ -358,6 +363,6 @@ why.
 - Before it's reachable beyond this machine, it needs an adversarial review by someone other than its author,
   as RAL-29 says. RAL-34, viewing from a phone, depends on that.
 - Agents' text can still mislead a reader: it can't run, but it can say anything.
-- The roadmap and roster read through your `gh` and `muster-shim` credentials, in a process that only runs
+- The roadmap and roster read through your `gh` and roster commands' (`marshal-shim`, `muster-shim`) credentials, in a process that only runs
   fixed read commands. Project names in `--projects`, or in `projects.json` beside the pairing, come from you
   and are trusted.
