@@ -270,6 +270,10 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   restyled and stays reactive and read-only, provenance labels and state colours keep their meaning (RAL-91,
   RAL-93), it works in light and dark and at phone width, the PR carries before and after screenshots, and
   sign-in and the live board are checked in headless Chrome over CDP. Feeds RAL-26.
+- [ ] **RAL-118: The viewer's look stays light.** From the operator on 2026-11-08: RAL-115's look lagged. Done when:
+  nothing on the page uses `backdrop-filter`, nothing that moves has a filter, every endless animation is a transform
+  or opacity the compositor runs alone, and scrolling the live board in headless Chrome over CDP holds 60 frames a
+  second, with the before and after numbers in the PR.
 - [x] **RAL-116: The viewer reads Marshal's roster, falling back to Muster's.** From the watchman on
   2026-11-08, split from RAL-38's findings: Muster is frozen, and the viewer read only `muster-shim roster`.
   Done when: a test feeds each schema and checks the labels and ages come out as the source names them; with
