@@ -2,8 +2,9 @@
 
 **An inventory and a runbook. Nothing in it has been done.** The watchman (mellow-weevil) asked for it on
 2026-11-08, toward the operator's goal of moving from Muster's daemon to Marshal's with no interruption.
-The gaps were brought up to date from Marshal's roadmap and the ledger the same day. Everything else was read on Murph on 2026-11-08, read-only, with Marshal at 0.58.1. Where something couldn't be
-read from Murph, as on a1, it says so. Every step is the operator's to approve and the lamplighter's to run.
+Everything below was read on Murph on 2026-11-08, read-only, with Marshal at 0.58.1, and the gaps were brought
+up to date from Marshal's roadmap and the ledger the same day. Where something couldn't be read from Murph,
+as on a1, it says so. Every step is the operator's to approve and the lamplighter's to run.
 
 ## First, a decision for the operator: Marshal's daemon is open on the LAN today
 
