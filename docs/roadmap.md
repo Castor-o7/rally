@@ -284,6 +284,15 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   in headless Chrome. The ledger is now shown before the roster is read, since a roster command can take its
   whole 20-second limit to fail before the next is tried; the viewer's tests read no roster unless they pass
   one.
+- [x] **RAL-117: The viewer tries the roster source that last worked first.** From the watchman on 2026-11-08,
+  after RAL-116: on Murph, `marshal-shim roster` took about 10 seconds to fail on every refresh before the
+  fallback. Done when: after a fallback the next refresh asks the source that worked first; an earlier source
+  is asked again at most every 5 minutes, and is used again once it answers; a unit test covers both with a
+  fake runner; and the page still says which source it read. Done: the refresh keeps a `RosterMemory` of the
+  command that worked; the ones before it are listed as passed over ("wasn't asked: it failed lately") until
+  `ROSTER_RETRY_EARLIER` is up, and are asked after it if it fails.
+  `the_roster_source_that_worked_is_asked_first_and_earlier_ones_now_and_then` and
+  `a_remembered_source_that_fails_falls_through_to_the_rest` cover it.
 - [ ] **RAL-26: Agree the look with the operator.** Done when: the operator has approved a visual design
   covering the current and past views, on a phone as well as a desktop.
 - [x] **RAL-27: Show the current ledger.** Partly done: the viewer (RAL-43, cd346a1) shows each team's declared state, stories, blockers and their freshness, labelled. RAL-27's second round adds each story's latest evidence (declared) with Rally's check of it (observed), and each team's track record, with their ages. Done 2026-11-05: the operator saw it running on the 127.0.0.1:7300 viewer at 2614a14, with MUS-17's observed "commit exists" in the Evidence table (ledger annotation 190). Done when: the web app shows each team's state, stories,

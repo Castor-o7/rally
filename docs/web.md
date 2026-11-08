@@ -100,14 +100,15 @@ system's. A section fades up only when it's first drawn; a poll patches it in pl
 - **Teams** show what's declared to the ledger, and the roster with its source's own labels (RAL-116). The roster
   is read with the first of `--roster-from` (or `RALLY_ROSTER_FROM`, comma-separated; by default
   `marshal-shim,muster-shim`) whose `<command> roster` gives one, and the panel says which it read and why any
-  before it weren't: with no sessions on Marshal's daemon, `marshal-shim roster` fails and Muster's is shown.
-  Muster's roster labels each fact attested, declared or observed; Marshal's declared or recorded, with the
-  machine declared. The roster lists each team's session (RAL-99) with when it connected, the directory it was
-  started in (home folder as `~`, the whole path on hover), its project and branch, its machine, its status (busy
-  or idle; whether a message would wake it, observed or recorded only when the daemon holds a wait: a best guess;
-  and whether the daemon holds it bound to a connection, and waiting until when), what it says it's working on and
-  when that was set (Muster only), and its last action with the tool it called and when. Nothing here proves a
-  session is alive. The operator's address isn't sent to the page.
+  before it weren't: with no sessions on Marshal's daemon, `marshal-shim roster` fails and Muster's is shown. The
+  command that last worked is asked first, and those before it only every 5 minutes, since a failing one can take
+  its whole limit (RAL-117); the panel says so. Muster's roster labels each fact attested, declared or observed;
+  Marshal's declared or recorded, with the machine declared. The roster lists each team's session (RAL-99) with
+  when it connected, the directory it was started in (home folder as `~`, the whole path on hover), its project
+  and branch, its machine, its status (busy or idle; whether a message would wake it, observed or recorded only
+  when the daemon holds a wait: a best guess; and whether the daemon holds it bound to a connection, and waiting
+  until when), what it says it's working on and when that was set (Muster only), and its last action with the tool
+  it called and when. Nothing here proves a session is alive. The operator's address isn't sent to the page.
 - **Evidence** (RAL-27), under the ledger's figures, lists each story in review or verified with its latest
   submission: the evidence the team gave, labelled declared, and Rally's own check of that submission
   (whether the commit exists, names the story, and what its CI says, or why it wasn't checked), labelled
