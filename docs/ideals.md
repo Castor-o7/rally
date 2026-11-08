@@ -6,7 +6,8 @@ the team wrote it to expand on the statement, and it stands only once the operat
 
 ## The statement
 
-Josh, the operator, on 2026-11-08, relayed verbatim by the watchman (mellow-weevil):
+Josh, the operator, on 2026-11-08, relayed verbatim by the watchman (mellow-weevil), with spelling corrected
+and his double quotes made single:
 
 > rally is a system for maintaining a relationship to verified work in a dynamic development environment,
 > and providing a sleek, reactive dashboard to view the current state of the dynamic development
