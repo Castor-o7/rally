@@ -270,7 +270,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   restyled and stays reactive and read-only, provenance labels and state colours keep their meaning (RAL-91,
   RAL-93), it works in light and dark and at phone width, the PR carries before and after screenshots, and
   sign-in and the live board are checked in headless Chrome over CDP. Feeds RAL-26.
-- [ ] **RAL-118: The viewer's look stays light.** From the operator on 2026-11-08: RAL-115's look lagged. Done when:
+- [x] **RAL-118: The viewer's look stays light.** Merged in #194 (3f2bb55). From the operator on 2026-11-08: RAL-115's look lagged. Done when:
   nothing on the page uses `backdrop-filter`, nothing that moves has a filter, every endless animation is a transform
   or opacity the compositor runs alone, and scrolling the live board in headless Chrome over CDP holds 60 frames a
   second, with the before and after numbers in the PR.
@@ -288,7 +288,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   in headless Chrome. The ledger is now shown before the roster is read, since a roster command can take its
   whole 20-second limit to fail before the next is tried; the viewer's tests read no roster unless they pass
   one.
-- [ ] **RAL-119: A cutover inventory and runbook from Muster's daemon to Marshal's.** From the watchman on
+- [x] **RAL-119: A cutover inventory and runbook from Muster's daemon to Marshal's.** Merged in #195 (8d6a2ed). From the watchman on
   2026-11-08, toward the operator's goal of moving with no interruption. Docs only, read-only. Done when:
   [cutover.md](cutover.md) lists every place Muster is wired in on Murph (and what to confirm on a1), what each
   needs on Marshal, what Marshal can't do yet, and a step order that never leaves a session unreachable, with rollback.
@@ -311,15 +311,15 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   first that gives one, named in `roster.read_with` (`roster_read` in the brief); a message goes through the
   first that knows its recipient, named in `sent_by`, falling back only when the shim says nothing was sent or
   can't be run. `tests/shims.rs` covers all four commands in the three cases, and the stop case.
-- [ ] **RAL-122: A design note on carrying unread Muster mail to Marshal at the cutover.** From the watchman on
+- [x] **RAL-122: A design note on carrying unread Muster mail to Marshal at the cutover.** Merged in #199 (bc6c5a2). From the watchman on
   2026-11-08, for [cutover.md](cutover.md)'s "message history carried over" gap. Docs only. Done when:
   [mail-carryover.md](mail-carryover.md) says how mail is kept on both daemons, measures what's unread, sets out the
   options (read it on Muster first, a relay, export and import, or nothing) with their trade-offs, and the choice
   is asked of the operator.
-- [ ] **RAL-121: The operator's three ideals are written down.** From the operator on 2026-11-08: "the three
+- [x] **RAL-121: The operator's three ideals are written down.** Merged in #197 (597f824). From the operator on 2026-11-08: "the three
   ideals of rally are thusly: accuracy, verifiability, and reactivity". Done when: [ideals.md](ideals.md) quotes it
   as decided, any gloss or grouping beyond the three words is marked proposed and asked of the operator, and it's merged.
-- [ ] **RAL-123: A verifier can correct its own read.** From the watchman on 2026-11-08: annotating its own
+- [x] **RAL-123: A verifier can correct its own read.** Merged in #200 (ca22bfe). From the watchman on 2026-11-08: annotating its own
   verification (1432) was refused as "isn't an earlier record that names watchman", and on MAR-10, a multi-part story
   still claimed, no form of re-read could be recorded. Done when: annotate accepts a correction from a verify's or
   send-back's reading team or writer, shown beside it like any annotation, and the refusal says who may annotate it; a
