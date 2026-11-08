@@ -107,7 +107,8 @@ system's. A section fades up only when it's first drawn; a poll patches it in pl
   its whole limit (RAL-117); the panel says so. Muster's roster labels each fact attested, declared or observed;
   Marshal's declared or recorded, with the machine declared. The roster lists each team's session (RAL-99) with
   when it connected, the directory it was started in (home folder as `~`, the whole path on hover), its project
-  and branch, its machine, its status (busy or idle; whether a message would wake it, observed or recorded only
+  and branch, its machine, its status (busy or idle, and for how long when the shim declares when that changed, `activity_at`
+  (MAR-58, RAL-124), or "since unknown" when it doesn't, never an age from its last tool; whether a message would wake it, observed or recorded only
   when the daemon holds a wait: a best guess; and whether the daemon holds it bound to a connection, and waiting
   until when), what it says it's working on and when that was set (Muster only), and its last action with the tool
   it called and when. Nothing here proves a session is alive. The operator's address isn't sent to the page.

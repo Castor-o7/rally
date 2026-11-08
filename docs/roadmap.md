@@ -325,6 +325,12 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   send-back's reading team or writer, shown beside it like any annotation, and the refusal says who may annotate it; a
   part's verifier can add `--also-read` while the part is Verified and the story isn't; tests cover a verifier
   annotating its own read, an unrelated team refused, and the part's also-read; and the viewer shows the annotation.
+- [ ] **RAL-124: The viewer says how long each session has been busy or idle.** From the watchman on 2026-11-08,
+  the part of RAL-38 that doesn't wait on the cutover. `activity` had no time of its own, and `last_activity_at` is the
+  last tool or prompt, not when a session turned busy or idle. Marshal's side is MAR-58 (the shim declares
+  `activity_at`). Done when: the roster carries `activity_at` from either schema, declared, when the shim gives it;
+  the page reads "busy for 3m", counting on, and "since unknown" without it; a unit test covers both schemas and a
+  headless Chrome test both cases.
 - [ ] **RAL-26: Agree the look with the operator.** Done when: the operator has approved a visual design
   covering the current and past views, on a phone as well as a desktop.
 - [x] **RAL-27: Show the current ledger.** Partly done: the viewer (RAL-43, cd346a1) shows each team's declared state, stories, blockers and their freshness, labelled. RAL-27's second round adds each story's latest evidence (declared) with Rally's check of it (observed), and each team's track record, with their ages. Done 2026-11-05: the operator saw it running on the 127.0.0.1:7300 viewer at 2614a14, with MUS-17's observed "commit exists" in the Evidence table (ledger annotation 190). Done when: the web app shows each team's state, stories,

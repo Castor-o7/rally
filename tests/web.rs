@@ -2335,3 +2335,44 @@ fn a_readers_note_on_its_own_read_shows_beside_it() {
         "{probe}"
     );
 }
+
+/// RAL-124, in the browser: a session whose shim declares when its activity changed reads "busy for
+/// 3m", counting on; one whose shim doesn't reads "idle, since unknown", never an age taken from its
+/// last tool or prompt.
+#[test]
+fn the_roster_says_how_long_a_session_has_been_busy_only_when_declared() {
+    let Some(chrome) = browser() else { return };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let roster = serde_json::json!({"sessions": [
+        {"nickname": "plush-tortoise", "wake": "waiting",
+         "declared": {"machine": "Murph", "project": "rally", "activity": "busy",
+                      "activity_at": now - 180_000, "connected_at": now - 3_600_000,
+                      "last_activity_at": now - 5_000, "current_task": "RAL-124"},
+         "recorded": {"bound_to_connection": true, "waiting": false, "waiting_until": null}},
+        {"nickname": "wise-leopard", "wake": "waiting",
+         "declared": {"machine": "Murph", "project": "marshal", "activity": "idle",
+                      "connected_at": now - 3_600_000, "last_activity_at": now - 7_000,
+                      "current_task": "MAR-58"},
+         "recorded": {"bound_to_connection": true, "waiting": true, "waiting_until": null}},
+    ]})
+    .to_string();
+    let viewer = start_after_with(
+        "[]",
+        None,
+        60,
+        |_, _| {},
+        |dir| {
+            let marshal = fake_roster_command(dir, "marshal-shim", &roster, 0);
+            vec!["--roster-from".into(), marshal]
+        },
+    );
+    let seen = in_browser(&viewer, &chrome, Some(ROSTER_PROBE));
+    let probe = &seen["probe"];
+    let text = probe["text"].as_str().unwrap_or_default();
+    assert!(text.contains("busy for 3m"), "{probe}");
+    assert!(text.contains("idle, since unknown"), "{probe}");
+    assert!(!text.contains("idle for"), "{probe}");
+}

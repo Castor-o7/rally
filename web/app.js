@@ -58,9 +58,10 @@ function el(tag, className, text) {
 
 // An age that keeps itself current (RAL-90): the ticker below rewrites it every second from
 // its timestamp, so "12s ago" doesn't stand still until the next poll.
-function ago(ms, now) {
-  const node = el("span", "age", age(ms, now === undefined ? Date.now() : now));
+function ago(ms, now, form) {
+  const node = el("span", "age", age(ms, now === undefined ? Date.now() : now, form));
   if (ms !== undefined && ms !== null) node.dataset.ts = String(ms);
+  if (form) node.dataset.form = form;
   return node;
 }
 
@@ -74,13 +75,15 @@ function shortCommit(text) {
   return node;
 }
 
-function age(ms, now) {
+function age(ms, now, form) {
   if (ms === undefined || ms === null) return "unknown";
   const seconds = Math.max(0, Math.round((now - ms) / 1000));
-  if (seconds < 60) return seconds + "s ago";
-  if (seconds < 3600) return Math.round(seconds / 60) + "m ago";
-  if (seconds < 172800) return Math.round(seconds / 3600) + "h ago";
-  return Math.round(seconds / 86400) + "d ago";
+  // "3m ago", or with form "for", a span of time: "3m" (RAL-124).
+  const end = form === "for" ? "" : " ago";
+  if (seconds < 60) return seconds + "s" + end;
+  if (seconds < 3600) return Math.round(seconds / 60) + "m" + end;
+  if (seconds < 172800) return Math.round(seconds / 3600) + "h" + end;
+  return Math.round(seconds / 86400) + "d" + end;
 }
 
 // A bar of roadmap ticks. A tick isn't a ledger state, so its fill is the ticked colour, never a
@@ -1317,7 +1320,7 @@ function showFreshness(now) {
 function tick() {
   const now = Date.now();
   for (const node of document.querySelectorAll(".age[data-ts]")) {
-    const text = age(Number(node.dataset.ts), now);
+    const text = age(Number(node.dataset.ts), now, node.dataset.form);
     if (node.textContent !== text) node.textContent = text;
   }
   showFreshness(now);
@@ -1368,11 +1371,18 @@ function rosterTeam(session, now) {
   return span;
 }
 
-// What the session says it's doing, its wake, and what the daemon holds about its connection
-// and wait, each under its source's label: Muster's observed, Marshal's recorded (RAL-116).
+// What the session says it's doing and for how long, its wake, and what the daemon holds about its
+// connection and wait, each under its source's label: Muster's observed, Marshal's recorded (RAL-116).
 function rosterStatus(session, now) {
   const span = el("span", "status");
-  span.append(labelled("declared", session.activity || "unknown"));
+  // How long it's been busy or idle comes only from when the shim declared that it changed
+  // (`activity_at`, RAL-124). The last tool or prompt isn't that, so without it Rally says so.
+  const activity = [session.activity || "unknown"];
+  if (session.activity) {
+    if (session.activity_at) activity.push(" for ", ago(session.activity_at, now, "for"));
+    else activity.push(el("span", "muted", ", since unknown"));
+  }
+  span.append(labelled("declared", ...activity));
   if (session.wake) {
     span.append(el("br"), el("span", "muted", [labelled(session.wake_label || "declared", "wake: " + session.wake)]));
   }
