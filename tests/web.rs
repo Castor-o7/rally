@@ -1943,7 +1943,8 @@ fn the_page_uses_a_wide_window() {
 }
 
 /// RAL-111, in the browser: on an 800-pixel window, as on a half screen, the page fits it. Wide
-/// tables scroll inside their own box, and the page itself never scrolls sideways.
+/// tables scroll inside their own box, and the page itself never scrolls sideways. RAL-125: and on a
+/// 390-pixel phone, emulated, as well.
 #[test]
 fn the_page_fits_a_narrow_window() {
     let Some(chrome) = browser() else { return };
@@ -2002,12 +2003,14 @@ fn the_page_fits_a_narrow_window() {
         sticking,
       };
     })()"##;
-    let seen = in_browser_at(&viewer, &chrome, Some(probe), Some("800,1000"));
-    let probe = &seen["probe"];
-    assert_eq!(probe["window"], 800, "{seen}");
-    assert!(probe["tables"].as_u64().unwrap() > 0, "{probe}");
-    assert_eq!(probe["sticking"], json!([]), "{probe}");
-    assert_eq!(probe["overflow"], false, "{probe}");
+    for (window, width) in [("800,1000", 800), ("390,844", 390)] {
+        let seen = in_browser_at(&viewer, &chrome, Some(probe), Some(window));
+        let probe = &seen["probe"];
+        assert_eq!(probe["window"], width, "{seen}");
+        assert!(probe["tables"].as_u64().unwrap() > 0, "{probe}");
+        assert_eq!(probe["sticking"], json!([]), "{width}: {probe}");
+        assert_eq!(probe["overflow"], false, "{width}: {probe}");
+    }
 }
 
 /// RAL-89, in the browser: a refresh patches the page rather than rebuilding it. Every node that

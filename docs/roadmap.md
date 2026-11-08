@@ -325,6 +325,12 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   send-back's reading team or writer, shown beside it like any annotation, and the refusal says who may annotate it; a
   part's verifier can add `--also-read` while the part is Verified and the story isn't; tests cover a verifier
   annotating its own read, an unrelated team refused, and the part's also-read; and the viewer shows the annotation.
+- [ ] **RAL-125: The viewer fits a phone.** From the watchman's read of RAL-115 on 2026-11-08: at about 500 pixels a
+  panel's edge and the Evidence table's last column looked clipped. Measured over CDP at a 390-pixel viewport on the
+  live board, nothing runs past the window outside a table's own scroll box: the look at 500 was the 15-pixel
+  scrollbar over a full-page capture, and the table scrolls sideways as RAL-111 intends. Done when: the
+  narrow-window browser test also runs at 390 pixels, emulated, and fails if anything outside `.table-wrap` runs past
+  the window, shown by breaking it on purpose.
 - [ ] **RAL-26: Agree the look with the operator.** Done when: the operator has approved a visual design
   covering the current and past views, on a phone as well as a desktop.
 - [x] **RAL-27: Show the current ledger.** Partly done: the viewer (RAL-43, cd346a1) shows each team's declared state, stories, blockers and their freshness, labelled. RAL-27's second round adds each story's latest evidence (declared) with Rally's check of it (observed), and each team's track record, with their ages. Done 2026-11-05: the operator saw it running on the 127.0.0.1:7300 viewer at 2614a14, with MUS-17's observed "commit exists" in the Evidence table (ledger annotation 190). Done when: the web app shows each team's state, stories,
