@@ -29,8 +29,8 @@ That makes two pillars:
    record hasn't been rewritten.
 3. **Reactivity.** It stays current as the environment changes, and shows that it is.
 
-The one-line gloss after each ideal is the team's, **proposed** for the operator to confirm. The ideals
-themselves are the operator's words.
+The one-line gloss after each ideal is the team's wording. The operator confirmed the glosses on
+2026-11-08, so they're **decided** too.
 
 ## Already decided
 
@@ -52,7 +52,8 @@ ideals can be read in one place, and they are not reopened.
 **Proposed, not decided.** These are the team's reading of the statement. Each one names the existing
 behaviour it describes, so it adds no new rule until the operator confirms it.
 
-How they sit under the three ideals, also proposed:
+How they sit under the three ideals. The operator confirmed this table on 2026-11-08, so the grouping is
+**decided**, though each principle in it is still proposed:
 
 | Ideal | Principles |
 |---|---|
@@ -96,6 +97,5 @@ Recorded as a question to the operator in Rally (`rally block --story RAL-114 --
 
 1. Do P1 to P10 read right as the meaning of your statement? Strike or reword any of them.
 2. Should the statement replace the README's opening description of Rally, or sit beside it?
-3. Do the glosses on the three ideals, and the table placing P1 to P10 under them, read right?
-4. Is "a rally" the open rally (one period with a name, as `rally open-rally` makes it), or the whole live
+3. Is "a rally" the open rally (one period with a name, as `rally open-rally` makes it), or the whole live
    environment at any moment? P9 assumes the first.
