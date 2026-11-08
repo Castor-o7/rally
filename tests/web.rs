@@ -2128,7 +2128,7 @@ const ROSTER_PROBE: &str = r##"(async () => {
 /// Muster's is read and the page says so, with Muster's own labels; with Marshal's read, the page
 /// shows Marshal's labels and no fallback.
 #[test]
-fn the_roster_falls_back_to_musters_and_keeps_each_sources_labels() {
+fn the_roster_shows_every_source_and_keeps_each_sources_labels() {
     let Some(chrome) = browser() else { return };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2163,8 +2163,10 @@ fn the_roster_falls_back_to_musters_and_keeps_each_sources_labels() {
         "{probe}"
     );
     assert!(text.contains("it reported a failure"), "{probe}");
-    assert!(text.contains("fell back"), "{probe}");
+    assert!(text.contains("so its sessions aren't shown"), "{probe}");
     assert_eq!(probe["fallbacks"], 1, "{probe}");
+    // Muster's sessions are shown, each naming its roster (RAL-126).
+    assert!(text.contains("via muster-shim"), "{probe}");
     assert!(!text.contains("example.com"), "{probe}");
     // Muster's labels: the machine attested (said once, in its header), the wait and connection
     // observed, and the times as ages.
@@ -2201,18 +2203,20 @@ fn the_roster_falls_back_to_musters_and_keeps_each_sources_labels() {
         |_, _| {},
         |dir| {
             let marshal = fake_roster_command(dir, "marshal-shim", &marshal, 0);
-            vec![
-                "--roster-from".into(),
-                format!("{marshal},muster-shim-is-never-asked"),
-            ]
+            // Muster's daemon is up with nobody on it: both are read, and only Marshal's
+            // sessions show.
+            let muster = fake_roster_command(dir, "muster-shim", r#"{"sessions": []}"#, 0);
+            vec!["--roster-from".into(), format!("{marshal},{muster}")]
         },
     );
     let seen = in_browser(&viewer, &chrome, Some(ROSTER_PROBE));
     let probe = &seen["probe"];
     let text = probe["text"].as_str().unwrap_or_default();
-    assert!(text.contains("marshal-shim roster."), "{probe}");
+    assert!(text.contains("marshal-shim roster and "), "{probe}");
+    assert!(text.contains("muster-shim roster."), "{probe}");
     assert_eq!(probe["fallbacks"], 0, "{probe}");
-    assert!(!text.contains("muster-shim"), "{probe}");
+    assert!(text.contains("via marshal-shim"), "{probe}");
+    assert!(!text.contains("via muster-shim"), "{probe}");
     // Marshal's labels: the machine declared, the wait and connection recorded; never observed
     // or attested, which are Muster's words.
     let labels = probe["labels"].to_string();
@@ -2230,6 +2234,37 @@ fn the_roster_falls_back_to_musters_and_keeps_each_sources_labels() {
         "{probe}"
     );
     assert!(text.contains("connected 2m ago"), "{probe}");
+
+    // Both with sessions, as while they move (RAL-126): both teams, each naming its roster, and
+    // each machine under its own roster's label.
+    let viewer = start_after_with(
+        "[]",
+        None,
+        60,
+        |_, _| {},
+        |dir| {
+            let marshal = fake_roster_command(dir, "marshal-shim", &marshal, 0);
+            let muster = fake_roster_command(dir, "muster-shim", &muster, 0);
+            vec!["--roster-from".into(), format!("{marshal},{muster}")]
+        },
+    );
+    let seen = in_browser(&viewer, &chrome, Some(ROSTER_PROBE));
+    let probe = &seen["probe"];
+    let text = probe["text"].as_str().unwrap_or_default();
+    assert!(
+        text.contains("wise-leopard") && text.contains("plush-tortoise"),
+        "{probe}"
+    );
+    assert!(
+        text.contains("via marshal-shim") && text.contains("via muster-shim"),
+        "{probe}"
+    );
+    let labels = probe["labels"].to_string();
+    assert!(
+        labels.contains("recorded") && labels.contains("observed"),
+        "{probe}"
+    );
+    assert!(labels.contains("attested"), "{probe}");
 }
 
 /// RAL-123, in the browser: a reader's own correction of its verify note shows beside the read, in

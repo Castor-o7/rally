@@ -77,8 +77,9 @@ Muster's facts keep Muster's own labels. `wake: waiting` is observed, and means 
 wake value, and `activity`, are declared. `wake: none` means no sign that a message would wake the session, not that
 it's gone. Idleness is judged by a session's declared activity, since a busy session can be waiting for messages
 too. Only a session that declares no activity counts as idle on `wake: waiting` alone. Rally's facts (claims, states,
-blockers) are declared. The roster is read through the first of `RALLY_ROSTER_FROM` (by default `marshal-shim`,
-then `muster-shim`) that gives one, named in the report's `roster.read_with` (RAL-120). Without one, only
+blockers) are declared. The roster is every one of `RALLY_ROSTER_FROM`'s (by default `marshal-shim` and
+`muster-shim`) merged, each session row naming its `source` (RAL-126); the report's `roster.read_with` lists those
+read, and `roster.passed_over` any that failed. Without one, only
 `declared_blocked` is shown, since the other rows need the roster.
 
 ## The check-in length

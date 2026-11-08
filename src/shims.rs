@@ -3,8 +3,8 @@
 //! reads the roster with it (RAL-116), and so do `rally stalls`, `rally wake` and `rally brief`;
 //! `rally wake` and `rally digest` send through it.
 //!
-//! During the move from Muster's daemon to Marshal's, each session lives on exactly one daemon. So a
-//! roster is read from the first command that gives one, and a message is sent through the first
+//! During the move from Muster's daemon to Marshal's, each session lives on exactly one daemon. So the
+//! roster is every command's merged, each row naming its source (RAL-126), and a message is sent through the first
 //! command that knows its recipient. A send falls back to the next command only when the shim says
 //! nothing was sent because the recipient isn't on its roster or its daemon couldn't be reached, or
 //! when the command can't be run at all. Any other failure stops there and is reported, so a shim
@@ -57,54 +57,102 @@ pub fn available(list: &[String]) -> bool {
     list.iter().any(|command| on_path(command))
 }
 
-/// A roster, the command it was read with, and why any before it weren't.
+/// Every source's roster merged, the commands that gave one, and why any others didn't (RAL-126).
 #[derive(Clone, Debug)]
 pub struct Roster {
+    /// `{"sessions": [...]}`, each session carrying the `source` it came from.
     pub value: Value,
-    pub source: String,
+    pub sources: Vec<String>,
     pub passed_over: Vec<(String, String)>,
 }
 
-/// The roster from the first of `list` whose `<command> roster` succeeds with a roster on it, or
-/// why each one failed.
+/// Reads `<command> roster` with every one of `list`, and merges what they give (RAL-126). While
+/// sessions move from Muster's daemon to Marshal's, both have some, so neither alone is the roster.
+/// `Err` with why each failed when none gave one.
 pub fn roster(list: &[String]) -> Result<Roster, Vec<(String, String)>> {
     let mut passed_over = Vec::new();
+    let mut rosters = Vec::new();
     for command in list {
-        let reason = match Command::new(command).arg("roster").output() {
-            Err(error) => format!("couldn't be run ({error})"),
-            Ok(out) if !out.status.success() => format!(
-                "reported a failure: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-            Ok(out) => match serde_json::from_slice::<Value>(&out.stdout) {
-                Ok(value) if value["sessions"].is_array() => {
-                    return Ok(Roster {
-                        value,
-                        source: command.clone(),
-                        passed_over,
-                    });
-                }
-                Ok(_) => "printed no roster".to_owned(),
-                Err(_) => "printed something that isn't JSON".to_owned(),
-            },
-        };
-        passed_over.push((command.clone(), reason));
+        match read_one(command) {
+            Ok(value) => rosters.push((command.clone(), value)),
+            Err(reason) => passed_over.push((command.clone(), reason)),
+        }
     }
-    Err(passed_over)
+    if rosters.is_empty() {
+        return Err(passed_over);
+    }
+    Ok(Roster {
+        value: serde_json::json!({"sessions": merge(&rosters)}),
+        sources: rosters.into_iter().map(|(command, _)| command).collect(),
+        passed_over,
+    })
 }
 
-/// The roster as `Option`, for the commands where it's optional, and a note naming the command it
+fn read_one(command: &str) -> Result<Value, String> {
+    let out = Command::new(command)
+        .arg("roster")
+        .output()
+        .map_err(|error| format!("couldn't be run ({error})"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "reported a failure: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    match serde_json::from_slice::<Value>(&out.stdout) {
+        Ok(value) if value["sessions"].is_array() => Ok(value),
+        Ok(_) => Err("printed no roster".to_owned()),
+        Err(_) => Err("printed something that isn't JSON".to_owned()),
+    }
+}
+
+/// The sessions of every roster, each with the `source` it came from (RAL-126). A session id on
+/// more than one keeps the row whose declared `last_activity_at` is latest, the earlier source on a
+/// tie, with `also_on` naming the others, so it's shown once and nothing is hidden.
+pub fn merge(rosters: &[(String, Value)]) -> Vec<Value> {
+    let mut rows: Vec<Value> = Vec::new();
+    for (source, roster) in rosters {
+        for session in roster["sessions"].as_array().into_iter().flatten() {
+            let mut row = session.clone();
+            row["source"] = Value::from(source.as_str());
+            row["also_on"] = Value::Array(Vec::new());
+            let id = session["session_id"].as_str().filter(|id| !id.is_empty());
+            let same = id.and_then(|id| rows.iter().position(|r| r["session_id"] == id));
+            let Some(at) = same else {
+                rows.push(row);
+                continue;
+            };
+            let active = |r: &Value| {
+                r["declared"]["last_activity_at"]
+                    .as_i64()
+                    .unwrap_or(i64::MIN)
+            };
+            let kept = &mut rows[at];
+            if active(&row) > active(kept) {
+                let mut also = kept["also_on"].as_array().cloned().unwrap_or_default();
+                also.push(kept["source"].clone());
+                row["also_on"] = Value::Array(also);
+                *kept = row;
+            } else if let Some(also) = kept["also_on"].as_array_mut() {
+                also.push(Value::from(source.as_str()));
+            }
+        }
+    }
+    rows
+}
+
+/// The roster as `Option`, for the commands where it's optional, and a note naming the commands it
 /// was read with, or why none gave one.
 pub fn roster_or_note(list: &[String]) -> (Option<Value>, Value) {
     match roster(list) {
         Ok(found) => {
-            let note = serde_json::json!({"read_with": found.source,
+            let note = serde_json::json!({"read_with": found.sources,
                 "passed_over": passed(&found.passed_over)});
             (Some(found.value), note)
         }
         Err(failed) => (
             None,
-            serde_json::json!({"read_with": null, "passed_over": passed(&failed)}),
+            serde_json::json!({"read_with": [], "passed_over": passed(&failed)}),
         ),
     }
 }
@@ -158,6 +206,42 @@ mod tests {
         assert_eq!(parse(Some(" , ")), ["marshal-shim", "muster-shim"]);
         assert_eq!(parse(Some("muster-shim")), ["muster-shim"]);
         assert_eq!(parse(Some("a, b")), ["a", "b"]);
+    }
+
+    #[test]
+    fn rosters_merge_and_a_session_on_both_is_shown_once() {
+        let row = |id: &str, at: i64| serde_json::json!({"session_id": id, "nickname": id, "declared": {"last_activity_at": at}});
+        let marshal = serde_json::json!({"sessions": [row("a", 10), row("both", 50)]});
+        let muster = serde_json::json!({"sessions": [row("b", 20), row("both", 40)]});
+        let merged = merge(&[
+            ("marshal-shim".into(), marshal),
+            ("muster-shim".into(), muster),
+        ]);
+        let ids: Vec<&str> = merged
+            .iter()
+            .map(|r| r["session_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["a", "both", "b"]);
+        assert_eq!(merged[0]["source"], "marshal-shim");
+        assert_eq!(merged[2]["source"], "muster-shim");
+        // On both: the more recently active row, naming the other source.
+        assert_eq!(merged[1]["source"], "marshal-shim");
+        assert_eq!(merged[1]["also_on"], serde_json::json!(["muster-shim"]));
+        // The later source wins when it's the more recent.
+        let older = serde_json::json!({"sessions": [row("both", 1)]});
+        let newer = serde_json::json!({"sessions": [row("both", 2)]});
+        let merged = merge(&[
+            ("marshal-shim".into(), older),
+            ("muster-shim".into(), newer),
+        ]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0]["source"], "muster-shim");
+        assert_eq!(merged[0]["also_on"], serde_json::json!(["marshal-shim"]));
+        // An empty roster adds nothing.
+        let empty = serde_json::json!({"sessions": []});
+        let one = serde_json::json!({"sessions": [row("b", 20)]});
+        let merged = merge(&[("marshal-shim".into(), empty), ("muster-shim".into(), one)]);
+        assert_eq!(merged.len(), 1);
     }
 
     #[test]
