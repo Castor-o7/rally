@@ -5,7 +5,7 @@
 :root {
   color-scheme: light;
   --page: #eef1f8;
-  --surface: rgba(255, 255, 255, 0.72);
+  --surface: rgba(255, 255, 255, 0.86);
   --surface-solid: #fbfcff;
   --text: #0c0f1d;
   --text-2: #4a5068;
@@ -37,7 +37,7 @@
   :root {
     color-scheme: dark;
     --page: #06070f;
-    --surface: rgba(17, 19, 38, 0.66);
+    --surface: rgba(17, 19, 38, 0.86);
     --surface-solid: #10122a;
     --text: #e9ebff;
     --text-2: #a3a8c9;
@@ -81,6 +81,8 @@ body::before {
   inset: 0;
   z-index: -1;
   pointer-events: none;
+  /* Its own layer, painted once: scrolling moves the page over it rather than repainting it (RAL-118). */
+  will-change: transform;
   background:
     radial-gradient(900px 520px at 12% -8%, var(--aurora-1), transparent 70%),
     radial-gradient(800px 600px at 100% 10%, var(--aurora-2), transparent 70%),
@@ -105,9 +107,12 @@ header {
   border-image: linear-gradient(90deg, var(--arc-1), var(--arc-2) 40%, transparent) 1;
 }
 .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
-.sigil { flex: none; width: 46px; height: 46px; color: var(--arc-1); filter: drop-shadow(0 0 6px var(--arc-glow)); }
-.sigil .ring-outer { transform-origin: 50% 50%; animation: turn 48s linear infinite; }
-.sigil .ring-inner { transform-origin: 50% 50%; animation: turn 30s linear infinite reverse; color: var(--arc-2); }
+.sigil { position: relative; flex: none; width: 46px; height: 46px; color: var(--arc-1); }
+/* Each ring is its own <svg> box, so turning it is a compositor transform: no repaint, no style work per
+   frame, and no filter on anything that moves (RAL-118). */
+.sigil svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.sigil .ring-outer { animation: turn 48s linear infinite; will-change: transform; }
+.sigil .ring-inner { animation: turn 30s linear infinite reverse; will-change: transform; color: var(--arc-2); }
 .eyebrow {
   margin: 0 0 2px;
   font: 600 10.5px/1 var(--mono);
@@ -150,7 +155,8 @@ h3 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: 0.01em; }
 p { margin: 0; }
 .muted { color: var(--text-2); font-size: 13px; }
 
-/* Panels are glass, edged in light, with corner brackets like a heads-up display. */
+/* Panels are smoked glass, edged in light, with corner brackets like a heads-up display. No
+   backdrop-filter: a blur under every panel was recomputed on every scrolled frame (RAL-118). */
 .panel, .roadmap {
   position: relative;
   margin-top: 12px;
@@ -159,8 +165,6 @@ p { margin: 0; }
   border: 1px solid var(--line);
   border-radius: 12px;
   box-shadow: var(--shadow);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  backdrop-filter: blur(14px) saturate(140%);
   transition: border-color 0.25s ease, box-shadow 0.25s ease;
 }
 .panel::before, .roadmap::before, .panel::after, .roadmap::after {
@@ -240,7 +244,7 @@ code.path { font: 12px var(--mono); }
 .state-pill .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--surface-solid) 60%, transparent); }
 
 /* The live indicator (RAL-90): green while polls arrive, amber once one is late, red once stale.
-   While live, the dot breathes: the page is listening. */
+   While live, the dot breathes: the page is listening. Only its opacity moves, which the compositor does alone. */
 .freshness {
   display: inline-flex;
   align-items: center;
@@ -250,12 +254,10 @@ code.path { font: 12px var(--mono); }
   border-radius: 999px;
   background: var(--surface);
   font: 12px var(--mono);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
 }
 .freshness .dot { display: inline-block; color: var(--good); text-shadow: 0 0 8px var(--good); }
 .freshness.live { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
-.freshness.live .dot { animation: breathe 2.4s ease-in-out infinite; }
+.freshness.live .dot { animation: breathe 2.4s ease-in-out infinite; will-change: opacity; }
 .freshness.late .dot { color: var(--s-in_review); text-shadow: 0 0 8px var(--s-in_review); }
 .freshness.late { border-color: color-mix(in srgb, var(--s-in_review) 50%, var(--line)); }
 .freshness.stale { color: var(--bad); border-color: var(--bad); }
@@ -341,8 +343,8 @@ main > section:nth-child(4) { animation-delay: 0.18s; }
 
 @keyframes turn { to { transform: rotate(360deg); } }
 @keyframes breathe {
-  0%, 100% { opacity: 1; text-shadow: 0 0 4px var(--good); }
-  50% { opacity: 0.55; text-shadow: 0 0 14px var(--good); }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
