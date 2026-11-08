@@ -525,6 +525,10 @@ pub struct Part {
     /// The commit its reader read, while it's Verified and the read named one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verified_commit: Option<String>,
+    /// Commits its verifier also read after the part was verified, such as a head that took a merge
+    /// of main (RAL-123). A new read of the part clears them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_read: Vec<String>,
 }
 
 impl Story {
@@ -997,10 +1001,13 @@ pub enum LedgerError {
     AnswerSource(&'static str),
     /// A story is named as waiting on itself.
     BlockedOnItself(String),
-    /// An annotation names a record that isn't an earlier record naming its team (RAL-19).
+    /// An annotation names a record that isn't an earlier record naming its team (RAL-19), and
+    /// that its team didn't write as a read (RAL-123). `may` says who may annotate it, when the
+    /// record exists.
     InvalidAnnotationTarget {
         corrects: u64,
         team: String,
+        may: Option<String>,
     },
     /// An annotation names another annotation; annotate the original (RAL-19).
     AnnotationOfAnnotation(u64),
@@ -1192,11 +1199,21 @@ impl fmt::Display for LedgerError {
                 seq - 1
             ),
             Self::InvalidDesignation(what) => write!(f, "a designation's {what}"),
-            Self::InvalidAnnotationTarget { corrects, team } => write!(
-                f,
-                "record {corrects} isn't an earlier record that names {team}: one of its states, a \
-                 blocker by or on it, or a record of a story it held"
-            ),
+            Self::InvalidAnnotationTarget {
+                corrects,
+                team,
+                may,
+            } => {
+                write!(
+                    f,
+                    "record {corrects} isn't an earlier record that names {team}: one of its states, a \
+                     blocker by or on it, a record of a story it held, or a read it wrote"
+                )?;
+                match may {
+                    Some(may) => write!(f, ". {may} may annotate it"),
+                    None => Ok(()),
+                }
+            }
             Self::AnnotationOfAnnotation(seq) => write!(
                 f,
                 "record {seq} is itself an annotation; annotate the record it annotates"
@@ -1245,6 +1262,15 @@ pub struct Ledger {
     aways: Vec<Away>,
     /// Every rally, oldest first; only the last can be open (RAL-76).
     rallies: Vec<Rally>,
+}
+
+/// `text` with its first letter in capitals, for the start of a sentence.
+fn capitalise(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// A team's annotation of an earlier record (RAL-19). Declared, like the team's name.
@@ -1482,6 +1508,46 @@ impl Ledger {
             .values_mut()
             .find(|story| story.history.iter().any(|entry| entry.seq == corrects))
             .ok_or_else(|| refuse("the record annotated isn't a story's"))?;
+        let same_verifier = |verify: &HistoryEntry| {
+            verify.source.credential == record.source().credential
+                && match (&verify.source.declared_name, &record.source().declared_name) {
+                    (Some(a), Some(b)) => same_name(a, b),
+                    _ => false,
+                }
+        };
+        // A part's verification (RAL-123): its verifier can add commits while the part is Verified,
+        // whatever the whole story's state, as a multi-part story stays claimed until it's closed.
+        if let Some(entry) = story.history.iter().find(|entry| entry.seq == corrects)
+            && let Change::Verify { part: Some(k), .. } = entry.change
+        {
+            let current = story.history.iter().rev().find(|entry| {
+                matches!(entry.change,
+                    Change::Verify { part: Some(p), .. } | Change::SendBack { part: Some(p), .. }
+                        if p == k)
+            });
+            if current.map(|entry| entry.seq) != Some(corrects) {
+                return Err(refuse(&format!(
+                    "only part {k}'s verification in force can have commits added"
+                )));
+            }
+            if !same_verifier(entry) {
+                return Err(refuse(
+                    "only the verifier, with the verification's own credential",
+                ));
+            }
+            let part = story
+                .parts
+                .get_mut(&k)
+                .filter(|part| part.state == State::Verified)
+                .ok_or_else(|| refuse(&format!("part {k} isn't Verified")))?;
+            for commit in commits {
+                let commit = commit.to_ascii_lowercase();
+                if !part.also_read.contains(&commit) {
+                    part.also_read.push(commit);
+                }
+            }
+            return Ok(());
+        }
         if story.state != State::Verified {
             return Err(refuse("the story isn't Verified"));
         }
@@ -1501,11 +1567,7 @@ impl Ledger {
                 "only the verification in force can have commits added",
             ));
         };
-        let same_name = match (&verify.source.declared_name, &record.source().declared_name) {
-            (Some(a), Some(b)) => same_name(a, b),
-            _ => false,
-        };
-        if verify.source.credential != record.source().credential || !same_name {
+        if !same_verifier(verify) {
             return Err(refuse(
                 "only the verifier, with the verification's own credential",
             ));
@@ -1518,6 +1580,110 @@ impl Ledger {
         }
         story.answer_covered_requests();
         Ok(())
+    }
+
+    /// The verify or send-back recorded at `seq`, if that's what it is (RAL-123).
+    fn read_at(&self, seq: u64) -> Option<&HistoryEntry> {
+        self.stories.values().find_map(|story| {
+            let at = story
+                .history
+                .binary_search_by_key(&seq, |entry| entry.seq)
+                .ok()?;
+            let entry = &story.history[at];
+            matches!(
+                entry.change,
+                Change::Verify { .. } | Change::SendBack { .. }
+            )
+            .then_some(entry)
+        })
+    }
+
+    /// Whether `team` wrote the read at `seq` (RAL-123): it's the reading team the read declared,
+    /// or the annotation comes from the read's own writer, by the same credential and declared name.
+    /// So a verifier can correct its own note, beside it, as a holder can (RAL-19).
+    fn wrote_read(&self, seq: u64, team: &str, by: &Source) -> bool {
+        let Some(read) = self.read_at(seq) else {
+            return false;
+        };
+        let (Change::Verify { team: reader, .. } | Change::SendBack { team: reader, .. }) =
+            &read.change
+        else {
+            return false;
+        };
+        if reader
+            .as_deref()
+            .is_some_and(|reader| same_name(reader, team))
+        {
+            return true;
+        }
+        read.source.credential == by.credential
+            && read
+                .source
+                .declared_name
+                .as_deref()
+                .zip(by.declared_name.as_deref())
+                .is_some_and(|(wrote, annotating)| same_name(wrote, annotating))
+    }
+
+    /// Who may annotate the record at `seq`, in words, for a refusal (RAL-123): the teams it names,
+    /// and for a read, its reading team and its writer. `None` when nobody is named.
+    fn who_may_annotate(&self, seq: u64) -> Option<String> {
+        let mut teams: BTreeSet<String> = BTreeSet::new();
+        let candidates = self
+            .teams
+            .keys()
+            .cloned()
+            .chain(
+                self.blockers
+                    .values()
+                    .flat_map(|b| std::iter::once(b.team.clone()).chain(b.on_team.clone())),
+            )
+            .chain(self.standings.values().map(|s| s.team.clone()))
+            .chain(self.stories.values().filter_map(|s| s.team.clone()))
+            .chain(self.stories.values().flat_map(|s| {
+                s.history.iter().filter_map(|entry| match &entry.change {
+                    Change::Claim { team, .. } => Some(team.clone()),
+                    _ => None,
+                })
+            }));
+        for name in candidates {
+            if self.names_team(seq, &name) {
+                teams.insert(name);
+            }
+        }
+        let mut who: Vec<String> = teams.into_iter().map(|t| format!("team {t}")).collect();
+        if let Some(read) = self.read_at(seq) {
+            if let Change::Verify {
+                team: Some(reader), ..
+            }
+            | Change::SendBack {
+                team: Some(reader), ..
+            } = &read.change
+            {
+                let reader = format!("team {reader}");
+                if !who.contains(&reader) {
+                    who.push(reader);
+                }
+            }
+            match &read.source.declared_name {
+                Some(name) => who.push(format!(
+                    "its writer, {name} on the {} credential, as any team",
+                    read.source.credential
+                )),
+                None => who.push(format!(
+                    "its writer, on the {} credential, as any team",
+                    read.source.credential
+                )),
+            }
+        }
+        match who.len() {
+            0 => None,
+            1 => Some(capitalise(&who[0])),
+            _ => {
+                let last = who.pop().expect("checked");
+                Some(capitalise(&format!("{} or {last}", who.join(", "))))
+            }
+        }
     }
 
     fn names_team(&self, seq: u64, team: &str) -> bool {
@@ -1853,8 +2019,18 @@ impl Ledger {
                     return Err(LedgerError::AnnotationOfAnnotation(corrects));
                 }
                 if also_read.is_empty() {
-                    if corrects >= seq || !self.names_team(corrects, &team) {
-                        return Err(LedgerError::InvalidAnnotationTarget { corrects, team });
+                    if corrects >= seq
+                        || !(self.names_team(corrects, &team)
+                            || self.wrote_read(corrects, &team, record.source()))
+                    {
+                        let may = (corrects < seq)
+                            .then(|| self.who_may_annotate(corrects))
+                            .flatten();
+                        return Err(LedgerError::InvalidAnnotationTarget {
+                            corrects,
+                            team,
+                            may,
+                        });
                     }
                 } else {
                     self.add_also_read(corrects, record, &also_read)?;
@@ -2462,6 +2638,7 @@ fn transition(
                     submitted_by: actor.map(str::to_owned),
                     evidence: evidence.clone(),
                     verified_commit: None,
+                    also_read: Vec::new(),
                 },
             );
         }
@@ -2502,6 +2679,7 @@ fn transition(
                 part.state = State::SentBack;
                 part.verified_commit = None;
             }
+            part.also_read.clear();
         }
         Change::Submit {
             team,
@@ -3580,6 +3758,59 @@ mod tests {
             Err(LedgerError::Part { why, .. }) => why,
             other => panic!("expected a part error, got {other:?}"),
         }
+    }
+
+    /// RAL-123: MAR-10's case. A part's verifier adds a commit it also read, such as a head that took
+    /// a merge of main, while the part is Verified and the story itself is still claimed. Nobody else
+    /// can, a later read of the part clears it, and `rally gate`'s part commits include it.
+    #[test]
+    fn a_parts_verifier_adds_an_also_read_while_the_story_is_still_claimed() {
+        let ev = |c: &str| format!("Castor-o7/rally@{c}");
+        let mut ledger = ledger_with(&[ready(), claim()]);
+        push(&mut ledger, &part_submit(1, &ev(COMMIT)));
+        push(&mut ledger, &part_read("verify", 1, COMMIT));
+        let read = ledger.last_seq();
+        assert_eq!(state(&ledger), State::Claimed);
+        let also = |name: &str| {
+            record(
+                Kind::Declared,
+                name,
+                json!({"change": "annotate", "corrects": read, "team": "watchman",
+                       "note": "re-read after main was merged in", "also_read": [OTHER_COMMIT]}),
+            )
+        };
+        // Someone other than the part's verifier can't.
+        let refused = apply_next(&mut ledger.clone(), &also("alice")).unwrap_err();
+        assert!(
+            refused.to_string().contains("only the verifier"),
+            "{refused}"
+        );
+        // The verifier can, and the story stays claimed.
+        push(&mut ledger, &also("watch"));
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.state, State::Claimed);
+        assert_eq!(story.parts[&1].also_read, [OTHER_COMMIT.to_owned()]);
+        let list = crate::views::stories(&ledger, None, &crate::views::Page::default()).unwrap();
+        assert_eq!(
+            list["stories"][STORY]["part_commits"],
+            json!([COMMIT, OTHER_COMMIT])
+        );
+        // A part that isn't Verified takes none: sent back, then resubmitted, its old read is gone.
+        let mut sent = ledger_with(&[ready(), claim()]);
+        push(&mut sent, &part_submit(2, &ev(COMMIT)));
+        push(&mut sent, &part_read("send_back", 2, COMMIT));
+        let back = sent.last_seq();
+        let refused = apply_next(
+            &mut sent,
+            &record(
+                Kind::Declared,
+                "watch",
+                json!({"change": "annotate", "corrects": back, "team": "watchman",
+                       "note": "n", "also_read": [OTHER_COMMIT]}),
+            ),
+        )
+        .unwrap_err();
+        assert!(refused.to_string().contains("also-read"), "{refused}");
     }
 
     /// RAL-79: DSM-37's case. Each part is submitted and read as it lands while the story stays

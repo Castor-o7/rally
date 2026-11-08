@@ -26,6 +26,11 @@ rally verify DSM-37 --commit <last> --note "all parts read"                 # re
 - **Amending a part** (RAL-71) is for its submitter, while that part is in review. Once a part is amended, a read
   of it that names a commit must name the amended evidence's. A story-level `amend` still covers only the story's
   own submission.
+- **A part's verifier adds a commit it also read** (RAL-123), such as a head that took a merge of main, with
+  `rally annotate --corrects <the part's verify record> --team <team> --note "..." --also-read <full commit>`.
+  It works while the part is Verified, whatever the story's state, and only from the verification's own credential
+  and declared name. A later read of the part clears it. The story list's `part_commits`, which `rally gate`
+  passes, include it.
 - **The close** is today's submit and verify. The final verify is refused while any part is in review or sent
   back, or any declared part was never submitted, and says which.
 - `--of n` declares how many parts there are, at most 64, and never below a part already submitted. Parts are
