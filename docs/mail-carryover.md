@@ -109,7 +109,9 @@ The operator, Josh, on 2026-11-08:
 
 [cutover.md](cutover.md) carries A's steps.
 
-The check A relies on, as run for this note (read-only):
+## The check
+
+The read-only query option A relies on, as run for this note:
 
 ```sql
 set default_transaction_read_only = on;
