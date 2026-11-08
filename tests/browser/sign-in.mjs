@@ -119,6 +119,13 @@ const evaluate = async (expression) => {
 };
 
 await send("Page.enable");
+// Chrome won't make a window narrower than 500 pixels, so a phone's width, such as 390, is emulated
+// as a mobile viewport instead (RAL-125).
+const [windowWidth, windowHeight] = windowSize.split(",").map(Number);
+if (windowWidth < 500) {
+  await send("Emulation.setDeviceMetricsOverride",
+    { width: windowWidth, height: windowHeight, deviceScaleFactor: 1, mobile: true });
+}
 let load = loaded();
 await send("Page.navigate", { url });
 await load;

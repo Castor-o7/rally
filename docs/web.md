@@ -79,6 +79,13 @@ animation only turns or fades a box of its own, which the compositor does withou
 page's CSP requires, so there are no web fonts: the font stacks name ones the machine may have, and fall back to the
 system's. A section fades up only when it's first drawn; a poll patches it in place (RAL-89), so it never replays.
 
+## Narrow windows (RAL-111, RAL-125)
+
+The page fits any window from a phone's 390 pixels up. Wide tables scroll sideways inside their own box, and
+the page itself never does. A headless Chrome test checks it at 800 pixels and at 390, emulated as a mobile
+viewport because Chrome won't make a window narrower than 500. The test fails if anything outside a table's box
+runs past the window. Reaching the page from a phone is a separate matter, RAL-34.
+
 ## How to read the figures
 
 - **Roadmap ticks** are counted from each project's roadmap file, with the file, commit and read time
