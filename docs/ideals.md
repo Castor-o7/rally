@@ -18,6 +18,20 @@ That makes two pillars:
 1. **The ledger.** It keeps a relationship to *verified* work while the environment keeps changing.
 2. **The dashboard.** It shows the *current* state of that environment, the rally, sleekly and reactively.
 
+## The three ideals
+
+**Decided.** The operator, Josh, told the rally team directly on 2026-11-08 (RAL-121):
+
+> the three ideals of rally are thusly: accuracy, verifiability, and reactivity
+
+1. **Accuracy.** What Rally shows is true to what happened, and says how it's known.
+2. **Verifiability.** Anyone can check it: who said what, who checked it, at which commit, and that the
+   record hasn't been rewritten.
+3. **Reactivity.** It stays current as the environment changes, and shows that it is.
+
+The one-line gloss after each ideal is the team's, **proposed** for the operator to confirm. The ideals
+themselves are the operator's words.
+
 ## Already decided
 
 These come from the operator's earlier rulings and fit under the two pillars. They are listed here so the
@@ -37,6 +51,14 @@ ideals can be read in one place, and they are not reopened.
 
 **Proposed, not decided.** These are the team's reading of the statement. Each one names the existing
 behaviour it describes, so it adds no new rule until the operator confirms it.
+
+How they sit under the three ideals, also proposed:
+
+| Ideal | Principles |
+|---|---|
+| Accuracy | P2 (every fact says how it's known), P4 (plain facts, no scores), P7 (sleek serves legibility) |
+| Verifiability | P1 (verified is tied to a commit), P3 (history, not a snapshot), P8 (read-only, always) |
+| Reactivity | P5 (cheap to ask), P6 (stays current without being asked), P9 (the rally is the unit), P10 (everywhere the operator looks) |
 
 ### The ledger: a relationship to verified work
 
@@ -74,5 +96,6 @@ Recorded as a question to the operator in Rally (`rally block --story RAL-114 --
 
 1. Do P1 to P10 read right as the meaning of your statement? Strike or reword any of them.
 2. Should the statement replace the README's opening description of Rally, or sit beside it?
-3. Is "a rally" the open rally (one period with a name, as `rally open-rally` makes it), or the whole live
+3. Do the glosses on the three ideals, and the table placing P1 to P10 under them, read right?
+4. Is "a rally" the open rally (one period with a name, as `rally open-rally` makes it), or the whole live
    environment at any moment? P9 assumes the first.
