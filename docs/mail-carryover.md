@@ -1,6 +1,7 @@
 # Carrying unread Muster mail to Marshal at the cutover (RAL-122)
 
-**A design note for the operator to choose from. Nothing is built or changed.** It fills the gap
+**Decided: option A, with the Marshal team running the check** (the operator, 2026-11-08; see "Decided" below).
+Nothing is built or changed by this note. It fills the gap
 [cutover.md](cutover.md) left open, "message history carried over", and asks only about **unread** mail:
 history that has been read stays readable in Muster's database, and nobody has asked for it on Marshal. The
 watchman (mellow-weevil) asked for it on 2026-11-08.
@@ -47,8 +48,8 @@ being read.
 ### A. Read it on Muster first (drain)
 
 Before a session moves, it reads and acks its Muster inbox, and announces its Marshal nickname on Muster with a
-`broadcast`. Before each move, and before Muster is retired (cutover step 7), the lamplighter runs the read-only
-query above. Anything unread to a session that has moved is relayed by hand with `marshal-shim tell`, quoting
+`broadcast`. Before each move, and before Muster is retired (cutover step 7), the Marshal team runs the read-only
+query below. Anything unread to a session that has moved is relayed by hand with `marshal-shim tell`, quoting
 the sender.
 
 - **Builds:** nothing. A query kept in the runbook.
@@ -90,15 +91,23 @@ Nothing is carried, and Muster's database is kept read-only after step 7 for any
 
 ## The team's recommendation
 
-**Proposed: A, with the check made routine.** Today's numbers say the inbox is empty where it matters. The
+**A, with the check made routine.** The operator chose it (below). Today's numbers say the inbox is empty where it matters. The
 runbook already moves sessions one at a time, between stories, with Muster still running, so a check before each
 move and a last one before step 7 catches what B would, without building anything. Choose **B** instead if the
 side-by-side period is expected to last more than a day or two. **C** isn't recommended. **D** isn't safe.
 
-## For the operator
+## Decided
 
-1. Which option: A (recommended), B, C or D?
-2. If A: is the lamplighter the right one to run the check and relay by hand?
+The operator, Josh, on 2026-11-08:
+
+1. **Option A.** Josh told the watchman directly, and closed Rally block 1465 with it. Josh also told the rally
+   team: "yes to your recommendation".
+2. **Who runs the check: the Marshal team.** The team had proposed the lamplighter. Josh answered the rally team
+   directly that it's the Marshal team. The watchman relayed an earlier answer from Josh, "the lamplighter can run
+   the check when its ready". This note follows the later, direct answer to the rally team, and the watchman has
+   been told of the difference.
+
+[cutover.md](cutover.md) carries A's steps.
 
 The check A relies on, as run for this note (read-only):
 
