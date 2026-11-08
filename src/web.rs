@@ -1402,7 +1402,7 @@ fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
 
 /// The commands the roster is read with, in order, by default (RAL-116): Marshal's, then Muster's,
 /// which is frozen but still where the sessions are until they move to Marshal's daemon.
-pub const DEFAULT_ROSTER_FROM: [&str; 2] = ["marshal-shim", "muster-shim"];
+pub const DEFAULT_ROSTER_FROM: [&str; 2] = crate::shims::DEFAULT;
 
 /// Reads the roster with the first of `from` that gives one, keeping only fields the page shows
 /// and the source's own labels for them. Each command is run as `<command> roster`. The result

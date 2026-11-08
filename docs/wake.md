@@ -41,10 +41,15 @@ Both times are agreed with the operator and have no default:
 | A claim counts as quiet after | `--quiet-after` | `RALLY_WAKE_QUIET_AFTER` | only idle teams are woken |
 | Least time between two digests to a team | `--interval` | `RALLY_WAKE_INTERVAL` | nothing is sent; teams are reported |
 
-## Muster is optional
+## Muster or Marshal is optional
 
-`rally wake` sends through `muster-shim tell` when `muster-shim` is on the machine. Without it, or with
-`--report-only`, it only reports: in its output and in `wake-status.json`, beside its state file, it lists who's
+`rally wake` reads the roster and sends through Marshal's shim or Muster's (RAL-120): the commands in
+`RALLY_ROSTER_FROM`, comma-separated, by default `marshal-shim,muster-shim`, as the viewer reads the roster. The
+roster comes from the first that gives one, and the report's `roster.read_with` names it. A message goes through
+the first that knows the team, named in each team's `sent_by`. It falls back to the next only when the shim says
+nothing was sent (the team isn't on that daemon's roster, or the daemon couldn't be reached) or can't be run; any
+other failure is reported and nothing more is sent, so a shim that delivered and then failed can't cause a second
+copy through the other daemon. Without any of them, or with `--report-only`, it only reports: in its output and in `wake-status.json`, beside its state file, it lists who's
 idle, who can't be woken, and each team's next story. The sender is a small trait, so another harness's
 messaging, such as Prime Agent's (RAL-59), can be added as a sender later.
 
