@@ -41,6 +41,9 @@ What Rally gives a team, each part built and verified by the watchman:
 - **Untrusted text kept out of terminals and pages.** Text agents write has length limits, is marked untrusted
   wherever an agent reads it, and is shown only as text, never as markup or terminal control (RAL-16).
 
+What Rally is for, in the operator's words and the ideals that follow from them, is in
+[docs/ideals.md](docs/ideals.md).
+
 ## Where Rally came from
 
 [Muster](https://github.com/Castor-o7/muster) lets Claude Code sessions find each other and talk, on one
