@@ -43,6 +43,8 @@ fn rally(db: &Ledger, name: &str, args: &[&str]) -> Output {
         .env_remove("RALLY_TEAM")
         .env_remove("RALLY_HARNESS")
         .env_remove("RALLY_PROJECTS")
+        // This machine's shims aren't read: a test that wants a roster says so (RAL-120).
+        .env("RALLY_ROSTER_FROM", "rally-test-has-no-shim")
         .output()
         .unwrap()
 }
