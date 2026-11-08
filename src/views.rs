@@ -243,6 +243,9 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
             if let Some(evidence) = latest_evidence(story) {
                 row["evidence"] = evidence;
             }
+            if let Some(read) = latest_read_notes(story, ledger.annotations()) {
+                row["read"] = read;
+            }
             // A multi-part story's parts (RAL-79): how many are verified, which are waiting for a
             // read, and the commits its verified parts' readers read, which `rally gate` passes.
             if !story.parts.is_empty() {
@@ -260,7 +263,8 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
                     .parts
                     .values()
                     .filter(|part| part.state == State::Verified)
-                    .filter_map(|part| part.verified_commit.as_ref())
+                    // Commits its verifier also read count too (RAL-123).
+                    .flat_map(|part| part.verified_commit.iter().chain(&part.also_read))
                     .collect();
                 if !read.is_empty() {
                     row["part_commits"] = json!(read);
@@ -384,6 +388,28 @@ fn latest_evidence(story: &crate::ledger::Story) -> Option<Value> {
         shown["check"] = checked;
     }
     Some(shown)
+}
+
+/// The story's latest verify or send-back, with what's been annotated on it, when anything has
+/// (RAL-123): so the viewer can show a reader's correction of its own note beside the read. A
+/// read nobody annotated isn't listed, to keep the list small.
+fn latest_read_notes(
+    story: &crate::ledger::Story,
+    annotations: &std::collections::BTreeMap<u64, Vec<crate::ledger::Annotation>>,
+) -> Option<Value> {
+    let read = story.history.iter().rev().find(|entry| {
+        matches!(
+            entry.change,
+            Change::Verify { part: None, .. } | Change::SendBack { part: None, .. }
+        )
+    })?;
+    let notes = annotations
+        .get(&read.seq)
+        .filter(|notes| !notes.is_empty())?;
+    Some(
+        json!({"seq": read.seq, "at_ms": read.at_ms, "by": read.source.declared_name,
+                "annotations": annotations_json(notes)}),
+    )
 }
 
 /// The most characters of agent text a team record shows of any one note (RAL-19). The rest is
@@ -1878,6 +1904,76 @@ mod tests {
             shown["detail"]["annotations"]["6"][0]["note"],
             "we disagree: see #12"
         );
+    }
+
+    /// RAL-123: a verifier corrects its own verify note, beside it, as a holder can; a team with
+    /// no part in the read is still refused, and the refusal says who may annotate it.
+    #[test]
+    fn a_reader_annotates_its_own_read_and_an_unrelated_team_is_refused() {
+        // Record 6 is v's verify, with no reading team declared, as a watchman's read is.
+        let mut records = two_teams();
+        records.push(rec(
+            "v",
+            json!({"change": "annotate", "corrects": 6, "team": "watchman",
+                   "note": "the note should say d69a8ae, not d69a8aa"}),
+        ));
+        let ledger = Ledger::replay(&records).unwrap();
+        assert_eq!(ledger.story("RAL-1").unwrap().state, State::Verified);
+        let list = stories(&ledger, None, &Page::default()).unwrap();
+        let read = &list["stories"]["RAL-1"]["read"];
+        assert_eq!(read["seq"], 6, "{list}");
+        assert_eq!(read["by"], "v");
+        assert_eq!(read["annotations"][0]["team"], "watchman");
+        assert_eq!(
+            read["annotations"][0]["note"],
+            "the note should say d69a8ae, not d69a8aa"
+        );
+
+        // Someone else, as a team that neither held the story nor read it, is refused.
+        let mut records = two_teams();
+        records.push(rec(
+            "x",
+            json!({"change": "annotate", "corrects": 6, "team": "c", "note": "n"}),
+        ));
+        let refused = Ledger::replay(&records).unwrap_err().to_string();
+        assert!(
+            refused.contains("isn't an earlier record that names c"),
+            "{refused}"
+        );
+        assert!(
+            refused.contains(
+                "Team b or its writer, v on the a1 credential, as any team may annotate it"
+            ),
+            "{refused}"
+        );
+        // The same name on another credential isn't the read's writer.
+        let mut records = two_teams();
+        let other = Record::new(
+            Kind::Declared,
+            Source {
+                credential: "b2".into(),
+                declared_name: Some("v".into()),
+            },
+            1,
+            json!({"change": "annotate", "corrects": 6, "team": "watchman", "note": "n"}),
+        )
+        .unwrap();
+        records.push(other);
+        assert!(Ledger::replay(&records).is_err());
+
+        // A read that declared its reading team can be annotated as that team.
+        let mut records = two_teams();
+        records.truncate(5);
+        records.push(rec(
+            "v",
+            json!({"change": "verify", "story": "RAL-1", "note": "ok", "team": "reader",
+                   "commit": "c".repeat(40)}),
+        ));
+        records.push(rec(
+            "w",
+            json!({"change": "annotate", "corrects": 6, "team": "reader", "note": "also checked CI"}),
+        ));
+        assert!(Ledger::replay(&records).is_ok());
     }
 
     #[test]

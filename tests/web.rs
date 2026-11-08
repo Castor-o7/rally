@@ -2228,3 +2228,110 @@ fn the_roster_falls_back_to_musters_and_keeps_each_sources_labels() {
     );
     assert!(text.contains("connected 2m ago"), "{probe}");
 }
+
+/// RAL-123, in the browser: a reader's own correction of its verify note shows beside the read, in
+/// the Evidence table, labelled declared.
+#[test]
+fn a_readers_note_on_its_own_read_shows_beside_it() {
+    let Some(chrome) = browser() else { return };
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let viewer = start_after("[]", None, 60, |db, dir| {
+        let write = |name: &str, args: &[&str]| -> Value {
+            let out = on(db, dir)
+                .args(["--credential", "a1", "--as", name])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            serde_json::from_slice(&out.stdout).unwrap_or(Value::Null)
+        };
+        write(
+            "author",
+            &[
+                "open-rally",
+                "--name",
+                "test",
+                "--project",
+                "RAL",
+                "--team",
+                "rally",
+            ],
+        );
+        let evidence = format!("Castor-o7/rally@{commit}");
+        write("author", &["ready", "RAL-1"]);
+        write("author", &["claim", "RAL-1", "--team", "rally"]);
+        write(
+            "author",
+            &[
+                "submit",
+                "RAL-1",
+                "--team",
+                "rally",
+                "--evidence",
+                &evidence,
+                "--not-checkable",
+            ],
+        );
+        let verify = write(
+            "reader",
+            &[
+                "verify",
+                "RAL-1",
+                "--note",
+                "read it at 0123457",
+                "--commit",
+                commit,
+            ],
+        );
+        let seq = verify["recorded"]
+            .as_u64()
+            .expect("the verify's record number");
+        // The reader corrects its own note, as the watchman, which no team held or named.
+        write(
+            "reader",
+            &[
+                "annotate",
+                "--corrects",
+                &seq.to_string(),
+                "--team",
+                "watchman",
+                "--note",
+                "the commit is 0123456, not 0123457",
+            ],
+        );
+    });
+    let probe = r##"(async () => {
+      const find = () => [...document.querySelectorAll("#ledger table")]
+        .find((t) => [...t.querySelectorAll("th")].some((th) => th.textContent.startsWith("Notes on the read")));
+      for (let i = 0; i < 100 && !find(); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const table = find();
+      if (!table) return { found: false };
+      const heads = [...table.querySelectorAll("th")].map((th) => th.textContent);
+      const column = heads.findIndex((h) => h.startsWith("Notes on the read"));
+      const cell = table.querySelector("tbody tr").children[column];
+      return { found: true, heads, cell: cell.textContent };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    assert_eq!(probe["found"], true, "{seen}");
+    let cell = probe["cell"].as_str().unwrap_or_default();
+    assert!(
+        cell.contains("watchman: the commit is 0123456, not 0123457"),
+        "{probe}"
+    );
+    // The whole column is declared, so its header says so once (RAL-93).
+    assert!(
+        probe["heads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h.as_str() == Some("Notes on the read declared")),
+        "{probe}"
+    );
+}

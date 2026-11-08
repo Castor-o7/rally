@@ -105,6 +105,13 @@ A read at a different commit than the one requested still answers the request, s
 moved on and the request's commit is no longer what would merge; the history keeps both commits.
 Whether the read covered what was merged is then `commit_differs`, once the merge is recorded.
 
+### A reader's own note (RAL-123)
+
+A verify or send-back is annotated like any record (RAL-19), and its reader can correct its own note there, beside
+it, without changing the verdict: the reading team it declared, or its writer, by the same credential and declared
+name, under any team. A team with no part in the read is still refused, and the refusal says who may annotate it.
+The viewer shows these notes beside the read, in the Evidence table.
+
 ### Who verifies: watchman or peer (RAL-51, RAL-52)
 
 The operator's rulings of 2026-11-04, relayed by the watchman:

@@ -390,12 +390,17 @@ function evidenceGroup(stories, untrusted, now) {
     return group;
   }
   group.append(el("p", "muted", untrusted || UNTRUSTED_FALLBACK));
-  group.append(table(["Story", "State", "Submitted", "Evidence", "Rally's check"],
+  // A reader's own correction of its note, or a holder's reply, sits beside the read (RAL-123). The
+  // column shows only when some read has one, so the table stays narrow otherwise.
+  const notes = rows.some(([, story]) => story.read && (story.read.annotations || []).length);
+  const heads = ["Story", "State", "Submitted", "Evidence", "Rally's check"];
+  if (notes) heads.push("Notes on the read");
+  group.append(table(heads,
     rows.map(([id, story]) => {
       const evidence = story.evidence;
       const check = evidence.check;
       const short = shortCommit(evidence.text);
-      return [
+      const cells = [
         { text: id, className: "nowrap" },
         // A verified state is itself the watchman's record, so it isn't labelled "verified"
         // a second time; a state still in review is only declared (RAL-96).
@@ -408,8 +413,22 @@ function evidenceGroup(stories, untrusted, now) {
           ? { text: [checkWords(check) + " (", ago(check.at_ms, now), ")"], label: "observed", className: "text" }
           : { text: "not checked yet", className: "muted" },
       ];
+      if (notes) cells.push(readNotes(story.read, now));
+      return cells;
     })));
   return group;
+}
+
+// The annotations on a story's latest read, each as "team: note (age)", newest last (RAL-123).
+function readNotes(read, now) {
+  const annotations = (read && read.annotations) || [];
+  if (!annotations.length) return { text: "", className: "muted" };
+  const parts = [];
+  annotations.forEach((note, i) => {
+    if (i) parts.push(" · ");
+    parts.push(note.team + ": " + note.note + " (", ago(note.at_ms, now), ")");
+  });
+  return { text: parts, label: "declared", className: "text" };
 }
 
 // Pick a past moment by record number (RAL-28): the page for it is #/past/<record>.
