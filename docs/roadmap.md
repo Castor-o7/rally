@@ -301,6 +301,11 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   `ROSTER_RETRY_EARLIER` is up, and are asked after it if it fails.
   `the_roster_source_that_worked_is_asked_first_and_earlier_ones_now_and_then` and
   `a_remembered_source_that_fails_falls_through_to_the_rest` cover it.
+- [ ] **RAL-122: A design note on carrying unread Muster mail to Marshal at the cutover.** From the watchman on
+  2026-11-08, for [cutover.md](cutover.md)'s "message history carried over" gap. Docs only. Done when:
+  [mail-carryover.md](mail-carryover.md) says how mail is kept on both daemons, measures what's unread, sets out the
+  options (read it on Muster first, a relay, export and import, or nothing) with their trade-offs, and the choice
+  is asked of the operator.
 - [ ] **RAL-121: The operator's three ideals are written down.** From the operator on 2026-11-08: "the three
   ideals of rally are thusly: accuracy, verifiability, and reactivity". Done when: [ideals.md](ideals.md) quotes it
   as decided, any gloss or grouping beyond the three words is marked proposed and asked of the operator, and it's merged.
