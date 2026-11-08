@@ -2,7 +2,7 @@
 
 **An inventory and a runbook. Nothing in it has been done.** The watchman (mellow-weevil) asked for it on
 2026-11-08, toward the operator's goal of moving from Muster's daemon to Marshal's with no interruption.
-Everything below was read on Murph on 2026-11-08, read-only, with Marshal at 0.58.1. Where something couldn't be
+The gaps were brought up to date from Marshal's roadmap and the ledger the same day. Everything else was read on Murph on 2026-11-08, read-only, with Marshal at 0.58.1. Where something couldn't be
 read from Murph, as on a1, it says so. Every step is the operator's to approve and the lamplighter's to run.
 
 ## First, a decision for the operator: Marshal's daemon is open on the LAN today
@@ -45,12 +45,13 @@ same as rows 1, 2 and 4.
 |---|---|---|
 | TLS | MAR-23 (waits on myko#129) | a1 can't join safely. See the decision above |
 | Per-machine pairing | MAR-24 (after MAR-23) | No gate, so the roster has no `attested` or `observed` facts, and Rally's viewer shows declared and recorded only (RAL-116) |
-| Nickname kept across a restart | MAR-9 | A restarted session gets a new nickname. Rally already records a restart with `rally rally-session add --succeeds` (RAL-108) |
+| Nickname kept across a restart | MAR-9, verified, merging 2026-11-08 | Until it's merged, a restarted session gets a new nickname. Rally already records a restart with `rally rally-session add --succeeds` (RAL-108) |
 | Message history and unread mail carried over | None yet | Muster's messages are in the `muster` database and Marshal's in `marshal`. Nothing copies them. Unread mail on Muster at the switch has to be read there first |
-| Unread mail across a Marshal daemon restart | To verify | Marshal keeps its state in Postgres. Whether unread mail survives a restart is MAR-14's restart cells, still open |
-| A message never offered twice | MAR-3 | A duplicate is possible until it lands |
+| Unread mail across a Marshal daemon restart | Muster's MUS-47, being ported (eager-cobra) | MAR-14's conformance suite, with its restart cells, is merged. Until the port lands, read unread mail before restarting Marshal's daemon |
+| A message never offered twice | MAR-3, merged | Done |
 | Idle overnight wake on Marshal's hooks | MAR-5 | Not yet shown on Murph. Run it before moving every session |
-| A health check | MAR-36 | No `marshal-shim doctor` yet to confirm each session is wired once |
+| A daemon write before the session is ready, retried | MAR-43, verified, merging 2026-11-08 | Once merged, nothing to do |
+| A health check | MAR-36, verified, merging 2026-11-08 | Once merged, `marshal-shim doctor` confirms each session is wired once |
 
 ## The order: a session is never unreachable
 
@@ -59,7 +60,7 @@ daemon at a time, and anyone can reach it through the other one for as long as i
 from a terminal on both (`muster-shim tell`, `marshal-shim tell`), so the lamplighter can relay between
 the two while they're mixed.
 
-0. **Before anything moves.** MAR-3 and MAR-5 are merged and shown, and the operator has made the bind
+0. **Before anything moves.** MAR-5 is shown (MAR-3 is already merged), and the operator has made the bind
    decision above. Record a hold in Rally (`rally hold`) naming the cutover, so every team sees it.
 1. **Prove one session.** Start a fresh test session wired only to Marshal: the MCP server `marshal`, and the
    five hooks from `marshal-shim`, in a project-local `.claude/settings.json` so nothing user-wide changes.
