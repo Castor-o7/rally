@@ -58,7 +58,7 @@ The web app comes after this.
 - [x] **RAL-10: Write the threat model.** Before any service exists. Done when: `docs/` says what the
   ledger holds, who could want to read or alter it, how the service and web app could be attacked, what
   must never be recorded, and what Rally doesn't defend against, and the operator has agreed it.
-- [ ] **RAL-114: Write down Rally's design ideals.** From the operator on 2026-11-08, relayed by the watchman,
+- [x] **RAL-114: Write down Rally's design ideals.** From the operator on 2026-11-08, relayed by the watchman,
   mellow-weevil. Done when: [ideals.md](ideals.md) quotes the operator's statement verbatim as its anchor,
   marks everything beyond it as decided (with where it was decided) or proposed, the README links it, it's
   merged, and the operator has signed off on the wording, or the proposed parts are open questions to the
@@ -265,7 +265,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
 
 - [x] **RAL-25: Give the ledger a read-only API.** Done when: it's documented, it uses RAL-13's access
   control, and a test shows no request through it can change the ledger.
-- [ ] **RAL-115: The viewer has a modern sci-fi magitech look.** From the operator on 2026-11-08, relayed by
+- [x] **RAL-115: The viewer has a modern sci-fi magitech look.** From the operator on 2026-11-08, relayed by
   the watchman: a sleek, reactive dashboard ([ideals.md](ideals.md), P6 to P10). Done when: the viewer is
   restyled and stays reactive and read-only, provenance labels and state colours keep their meaning (RAL-91,
   RAL-93), it works in light and dark and at phone width, the PR carries before and after screenshots, and
@@ -458,7 +458,7 @@ developer welcomes Rally merging into Levi. Nothing goes to ignition-is-go/levi 
 operator says so; the work is done on a local checkout of Levi at `~/Documents/Gamoire/levi`. RAL-40 is still the
 story for Rally reading Levi; these stories are about putting Rally's features into Levi.
 
-- [ ] **RAL-112: The viewer page reloads itself when the viewer runs new page code.** From the operator on
+- [x] **RAL-112: The viewer page reloads itself when the viewer runs new page code.** From the operator on
   2026-11-06: rally 0x5's report box kept showing the DiscoSim writeup after RAL-104 was deployed, because the tab
   had loaded its code before the restart, and a new window fixed it. Done when: the viewer stamps the page it serves
   with a fingerprint of its page code, and every status carries it. A tab whose status names other code reloads
@@ -632,31 +632,31 @@ word.
   lasts 14 days from its sign-in, checked on every request and at start, and only the newest 32 are kept; `--new-key`
   still signs every browser out, across a restart too; an unreadable sessions file signs no one in and doesn't stop
   the viewer; with a test.
-- [ ] **RAL-113: `drawPatched` says a kept node keeps its first listener.** From mellow-weevil's read of RAL-89:
+- [x] **RAL-113: `drawPatched` says a kept node keeps its first listener.** From mellow-weevil's read of RAL-89:
   a node the patch keeps keeps the listeners from its first draw, so a handler that closed over render-time data
   would act on stale data. Done when: a comment above `drawPatched` says a handler in a patched section must read
   what it needs when it runs. Comment only.
-- [ ] **RAL-89: The viewer refreshes without flashing or closing what's open.** From robust-warbler's visual review
+- [x] **RAL-89: The viewer refreshes without flashing or closing what's open.** From robust-warbler's visual review
   of the viewer on 2026-11-06, item 1: each poll rebuilt every section with `replaceChildren`. RAL-96 (#167) kept
   open sections open and skipped the redraw while someone types or selects. Done when: a refresh draws each section
   into a detached copy and patches the page's own section to match, so every node that hasn't changed is the same
   node afterwards, and text or attributes that differ are changed in place; a field keeps its focus and what was
   typed; a section's open state survives a draw with no refresh around it; and headless Chrome tests show each,
   failing on the page before it. Item 3 (highlight changed rows, ease bars) isn't part of it.
-- [ ] **RAL-111: A browser test checks the viewer at a narrow window.** From mellow-weevil's read of RAL-92: with
+- [x] **RAL-111: A browser test checks the viewer at a narrow window.** From mellow-weevil's read of RAL-92: with
   every browser test at 1500 pixels, nothing covered a half screen. Done when: a test can ask `sign-in.mjs` for its
   window with `RALLY_BROWSER_WINDOW` (`width,height`, checked, defaulting to 1500,1000); a headless Chrome test at
   800 pixels finds no horizontal page overflow and nothing wider than the window outside a table's own scrolling
   box, with the evidence table on the page; and it fails when the page is made wider than the window. Headless
   Chrome won't make a window narrower than 500 pixels, so a phone's width would need device emulation instead;
   that isn't done here.
-- [ ] **RAL-92: The viewer's tables are compact: short SHAs, no wrapped IDs, a wider page.** From robust-warbler's
+- [x] **RAL-92: The viewer's tables are compact: short SHAs, no wrapped IDs, a wider page.** From robust-warbler's
   visual review of the viewer on 2026-11-06, items 6 to 8. Short SHAs with the whole in the title and unwrapped IDs
   and ages came with RAL-90 (#167); the copy button item 6 suggested isn't built. What was left was item 8: at
   `max-width: 960px` about 40% of a 1500-pixel screen sat empty while the tables wrapped heavily. Done when: the
   page uses up to 1200 pixels, never runs wider than the window, and a headless Chrome test on a 1500-pixel window
   shows it, failing at 960.
-- [ ] **RAL-93: The viewer shows each state once, with provenance in a legend.** From robust-warbler's visual
+- [x] **RAL-93: The viewer shows each state once, with provenance in a legend.** From robust-warbler's visual
   review of the viewer on 2026-11-06, item 5: declared, observed and attested chips sat on almost every cell.
   RAL-96 (#167) already shows a state once, as a dot and its name. Done when: a table column whose cells all carry
   the same label shows it once, in its header, and on none of its cells; a column that mixes kinds (or has cells
@@ -670,13 +670,13 @@ word.
   only changes of state; Verified is green and In review amber, in both schemes; evidence of the form
   `owner/repo@<40 hex>` shows its first 7 with the whole in the title, and other evidence as written; IDs, states
   and ages don't wrap; a headless Chrome test shows each, and fails on the page before it.
-- [ ] **RAL-94: The watchman's writeup renders its markdown, as text only.** Filed by cobalt-glen, assigned by
+- [x] **RAL-94: The watchman's writeup renders its markdown, as text only.** Filed by cobalt-glen, assigned by
   mellow-weevil: the writeup and day summaries were one block of preformatted text. Done when: headings, lists,
   emphasis, code, quotes and tables are drawn, built with el() and text nodes only (no innerHTML, RAL-16); raw HTML in
   the markdown shows as text; only http and https links are links, opened without a referrer or opener, and any other
   address shows as inert text; and a headless Chrome test shows a `<script>`, an `<img onerror>` and a `javascript:`
   link staying inert, and fails on the page before.
-- [ ] **RAL-91: The viewer's bars are coloured by what they measure.** The open half of RAL-91 (cobalt-glen's "the
+- [x] **RAL-91: The viewer's bars are coloured by what they measure.** The open half of RAL-91 (cobalt-glen's "the
   viewer's status colours follow meaning"), assigned by mellow-weevil: every bar's fill was one blue (`--fill`),
   whatever it measured. Done when: each Verified bar and each Progress from the ledger is one bar of Verified green,
   In review amber and Sent back pink over the stories tracked, in RAL-90's state colours, with a title on each
