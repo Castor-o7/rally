@@ -1556,6 +1556,15 @@ struct App {
     roster_from: Vec<String>,
 }
 
+/// What the viewer reads on this machine rather than from the service or GitHub.
+#[derive(Clone, Debug, Default)]
+pub struct LocalReads {
+    /// Day summaries from local folders (RAL-45).
+    pub local: LocalSummaries,
+    /// The commands the roster is read with, the first that gives one (RAL-116).
+    pub roster_from: Vec<String>,
+}
+
 /// Folders on this machine holding day summaries, which the operator's rule keeps out of git, so
 /// GitHub never has them (RAL-45). Each is read for its newest `YYYY-MM-DD.md`, read-only.
 #[derive(Clone, Debug, Default)]
@@ -1693,9 +1702,9 @@ pub async fn serve(
     ledger: LedgerReader,
     past: PastReader,
     backup: Option<BackupWatch>,
-    local: LocalSummaries,
-    roster_from: Vec<String>,
+    reads: LocalReads,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let LocalReads { local, roster_from } = reads;
     let address = listener.local_addr()?;
     let sessions_file = sessions_file(&sign_in.key_file);
     let sessions = load_sessions(&sessions_file, &sign_in.key_file);
@@ -1772,7 +1781,6 @@ fn refresh_forever(app: &App, ledger: &LedgerReader) {
             }
             Err(reason) => json!({"available": false, "reason": reason}),
         };
-        let roster = read_roster(&app.roster_from);
         let backup = app.backup.as_ref().map(|watch| {
             let saved = crate::backup::saved(&watch.dir).map_err(|e| e.to_string());
             backup_status(saved, now_ms() as i64, watch.max_age_hours)
@@ -1780,9 +1788,12 @@ fn refresh_forever(app: &App, ledger: &LedgerReader) {
         {
             let mut snapshot = app.snapshot.lock().expect("no panics");
             snapshot.ledger = Some(ledger_value);
-            snapshot.roster = Some(roster);
             snapshot.backup = backup;
         }
+        // Read after the ledger is shown, since a roster command can take its whole limit to fail
+        // before the next is tried (RAL-116).
+        let roster = read_roster(&app.roster_from);
+        app.snapshot.lock().expect("no panics").roster = Some(roster);
         std::thread::sleep(LIVE_EVERY);
     }
 }

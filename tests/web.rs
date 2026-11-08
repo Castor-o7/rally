@@ -37,6 +37,9 @@ fn rally() -> Command {
     ] {
         command.env_remove(name);
     }
+    // The viewer's tests don't read this machine's roster: one that wants one passes
+    // --roster-from, which takes precedence (RAL-116).
+    command.env("RALLY_ROSTER_FROM", "rally-test-has-no-roster");
     command
 }
 
@@ -111,9 +114,6 @@ fn start_after_with(
         .arg(&key_file)
         .args(["--code-seconds", &code_seconds.to_string()])
         .args(web_args(dir.path()))
-        // The viewer's tests don't read this machine's roster: one that wants one passes
-        // --roster-from, which takes precedence (RAL-116).
-        .env("RALLY_ROSTER_FROM", "rally-test-has-no-roster")
         .stdout(Stdio::piped());
     if fake_gh.is_some() {
         let path = std::env::var("PATH").unwrap_or_default();

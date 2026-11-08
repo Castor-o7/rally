@@ -2672,9 +2672,8 @@ fn run_viewer(
     location: Option<Location>,
     config: PathBuf,
     backup: Option<BackupWatch>,
-    local: LocalSummaries,
+    reads: web::LocalReads,
     sign_in: web::SignIn,
-    roster_from: Vec<String>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let key_file = sign_in.key_file.as_path();
     let projects_from = projects
@@ -2690,7 +2689,8 @@ fn run_viewer(
         format!("{from} isn't a projects list: {e}")
     })?;
     // A prefix the viewer doesn't list would be silently ignored, so refuse it.
-    if let Some(prefix) = local
+    if let Some(prefix) = reads
+        .local
         .by_prefix
         .keys()
         .find(|prefix| !projects.iter().any(|project| &project.prefix == *prefix))
@@ -2743,8 +2743,7 @@ fn run_viewer(
         reader,
         past,
         backup,
-        local,
-        roster_from,
+        reads,
     ))?;
     Ok(json!({"stopped": true}).to_string())
 }
@@ -3084,12 +3083,11 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 location,
                 config,
                 backup,
-                local,
+                web::LocalReads { local, roster_from },
                 web::SignIn {
                     key_file,
                     code_ttl: std::time::Duration::from_secs(code_seconds),
                 },
-                roster_from,
             );
         }
         Command::View {
