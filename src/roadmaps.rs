@@ -142,6 +142,26 @@ pub fn summarize(prefix: &str, detail: Option<&Value>) -> Value {
     out
 }
 
+/// What `rally next` says first while a project's roadmap isn't cleared (RAL-131), or `None` once
+/// it is, while it's being revised from a clearance, or when it couldn't be read.
+pub fn first_note(summary: &Value) -> Option<String> {
+    let stage = summary["stage"].as_str().unwrap_or_default();
+    if matches!(
+        stage,
+        "cleared" | "revising" | "revision_awaiting_clearance" | "unread"
+    ) {
+        return None;
+    }
+    Some(format!(
+        "{}'s roadmap isn't cleared ({}). The cycle: draft it with \"done when\" lines, submit it \
+         as {}, and once the watchman clears it, take the stories the watchman assigns. Next: {}",
+        summary["project"].as_str().unwrap_or_default(),
+        stage.replace('_', " "),
+        summary["story"].as_str().unwrap_or_default(),
+        summary["next"].as_str().unwrap_or_default(),
+    ))
+}
+
 /// Every roadmap given, with the cycle and how to read it.
 pub fn report(roadmaps: Vec<Value>) -> Value {
     json!({
@@ -214,6 +234,33 @@ mod tests {
         assert_eq!(cleared["cleared"]["commit"], COMMIT);
         assert_eq!(cleared["cleared"]["by"], "n3");
         assert_eq!(cleared["clearances"], 1);
+    }
+
+    /// RAL-131: `rally next` leads with the roadmap until it's cleared, and not after.
+    #[test]
+    fn next_leads_with_an_uncleared_roadmap() {
+        let none = first_note(&summarize("ROO", None)).unwrap();
+        assert!(
+            none.contains("ROO's roadmap isn't cleared (none)"),
+            "{none}"
+        );
+        assert!(none.contains("rally ready ROO-0"), "{none}");
+        let waiting = summarize("ROO", Some(&detail("in_review", vec![claim(1), submit(2)])));
+        assert!(first_note(&waiting).unwrap().contains("awaiting clearance"));
+        let cleared = summarize(
+            "ROO",
+            Some(&detail("verified", vec![claim(1), submit(2), verify(3)])),
+        );
+        assert_eq!(first_note(&cleared), None);
+        let revising = summarize(
+            "ROO",
+            Some(&detail(
+                "claimed",
+                vec![claim(1), submit(2), verify(3), claim(4)],
+            )),
+        );
+        assert_eq!(first_note(&revising), None);
+        assert_eq!(first_note(&json!({"stage": "unread"})), None);
     }
 
     #[test]

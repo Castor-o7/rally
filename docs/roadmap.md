@@ -880,8 +880,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   assign <STORY> --team <team> --end --note`, a newer assignment of the story, or the story's merge; with tests
   of the ledger, the service's rule and the pick.
 - [ ] **RAL-131: A team new to the rally is told the cycle: roadmap, clearance, assignment, revision.**
-  Depends on RAL-129 and RAL-130. Done when: `rally next --team` for a project whose roadmap isn't cleared says
-  so, and what to run (draft it with "done when" lines, then `rally roadmap submit`), before offering its
-  stories; the session-start briefing names the open rally, the team's project and its roadmap state, any story
-  assigned to the team, and the cycle in four lines; `rally init`'s block describes the cycle; `rally brief`
-  lists, for the watchman, each project in the open rally whose roadmap is uncleared or revised; with tests.
+  Depends on RAL-129 and RAL-130. Done when: `rally next --team` gives `project_roadmap`, and while the
+  project's roadmap isn't cleared (and isn't being revised from a clearance) leads with `roadmap_first`, saying
+  so and what to run; the session-start briefing names the open rally and its projects, each project's roadmap
+  stage, the stories assigned to the team, and the cycle in four lines, escaped like agents' text and within its
+  caps, and leaves out what it can't read in time; `rally init`'s block describes the cycle; `rally brief` lists
+  the open rally's roadmaps (RAL-129); with tests. With it, from the watchman's read of RAL-130: an assigned
+  story waiting on an unfinished one it depends on isn't offered, and says why; docs/clearance.md says the
+  openers rule limits by credential, so by machine where sessions share one.

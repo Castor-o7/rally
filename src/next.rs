@@ -292,8 +292,16 @@ pub fn pick(
                 && !(on_operator(blocker) && names(blocker, "team", team))
         })
     };
-    // Stories assigned to this team (RAL-130), ready and not blocked: in roadmap order, then the
-    // oldest assignment first.
+    // The first story `id` depends on that isn't done, by its roadmap item's "Depends on".
+    let unfinished_dep = |id: &str| {
+        roadmap.iter().find(|item| item.id == id).and_then(|item| {
+            depends_on(item)
+                .into_iter()
+                .find(|dep| dep != id && !done(dep, roadmap, ledger))
+        })
+    };
+    // Stories assigned to this team (RAL-130), ready, not blocked and not waiting on an unfinished
+    // story they depend on: in roadmap order, then the oldest assignment first.
     let position = |id: &str| roadmap.iter().position(|item| item.id == id);
     let mut assigned: Vec<(usize, u64, String)> = ledger
         .stories
@@ -307,6 +315,7 @@ pub fn pick(
             story["state"] == "ready"
                 && blocked_on(id).is_none()
                 && !roadmap.iter().any(|item| &item.id == *id && item.ticked)
+                && unfinished_dep(id).is_none()
         })
         .map(|(id, story)| {
             (
@@ -671,6 +680,32 @@ mod tests {
         assert_eq!(out["next"]["story"], "RAL-4", "{out}");
         assert!(out["skipped"].as_array().unwrap().iter().any(|s| s["story"] == "RAL-3"
             && s["reason"].as_str().unwrap().contains("blocked")));
+        // An assigned story that depends on an unfinished one isn't offered, and says why.
+        let dep_roadmap = items(
+            "- [ ] **RAL-1: a.**\n- [ ] **RAL-3: c.** Depends on RAL-1.\n- [ ] **RAL-4: d.**\n",
+            "RAL",
+        );
+        let out = pick(
+            "rally",
+            &dep_roadmap,
+            &Ledger {
+                stories: stories.as_object().unwrap(),
+                blockers: &[],
+                away: None,
+            },
+            None,
+            0,
+        );
+        assert_eq!(out["next"]["story"], "RAL-4", "{out}");
+        assert!(
+            out["skipped"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["story"] == "RAL-3"
+                    && s["reason"].as_str().unwrap().contains("depends on RAL-1")),
+            "{out}"
+        );
         // Sent-back work still comes first.
         let mut with_back = stories.clone();
         with_back["RAL-1"] = json!({"state": "sent_back", "team": "rally"});

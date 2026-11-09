@@ -1117,11 +1117,15 @@ fn session_start(
     let Ok(pairing) = serde_json::from_str::<Pairing>(&text) else {
         return quiet(&format!("{} can't be read", path.display()));
     };
+    let started = std::time::Instant::now();
     match rally::session::fetch(&pairing, rally::session::DEADLINE) {
         Ok((stories, blockers)) => {
+            // The open rally and its roadmaps (RAL-131), in what's left of the deadline.
+            let left = rally::session::DEADLINE.saturating_sub(started.elapsed());
+            let context = rally::session::fetch_rally(&pairing, left);
             println!(
                 "{}",
-                rally::session::render_for(team, &stories, &blockers, harness)
+                rally::session::render_in(team, &stories, &blockers, harness, context.as_ref())
             )
         }
         Err(error) => quiet(&escape_for_terminal(&error)),
@@ -2291,6 +2295,14 @@ fn next(
     })?;
     if let Some(state) = teams["teams"].get(team.trim().to_lowercase()) {
         result["team_status"] = state["status"].clone();
+    }
+    // Where the project's roadmap stands (RAL-131): until it's cleared, its stories are offered
+    // as the roadmap orders them, but the roadmap comes first.
+    if let Some(summary) = read_roadmaps(&backend, std::slice::from_ref(&prefix)).pop() {
+        if let Some(note) = rally::roadmaps::first_note(&summary) {
+            result["roadmap_first"] = json!(note);
+        }
+        result["project_roadmap"] = summary;
     }
     result["roadmap"] = json!(roadmap);
     result["prefix"] = json!(prefix);
