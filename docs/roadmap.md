@@ -912,7 +912,7 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   (declared)"; with a unit test. Alongside, outside the code: each MAR check showing "CI none" whose commit
   GitHub shows with check runs gets a correction note giving the counts (25 notes, 1924 to 1948; MAR-18 and
   MAR-49 have no runs and keep "none"), and ROO-0 and ROO-13 get the RAL-128 note (1949, 1950).
-- [ ] **RAL-135: A project is added to or removed from the open rally.** The operator, 2026-11-09, asking why
+- [x] **RAL-135: A project is added to or removed from the open rally.** Merged in #215 (b3838f0). The operator, 2026-11-09, asking why
   RAL wasn't on rally 0x7's board: rally 0x7 opened with MAR and ROO, and a rally's projects were fixed when it
   opened, so a team joining later could only be shown by closing and reopening the rally. "this is a necessary
   feature since rally is meant to model and display a dynamic development environment, while being a
