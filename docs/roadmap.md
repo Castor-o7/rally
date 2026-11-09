@@ -855,15 +855,15 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   `exists` is left out, the reason says the repository isn't visible to the token so the commit's existence is
   unknown, and the check isn't retried; a read that fails is retried as before; with a unit test and a test of
   the client's two GETs, and docs/evidence.md.
-- [ ] **RAL-129: A project's roadmap is submitted to the watchman and cleared at a commit.** Done when: `rally
-  roadmap submit <PREFIX> --team <team> --evidence owner/repo@<full commit>` records the roadmap a team
-  proposes for a project, checked as story evidence is; `rally roadmap clear <PREFIX> --commit <full commit>
-  --note` and `rally roadmap send-back <PREFIX> --note` answer it, refused from its submitter and for any
-  commit but the one submitted; each answer is labelled watchman, peer or other by the designation in force, as
-  verifications are; a revised roadmap is submitted the same way, and the project's roadmap then reads as
-  revised and awaiting clearance, with the last cleared commit kept; `rally roadmap show [PREFIX]` lists each
-  project's roadmap state, its history and how each fact is known; `rally brief` and `rally waiting` include
-  roadmaps waiting for a reader; the same records always rebuild the same state; with tests.
+- [ ] **RAL-129: A project's roadmap is submitted to the watchman and cleared at a commit.** A project's
+  roadmap is its story `<PREFIX>-0`, so submitting, clearing, sending back, waiting and the watchman/peer
+  labels are those of any story. Done when: a cleared `<PREFIX>-0`, and no other Verified story, can be claimed
+  again to revise it, and goes back for clearance; `rally roadmap [PREFIX...]`, read-only, gives each project's
+  roadmap, or each of the open rally's projects', with its stage (none, not started, drafting, awaiting
+  clearance, cleared, sent back, revising, revision awaiting clearance), who submitted it and what, who cleared
+  it at which commit, the last clearance during a revision, and what to run next; a roadmap that can't be read
+  says so and isn't reported as missing; `rally brief` lists the open rally's roadmaps; docs/clearance.md
+  describes the cycle; with tests of the ledger rule and of each stage.
 - [ ] **RAL-130: The watchman assigns a cleared roadmap's stories, and `rally next` offers them first.**
   Depends on RAL-129. Done when: `rally assign <STORY> --team <team> --note` records, as declared, that the
   story is assigned to the team; `rally next --team` offers the team's own sent-back work, then stories assigned
