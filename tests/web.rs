@@ -2092,6 +2092,62 @@ fn a_refresh_keeps_every_unchanged_node_and_fixes_what_changed() {
     assert_eq!(probe["typed"], "7", "{probe}");
 }
 
+/// A redraw updates inline styles too. The page's CSP doesn't apply a style attribute set with
+/// setAttribute, so the board's state bar kept its first draw's widths until a reload, while the
+/// counts beside it moved on. After a redraw with one more story, the drawn widths follow the counts.
+#[test]
+fn a_redraw_moves_the_state_bar_with_the_counts() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start_after("[]", None, 60, |db, dir| {
+        let write = |args: &[&str]| {
+            let out = on(db, dir)
+                .args(["--credential", "a1", "--as", "author"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        write(&[
+            "open-rally",
+            "--name",
+            "test",
+            "--project",
+            "RAL",
+            "--team",
+            "rally",
+        ]);
+        write(&["ready", "RAL-1"]);
+        write(&["ready", "RAL-2"]);
+        write(&["claim", "RAL-2", "--team", "rally"]);
+    });
+    let probe = r##"(async () => {
+      for (let i = 0; i < 100 && !document.querySelector("#ledger .bar.tall"); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const drawn = () => Object.fromEntries([...document.querySelectorAll("#ledger .bar.tall > div")]
+        .map((part) => [part.className, getComputedStyle(part).flexGrow]));
+      const before = drawn();
+      // One more ready story, as the next poll would bring.
+      const status = structuredClone(lastStatus);
+      status.ledger.stories["RAL-3"] = { ...status.ledger.stories["RAL-1"] };
+      if (status.rally && status.rally.board) status.rally.board.stories.push("RAL-3");
+      show(status, Date.now());
+      // The bar's segments ease to their new widths (.bar > div's 0.6 s transition).
+      await new Promise((r) => setTimeout(r, 1000));
+      return { before, after: drawn() };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    assert_eq!(probe["before"]["s-ready"], "1", "{seen}");
+    assert_eq!(probe["before"]["s-claimed"], "1", "{seen}");
+    assert_eq!(probe["after"]["s-ready"], "2", "the bar kept its first draw: {probe}");
+    assert_eq!(probe["after"]["s-claimed"], "1", "{probe}");
+}
+
 /// Writes an executable `name` in `dir` that prints `stdout` and exits with `code`, standing in
 /// for a shim's `roster`.
 fn fake_roster_command(dir: &std::path::Path, name: &str, stdout: &str, code: i32) -> String {

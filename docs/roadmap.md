@@ -924,3 +924,12 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   `project_changes`, through its close; the viewer's rally panel lists the changes, declared; docs/service.md's
   rollback table names it; with ledger, service and headless Chrome tests. Along with it, docs/service.md's
   table gains RAL-129's re-claim and RAL-130's `assign`, which it was missing.
+- [ ] **RAL-139: Viewer: a redraw updates inline styles (bars no longer freeze at their first draw).** Found
+  by silken-beetle watching the live viewer on 2026-11-09: the rally board's state bar drew 4/14/49/49 while
+  its legend and its `style` attributes said 6/17/1/51, so a new "In review 1" segment was as wide as
+  Verified's 51. `patchNode` (RAL-113) copied `style` with `setAttribute`, which the page's CSP
+  (`style-src` without `'unsafe-inline'`) doesn't apply: the attribute's text changed but what was drawn
+  didn't, so every patched bar kept its first draw until a reload. Done when: a redraw copies inline styles
+  one property at a time with `style.setProperty`, which the CSP applies; a browser test draws the board,
+  adds a story, redraws, and finds the bar's computed widths follow the counts (failing on the old
+  `patchNode`); and no other attribute `patchNode` copies is one the CSP refuses.
