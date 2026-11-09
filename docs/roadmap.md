@@ -986,3 +986,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   `/api/status`; RAL-138's cues light a changed story or session in the strip, and nothing animates while nothing
   changes; with a browser test of the busy list, text-only tasks, "since unknown", newest-first order and the
   cue on a redraw.
+- [ ] **RAL-141: A parts story with every part verified says the close is what's next.** From the watchman on
+  2026-11-09: MAR-23 had parts 2/2 verified and sat Claimed, `read-merged` and a correction were refused with
+  "can't make this change from Claimed", and nothing said that the holding team's close (docs/parts.md) was
+  what was missing, so the watchman asked whether it was a bug. Done when: a verify, send-back or `read-merged`
+  on a claimed parts story whose every declared part is verified is refused saying the close is next and whose
+  move it is, with the command; `rally show` gives `close_due` on such a story, in the list and the detail;
+  `rally waiting` lists them under `closes_due`, since they wait on a team, not a reader; a merge recorded in
+  between changes none of it; docs/parts.md says so; with ledger and view tests.

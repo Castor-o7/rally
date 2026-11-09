@@ -202,6 +202,9 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
             shown["parts"] = json!(parts_text(detail));
             shown["part_list"] = json!(detail.parts);
         }
+        if let Some(close) = close_due(detail) {
+            shown["close_due"] = close;
+        }
         // Teams' annotations of this story's records, beside the record they annotate (RAL-19).
         let annotated: Map<String, Value> = detail
             .history
@@ -256,6 +259,9 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
             }
             // A multi-part story's parts (RAL-79): how many are verified, which are waiting for a
             // read, and the commits its verified parts' readers read, which `rally gate` passes.
+            if let Some(close) = close_due(story) {
+                row["close_due"] = close;
+            }
             if !story.parts.is_empty() {
                 row["parts"] = json!(parts_text(story));
                 let in_review: Vec<u32> = story
@@ -290,6 +296,24 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
 }
 
 /// A multi-part story's parts, as `2/4 verified` (RAL-79).
+/// What's next for a parts story whose every part is verified (RAL-141): the holding team's plain
+/// submit, then a verify. `None` unless that's where the story stands.
+pub fn close_due(story: &crate::ledger::Story) -> Option<Value> {
+    if !story.close_due() {
+        return None;
+    }
+    let team = story.team.as_deref().unwrap_or("<team>");
+    Some(json!({
+        "parts": parts_text(story),
+        "team": story.team,
+        "next": format!(
+            "every part is verified; the close is next: {team} runs `rally submit <STORY> --team \
+             {team} --evidence owner/repo@<full commit>` (no --part), then a verifier verifies it \
+             at that commit (docs/parts.md)"
+        ),
+    }))
+}
+
 pub fn parts_text(story: &crate::ledger::Story) -> String {
     format!(
         "{}/{} verified",
@@ -1109,9 +1133,22 @@ pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
             ),
         },
     };
+    // Parts stories whose close is next (RAL-141): waiting on their holding team, not a reader.
+    let closes_due: Vec<Value> = ledger
+        .stories()
+        .iter()
+        .filter_map(|(id, story)| {
+            let mut close = close_due(story)?;
+            close["story"] = json!(id);
+            Some(close)
+        })
+        .collect();
     json!({
         "untrusted_text": UNTRUSTED_TEXT, "as_of": ledger.last_seq(), "waiting": shown,
         "total": total,
+        "closes_due": closes_due,
+        "closes_due_are": "Parts stories with every part verified and no close submitted yet: they \
+                           wait on the holding team's plain submit, not on a reader (RAL-141).",
         "rule": "While a watchman is designated, merges still wait for the watchman's read: with \
                  more than one, the read of a watchman whose scope covers the story.",
         "readers": readers_note,
@@ -1401,6 +1438,60 @@ mod tests {
     }
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// RAL-141: a parts story with every part verified shows its close as what's next, in the
+    /// list, the detail and `waiting`; one with a part still open doesn't.
+    #[test]
+    fn a_parts_story_with_every_part_verified_shows_its_close_as_next() {
+        let team = |body: Value| as_kind(Kind::Declared, "author", body);
+        let watch = |body: Value| as_kind(Kind::Verified, "watch", body);
+        let part = |k: u32| {
+            team(
+                json!({"change": "submit", "story": "RAL-1", "team": "rally",
+                        "evidence": format!("o/r@{COMMIT}"), "part": k, "of": 2}),
+            )
+        };
+        let read = |k: u32| {
+            watch(
+                json!({"change": "verify", "story": "RAL-1", "note": "ok", "commit": COMMIT,
+                         "part": k}),
+            )
+        };
+        let mut records = vec![
+            team(json!({"change": "ready", "story": "RAL-1"})),
+            team(json!({"change": "claim", "story": "RAL-1", "team": "rally"})),
+            part(1),
+            read(1),
+            part(2),
+        ];
+        let ledger = Ledger::replay(&records).unwrap();
+        let list = stories(&ledger, None, &Page::default()).unwrap();
+        assert!(list["stories"]["RAL-1"].get("close_due").is_none());
+        assert!(
+            waiting(&ledger)["closes_due"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        records.push(read(2));
+        let ledger = Ledger::replay(&records).unwrap();
+        let list = stories(&ledger, None, &Page::default()).unwrap();
+        let close = &list["stories"]["RAL-1"]["close_due"];
+        assert_eq!(close["team"], "rally", "{list}");
+        assert_eq!(close["parts"], "2/2 verified");
+        assert!(
+            close["next"]
+                .as_str()
+                .unwrap()
+                .contains("rally submit <STORY> --team rally")
+        );
+        let detail = stories(&ledger, Some("RAL-1"), &Page::default()).unwrap();
+        assert_eq!(detail["detail"]["close_due"]["team"], "rally");
+        let due = waiting(&ledger)["closes_due"].clone();
+        assert_eq!(due[0]["story"], "RAL-1", "{due}");
+        assert_eq!(due.as_array().unwrap().len(), 1);
+    }
 
     /// RAL-136: only what's in force is listed, each as declared, with who declared it.
     #[test]

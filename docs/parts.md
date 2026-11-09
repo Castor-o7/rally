@@ -31,6 +31,9 @@ rally verify DSM-37 --commit <last> --note "all parts read"                 # re
   It works while the part is Verified, whatever the story's state, and only from the verification's own credential
   and declared name. A later read of the part clears it. The story list's `part_commits`, which `rally gate`
   passes, include it.
+- **With every part verified, the close is the holding team's move** (RAL-141). The story stays Claimed until
+  that team's plain submit; a verify, send-back or `read-merged` tried first is refused saying so, and `rally
+  show` and `rally waiting` (`closes_due`) name it as what's next.
 - **The close** is today's submit and verify. The final verify is refused while any part is in review or sent
   back, or any declared part was never submitted, and says which.
 - `--of n` declares how many parts there are, at most 64, and never below a part already submitted. Parts are
