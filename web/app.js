@@ -413,13 +413,23 @@ function evidenceGroup(stories, untrusted, now) {
         short ? { text: short, label: "declared", className: "nowrap" }
           : { text: evidence.text, label: "declared", className: "text" },
         check
-          ? { text: [checkWords(check) + " (", ago(check.at_ms, now), ")"], label: "observed", className: "text" }
+          ? { text: checkText(check, now), label: "observed", className: "text" }
           : { text: "not checked yet", className: "muted" },
       ];
       if (notes) cells.push(readNotes(story.read, now));
       return cells;
     })));
   return group;
+}
+
+// Rally's check in words with its age, then any correction of it, which is someone's declaration,
+// not Rally's observation, and says so (RAL-134).
+function checkText(check, now) {
+  const parts = [checkWords(check) + " (", ago(check.at_ms, now), ")"];
+  for (const fix of check.corrections || []) {
+    parts.push(" · corrected by " + (fix.by || "someone") + " (declared): " + fix.note + " (", ago(fix.at_ms, now), ")");
+  }
+  return parts;
 }
 
 // The annotations on a story's latest read, each as "team: note (age)", newest last (RAL-123).

@@ -903,3 +903,12 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   changed, reads it again and reads its roadmaps at once, keeping each project's last reading by prefix; a
   version that can't be read or isn't a list keeps the list before, and the page says why; `/api/status`
   gives `projects_file`, observed; with a test of the reload and docs/web.md.
+- [ ] **RAL-134: A correction of Rally's evidence check shows beside the check on the viewer.** From
+  silken-beetle's watch of the viewer after RAL-133 went live: the correction notes beside the "no such commit"
+  checks (1646, 1650, 1732, 1734) didn't show in the Evidence table, so a reader still saw "no such commit"
+  with nothing against it, and checks recorded "CI none" before RAL-132 stay that way. Done when: the story list
+  gives each check's corrections (record, who, when, note, declared) beside it, leaving the check as observed;
+  the Evidence table's "Rally's check" cell shows each one after the check, as "corrected by <name>
+  (declared)"; with a unit test. Alongside, outside the code: each MAR check showing "CI none" whose commit
+  GitHub shows with check runs gets a correction note giving the counts (25 notes, 1924 to 1948; MAR-18 and
+  MAR-49 have no runs and keep "none"), and ROO-0 and ROO-13 get the RAL-128 note (1949, 1950).

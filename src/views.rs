@@ -393,6 +393,23 @@ fn latest_evidence(story: &crate::ledger::Story) -> Option<Value> {
         checked["kind"] = json!("observed");
         checked["seq"] = json!(entry.seq);
         checked["at_ms"] = json!(entry.at_ms);
+        // Corrections of the check, declared by whoever wrote them, beside it (RAL-134): the check
+        // stays as Rally observed it, and a reader sees what was said against it.
+        let corrections: Vec<Value> = story
+            .history
+            .iter()
+            .filter(|c| entry.corrected_by.contains(&c.seq))
+            .filter_map(|c| match &c.change {
+                Change::Correct { note, .. } => Some(json!({
+                    "seq": c.seq, "at_ms": c.at_ms, "kind": c.kind,
+                    "by": c.source.declared_name, "note": clip(note),
+                })),
+                _ => None,
+            })
+            .collect();
+        if !corrections.is_empty() {
+            checked["corrections"] = json!(corrections);
+        }
         shown["check"] = checked;
     }
     Some(shown)
@@ -1413,6 +1430,26 @@ mod tests {
         assert_eq!(check["kind"], "observed");
         assert_eq!(check["seq"], 9);
         assert_eq!(check["ci"], "passed");
+        assert!(check.get("corrections").is_none());
+
+        // RAL-134: a correction of the check shows beside it, declared, and the check is unchanged.
+        records.push(team(
+            json!({"change": "correct", "story": "RAL-1", "corrects": 9,
+                                 "note": "GitHub has 5 of 5 runs passed on this commit"}),
+        ));
+        let ledger = Ledger::replay(&records).unwrap();
+        let list = stories(&ledger, None, &Page::default()).unwrap();
+        let check = &list["stories"]["RAL-1"]["evidence"]["check"];
+        assert_eq!(check["ci"], "passed");
+        assert_eq!(check["corrections"][0]["seq"], 10);
+        assert_eq!(check["corrections"][0]["kind"], "declared");
+        assert_eq!(check["corrections"][0]["by"], "author");
+        assert!(
+            check["corrections"][0]["note"]
+                .as_str()
+                .unwrap()
+                .contains("5 of 5")
+        );
     }
 
     #[test]
