@@ -60,7 +60,8 @@ Where you use Rally:
   The viewer's report box lists them, newest first.
   Only the operator or the watchman opens or closes a rally; the service enforces it with `--rally-openers`.
   They also add or remove a session in the open rally with `rally rally-session add|remove <nickname> --note "..."`,
-  and confirm a restart with `--succeeds <old nickname>`.
+  and confirm a restart with `--succeeds <old nickname>`. They add or remove a project as a team joins or
+  leaves with `rally rally-project add|remove <PREFIX> --note "..."`.
 - **Record what's standing**: `rally hold`, `rally condition` and `rally grant` (with `--direct` or
   `--relayed-by`), ended with `rally end-standing <N> --note "why"`. Declared only: a recorded grant
   confers no authority, so approvals still come from the operator directly.

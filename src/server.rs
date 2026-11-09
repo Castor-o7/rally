@@ -719,11 +719,13 @@ async fn write_record(
         }
     }
     // Only the operator or the watchman opens or closes a rally (RAL-77), adds or removes one
-    // of its sessions (RAL-110), or assigns a story (RAL-130), backfilled or not.
+    // of its sessions (RAL-110) or projects (RAL-135), or assigns a story (RAL-130), backfilled or
+    // not.
     let applied = applied_change(&body);
     let rally_change = applied == "open_rally"
         || applied == "close_rally"
         || applied == "rally_session"
+        || applied == "rally_project"
         || applied == "assign";
     if rally_change && let Err(refused) = may_open_rallies(&service, &identity.credential).await {
         return *refused;

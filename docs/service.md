@@ -31,6 +31,9 @@ Records that end the rollback window, because a binary older than the one named 
 | `annotate` of a verify or send-back by its own writer or reading team, or `annotate --also-read` on a part's verification | `be65064` | RAL-123 |
 | `rally-session` | `a70e313` | RAL-110 |
 | `event` | `a70e313` | RAL-104 |
+| `claim` of a cleared roadmap story `<PREFIX>-0`, to revise it (first written at record 1981) | `fada36c` | RAL-129 |
+| `assign` (first written at record 1970) | `fada36c` | RAL-130 |
+| `rally-project` | not yet deployed | RAL-135 |
 
 Before rolling back to a binary older than the story that added one, check that none has been written.
 
