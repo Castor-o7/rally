@@ -757,8 +757,12 @@ fn opened_rally(open: &Value, roster: &Value) -> Value {
                             "confirmed": s.confirmed}))
             .collect::<Vec<_>>(),
         "sessions_changed": open["sessions"].as_array().cloned().unwrap_or_default(),
-        "rule": "This rally's board: its projects and teams as declared when it opened, and only \
-                 what was recorded since. Earlier work is kept in the ledger and under past rallies.",
+        // Projects added or removed since it opened (RAL-135), each with who and when.
+        "projects_changed": open["project_changes"].as_array().cloned().unwrap_or_default(),
+        "opened_with": open["opened_with"],
+        "rule": "This rally's board: its projects and teams as declared when it opened or since, \
+                 and only what was recorded since it opened. Earlier work is kept in the ledger and \
+                 under past rallies.",
     })
 }
 

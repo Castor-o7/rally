@@ -332,6 +332,14 @@ function rallyLine(rally, otherStories) {
         + (added.length && removed.length ? ";" : "")
         + (removed.length ? " removed " + removed.join(", ") : "")));
     }
+    // Projects the operator or watchman added or removed since it opened (RAL-135), each kept.
+    const changes = rally.projects_changed || [];
+    if (changes.length) {
+      box.append(el("p", "muted", "Projects changed since it opened (declared): "
+        + changes.map((c) => (c.remove ? "removed " : "added ") + c.project + " at record " + c.seq
+          + (c.source && c.source.declared_name ? " by " + c.source.declared_name : "")).join("; ")
+        + (rally.opened_with ? " · opened with " + rally.opened_with.join(", ") : "")));
+    }
     box.append(el("p", "muted", "Opened " + when(rally.opened_at_ms) + ", at record " + rally.since_seq
       + (rally.opened_by ? ", by " + rally.opened_by : "") + ". " + rally.rule));
   } else {

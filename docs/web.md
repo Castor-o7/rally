@@ -199,6 +199,21 @@ another nickname being detected for the same session. The page lists what was ad
 opened. Like opening and closing a rally, only the operator or the watchman may do it once `--rally-openers` is
 set. It's one record kind, `rally_session`, and the first one ends the rollback window (see `docs/service.md`).
 
+A rally's projects can change while it's open too (RAL-135), since a team can join a rally, or leave it, after it
+opens:
+
+```bash
+rally rally-project add RAL --note "the rally team joins rally 0x7"      # add a project to the open rally
+rally rally-project remove CAT --note "Meow is paused for this rally"    # take one out
+```
+
+From that record on, the project is in the rally or out of it: on the board, in `rally brief`, `rally roadmap`
+and the session-start briefing. Its board shows the stories recorded since the rally opened, as the others'
+do. The rally keeps what it opened with (`opened_with`) and each change (`project_changes`), and the panel
+lists them, declared. Adding a project that's already in, or removing one that isn't, is refused. So is
+removing the last project; that's closing the rally. The same rule as `rally-session` decides who may do it.
+It's one record kind, `rally_project`, and the first one ends the rollback window.
+
 Nothing is removed. The ledger is append-only and hash-chained, and deleting records would fail its check, so a
 closed rally is kept whole. The page lists past rallies, and each opens as its own board (`#/rally/<record that
 opened it>`, RAL-77): the ledger as it stood when it closed (RAL-28), showing only its projects' stories recorded
