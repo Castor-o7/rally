@@ -302,6 +302,7 @@ fn router(
         .route("/v1/stories/{id}", get(one_story))
         .route("/v1/teams", get(list_teams))
         .route("/v1/rallies", get(list_rallies))
+        .route("/v1/standings", get(list_standings))
         .route("/v1/blockers", get(open_blockers))
         .route("/v1/track-records", get(list_track_records))
         .route("/v1/track-records/{name}", get(one_track_record))
@@ -719,11 +720,13 @@ async fn write_record(
         }
     }
     // Only the operator or the watchman opens or closes a rally (RAL-77), adds or removes one
-    // of its sessions (RAL-110), or assigns a story (RAL-130), backfilled or not.
+    // of its sessions (RAL-110) or projects (RAL-135), or assigns a story (RAL-130), backfilled or
+    // not.
     let applied = applied_change(&body);
     let rally_change = applied == "open_rally"
         || applied == "close_rally"
         || applied == "rally_session"
+        || applied == "rally_project"
         || applied == "assign";
     if rally_change && let Err(refused) = may_open_rallies(&service, &identity.credential).await {
         return *refused;
@@ -1296,6 +1299,15 @@ async fn list_rallies(
         })
     })
     .await
+}
+
+/// The holds, conditions and grants in force (RAL-136), read light, for the viewer.
+async fn list_standings(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    view(service, identity, query, views::standings).await
 }
 
 /// The change a record's body applies: a backfill applies the entry inside it (RAL-30), so a

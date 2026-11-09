@@ -912,6 +912,25 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   (declared)"; with a unit test. Alongside, outside the code: each MAR check showing "CI none" whose commit
   GitHub shows with check runs gets a correction note giving the counts (25 notes, 1924 to 1948; MAR-18 and
   MAR-49 have no runs and keep "none"), and ROO-0 and ROO-13 get the RAL-128 note (1949, 1950).
+- [ ] **RAL-135: A project is added to or removed from the open rally.** The operator, 2026-11-09, asking why
+  RAL wasn't on rally 0x7's board: rally 0x7 opened with MAR and ROO, and a rally's projects were fixed when it
+  opened, so a team joining later could only be shown by closing and reopening the rally. "this is a necessary
+  feature since rally is meant to model and display a dynamic development environment, while being a
+  verifieable ledger of work for the agent teams that are participating in the rally". Done when: `rally
+  rally-project add|remove <PREFIX> --note` records, declared, a project joining or leaving the open rally,
+  taken by the service only from those who may open a rally; refused with no rally open, for a prefix already
+  in (add) or not in (remove), and for the last project; the rally's `projects` change from that record, so the
+  board, brief, roadmaps and session briefing follow it; the rally keeps `opened_with` and each change in
+  `project_changes`, through its close; the viewer's rally panel lists the changes, declared; docs/service.md's
+  rollback table names it; with ledger, service and headless Chrome tests. Along with it, docs/service.md's
+  table gains RAL-129's re-claim and RAL-130's `assign`, which it was missing.
+- [ ] **RAL-136: The viewer shows the holds, conditions and grants in force.** From the watchman on 2026-11-09,
+  during the Marshal soak: the viewer had no sign of a standing record, so MAR-77's deploy hold and the cutover
+  hold (1859) were only in `rally brief`. Done when: the service serves `/v1/standings`, a light read of the
+  holds, conditions and grants not ended, each as declared with who declared it; the viewer reads it on every
+  refresh and shows "Standing in force" beside the rally, holds first, each with what it's on, what releases it
+  or its scope, its record and age, labelled declared, and says so when the service is older; an ended one isn't
+  shown; with a unit test and a headless Chrome test, and docs/web.md.
 - [ ] **RAL-137: Viewer: a solid black page background, panels keep their colours.** From Josh directly
   (2026-11-09): the page's background is solid black, and the panels and other visual content keep their
   current colour scheme. Done when: in both schemes the page behind the panels is `#000` with no aurora or

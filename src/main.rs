@@ -604,6 +604,17 @@ enum Command {
         #[arg(long)]
         note: String,
     },
+    /// Add a project to the open rally by its story prefix, or remove one (RAL-135), as a team
+    /// joins or leaves it. Only those who may open a rally may do it. The rally's board, brief,
+    /// roadmaps and session briefings follow it at once, and the change is kept with the rally
+    RallyProject {
+        /// `add` or `remove`
+        action: String,
+        /// The project's story prefix, such as RAL
+        prefix: String,
+        #[arg(long)]
+        note: String,
+    },
     /// Add a session to the open rally by its Muster nickname, or remove one (RAL-110). Only those
     /// who may open a rally may do it. `--succeeds` confirms a session as a restart of a listed one.
     RallySession {
@@ -2569,8 +2580,27 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
             |ledger, page| views::track_records(ledger, None, page),
         )?;
         let rallies = read_rallies(&backend);
+        // What's standing in force (RAL-136). An older service without the read says so.
+        let standings = match &backend {
+            Backend::File(_) => backend
+                .read_value("/v1/standings", None, &Page::default(), views::standings)
+                .unwrap_or_else(|error| json!({"available": false, "reason": error.to_string()})),
+            Backend::Service(pairing) => {
+                match client::request(pairing, "GET", "/v1/standings", None, &[]) {
+                    Ok(reply) if reply.status == 404 => {
+                        json!({"available": false, "older_service": true,
+                    "reason": "the service has no /v1/standings (it's older than RAL-136)"})
+                    }
+                    Ok(reply) => reply_value(&reply).unwrap_or_else(
+                        |error| json!({"available": false, "reason": error.to_string()}),
+                    ),
+                    Err(error) => json!({"available": false, "reason": error.to_string()}),
+                }
+            }
+        };
         Ok(json!({
             "rallies": rallies,
+            "standings": standings,
             "as_of": stories["as_of"],
             "as_of_at_ms": stories["as_of_at_ms"],
             "stories": stories["stories"],
@@ -4019,6 +4049,22 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             Kind::Declared,
             json!({"change": "assign", "story": story, "team": team, "note": note, "end": end}),
         ),
+        Command::RallyProject {
+            action,
+            prefix,
+            note,
+        } => {
+            let remove = match action.as_str() {
+                "add" => false,
+                "remove" => true,
+                other => return Err(format!("say add or remove, not {other:?}").into()),
+            };
+            (
+                Kind::Declared,
+                json!({"change": "rally_project", "project": prefix.trim().to_uppercase(),
+                       "remove": remove, "note": note}),
+            )
+        }
         Command::Merge { story, commit } => (
             Kind::Declared,
             json!({"change": "merge", "story": story, "commit": commit}),

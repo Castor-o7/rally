@@ -2267,6 +2267,127 @@ fn the_roster_shows_every_source_and_keeps_each_sources_labels() {
     assert!(labels.contains("attested"), "{probe}");
 }
 
+/// RAL-135, in the browser: a project added to the open rally joins its board at once, and the
+/// rally's panel says when and by whom, with what it opened with.
+#[test]
+fn a_project_added_to_the_open_rally_shows_on_its_panel() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start_after("[]", None, 60, |db, dir| {
+        let write = |args: &[&str]| {
+            let out = on(db, dir)
+                .args(["--credential", "a1", "--as", "mellow-weevil"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        write(&[
+            "open-rally",
+            "--name",
+            "0x7",
+            "--project",
+            "MAR",
+            "--project",
+            "ROO",
+        ]);
+        write(&[
+            "rally-project",
+            "add",
+            "RAL",
+            "--note",
+            "the rally team joins",
+        ]);
+    });
+    let probe = r##"(async () => {
+      const text = () => document.body.textContent;
+      for (let i = 0; i < 100 && !text().includes("Projects changed"); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return { text: text() };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let text = seen["probe"]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("Projects: MAR, ROO, RAL"), "{seen}");
+    assert!(
+        text.contains(
+            "Projects changed since it opened (declared): added RAL at record 2 by mellow-weevil"
+        ) && text.contains("opened with MAR, ROO"),
+        "{seen}"
+    );
+}
+
+/// RAL-136, in the browser: the holds, conditions and grants in force show beside the rally, each
+/// labelled declared, and one that's ended doesn't.
+#[test]
+fn the_holds_and_grants_in_force_show_beside_the_rally() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start_after("[]", None, 60, |db, dir| {
+        let write = |args: &[&str]| {
+            let out = on(db, dir)
+                .args(["--credential", "a1", "--as", "mellow-weevil"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        write(&["open-rally", "--name", "0x7", "--project", "MAR"]);
+        write(&[
+            "hold",
+            "--team",
+            "watchman",
+            "--note",
+            "cutover in progress",
+            "--releases",
+            "step 7 passes",
+        ]);
+        write(&[
+            "condition",
+            "--team",
+            "watchman",
+            "--note",
+            "marshal binds loopback",
+        ]);
+        write(&[
+            "hold",
+            "--team",
+            "watchman",
+            "--note",
+            "an old hold",
+            "--releases",
+            "x",
+        ]);
+        write(&["end-standing", "4", "--note", "released"]);
+    });
+    let probe = r##"(async () => {
+      const box = () => document.querySelector(".standings");
+      for (let i = 0; i < 100 && !(box() && box().querySelector("table")); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return { text: box() ? box().textContent : "" };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let text = seen["probe"]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("Standing in force"), "{seen}");
+    assert!(
+        text.contains("cutover in progress") && text.contains("step 7 passes"),
+        "{seen}"
+    );
+    assert!(text.contains("marshal binds loopback"), "{seen}");
+    assert!(
+        !text.contains("an old hold"),
+        "an ended hold isn't in force: {seen}"
+    );
+    assert!(text.contains("by mellow-weevil"), "{seen}");
+}
+
 /// RAL-123, in the browser: a reader's own correction of its verify note shows beside the read, in
 /// the Evidence table, labelled declared.
 #[test]
