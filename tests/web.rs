@@ -2125,7 +2125,15 @@ fn a_change_cues_what_changed_and_an_unchanged_poll_cues_nothing() {
         for id in ["RAL-1", "RAL-2"] {
             write(&["ready", id]);
             write(&["claim", id, "--team", "rally"]);
-            write(&["submit", id, "--team", "rally", "--evidence", evidence, "--not-checkable"]);
+            write(&[
+                "submit",
+                id,
+                "--team",
+                "rally",
+                "--evidence",
+                evidence,
+                "--not-checkable",
+            ]);
         }
     });
     let probe = r##"(async () => {
@@ -2164,7 +2172,9 @@ fn a_change_cues_what_changed_and_an_unchanged_poll_cues_nothing() {
         "a new record cues the live indicator: {probe}"
     );
     assert!(
-        changed.iter().any(|c| c.starts_with("RAL-2") && c.ends_with("cue-changed")),
+        changed
+            .iter()
+            .any(|c| c.starts_with("RAL-2") && c.ends_with("cue-changed")),
         "the story that moved is cued: {probe}"
     );
     assert!(
@@ -2176,11 +2186,24 @@ fn a_change_cues_what_changed_and_an_unchanged_poll_cues_nothing() {
         "In review and Verified moved, and only they are cued: {probe}"
     );
     assert_eq!(probe["colour"], "var(--s-verified)", "{probe}");
-    assert_eq!(probe["afterwards"], json!([]), "a cue goes by itself: {probe}");
-    assert_eq!(probe["unchanged"], json!([]), "an unchanged poll cues nothing: {probe}");
-    assert_eq!(probe["running"], 0, "nothing animates while nothing changes: {probe}");
+    assert_eq!(
+        probe["afterwards"],
+        json!([]),
+        "a cue goes by itself: {probe}"
+    );
+    assert_eq!(
+        probe["unchanged"],
+        json!([]),
+        "an unchanged poll cues nothing: {probe}"
+    );
+    assert_eq!(
+        probe["running"], 0,
+        "nothing animates while nothing changes: {probe}"
+    );
     assert!(
-        changed.iter().any(|c| c.ends_with("cue-arrive") && !c.starts_with("freshness")),
+        changed
+            .iter()
+            .any(|c| c.ends_with("cue-arrive") && !c.starts_with("freshness")),
         "the sigil turns for a new record: {probe}"
     );
 }
@@ -2250,14 +2273,33 @@ fn the_activity_strip_shows_who_is_working_and_what_just_changed() {
     let probe = &seen["probe"];
     let now: Vec<String> = serde_json::from_value(probe["now"].clone()).unwrap();
     assert_eq!(now.len(), 2, "only the busy sessions: {probe}");
-    assert!(now[0].contains("busy-bee") && now[0].contains("busy for"), "{probe}");
-    assert!(now[0].contains("<b>fixing</b> the bar"), "the task shows as text: {probe}");
-    assert_eq!(probe["injected"], false, "agent-written text is never markup: {probe}");
-    assert!(now[1].contains("new-moth") && now[1].contains("since unknown"), "{probe}");
+    assert!(
+        now[0].contains("busy-bee") && now[0].contains("busy for"),
+        "{probe}"
+    );
+    assert!(
+        now[0].contains("<b>fixing</b> the bar"),
+        "the task shows as text: {probe}"
+    );
+    assert_eq!(
+        probe["injected"], false,
+        "agent-written text is never markup: {probe}"
+    );
+    assert!(
+        now[1].contains("new-moth") && now[1].contains("since unknown"),
+        "{probe}"
+    );
     assert!(!now.iter().any(|n| n.contains("idle-ox")), "{probe}");
-    assert_eq!(probe["recent"], json!(["RAL-2", "RAL-1"]), "newest first: {probe}");
+    assert_eq!(
+        probe["recent"],
+        json!(["RAL-2", "RAL-1"]),
+        "newest first: {probe}"
+    );
     assert_eq!(probe["recentAfter"], json!(["RAL-1", "RAL-2"]), "{probe}");
-    assert_eq!(probe["cued"], true, "the change is cued in the strip: {probe}");
+    assert_eq!(
+        probe["cued"], true,
+        "the change is cued in the strip: {probe}"
+    );
 }
 
 /// Writes an executable `name` in `dir` that prints `stdout` and exits with `code`, standing in
