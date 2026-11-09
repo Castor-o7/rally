@@ -960,7 +960,7 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   grid, the panels, bars and state colours are unchanged (RAL-91's colours), and text set straight on the
   page (the header, section headings, their muted lines) uses `--on-page` colours that meet WCAG AA on
   black in both schemes; with the viewer's browser tests passing.
-- [ ] **RAL-138: Viewer: reactive, agentic visual cues for live state.** From Josh directly (2026-11-09):
+- [x] **RAL-138: Viewer: reactive, agentic visual cues for live state.** Merged in #221 (5541ed0). From Josh directly (2026-11-09):
   research visual techniques that read as "reactive/agentic", and use them. From the watchman's scope: every
   cue is tied to a real change in the ledger or roster (a new record arriving, a session going busy or
   idle, a hold in force, a check correction), nothing animates while nothing changes, motion respects
@@ -968,7 +968,7 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   gives the research and why each cue was chosen; the cues are in the viewer with a browser test that a
   change triggers its cue and an unchanged poll triggers none; and the PR shows them, in screenshots or a
   short recording.
-- [ ] **RAL-139: Viewer: a redraw updates inline styles (bars no longer freeze at their first draw).** Found
+- [x] **RAL-139: Viewer: a redraw updates inline styles (bars no longer freeze at their first draw).** Merged in #219 (a90c3bc). Found
   by silken-beetle watching the live viewer on 2026-11-09: the rally board's state bar drew 4/14/49/49 while
   its legend and its `style` attributes said 6/17/1/51, so a new "In review 1" segment was as wide as
   Verified's 51. `patchNode` (RAL-113) copied `style` with `setAttribute`, which the page's CSP
@@ -977,7 +977,7 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   one property at a time with `style.setProperty`, which the CSP applies; a browser test draws the board,
   adds a story, redraws, and finds the bar's computed widths follow the counts (failing on the old
   `patchNode`); and no other attribute `patchNode` copies is one the CSP refuses.
-- [ ] **RAL-140: Viewer: an Activity strip shows who's working now and what just changed.** From Josh directly
+- [x] **RAL-140: Viewer: an Activity strip shows who's working now and what just changed.** Merged in #221 (5541ed0). From Josh directly
   (2026-11-09), following RAL-138's research: presence and attribution are the clearest agentic cues. Done when:
   at the top of the rally's status, "Now" lists the rally's sessions whose activity is busy, each with its
   nickname, how long it's been busy (declared; "since unknown" when `activity_at` is missing) and its
@@ -986,7 +986,7 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   `/api/status`; RAL-138's cues light a changed story or session in the strip, and nothing animates while nothing
   changes; with a browser test of the busy list, text-only tasks, "since unknown", newest-first order and the
   cue on a redraw.
-- [ ] **RAL-141: A parts story with every part verified says the close is what's next.** From the watchman on
+- [x] **RAL-141: A parts story with every part verified says the close is what's next.** Merged in #222 (44ffaab). From the watchman on
   2026-11-09: MAR-23 had parts 2/2 verified and sat Claimed, `read-merged` and a correction were refused with
   "can't make this change from Claimed", and nothing said that the holding team's close (docs/parts.md) was
   what was missing, so the watchman asked whether it was a bug. Done when: a verify, send-back or `read-merged`
