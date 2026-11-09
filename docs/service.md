@@ -23,14 +23,14 @@ Records that end the rollback window, because a binary older than the one named 
 |---|---|---|
 | `designate --credential` | `598f2b0` | RAL-53 |
 | `hold`, `condition` or `grant` | `2614a14` | RAL-64 |
-| `annotate --also-read` | not yet | RAL-67 |
-| `open-rally` or `close-rally` | not yet | RAL-76 |
-| `submit`, `verify` or `send-back` with `--part` (a `part` field) | not yet | RAL-79 |
+| `annotate --also-read` | `2c45e8f` | RAL-67 |
+| `open-rally` or `close-rally` | `b6c223e` | RAL-76 |
+| `submit`, `verify` or `send-back` with `--part` (a `part` field) | `3138066` | RAL-79 |
 | `amend` (a submit with `"amend": true`) | `6b7227f` | RAL-71 |
-| `read-merged` | not yet | RAL-85 |
-| `annotate` of a verify or send-back by its own writer or reading team, or `annotate --also-read` on a part's verification | not yet | RAL-123 |
-| `rally-session` | not yet | RAL-110 |
-| `event` | not yet | RAL-104 |
+| `read-merged` | `c79a2c5` | RAL-85 |
+| `annotate` of a verify or send-back by its own writer or reading team, or `annotate --also-read` on a part's verification | `be65064` | RAL-123 |
+| `rally-session` | `a70e313` | RAL-110 |
+| `event` | `a70e313` | RAL-104 |
 
 Before rolling back to a binary older than the story that added one, check that none has been written.
 
