@@ -945,3 +945,12 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   gives the research and why each cue was chosen; the cues are in the viewer with a browser test that a
   change triggers its cue and an unchanged poll triggers none; and the PR shows them, in screenshots or a
   short recording.
+- [ ] **RAL-139: Viewer: a redraw updates inline styles (bars no longer freeze at their first draw).** Found
+  by silken-beetle watching the live viewer on 2026-11-09: the rally board's state bar drew 4/14/49/49 while
+  its legend and its `style` attributes said 6/17/1/51, so a new "In review 1" segment was as wide as
+  Verified's 51. `patchNode` (RAL-113) copied `style` with `setAttribute`, which the page's CSP
+  (`style-src` without `'unsafe-inline'`) doesn't apply: the attribute's text changed but what was drawn
+  didn't, so every patched bar kept its first draw until a reload. Done when: a redraw copies inline styles
+  one property at a time with `style.setProperty`, which the CSP applies; a browser test draws the board,
+  adds a story, redraws, and finds the bar's computed widths follow the counts (failing on the old
+  `patchNode`); and no other attribute `patchNode` copies is one the CSP refuses.
