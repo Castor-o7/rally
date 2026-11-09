@@ -257,6 +257,7 @@ function renderLedger(ledger, backup, now, untrusted, rally) {
   const all = Object.entries(ledger.stories || {});
   const stories = all.filter(([id]) => storyInRally(rally, id));
   root.append(rallyLine(rally, all.length - stories.length));
+  root.append(standingBox(ledger.standings, now));
   if (stories.length === 0) {
     root.append(el("p", "muted", !all.length ? "No stories have been recorded yet."
       : rally && rally.opened ? "Nothing recorded for this rally's projects since it opened."
@@ -286,6 +287,34 @@ function renderLedger(ledger, backup, now, untrusted, rally) {
   root.append(heading, stack, legend);
   root.append(evidenceGroup(stories, untrusted, now));
   root.append(pastForm(check ? check.head.seq : ledger.as_of));
+}
+
+// The holds, conditions and grants in force (RAL-136), each as its writer declared it, shown
+// beside the rally because they decide what may happen in it. A grant confers no authority.
+function standingBox(standings, now) {
+  const box = el("div", "standings");
+  box.append(el("h3", "", "Standing in force"));
+  if (!standings || standings.available === false) {
+    box.append(el("p", "muted", "Not read: " + ((standings && standings.reason) || "the viewer didn't say.")));
+    return box;
+  }
+  const rows = standings.standings || [];
+  if (!rows.length) {
+    box.append(el("p", "muted", "No hold, condition or grant is in force."));
+    return box;
+  }
+  const order = { hold: 0, condition: 1, grant: 2 };
+  rows.sort((a, b) => (order[a.standing] - order[b.standing]) || (a.seq - b.seq));
+  box.append(table(["Kind", "On", "What", "Until / scope", "Declared"], rows.map((r) => [
+    { text: r.standing, className: "nowrap" },
+    { text: r.story || r.team || "", className: "nowrap" },
+    { text: r.note, className: "text" },
+    { text: r.releases || r.scope || "", className: "text" },
+    { text: ["#" + r.seq + (r.declared_by ? " by " + r.declared_by : "") + ", ", ago(r.at_ms, now)],
+      label: "declared", className: "nowrap" },
+  ])));
+  box.append(el("p", "muted", standings.authority || "Declared only."));
+  return box;
 }
 
 // What's in the current rally and why, or why it couldn't be told (RAL-69), and the past
