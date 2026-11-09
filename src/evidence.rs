@@ -646,13 +646,22 @@ pub enum Step {
 }
 
 /// Records a final outcome at once. CI still running is checked again until `ceiling_ms` after
-/// the submission, then recorded as still pending, saying the wait ran out.
+/// the submission, then recorded as still pending, saying the wait ran out. No CI at all is
+/// looked for again the same way (RAL-132): a submission often comes before its CI has started,
+/// so `none` at once would be recorded for good while the runs came minutes later.
 pub fn step(mut outcome: Outcome, job: &Job, now_ms: i64, ceiling_ms: u64) -> Step {
-    if outcome.is_final() {
+    let no_ci_yet = outcome.ci == Some(Ci::None) && !outcome.unread;
+    if outcome.is_final() && !no_ci_yet {
         return Step::Record(outcome);
     }
     if now_ms.saturating_sub(job.submitted_at_ms) >= i64::try_from(ceiling_ms).unwrap_or(i64::MAX) {
         let minutes = ceiling_ms / 60_000;
+        if no_ci_yet {
+            outcome.reason = Some(format!(
+                "no check runs or statuses appeared within {minutes} minutes of the submission"
+            ));
+            return Step::Record(outcome);
+        }
         outcome.reason = Some(match outcome.reason.take() {
             // A read that kept failing says what failed.
             Some(why) if outcome.unread => {
@@ -1543,6 +1552,49 @@ mod tests {
         assert!(result.unwrap_err().contains("redirect"));
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(elsewhere.accept().is_err(), "the redirect was followed");
+    }
+
+    /// RAL-132: MAR-61's check found no CI a second after the submit and recorded `none`, while
+    /// its five check runs started 7 minutes later. No CI is looked for again until the ceiling.
+    #[test]
+    fn no_ci_yet_is_looked_for_again_until_the_ceiling() {
+        let job = Job {
+            story: "RAL-5".into(),
+            submit: 4,
+            evidence: evidence(),
+            submitted_at_ms: 1_000,
+        };
+        let none = Outcome {
+            checkable: true,
+            repo: Some("Castor-o7/rally".into()),
+            commit: Some(COMMIT.into()),
+            exists: Some(true),
+            names_story: Some(true),
+            ci: Some(Ci::None),
+            reason: None,
+            unread: false,
+        };
+        let ceiling = 30 * 60_000;
+        assert_eq!(step(none.clone(), &job, 2_000, ceiling), Step::Again);
+        assert_eq!(
+            step(none.clone(), &job, 1_000 + ceiling as i64 - 1, ceiling),
+            Step::Again
+        );
+        let Step::Record(recorded) = step(none.clone(), &job, 1_000 + ceiling as i64, ceiling)
+        else {
+            panic!("not recorded at the ceiling");
+        };
+        assert_eq!(recorded.ci, Some(Ci::None));
+        assert!(recorded.reason.unwrap().contains("30 minutes"));
+        // Once the runs show, the outcome is recorded at once.
+        let passed = Outcome {
+            ci: Some(Ci::Passed),
+            ..none
+        };
+        assert!(matches!(
+            step(passed, &job, 2_000, ceiling),
+            Step::Record(_)
+        ));
     }
 
     #[test]
