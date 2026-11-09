@@ -2144,7 +2144,10 @@ fn a_redraw_moves_the_state_bar_with_the_counts() {
     let probe = &seen["probe"];
     assert_eq!(probe["before"]["s-ready"], "1", "{seen}");
     assert_eq!(probe["before"]["s-claimed"], "1", "{seen}");
-    assert_eq!(probe["after"]["s-ready"], "2", "the bar kept its first draw: {probe}");
+    assert_eq!(
+        probe["after"]["s-ready"], "2",
+        "the bar kept its first draw: {probe}"
+    );
     assert_eq!(probe["after"]["s-claimed"], "1", "{probe}");
 }
 
