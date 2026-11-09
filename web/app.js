@@ -606,8 +606,12 @@ function currentPast() {
   return { key: match[1] + ":" + match[2], seq: Number(match[2]), rally: match[1] === "rally" };
 }
 
-function renderRoadmaps(projects, now, rally) {
+function renderRoadmaps(projects, now, rally, projectsFile) {
   const root = drawing("roadmaps");
+  // RAL-133: the viewer re-reads its projects file when it changes; a version it couldn't use says so.
+  if (projectsFile && projectsFile.problem) {
+    root.append(el("p", "warning", "⚠ The projects list changed but couldn't be read: " + projectsFile.problem + "."));
+  }
   const shown = projects.filter((p) => p.in_rally !== false);
   if (!shown.length) root.append(el("p", "muted", "No listed project is in this rally."));
   const unlisted = (rallyKnown(rally) && rally.prefixes || []).filter((prefix) => !projects.some((p) => p.prefix === prefix));
@@ -1274,7 +1278,7 @@ function show(status, now) {
     drawPatched("project-page", () => renderProject(status, prefix, now));
   } else {
     drawPatched("ledger", () => renderLedger(status.ledger, status.backup, now, status.untrusted_text, status.rally));
-    drawPatched("roadmaps", () => renderRoadmaps(status.projects, now, status.rally));
+    drawPatched("roadmaps", () => renderRoadmaps(status.projects, now, status.rally, status.projects_file));
     drawPatched("teams", () => renderTeams(status, now));
     drawPatched("muster", () => renderMuster(status, now));
   }

@@ -93,7 +93,12 @@ runs past the window. Reaching the page from a phone is a separate matter, RAL-3
   into one number. The projects and their meanings come from `--projects` if given, otherwise from
   `projects.json` beside the pairing (`~/.config/rally/projects.json`) if it exists, and otherwise from the
   built-in `web/projects.json` (RAL-74). The viewer's first line says which, as `projects`. A file that's
-  there but can't be read or isn't a list stops the viewer, rather than falling back. Every checkbox in the
+  there but can't be read or isn't a list stops the viewer, rather than falling back. A file is watched while
+  the viewer runs (RAL-133): at each 30-second refresh its modification time is looked at, and when it has
+  changed the list is read again and its roadmaps read at once, so a project added to a rally shows without
+  a restart. A newer version that can't be read or isn't a list keeps the list read before, and the
+  Roadmaps section says why; `/api/status` gives `projects_file` with where the list came from and when it
+  was read, observed. Every checkbox in the
   file counts, outside code examples. Percentages round down. A roadmap that's read but has no checkboxes at
   all, such as DiscoSim's table, has no ticks to count, so its card shows **Progress from the ledger** instead
   (RAL-81): Verified of the stories the ledger tracks under its prefix, labelled as the ledger's. It isn't added

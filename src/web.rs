@@ -1591,7 +1591,11 @@ pub fn shape_roster(value: &Value, read_at_ms: u64) -> Value {
 }
 
 struct App {
-    projects: Vec<Project>,
+    /// The projects shown, re-read when their file changes (RAL-133).
+    projects: Mutex<Vec<Project>>,
+    projects_file: Option<std::path::PathBuf>,
+    /// When the projects file was last read, and what went wrong reading a newer version.
+    projects_seen: Mutex<ProjectsSeen>,
     /// Local folders of day summaries to read instead of GitHub's (RAL-45).
     local: LocalSummaries,
     snapshot: Mutex<Snapshot>,
@@ -1619,6 +1623,9 @@ struct App {
 pub struct LocalReads {
     /// Day summaries from local folders (RAL-45).
     pub local: LocalSummaries,
+    /// The projects file the viewer was started with, watched for changes (RAL-133), or `None`
+    /// for the built-in list.
+    pub projects_file: Option<std::path::PathBuf>,
     /// The commands the roster is read with, the first that gives one (RAL-116).
     pub roster_from: Vec<String>,
 }
@@ -1762,12 +1769,23 @@ pub async fn serve(
     backup: Option<BackupWatch>,
     reads: LocalReads,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let LocalReads { local, roster_from } = reads;
+    let LocalReads {
+        local,
+        roster_from,
+        projects_file,
+    } = reads;
+    let projects_seen = ProjectsSeen {
+        modified: projects_file.as_deref().and_then(modified_at),
+        read_at_ms: now_ms(),
+        problem: None,
+    };
     let address = listener.local_addr()?;
     let sessions_file = sessions_file(&sign_in.key_file);
     let sessions = load_sessions(&sessions_file, &sign_in.key_file);
     let app = Arc::new(App {
-        projects,
+        projects: Mutex::new(projects),
+        projects_file,
+        projects_seen: Mutex::new(projects_seen),
         local,
         snapshot: Mutex::new(Snapshot::default()),
         allowed_hosts: allowed_hosts(address)?,
@@ -1817,15 +1835,106 @@ fn allowed_hosts(address: SocketAddr) -> Result<Vec<String>, String> {
     Ok(hosts)
 }
 
+/// When the projects file was last read (RAL-133).
+#[derive(Clone, Debug, Default)]
+struct ProjectsSeen {
+    /// The file's modification time when it was last looked at.
+    modified: Option<SystemTime>,
+    /// When the list in use was read.
+    read_at_ms: u64,
+    /// Why a newer version of the file couldn't be used, which keeps the list read before.
+    problem: Option<String>,
+}
+
+fn modified_at(path: &std::path::Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// What a look at the projects file found (RAL-133).
+#[derive(Debug)]
+enum Reload {
+    Unchanged,
+    Changed(Vec<Project>),
+    Unreadable(String),
+}
+
+/// Looks at the projects file, and reads it again if it changed since `seen`.
+fn reload_projects(
+    path: &std::path::Path,
+    seen: Option<SystemTime>,
+) -> (Reload, Option<SystemTime>) {
+    let modified = modified_at(path);
+    if modified.is_some() && modified == seen {
+        return (Reload::Unchanged, modified);
+    }
+    let read = std::fs::read_to_string(path)
+        .map_err(|e| format!("can't read {}: {e}", path.display()))
+        .and_then(|text| {
+            serde_json::from_str::<Vec<Project>>(&text)
+                .map_err(|e| format!("{} isn't a projects list: {e}", path.display()))
+        });
+    match read {
+        Ok(projects) => (Reload::Changed(projects), modified),
+        Err(problem) => (Reload::Unreadable(problem), modified),
+    }
+}
+
+/// The roadmap rows read for `old`, put in the order of `new` by prefix, so a reload keeps each
+/// project's last reading and a new project starts empty until it's read.
+fn remap_rows(old: &[Project], new: &[Project], rows: &[Value]) -> Vec<Value> {
+    new.iter()
+        .map(|project| {
+            old.iter()
+                .position(|o| o.prefix == project.prefix)
+                .and_then(|i| rows.get(i))
+                .cloned()
+                .unwrap_or_else(|| json!({}))
+        })
+        .collect()
+}
+
+/// Reads the projects file again if it changed, and says whether the list did (RAL-133).
+fn check_projects_file(app: &App) -> bool {
+    let Some(path) = &app.projects_file else {
+        return false;
+    };
+    let seen = app.projects_seen.lock().expect("no panics").modified;
+    let (reload, modified) = reload_projects(path, seen);
+    let mut status = app.projects_seen.lock().expect("no panics");
+    status.modified = modified;
+    match reload {
+        Reload::Unchanged => false,
+        Reload::Unreadable(problem) => {
+            status.problem = Some(problem);
+            false
+        }
+        Reload::Changed(new) => {
+            status.problem = None;
+            status.read_at_ms = now_ms();
+            drop(status);
+            let mut projects = app.projects.lock().expect("no panics");
+            let mut snapshot = app.snapshot.lock().expect("no panics");
+            snapshot.roadmaps = remap_rows(&projects, &new, &snapshot.roadmaps);
+            *projects = new;
+            true
+        }
+    }
+}
+
 fn refresh_forever(app: &App, ledger: &LedgerReader) {
     let mut roadmaps_due = Instant::now();
     let mut roster_memory = RosterMemory::default();
     loop {
+        // A changed projects file is read again, and its roadmaps read now (RAL-133).
+        if check_projects_file(app) {
+            roadmaps_due = Instant::now();
+        }
         if Instant::now() >= roadmaps_due {
+            let projects = app.projects.lock().expect("no panics").clone();
             let previous = app.snapshot.lock().expect("no panics").roadmaps.clone();
-            let mut roadmaps = refresh_roadmaps(&app.projects, &previous);
-            apply_local_summaries(&app.projects, &mut roadmaps, &app.local);
-            let summary = muster_summary(&app.projects, &roadmaps);
+            let mut roadmaps = refresh_roadmaps(&projects, &previous);
+            apply_local_summaries(&projects, &mut roadmaps, &app.local);
+            let summary = muster_summary(&projects, &roadmaps);
             let mut snapshot = app.snapshot.lock().expect("no panics");
             snapshot.roadmaps = roadmaps;
             snapshot.muster_summary = Some(summary);
@@ -2015,12 +2124,12 @@ async fn status(State(app): State<Arc<App>>) -> Response {
         .roster
         .clone()
         .unwrap_or_else(|| json!({"available": false, "reason": "still reading it."}));
-    let mut rally = current_rally(&app.projects, &ledger, &roster);
+    let app_projects = app.projects.lock().expect("no panics").clone();
+    let mut rally = current_rally(&app_projects, &ledger, &roster);
     if rally["opened"] == json!(true) {
         rally["board"] = board(&rally, &ledger);
     }
-    let projects: Vec<Value> = app
-        .projects
+    let projects: Vec<Value> = app_projects
         .iter()
         .enumerate()
         .map(|(index, project)| {
@@ -2058,10 +2167,26 @@ async fn status(State(app): State<Arc<App>>) -> Response {
         "roster": roster,
         "backup": backup,
         "projects": projects,
+        "projects_file": projects_file_status(&app),
         "rally": rally,
         "muster_summary": muster_summary,
     }))
     .into_response()
+}
+
+/// Where the projects came from and when they were read (RAL-133), observed by the viewer.
+fn projects_file_status(app: &App) -> Value {
+    let seen = app.projects_seen.lock().expect("no panics").clone();
+    let mut out = json!({
+        "kind": "observed",
+        "from": app.projects_file.as_ref().map_or_else(|| json!("built-in"), |p| json!(p)),
+        "read_at_ms": seen.read_at_ms,
+        "watched": app.projects_file.is_some(),
+    });
+    if let Some(problem) = seen.problem {
+        out["problem"] = json!(format!("{problem}; still showing the list read before"));
+    }
+    out
 }
 
 /// The refusal of a request a browser marks as from another site (RAL-88).
@@ -2876,6 +3001,56 @@ mod tests {
             muster_summary(&projects, &roadmaps)["text"],
             "the muster's day"
         );
+    }
+
+    /// RAL-133: the projects file is read again only when it changes; a version that can't be
+    /// read keeps the list before; and a reload keeps each project's last roadmap reading.
+    #[test]
+    fn a_changed_projects_file_is_read_again() {
+        let dir = std::env::temp_dir().join(format!("rally-projects-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("projects.json");
+        let one: Vec<Project> = serde_json::from_str(DEFAULT_PROJECTS).unwrap();
+        std::fs::write(&path, serde_json::to_string(&one[..1]).unwrap()).unwrap();
+        let (first, seen) = reload_projects(&path, None);
+        assert!(
+            matches!(first, Reload::Changed(ref p) if p.len() == 1),
+            "{first:?}"
+        );
+        let (again, seen) = reload_projects(&path, seen);
+        assert!(matches!(again, Reload::Unchanged), "{again:?}");
+        // A newer version, with a project added: its modification time differs.
+        let later = seen.unwrap() + Duration::from_secs(2);
+        std::fs::write(&path, serde_json::to_string(&one[..2]).unwrap()).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let (changed, seen) = reload_projects(&path, seen);
+        assert!(
+            matches!(changed, Reload::Changed(ref p) if p.len() == 2),
+            "{changed:?}"
+        );
+        // A broken version is said, not used.
+        std::fs::write(&path, "not json").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later + Duration::from_secs(2))
+            .unwrap();
+        let (broken, _) = reload_projects(&path, seen);
+        assert!(
+            matches!(broken, Reload::Unreadable(ref why) if why.contains("isn't a projects list"))
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        // Rows follow their project by prefix; a new project starts empty.
+        let rows = vec![json!({"boxes": 1})];
+        let remapped = remap_rows(&one[..1], &[one[1].clone(), one[0].clone()], &rows);
+        assert_eq!(remapped, vec![json!({}), json!({"boxes": 1})]);
     }
 
     fn rally_projects() -> Vec<Project> {
