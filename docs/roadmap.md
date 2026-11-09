@@ -324,6 +324,12 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   `the_roster_is_every_sources_union_and_says_which_were_read` and
   `the_roster_shows_every_source_and_keeps_each_sources_labels` (headless Chrome) cover the viewer. Sending is
   unchanged.
+- [ ] **RAL-127: cutover.md's gap table is current with Marshal main.** From robust-warbler's survey of
+  [cutover.md](cutover.md) against Marshal main `700a1b2`, relayed by the watchman on 2026-11-09: the table still
+  said MAR-9, MAR-36 and MAR-43 were "merging" and MUS-47 was "being ported". Docs only. Done when: each gap row
+  names its story's state and merge commit as of current Marshal main; step 1 points at Marshal's
+  `cutover-test-session.md` (MAR-59) and doctor's project check (MAR-60); step 7 links the no-traffic check
+  (MAR-65); and the table says when it was last checked.
 - [x] **RAL-122: A design note on carrying unread Muster mail to Marshal at the cutover.** Merged in #199 (bc6c5a2). From the watchman on
   2026-11-08, for [cutover.md](cutover.md)'s "message history carried over" gap. Docs only. Done when:
   [mail-carryover.md](mail-carryover.md) says how mail is kept on both daemons, measures what's unread, sets out the
