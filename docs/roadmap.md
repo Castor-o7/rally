@@ -838,3 +838,41 @@ word.
   `ureq`. Done when: a `deny.toml` lists the licences Rally accepts (including `webpki-roots`'s
   CDLA-Permissive-2.0) and the sources it allows; CI runs `cargo deny check` on every PR; and today's advisory,
   RUSTSEC-2026-0387 in `crypto-bigint` through `ssh-key`, is fixed or recorded with a reason.
+
+### A rally that keeps up with its teams
+
+The operator, directly on 2026-11-09, set the goal: Rally stays current with the rally as it happens. A project
+team that joins should understand the workflow: it designs a development roadmap and passes it to the
+watchman for verification and clearance; once the roadmap is accepted, the watchman coordinates and assigns
+its tasks; and the cycle continues, the roadmap revised as needed to reach the project's goal. The design
+principles named were durable, accurate and reactive. Found in rally 0x7 by plush-tortoise.
+
+- [ ] **RAL-128: The evidence check says a repository it can't see is unseen, not that the commit doesn't
+  exist.** In rally 0x7 every RootyRoopsDAW submission (records 1650, 1732, 1734) was observed as
+  `exists: false`, though each commit exists. The repository is private and the service's token gets a 404 from
+  it, and GitHub uses the same 404 for a missing commit. Done when: after a 404 or 422 on the commit, the check
+  reads the repository (a GET); only when the token sees it is `exists` recorded false; when it doesn't,
+  `exists` is left out, the reason says the repository isn't visible to the token so the commit's existence is
+  unknown, and the check isn't retried; a read that fails is retried as before; with a unit test and a test of
+  the client's two GETs, and docs/evidence.md.
+- [ ] **RAL-129: A project's roadmap is submitted to the watchman and cleared at a commit.** Done when: `rally
+  roadmap submit <PREFIX> --team <team> --evidence owner/repo@<full commit>` records the roadmap a team
+  proposes for a project, checked as story evidence is; `rally roadmap clear <PREFIX> --commit <full commit>
+  --note` and `rally roadmap send-back <PREFIX> --note` answer it, refused from its submitter and for any
+  commit but the one submitted; each answer is labelled watchman, peer or other by the designation in force, as
+  verifications are; a revised roadmap is submitted the same way, and the project's roadmap then reads as
+  revised and awaiting clearance, with the last cleared commit kept; `rally roadmap show [PREFIX]` lists each
+  project's roadmap state, its history and how each fact is known; `rally brief` and `rally waiting` include
+  roadmaps waiting for a reader; the same records always rebuild the same state; with tests.
+- [ ] **RAL-130: The watchman assigns a cleared roadmap's stories, and `rally next` offers them first.**
+  Depends on RAL-129. Done when: `rally assign <STORY> --team <team> --note` records, as declared, that the
+  story is assigned to the team; `rally next --team` offers the team's own sent-back work, then stories assigned
+  to it, then the roadmap order as before, saying which rule picked it; an assignment confers no authority and
+  doesn't claim the story, and another team may still claim it, which `next` and `show` say; an assignment
+  stays until `rally assign <STORY> --end --note`, a newer assignment of the story, or the story's merge; with tests.
+- [ ] **RAL-131: A team new to the rally is told the cycle: roadmap, clearance, assignment, revision.**
+  Depends on RAL-129 and RAL-130. Done when: `rally next --team` for a project whose roadmap isn't cleared says
+  so, and what to run (draft it with "done when" lines, then `rally roadmap submit`), before offering its
+  stories; the session-start briefing names the open rally, the team's project and its roadmap state, any story
+  assigned to the team, and the cycle in four lines; `rally init`'s block describes the cycle; `rally brief`
+  lists, for the watchman, each project in the open rally whose roadmap is uncleared or revised; with tests.

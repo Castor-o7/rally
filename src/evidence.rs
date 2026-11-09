@@ -114,6 +114,12 @@ pub fn names(text: &str, story: &str) -> bool {
 pub trait Forge {
     /// The commit's message, or `None` if the repository has no such commit.
     fn commit_message(&self, repo: &str, commit: &str) -> Result<Option<String>, String>;
+    /// Whether the token can see the repository at all (RAL-128). GitHub answers 404 for a
+    /// commit in a private repository the token can't read, just as for a missing one, so a
+    /// missing commit is only "doesn't exist" once the repository itself is seen.
+    fn repo_visible(&self, _repo: &str) -> Result<bool, String> {
+        Ok(true)
+    }
     /// The titles of pull requests that contain the commit.
     fn pull_titles(&self, repo: &str, commit: &str) -> Result<Vec<String>, String>;
     /// What the commit's check runs and statuses say.
@@ -150,7 +156,21 @@ pub fn check(forge: Option<&dyn Forge>, story: &str, evidence: &str) -> Outcome 
         }
     };
     let Some(message) = message else {
-        outcome.exists = Some(false);
+        match forge.repo_visible(&repo) {
+            Ok(true) => outcome.exists = Some(false),
+            // Unknown, not false: the commit may well be there (RAL-128).
+            Ok(false) => {
+                outcome.reason = Some(format!(
+                    "not checked: GitHub shows the service's token no repository {repo}. It's \
+                     private and outside the token's access, or it doesn't exist, so whether the \
+                     commit exists is unknown"
+                ));
+            }
+            Err(error) => {
+                outcome.reason = Some(format!("GitHub couldn't be read: {error}"));
+                outcome.unread = true;
+            }
+        }
         return outcome;
     };
     outcome.exists = Some(true);
@@ -341,6 +361,17 @@ impl Forge for GitHub {
                     .to_owned(),
             )),
             (404 | 422, _) => Ok(None),
+            (status, value) => Err(format!(
+                "GitHub answered {status}: {}",
+                value["message"].as_str().unwrap_or("no reason given")
+            )),
+        }
+    }
+
+    fn repo_visible(&self, repo: &str) -> Result<bool, String> {
+        match self.get(&format!("/repos/{repo}"))? {
+            (200, _) => Ok(true),
+            (404, _) => Ok(false),
             (status, value) => Err(format!(
                 "GitHub answered {status}: {}",
                 value["message"].as_str().unwrap_or("no reason given")
@@ -825,6 +856,64 @@ mod tests {
         assert!(outcome.checkable);
         assert_eq!(outcome.exists, None);
         assert!(outcome.reason.unwrap().contains("no GitHub token"));
+    }
+
+    /// RAL-128: a private repository the token can't see answers 404 for every commit, so its
+    /// commits are unknown, not missing, and the check isn't tried again.
+    #[test]
+    fn a_commit_in_a_repository_the_token_cant_see_is_unknown_not_missing() {
+        struct Hidden;
+        impl Forge for Hidden {
+            fn commit_message(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+                Ok(None)
+            }
+            fn repo_visible(&self, _: &str) -> Result<bool, String> {
+                Ok(false)
+            }
+            fn pull_titles(&self, _: &str, _: &str) -> Result<Vec<String>, String> {
+                unreachable!()
+            }
+            fn ci(&self, _: &str, _: &str) -> Result<Ci, String> {
+                unreachable!()
+            }
+        }
+        let outcome = check(Some(&Hidden), "RAL-5", &evidence());
+        assert!(outcome.checkable);
+        assert_eq!(
+            (outcome.exists, outcome.names_story, outcome.ci),
+            (None, None, None)
+        );
+        assert!(
+            outcome.reason.as_deref().unwrap().contains("unknown"),
+            "{outcome:?}"
+        );
+        assert!(outcome.is_final());
+    }
+
+    /// The client asks for the repository after a 404 on the commit, and says what it saw.
+    #[test]
+    fn the_client_reads_the_repository_after_a_missing_commit() {
+        let (base, server) = recording_github(2, |_, _| (404, r#"{"message":"Not Found"}"#));
+        let github = GitHub::at("read-only-token".into(), base);
+        let outcome = check(Some(&github), "RAL-5", &evidence());
+        let seen = server.join().unwrap();
+        assert_eq!(outcome.exists, None, "{outcome:?}");
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].1, "/repos/Castor-o7/rally");
+        assert!(seen.iter().all(|(method, _, _)| method == "GET"));
+
+        let (base, server) = recording_github(2, |_, path| {
+            if path == "/repos/Castor-o7/rally" {
+                (200, r#"{"full_name":"Castor-o7/rally"}"#)
+            } else {
+                (422, r#"{"message":"No commit found"}"#)
+            }
+        });
+        let github = GitHub::at("read-only-token".into(), base);
+        let outcome = check(Some(&github), "RAL-5", &evidence());
+        server.join().unwrap();
+        assert_eq!(outcome.exists, Some(false), "{outcome:?}");
+        assert!(outcome.is_final());
     }
 
     #[test]
