@@ -1135,6 +1135,29 @@ pub fn rallies(ledger: &Ledger, _page: &Page) -> Result<Value, String> {
     }))
 }
 
+/// The holds, conditions and grants in force (RAL-136), oldest first, each as its writer declared
+/// it: what it holds or allows, on which story, what releases a hold, and who declared it. Light
+/// enough for the viewer to read on every refresh. A grant's record confers no authority.
+pub fn standings(ledger: &Ledger, _page: &Page) -> Result<Value, String> {
+    let rows: Vec<Value> = ledger
+        .standings()
+        .values()
+        .filter(|standing| standing.ended.is_none())
+        .map(|standing| {
+            let mut row = json!(standing);
+            row["declared_by"] = json!(standing.source.declared_name);
+            row
+        })
+        .collect();
+    Ok(json!({
+        "untrusted_text": UNTRUSTED_TEXT,
+        "as_of": ledger.last_seq(),
+        "standings": rows,
+        "authority": "Declared only: a grant's record confers no authority, and approvals come \
+                      from the operator directly.",
+    }))
+}
+
 /// Every team's declared state, a page at a time, or one team with a page of its history. `Err`
 /// holds what wasn't found.
 pub fn teams(ledger: &Ledger, team: Option<&str>, page: &Page) -> Result<Value, String> {
@@ -1381,6 +1404,32 @@ mod tests {
 
     /// RAL-27: the story list carries each story's latest evidence, declared, with Rally's check
     /// of that submission, observed, and not a check of an earlier one.
+    #[test]
+    /// RAL-136: only what's in force is listed, each as declared, with who declared it.
+    #[test]
+    fn standings_lists_what_is_in_force() {
+        let team = |body: Value| as_kind(Kind::Declared, "mellow-weevil", body);
+        let records = vec![
+            team(
+                json!({"change": "standing", "standing": "hold", "team": "watchman",
+                        "note": "cutover in progress", "releases": "step 7"}),
+            ),
+            team(
+                json!({"change": "standing", "standing": "grant", "team": "ROO",
+                        "note": "merge as you go", "scope": "ROO PRs", "given": {"from": "direct"}}),
+            ),
+            team(json!({"change": "end_standing", "standing": 2, "note": "done"})),
+        ];
+        let ledger = Ledger::replay(&records).unwrap();
+        let out = standings(&ledger, &Page::default()).unwrap();
+        let rows = out["standings"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{out}");
+        assert_eq!(rows[0]["standing"], "hold");
+        assert_eq!(rows[0]["releases"], "step 7");
+        assert_eq!(rows[0]["declared_by"], "mellow-weevil");
+        assert_eq!(rows[0]["kind"], "declared");
+    }
+
     #[test]
     fn the_story_list_shows_the_latest_evidence_and_its_own_check() {
         let team = |body: Value| as_kind(Kind::Declared, "author", body);

@@ -2580,8 +2580,27 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
             |ledger, page| views::track_records(ledger, None, page),
         )?;
         let rallies = read_rallies(&backend);
+        // What's standing in force (RAL-136). An older service without the read says so.
+        let standings = match &backend {
+            Backend::File(_) => backend
+                .read_value("/v1/standings", None, &Page::default(), views::standings)
+                .unwrap_or_else(|error| json!({"available": false, "reason": error.to_string()})),
+            Backend::Service(pairing) => {
+                match client::request(pairing, "GET", "/v1/standings", None, &[]) {
+                    Ok(reply) if reply.status == 404 => {
+                        json!({"available": false, "older_service": true,
+                    "reason": "the service has no /v1/standings (it's older than RAL-136)"})
+                    }
+                    Ok(reply) => reply_value(&reply).unwrap_or_else(
+                        |error| json!({"available": false, "reason": error.to_string()}),
+                    ),
+                    Err(error) => json!({"available": false, "reason": error.to_string()}),
+                }
+            }
+        };
         Ok(json!({
             "rallies": rallies,
+            "standings": standings,
             "as_of": stories["as_of"],
             "as_of_at_ms": stories["as_of_at_ms"],
             "stories": stories["stories"],

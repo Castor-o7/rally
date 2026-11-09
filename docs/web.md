@@ -214,6 +214,12 @@ lists them, declared. Adding a project that's already in, or removing one that i
 removing the last project; that's closing the rally. The same rule as `rally-session` decides who may do it.
 It's one record kind, `rally_project`, and the first one ends the rollback window.
 
+Beside the rally, **Standing in force** (RAL-136) lists every hold, condition and grant not yet ended, holds
+first: what it holds or allows, the story or team it's on, what releases a hold or a grant's scope, and who declared
+it and when, labelled declared. They decide what may happen in the rally, such as a deploy held until a soak ends,
+so they sit where the rally is read. The viewer reads them from the service's `/v1/standings`, a light read on every
+refresh, and says so when an older service hasn't got it. A grant shown here confers no authority.
+
 Nothing is removed. The ledger is append-only and hash-chained, and deleting records would fail its check, so a
 closed rally is kept whole. The page lists past rallies, and each opens as its own board (`#/rally/<record that
 opened it>`, RAL-77): the ledger as it stood when it closed (RAL-28), showing only its projects' stories recorded
