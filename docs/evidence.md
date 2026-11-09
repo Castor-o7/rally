@@ -8,7 +8,10 @@ the story's history.
 
 Evidence written as `owner/repo@<full commit>` (40 or 64 hex digits) is checked for:
 
-- **`exists`:** the repository has that commit.
+- **`exists`:** the repository has that commit. GitHub answers 404 both for a missing commit and for any
+  commit in a private repository the token can't read, so after a 404 the repository itself is read: only
+  when the token sees it is the commit recorded as not existing. Otherwise `exists` is left out and the
+  reason says the repository isn't visible to the token, so the commit's existence is unknown (RAL-128).
 - **`names_story`:** the commit's message, or the title of a pull request containing it, names the story ID as a
   whole word (`RAL-5`, not `RAL-50`).
 - **`ci`:** what the commit's check runs and combined status say together: `passed`, `failed`, `pending`, or
