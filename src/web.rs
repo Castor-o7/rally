@@ -1894,6 +1894,9 @@ fn remap_rows(old: &[Project], new: &[Project], rows: &[Value]) -> Vec<Value> {
 }
 
 /// Reads the projects file again if it changed, and says whether the list did (RAL-133).
+///
+/// Lock order, everywhere: `projects_seen`, released before `projects`, then `snapshot`. Nothing
+/// takes `projects` while holding `snapshot`.
 fn check_projects_file(app: &App) -> bool {
     let Some(path) = &app.projects_file else {
         return false;
@@ -2115,6 +2118,9 @@ async fn past_view(
 }
 
 async fn status(State(app): State<Arc<App>>) -> Response {
+    // Projects before the snapshot, the order `check_projects_file` takes them in, so a reload
+    // and a request can't wait on each other (the watchman's read of RAL-133).
+    let app_projects = app.projects.lock().expect("no panics").clone();
     let snapshot = app.snapshot.lock().expect("no panics");
     let ledger = snapshot
         .ledger
@@ -2124,7 +2130,6 @@ async fn status(State(app): State<Arc<App>>) -> Response {
         .roster
         .clone()
         .unwrap_or_else(|| json!({"available": false, "reason": "still reading it."}));
-    let app_projects = app.projects.lock().expect("no panics").clone();
     let mut rally = current_rally(&app_projects, &ledger, &roster);
     if rally["opened"] == json!(true) {
         rally["board"] = board(&rally, &ledger);
