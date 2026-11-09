@@ -778,6 +778,21 @@ enum Command {
         #[arg(long)]
         commit: String,
     },
+    /// Assign a story to a team (RAL-130), or with --end end its assignment. Normally the
+    /// watchman's, once the project's roadmap is cleared (RAL-129); the service takes it only from
+    /// those who may open a rally. Declared: it claims nothing and confers no authority, and
+    /// `rally next` offers the team its assigned stories ahead of roadmap order. A newer
+    /// assignment replaces it, and the story's merge ends it.
+    Assign {
+        story: String,
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        note: String,
+        /// End the story's assignment to --team.
+        #[arg(long)]
+        end: bool,
+    },
     /// Record that you read the commit merged for a Verified story, when it isn't one the
     /// verification covers (RAL-85), such as a head that took a merge of main after the read. It's
     /// your own read, shown beside the verification; anyone who isn't an author can write it,
@@ -1102,11 +1117,15 @@ fn session_start(
     let Ok(pairing) = serde_json::from_str::<Pairing>(&text) else {
         return quiet(&format!("{} can't be read", path.display()));
     };
+    let started = std::time::Instant::now();
     match rally::session::fetch(&pairing, rally::session::DEADLINE) {
         Ok((stories, blockers)) => {
+            // The open rally and its roadmaps (RAL-131), in what's left of the deadline.
+            let left = rally::session::DEADLINE.saturating_sub(started.elapsed());
+            let context = rally::session::fetch_rally(&pairing, left);
             println!(
                 "{}",
-                rally::session::render_for(team, &stories, &blockers, harness)
+                rally::session::render_in(team, &stories, &blockers, harness, context.as_ref())
             )
         }
         Err(error) => quiet(&escape_for_terminal(&error)),
@@ -2276,6 +2295,14 @@ fn next(
     })?;
     if let Some(state) = teams["teams"].get(team.trim().to_lowercase()) {
         result["team_status"] = state["status"].clone();
+    }
+    // Where the project's roadmap stands (RAL-131): until it's cleared, its stories are offered
+    // as the roadmap orders them, but the roadmap comes first.
+    if let Some(summary) = read_roadmaps(&backend, std::slice::from_ref(&prefix)).pop() {
+        if let Some(note) = rally::roadmaps::first_note(&summary) {
+            result["roadmap_first"] = json!(note);
+        }
+        result["project_roadmap"] = summary;
     }
     result["roadmap"] = json!(roadmap);
     result["prefix"] = json!(prefix);
@@ -3983,6 +4010,15 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             (Kind::Declared, body)
         }
+        Command::Assign {
+            story,
+            team,
+            note,
+            end,
+        } => (
+            Kind::Declared,
+            json!({"change": "assign", "story": story, "team": team, "note": note, "end": end}),
+        ),
         Command::Merge { story, commit } => (
             Kind::Declared,
             json!({"change": "merge", "story": story, "commit": commit}),

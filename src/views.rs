@@ -195,6 +195,9 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
         if !detail.requested_reads.is_empty() {
             shown["requested_reads"] = json!(detail.requested_reads);
         }
+        if let Some(assigned) = &detail.assigned {
+            shown["assigned"] = json!(assigned);
+        }
         if !detail.parts.is_empty() {
             shown["parts"] = json!(parts_text(detail));
             shown["part_list"] = json!(detail.parts);
@@ -234,6 +237,11 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
             }
             if story.merged_commit.is_some() {
                 row["merged"] = json!(true);
+            }
+            // Declared by whoever assigned it (RAL-130); it claims nothing.
+            if let Some(assigned) = &story.assigned {
+                row["assigned"] = json!({"team": assigned.team, "seq": assigned.seq,
+                                         "by": assigned.source.declared_name, "kind": assigned.kind});
             }
             // Every commit the verification in force covers: its own, any added as also read
             // (RAL-67), and merged commits read beside it (RAL-85).

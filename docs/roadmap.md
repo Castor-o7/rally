@@ -872,16 +872,29 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   describes the cycle; with tests of the ledger rule and of each stage.
 - [ ] **RAL-130: The watchman assigns a cleared roadmap's stories, and `rally next` offers them first.**
   Depends on RAL-129. Done when: `rally assign <STORY> --team <team> --note` records, as declared, that the
-  story is assigned to the team; `rally next --team` offers the team's own sent-back work, then stories assigned
-  to it, then the roadmap order as before, saying which rule picked it; an assignment confers no authority and
-  doesn't claim the story, and another team may still claim it, which `next` and `show` say; an assignment
-  stays until `rally assign <STORY> --end --note`, a newer assignment of the story, or the story's merge; with tests.
+  story is assigned to the team, taken by the service only from those who may open a rally (the operator or the
+  watchman, RAL-77); the assignment claims nothing and confers no authority; `rally show` gives it; `rally next
+  --team` offers the team's own sent-back work, then ready and unblocked stories assigned to it, then the
+  roadmap order as before, saying which rule picked it; a story assigned to another team is skipped, saying so
+  and that it may still be claimed; an assigned story that's blocked says why; an assignment stays until `rally
+  assign <STORY> --team <team> --end --note`, a newer assignment of the story, or the story's merge; with tests
+  of the ledger, the service's rule and the pick.
 - [ ] **RAL-131: A team new to the rally is told the cycle: roadmap, clearance, assignment, revision.**
-  Depends on RAL-129 and RAL-130. Done when: `rally next --team` for a project whose roadmap isn't cleared says
-  so, and what to run (draft it with "done when" lines, then `rally roadmap submit`), before offering its
-  stories; the session-start briefing names the open rally, the team's project and its roadmap state, any story
-  assigned to the team, and the cycle in four lines; `rally init`'s block describes the cycle; `rally brief`
-  lists, for the watchman, each project in the open rally whose roadmap is uncleared or revised; with tests.
+  Depends on RAL-129 and RAL-130. Done when: `rally next --team` gives `project_roadmap`, and while the
+  project's roadmap isn't cleared (and isn't being revised from a clearance) leads with `roadmap_first`, saying
+  so and what to run; the session-start briefing names the open rally and its projects, each project's roadmap
+  stage, the stories assigned to the team, and the cycle in four lines, escaped like agents' text and within its
+  caps, and leaves out what it can't read in time; `rally init`'s block describes the cycle; `rally brief` lists
+  the open rally's roadmaps (RAL-129); with tests. With it, from the watchman's read of RAL-130: an assigned
+  story waiting on an unfinished one it depends on isn't offered, and says why; docs/clearance.md says the
+  openers rule limits by credential, so by machine where sessions share one.
+- [ ] **RAL-132: An evidence check that finds no CI yet looks again before recording none.** From
+  silken-beetle's watch of the viewer on 2026-11-09: MAR-61 (9a8f5e1), MAR-62 and five other Marshal stories
+  showed "CI none" for good, while GitHub has 5 of 5 check runs passed on each. MAR-61's check ran a second after
+  its submit (1723, 1724) and its runs started 7 minutes later. Done when: a check that finds no check runs and
+  no statuses is looked for again, as pending CI is, until the ceiling (`--evidence-ci-wait`, 30 minutes); runs
+  appearing in that time are recorded as they stand; at the ceiling `none` is recorded with a reason saying no CI
+  appeared within it; with a unit test and docs/evidence.md.
 - [ ] **RAL-133: The viewer picks up a change to its projects file without a restart.** From silken-beetle's
   watch of the viewer on 2026-11-09 (finding 4): rally 0x7 opened with ROO, and ROO was added to
   `~/.config/rally/projects.json` that same second, but the viewer had read `--projects` once, at its start 4

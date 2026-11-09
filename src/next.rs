@@ -8,9 +8,14 @@
 //! In order, a team's next story is:
 //!
 //! 1. one of its own that was sent back, which comes ahead of new work;
-//! 2. one it shelved whose question the operator has since answered, oldest shelf first;
-//! 3. the first story in roadmap order that's unticked, not held or verified in the ledger, not
-//!    blocked, and not waiting on an unfinished story it depends on.
+//! 2. one assigned to it (RAL-130), ready and not blocked, in roadmap order, then oldest
+//!    assignment first;
+//! 3. one it shelved whose question the operator has since answered, oldest shelf first;
+//! 4. the first story in roadmap order that's unticked, not held or verified in the ledger, not
+//!    blocked, not assigned to another team, and not waiting on an unfinished story it depends on.
+//!
+//! An assignment is declared and claims nothing: a story assigned to another team is skipped and
+//! says so, and the team may still claim it.
 //!
 //! A story waiting on the operator isn't skipped: it stays the pick until the window passes,
 //! then the team can shelve it and take the next one.
@@ -279,6 +284,49 @@ pub fn pick(
         .filter_map(|shelf| shelf["story"].as_str())
         .collect();
 
+    // Open blockers on a story, other than the team's own question to the operator.
+    let blocked_on = |id: &str| {
+        ledger.blockers.iter().find(|blocker| {
+            is_open(blocker)
+                && names(blocker, "story", id)
+                && !(on_operator(blocker) && names(blocker, "team", team))
+        })
+    };
+    // The first story `id` depends on that isn't done, by its roadmap item's "Depends on".
+    let unfinished_dep = |id: &str| {
+        roadmap.iter().find(|item| item.id == id).and_then(|item| {
+            depends_on(item)
+                .into_iter()
+                .find(|dep| dep != id && !done(dep, roadmap, ledger))
+        })
+    };
+    // Stories assigned to this team (RAL-130), ready, not blocked and not waiting on an unfinished
+    // story they depend on: in roadmap order, then the oldest assignment first.
+    let position = |id: &str| roadmap.iter().position(|item| item.id == id);
+    let mut assigned: Vec<(usize, u64, String)> = ledger
+        .stories
+        .iter()
+        .filter(|(_, story)| {
+            story["assigned"]["team"]
+                .as_str()
+                .is_some_and(|t| same_name(t, team))
+        })
+        .filter(|(id, story)| {
+            story["state"] == "ready"
+                && blocked_on(id).is_none()
+                && !roadmap.iter().any(|item| &item.id == *id && item.ticked)
+                && unfinished_dep(id).is_none()
+        })
+        .map(|(id, story)| {
+            (
+                position(id).unwrap_or(usize::MAX),
+                story["assigned"]["seq"].as_u64().unwrap_or(0),
+                id.clone(),
+            )
+        })
+        .collect();
+    assigned.sort();
+
     let mut skipped = Vec::new();
     let mut candidates: Vec<&Item> = Vec::new();
     for item in roadmap.iter().filter(|item| !item.ticked) {
@@ -310,13 +358,28 @@ pub fn pick(
         if away_active && asking.contains_key(id) {
             continue;
         }
-        // Open blockers on the story, other than the team's own question to the operator.
-        let blocked = ledger.blockers.iter().find(|blocker| {
-            is_open(blocker)
-                && names(blocker, "story", id)
-                && !(on_operator(blocker) && names(blocker, "team", team))
-        });
-        if let Some(blocker) = blocked {
+        // Coordinated by whoever assigned it: shown, not offered, and still free to claim.
+        if let Some(other) = ledger
+            .stories
+            .get(id)
+            .and_then(|s| s["assigned"]["team"].as_str())
+        {
+            if !same_name(other, team) {
+                skipped.push(json!({
+                    "story": id,
+                    "reason": format!(
+                        "assigned to {other} (declared); you may still claim it if you agree that \
+                         with them"
+                    ),
+                }));
+                continue;
+            }
+            // The team's own, offered above unless something blocks it, which is said below.
+            if assigned.iter().any(|(_, _, a)| a == id) {
+                continue;
+            }
+        }
+        if let Some(blocker) = blocked_on(id) {
             let on = blocker["on_team"]
                 .as_str()
                 .map(|team| format!("the team {team}"))
@@ -362,6 +425,12 @@ pub fn pick(
             id,
             "it was sent back to your team, which comes ahead of new work",
         ))
+    } else if let Some((_, _, id)) = assigned.first() {
+        let mut next = pick_of(id, "it was assigned to your team");
+        if let Some(story) = ledger.stories.get(id) {
+            next["assigned"] = story["assigned"].clone();
+        }
+        Some(next)
     } else if let Some((_, id)) = answered.first() {
         Some(pick_of(
             id,
@@ -568,6 +637,90 @@ mod tests {
                              "note": "n", "at_ms": 1, "closed": {"seq": 10}}),
         ];
         assert_eq!(run(&held, &closed, 0)["next"]["story"], "RAL-4");
+    }
+
+    /// RAL-130: an assigned story comes after sent-back work and ahead of roadmap order; one
+    /// assigned to another team is skipped, saying so; an assigned story that's blocked isn't
+    /// offered, and says why.
+    #[test]
+    fn assigned_stories_come_before_roadmap_order() {
+        let roadmap = items(
+            "- [ ] **RAL-1: a.**\n- [ ] **RAL-2: b.**\n- [ ] **RAL-3: c.**\n- [ ] **RAL-4: d.**\n",
+            "RAL",
+        );
+        let stories = json!({
+            "RAL-2": {"state": "ready", "assigned": {"team": "muster", "seq": 7}},
+            "RAL-3": {"state": "ready", "assigned": {"team": "rally", "seq": 8, "by": "watch"}},
+            "RAL-4": {"state": "ready", "assigned": {"team": "rally", "seq": 9}},
+        });
+        let blockers = vec![json!({"seq": 10, "team": "rally", "story": "RAL-3",
+                                   "on_team": "muster", "note": "needs MUS-1"})];
+        let pick_with = |blockers: &[Value]| {
+            pick(
+                "rally",
+                &roadmap,
+                &Ledger {
+                    stories: stories.as_object().unwrap(),
+                    blockers,
+                    away: None,
+                },
+                None,
+                0,
+            )
+        };
+        let out = pick_with(&[]);
+        assert_eq!(out["next"]["story"], "RAL-3", "{out}");
+        assert_eq!(out["next"]["why"], "it was assigned to your team");
+        assert_eq!(out["next"]["assigned"]["by"], "watch");
+        let skipped = out["skipped"].as_array().unwrap();
+        assert!(skipped.iter().any(|s| s["story"] == "RAL-2"
+            && s["reason"].as_str().unwrap().contains("assigned to muster")));
+        // Blocked: the next assigned one, and RAL-3 says why.
+        let out = pick_with(&blockers);
+        assert_eq!(out["next"]["story"], "RAL-4", "{out}");
+        assert!(out["skipped"].as_array().unwrap().iter().any(|s| s["story"] == "RAL-3"
+            && s["reason"].as_str().unwrap().contains("blocked")));
+        // An assigned story that depends on an unfinished one isn't offered, and says why.
+        let dep_roadmap = items(
+            "- [ ] **RAL-1: a.**\n- [ ] **RAL-3: c.** Depends on RAL-1.\n- [ ] **RAL-4: d.**\n",
+            "RAL",
+        );
+        let out = pick(
+            "rally",
+            &dep_roadmap,
+            &Ledger {
+                stories: stories.as_object().unwrap(),
+                blockers: &[],
+                away: None,
+            },
+            None,
+            0,
+        );
+        assert_eq!(out["next"]["story"], "RAL-4", "{out}");
+        assert!(
+            out["skipped"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["story"] == "RAL-3"
+                    && s["reason"].as_str().unwrap().contains("depends on RAL-1")),
+            "{out}"
+        );
+        // Sent-back work still comes first.
+        let mut with_back = stories.clone();
+        with_back["RAL-1"] = json!({"state": "sent_back", "team": "rally"});
+        let out = pick(
+            "rally",
+            &roadmap,
+            &Ledger {
+                stories: with_back.as_object().unwrap(),
+                blockers: &[],
+                away: None,
+            },
+            None,
+            0,
+        );
+        assert_eq!(out["next"]["story"], "RAL-1");
     }
 
     #[test]

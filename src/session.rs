@@ -44,6 +44,89 @@ pub fn clean(text: &str) -> String {
     out
 }
 
+/// The open rally and where its projects' roadmaps stand (RAL-131), for a team that may be new to
+/// it: read within what's left of the deadline, and left out if it can't be.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RallyContext {
+    pub name: String,
+    pub projects: Vec<String>,
+    /// [`crate::roadmaps::summarize`] for each project, in order.
+    pub roadmaps: Vec<Value>,
+}
+
+/// The open rally and its roadmaps through the service within `total`, or `None` when no rally is
+/// open or it can't be read in time. A roadmap that can't be read is left out, never shown as
+/// missing.
+pub fn fetch_rally(pairing: &Pairing, total: Duration) -> Option<RallyContext> {
+    let deadline = Instant::now() + total;
+    let get = |path: &str| -> Result<(u16, Value), String> {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err("out of time".into());
+        }
+        let reply = client::request_for(pairing, "GET", path, left).map_err(|e| e.to_string())?;
+        let value = serde_json::from_str(&reply.body).unwrap_or(Value::Null);
+        Ok((reply.status, value))
+    };
+    let (status, rallies) = get("/v1/rallies").ok()?;
+    if !(200..300).contains(&status) {
+        return None;
+    }
+    let open = rallies.get("open").filter(|o| o.is_object())?;
+    let projects: Vec<String> = open["projects"]
+        .as_array()?
+        .iter()
+        .filter_map(|p| p.as_str().map(str::to_owned))
+        .collect();
+    let mut roadmaps = Vec::new();
+    for prefix in &projects {
+        let story = crate::ledger::roadmap_story(prefix);
+        match get(&format!("/v1/stories/{}", encode(&story))) {
+            Ok((200, value)) => {
+                roadmaps.push(crate::roadmaps::summarize(prefix, Some(&value["detail"])))
+            }
+            Ok((404, _)) => roadmaps.push(crate::roadmaps::summarize(prefix, None)),
+            _ => {}
+        }
+    }
+    Some(RallyContext {
+        name: open["name"].as_str().unwrap_or_default().to_owned(),
+        projects,
+        roadmaps,
+    })
+}
+
+/// One roadmap's line: its stage, and the commit it was cleared at.
+fn roadmap_line(roadmap: &Value) -> String {
+    let story = clean(roadmap["story"].as_str().unwrap_or("?"));
+    let stage = roadmap["stage"]
+        .as_str()
+        .unwrap_or("unknown")
+        .replace('_', " ");
+    let kind = clean(roadmap["kind"].as_str().unwrap_or("declared"));
+    let short = |v: &Value| {
+        clean(
+            &v.as_str()
+                .unwrap_or("?")
+                .chars()
+                .take(7)
+                .collect::<String>(),
+        )
+    };
+    let at = if let Some(commit) = roadmap.get("cleared").map(|c| &c["commit"]) {
+        format!(" at {}", short(commit))
+    } else if let Some(commit) = roadmap.get("last_cleared").map(|c| &c["commit"]) {
+        format!(", last cleared at {}", short(commit))
+    } else {
+        String::new()
+    };
+    format!(
+        "- {} roadmap ({story}): {}{at} ({kind})",
+        clean(roadmap["project"].as_str().unwrap_or("?")),
+        clean(&stage)
+    )
+}
+
 /// The stories (by id) and open blockers, read through the service within `total`.
 pub fn fetch(
     pairing: &Pairing,
@@ -143,10 +226,58 @@ pub fn render_for(
     blockers: &[Value],
     harness: Harness,
 ) -> String {
+    render_in(team, stories, blockers, harness, None)
+}
+
+/// [`render_for`], led by the open rally, its projects' roadmaps, the stories assigned to the
+/// team and the cycle (RAL-131), when the rally could be read.
+pub fn render_in(
+    team: &str,
+    stories: &Map<String, Value>,
+    blockers: &[Value],
+    harness: Harness,
+    rally: Option<&RallyContext>,
+) -> String {
     let mine = |row: &Value| row["team"].as_str() == Some(team);
     let mut body: Vec<String> = Vec::new();
     if harness == Harness::PrimeAgent {
         body.push(PRIME_AGENT_NOTICE.into());
+    }
+    if let Some(rally) = rally {
+        body.push(format!(
+            "Open rally (declared): {}; projects {}",
+            clean(&rally.name),
+            clean(&rally.projects.join(", "))
+        ));
+        body.extend(rally.roadmaps.iter().map(roadmap_line));
+        body.push("The cycle (see `rally roadmap`):".into());
+        // Escaped as agents' text is, so `<PREFIX>` can't pose as a tag.
+        body.extend(
+            crate::roadmaps::CYCLE
+                .iter()
+                .map(|line| format!("  {}", clean(line))),
+        );
+    }
+    let assigned: Vec<String> = stories
+        .iter()
+        .filter(|(_, row)| {
+            row["assigned"]["team"]
+                .as_str()
+                .is_some_and(|t| crate::ledger::same_name(t, team))
+        })
+        .map(|(id, row)| {
+            let (state, _) = state_of(row);
+            format!(
+                "- {}: {}, assigned by {} (declared)",
+                clean(id),
+                clean(state),
+                clean(row["assigned"]["by"].as_str().unwrap_or("?"))
+            )
+        })
+        .collect();
+    if !assigned.is_empty() {
+        body.push("Assigned to your team (`rally next` offers these first):".into());
+        body.extend(assigned);
     }
 
     let own: Vec<String> = stories
@@ -291,6 +422,56 @@ fn cap(open: &str, body: Vec<String>, close: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// RAL-131: a session in an open rally is told the rally, each project's roadmap stage, the
+    /// stories assigned to its team, and the cycle.
+    #[test]
+    fn a_new_team_is_told_the_rally_its_roadmaps_and_the_cycle() {
+        let rally = RallyContext {
+            name: "rally 0x7".into(),
+            projects: vec!["MAR".into(), "ROO".into()],
+            roadmaps: vec![
+                crate::roadmaps::summarize("MAR", None),
+                json!({"project": "ROO", "story": "ROO-0", "stage": "cleared", "kind": "verified",
+                       "cleared": {"commit": "0123456789abcdef0123456789abcdef01234567"}}),
+            ],
+        };
+        let stories = json!({
+            "ROO-3": {"state": "ready", "assigned": {"team": "rustdaw", "by": "mellow-weevil"}},
+            "ROO-4": {"state": "ready", "assigned": {"team": "marshal", "by": "mellow-weevil"}},
+        });
+        let out = render_in(
+            "rustdaw",
+            stories.as_object().unwrap(),
+            &[],
+            Harness::Other,
+            Some(&rally),
+        );
+        assert!(
+            out.contains("Open rally (declared): rally 0x7; projects MAR, ROO"),
+            "{out}"
+        );
+        assert!(
+            out.contains("- MAR roadmap (MAR-0): none (observed)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("- ROO roadmap (ROO-0): cleared at 0123456 (verified)"),
+            "{out}"
+        );
+        for line in crate::roadmaps::CYCLE {
+            assert!(out.contains(&clean(line)), "{out}");
+        }
+        assert!(
+            out.contains("- ROO-3: ready, assigned by mellow-weevil (declared)"),
+            "{out}"
+        );
+        assert!(!out.contains("ROO-4"), "{out}");
+        assert!(out.lines().count() <= MAX_LINES);
+        // Without a rally, as before.
+        let plain = render_in("rustdaw", &Map::new(), &[], Harness::Other, None);
+        assert!(!plain.contains("Open rally"));
+    }
 
     fn stories() -> Map<String, Value> {
         json!({

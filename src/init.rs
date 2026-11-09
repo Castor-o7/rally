@@ -40,11 +40,19 @@ pair code from the operator), and say who you are with `--as <name>` or `RALLY_N
 **Who verifies:** while the operator has designated a watchman, merges wait for the watchman's
 read at the head being merged. Otherwise another team, or the operator, verifies.
 
+**A project's cycle** (see docs/clearance.md): a team new to a project drafts its roadmap, with
+\"done when\" lines, and submits it for clearance as story `<PREFIX>-0` at the commit that holds
+it. The watchman clears it (`rally verify <PREFIX>-0`) or sends it back. Once it's cleared, the
+watchman assigns its stories (`rally assign`), and `rally next` offers each team its assigned
+stories first. Revise the roadmap as the work goes: claim `<PREFIX>-0` again and resubmit it.
+`rally roadmap` shows where each project's roadmap stands.
+
 Where you use Rally:
 
-- **Pick your next story**: `rally next --team <team>` gives it by roadmap order, and says
-  what it skipped and why. A story that needs the operator isn't skipped: ask the operator, and
-  record the question with `rally block --story <STORY> --on-team operator`.
+- **Pick your next story**: `rally next --team <team>` gives your sent-back work first, then the
+  stories assigned to your team, then roadmap order, and says what it skipped and why. A story
+  that needs the operator isn't skipped: ask the operator, and record the question with
+  `rally block --story <STORY> --on-team operator`.
 - **Number a new story** with `rally new-story <PREFIX> --title \"...\"`, which takes the next free
   number, so two teams never write the same ID.
 - **Claim** a ready story: `rally claim <STORY> --team <team>`. Give it up with
@@ -57,6 +65,8 @@ Where you use Rally:
 - **Ask for a read** before a merge: `rally request-read <STORY> --commit <full commit> --note \"...\"`.
   An open request blocks the merge, and the read must cover the head being merged.
 - **Record a merge**: `rally merge <STORY> --commit <full commit>`.
+- **Assign a story** (the watchman, once the roadmap is cleared):
+  `rally assign <STORY> --team <team> --note \"...\"`, ended with `--end`.
 - **A story in parts**: `rally submit <STORY> --part k [--of n] ...`, then a verify or send-back
   `--part k` for each; close it with a plain submit and verify. See docs/parts.md.
 - **Before moving a branch**: `rally gate <base>..<new>` refuses if a story the commits name is

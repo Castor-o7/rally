@@ -345,6 +345,17 @@ pub enum Change {
         succeeds: Option<String>,
         note: String,
     },
+    /// Someone, normally the watchman, assigns a story to a team (RAL-130), or with `end` ends the
+    /// story's assignment. Declared: it informs and doesn't command, claims nothing, and confers
+    /// no authority, so another team may still claim the story. A newer assignment replaces it,
+    /// and the story's merge ends it.
+    Assign {
+        story: String,
+        team: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        end: bool,
+        note: String,
+    },
     /// Anyone records a major event of the open rally (RAL-104): a one-line headline, how serious
     /// it is, and what backs it (record numbers, pull requests, commits or files), if anything.
     /// Declared, like any other claim. It belongs to the open rally, and stays with it once closed.
@@ -398,6 +409,7 @@ impl Change {
             | Self::ReadMerged { story, .. }
             | Self::RequestRead { story, .. }
             | Self::WithdrawRead { story, .. }
+            | Self::Assign { story, .. }
             | Self::Correct { story, .. } => story,
         }
     }
@@ -489,6 +501,10 @@ pub struct Story {
     /// How many parts the team last said the story has (RAL-79), declared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parts_of: Option<u32>,
+    /// The team the story is assigned to (RAL-130), declared, until it's ended, replaced or the
+    /// story merges.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assigned: Option<Assignment>,
     pub history: Vec<HistoryEntry>,
     /// The declared names of everyone who ever claimed or submitted it, compared as
     /// [`same_name`] does, so that checking a verifier doesn't search the whole history.
@@ -498,6 +514,17 @@ pub struct Story {
     /// service keeps between requests is this same in-memory `Ledger`, built by replay and apply.
     #[serde(skip)]
     authors: BTreeSet<String>,
+}
+
+/// A story's assignment to a team (RAL-130): who declared it, and when.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Assignment {
+    pub team: String,
+    pub seq: u64,
+    pub at_ms: i64,
+    pub kind: Kind,
+    pub source: Source,
+    pub note: String,
 }
 
 /// A read of a merged commit beside the verification in force (RAL-85): the reader's own record.
@@ -2451,6 +2478,7 @@ impl Ledger {
                     requested_reads: Vec::new(),
                     parts: BTreeMap::new(),
                     parts_of: None,
+                    assigned: None,
                     history: Vec::new(),
                     authors: BTreeSet::new(),
                 },
@@ -2535,6 +2563,30 @@ fn transition(
             story.team = Some(team.clone());
             // A new claim needs its own submission.
             story.submitted_by = None;
+        }
+        Change::Assign {
+            team, end, note, ..
+        } => {
+            require_kind(record, Kind::Declared)?;
+            if *end {
+                match &story.assigned {
+                    Some(assigned) if same_name(&assigned.team, team) => story.assigned = None,
+                    _ => {
+                        return Err(LedgerError::InvalidChange(format!(
+                            "{id} isn't assigned to {team}, so there's no assignment to end"
+                        )));
+                    }
+                }
+            } else {
+                story.assigned = Some(Assignment {
+                    team: team.clone(),
+                    seq,
+                    at_ms: record.at_ms(),
+                    kind: record.kind(),
+                    source: record.source().clone(),
+                    note: note.clone(),
+                });
+            }
         }
         Change::Release { team, .. } => {
             require_kind(record, Kind::Declared)?;
@@ -2790,6 +2842,8 @@ fn transition(
             // judgement of the work.
             require_kind(record, Kind::Declared)?;
             story.merged_commit = Some(commit.clone());
+            // A merged story's assignment is done (RAL-130).
+            story.assigned = None;
             // A request still open now shows the merge got there first, unless the verification in
             // force already covers the commit it asked about (RAL-106).
             let covered: Vec<bool> = story
@@ -3220,6 +3274,7 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         | Change::TeamState { team, .. } => &[("team", team)],
         Change::Block { team, note, .. }
         | Change::Annotate { team, note, .. }
+        | Change::Assign { team, note, .. }
         | Change::Standing { team, note, .. } => &[("team", team), ("note", note)],
         Change::Unblock { note, .. }
         | Change::EndStanding { note, .. }
@@ -3390,7 +3445,7 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
             text.extend([("team", team.as_str()), ("note", note)]);
             text.extend(on_team.as_deref().map(|on| ("team", on)));
         }
-        Change::Annotate { team, note, .. } => {
+        Change::Annotate { team, note, .. } | Change::Assign { team, note, .. } => {
             text.extend([("team", team.as_str()), ("note", note)])
         }
         Change::Submit {
@@ -6171,6 +6226,42 @@ mod tests {
             apply_next(&mut ledger, &claim_as("ROO-3", "rustdaw")),
             Err(LedgerError::InvalidTransition { .. })
         ));
+    }
+
+    /// RAL-130: an assignment is declared, claims nothing, is replaced by a newer one, ended only
+    /// for the team it names, and ended by the story's merge.
+    #[test]
+    fn a_story_is_assigned_replaced_ended_and_done_at_its_merge() {
+        let assign = |team_name: &str, end: bool| {
+            team(
+                json!({"change": "assign", "story": STORY, "team": team_name, "end": end,
+                        "note": "from the cleared roadmap"}),
+            )
+        };
+        let mut ledger = ledger_with(&[ready()]);
+        apply_next(&mut ledger, &assign("rally", false)).unwrap();
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.state, State::Ready, "an assignment claims nothing");
+        assert_eq!(story.assigned.as_ref().unwrap().team, "rally");
+        apply_next(&mut ledger, &assign("muster", false)).unwrap();
+        assert_eq!(
+            ledger.story(STORY).unwrap().assigned.as_ref().unwrap().team,
+            "muster"
+        );
+        assert!(apply_next(&mut ledger, &assign("rally", true)).is_err());
+        apply_next(&mut ledger, &assign("muster", true)).unwrap();
+        assert!(ledger.story(STORY).unwrap().assigned.is_none());
+        // Only declared: an assignment is somebody's say-so, not a reader's check.
+        let observed = record(
+            Kind::Verified,
+            "rally",
+            json!({"change": "assign", "story": STORY, "team": "rally", "note": "x"}),
+        );
+        assert!(apply_next(&mut ledger, &observed).is_err());
+        apply_next(&mut ledger, &assign("rally", false)).unwrap();
+        let merge = team(json!({"change": "merge", "story": STORY, "commit": COMMIT}));
+        apply_next(&mut ledger, &merge).unwrap();
+        assert!(ledger.story(STORY).unwrap().assigned.is_none());
     }
 
     #[test]
