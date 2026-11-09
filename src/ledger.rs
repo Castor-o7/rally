@@ -591,6 +591,16 @@ impl Story {
             .collect()
     }
 
+    /// Whether the story's close is what's next (RAL-141): it has parts, every declared part is
+    /// verified, and the story itself is still claimed. The holding team's plain submit, then a
+    /// verify, closes it; nothing a verifier does alone moves it (docs/parts.md, "The close").
+    pub fn close_due(&self) -> bool {
+        !self.parts.is_empty()
+            && self.state == State::Claimed
+            && self.open_parts().is_empty()
+            && self.missing_parts().is_empty()
+    }
+
     /// The parts still open: in review or sent back.
     fn open_parts(&self) -> Vec<u32> {
         self.parts
@@ -1011,6 +1021,12 @@ pub enum LedgerError {
         part: u32,
         why: String,
     },
+    /// A verifier's change to a parts story whose every part is verified but whose close hasn't
+    /// been submitted (RAL-141): the holding team's plain submit is what's next.
+    CloseNeeded {
+        story: String,
+        team: Option<String>,
+    },
     /// A final verify of a story with parts still in review or sent back (RAL-79).
     PartsOpen {
         story: String,
@@ -1111,6 +1127,14 @@ impl fmt::Display for LedgerError {
             Self::InvalidTransition { story, from } => {
                 write!(f, "{story} can't make this change from {from:?}")
             }
+            Self::CloseNeeded { story, team } => write!(
+                f,
+                "{story} has every part verified, and its close is what's next: {} runs `rally \
+                 submit {story} --team {} --evidence ...` (no --part), then a verifier verifies \
+                 it at that commit. See docs/parts.md",
+                team.as_deref().unwrap_or("the holding team"),
+                team.as_deref().unwrap_or("<team>"),
+            ),
             Self::ClaimLapsed { story, from } => match from {
                 State::SentBack => write!(
                     f,
@@ -2602,9 +2626,20 @@ fn transition(
     actor: Option<&str>,
     seq: u64,
 ) -> Result<(), LedgerError> {
-    let refuse = |from| LedgerError::InvalidTransition {
-        story: id.to_owned(),
-        from,
+    // From Claimed with every part verified, say what's next instead of only refusing (RAL-141).
+    let close_due = story.close_due();
+    let holder = story.team.clone();
+    let refuse = |from| {
+        if from == State::Claimed && close_due {
+            return LedgerError::CloseNeeded {
+                story: id.to_owned(),
+                team: holder.clone(),
+            };
+        }
+        LedgerError::InvalidTransition {
+            story: id.to_owned(),
+            from,
+        }
     };
     match change {
         Change::Ready { .. }
@@ -3983,6 +4018,60 @@ mod tests {
 
     /// RAL-79: DSM-37's case. Each part is submitted and read as it lands while the story stays
     /// claimed; the final close waits for every part, then marks the story Verified.
+    /// RAL-141: with every part verified and no close submitted, a verify, send-back or read of the
+    /// merged commit is refused saying the close is next and whose move it is; once the close is
+    /// submitted, the verify goes through as before.
+    #[test]
+    fn a_parts_story_with_every_part_verified_says_the_close_is_next() {
+        let ev = |c: &str| format!("Castor-o7/rally@{c}");
+        let two_parts = |k: u32, evidence: &str| {
+            team(
+                json!({"change": "submit", "story": STORY, "team": "rally", "evidence": evidence,
+                        "part": k, "of": 2}),
+            )
+        };
+        let mut ledger = ledger_with(&[ready(), claim()]);
+        push(&mut ledger, &two_parts(1, &ev(COMMIT)));
+        push(&mut ledger, &part_read("verify", 1, COMMIT));
+        assert!(
+            !ledger.story(STORY).unwrap().close_due(),
+            "part 2 still missing"
+        );
+        push(&mut ledger, &two_parts(2, &ev(OTHER_COMMIT)));
+        push(&mut ledger, &part_read("verify", 2, OTHER_COMMIT));
+        let story = ledger.story(STORY).unwrap();
+        assert_eq!(story.state, State::Claimed);
+        assert!(story.close_due());
+        for body in [
+            json!({"change": "verify", "story": STORY, "note": "x", "commit": COMMIT}),
+            json!({"change": "send_back", "story": STORY, "note": "x"}),
+            json!({"change": "read_merged", "story": STORY, "note": "x", "commit": COMMIT}),
+        ] {
+            let refused = ledger.check(ledger.last_seq() + 1, &verifier(body.clone()));
+            assert!(
+                matches!(&refused, Err(LedgerError::CloseNeeded { team: Some(t), .. }) if t == "rally"),
+                "{body}: {refused:?}"
+            );
+            assert!(
+                refused
+                    .unwrap_err()
+                    .to_string()
+                    .contains("rally submit RAL-3 --team rally")
+            );
+        }
+        // A merge in between changes nothing: it's a fact about the repository.
+        push(
+            &mut ledger,
+            &team(json!({"change": "merge", "story": STORY, "commit": COMMIT})),
+        );
+        assert!(ledger.story(STORY).unwrap().close_due());
+        // The holding team's close, then the verify, as docs/parts.md says.
+        push(&mut ledger, &submit());
+        assert!(!ledger.story(STORY).unwrap().close_due());
+        push(&mut ledger, &verify());
+        assert_eq!(state(&ledger), State::Verified);
+    }
+
     #[test]
     fn each_part_is_read_as_it_lands_and_the_close_waits_for_them_all() {
         let ev = |c: &str| format!("Castor-o7/rally@{c}");
