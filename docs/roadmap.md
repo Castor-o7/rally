@@ -895,3 +895,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   no statuses is looked for again, as pending CI is, until the ceiling (`--evidence-ci-wait`, 30 minutes); runs
   appearing in that time are recorded as they stand; at the ceiling `none` is recorded with a reason saying no CI
   appeared within it; with a unit test and docs/evidence.md.
+- [ ] **RAL-133: The viewer picks up a change to its projects file without a restart.** From silken-beetle's
+  watch of the viewer on 2026-11-09 (finding 4): rally 0x7 opened with ROO, and ROO was added to
+  `~/.config/rally/projects.json` that same second, but the viewer had read `--projects` once, at its start 4
+  hours earlier, so it showed "In this rally without a roadmap in the viewer's project list: ROO" and no ROO
+  card. Done when: at each refresh the viewer looks at the projects file's modification time and, when it
+  changed, reads it again and reads its roadmaps at once, keeping each project's last reading by prefix; a
+  version that can't be read or isn't a list keeps the list before, and the page says why; `/api/status`
+  gives `projects_file`, observed; with a test of the reload and docs/web.md.

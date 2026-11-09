@@ -3147,11 +3147,15 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             };
             return run_viewer(
                 &bind,
-                projects,
+                projects.clone(),
                 location,
                 config,
                 backup,
-                web::LocalReads { local, roster_from },
+                web::LocalReads {
+                    local,
+                    roster_from,
+                    projects_file: projects,
+                },
                 web::SignIn {
                     key_file,
                     code_ttl: std::time::Duration::from_secs(code_seconds),
