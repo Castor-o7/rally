@@ -1261,7 +1261,9 @@ function drawing(id) {
 }
 
 // A kept node keeps the listeners from its first draw (RAL-113): a handler in a patched section must
-// read what it needs when it runs, never close over data or nodes from the render that made it.
+// read what it needs when it runs, never close over data or nodes from the render that made it. Its
+// inline styles are copied one property at a time (patchStyle), since the CSP won't apply a whole
+// style attribute.
 function drawPatched(id, render) {
   const live = document.getElementById(id);
   const draft = live.cloneNode(false);
@@ -1295,15 +1297,34 @@ function patchNode(live, fresh) {
     if (live.nodeValue !== fresh.nodeValue) live.nodeValue = fresh.nodeValue;
     return;
   }
-  // A section the reader opened or closed stays as they left it (RAL-96).
-  const keep = (name) => live.tagName === "DETAILS" && name === "open";
+  // A section the reader opened or closed stays as they left it (RAL-96). Inline styles are patched
+  // apart from the other attributes (patchStyle).
+  const keep = (name) => (live.tagName === "DETAILS" && name === "open") || name === "style";
   for (const { name } of [...live.attributes]) {
     if (!fresh.hasAttribute(name) && !keep(name)) live.removeAttribute(name);
   }
   for (const { name, value } of [...fresh.attributes]) {
     if (live.getAttribute(name) !== value && !keep(name)) live.setAttribute(name, value);
   }
+  patchStyle(live, fresh);
   patchChildren(live, fresh);
+}
+
+// The page's CSP (style-src without 'unsafe-inline') doesn't apply a style attribute set with
+// setAttribute, nor one set as style.cssText: the attribute's text changes, but what's drawn doesn't.
+// So a bar patched that way kept its first draw's widths until a reload. A property set with
+// style.setProperty is applied, so inline styles are copied one property at a time.
+function patchStyle(live, fresh) {
+  for (const name of [...live.style]) {
+    if (!fresh.style.getPropertyValue(name)) live.style.removeProperty(name);
+  }
+  for (const name of [...fresh.style]) {
+    const value = fresh.style.getPropertyValue(name);
+    const priority = fresh.style.getPropertyPriority(name);
+    if (live.style.getPropertyValue(name) !== value || live.style.getPropertyPriority(name) !== priority) {
+      live.style.setProperty(name, value, priority);
+    }
+  }
 }
 
 function show(status, now) {
