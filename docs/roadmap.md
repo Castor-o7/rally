@@ -912,3 +912,17 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   (declared)"; with a unit test. Alongside, outside the code: each MAR check showing "CI none" whose commit
   GitHub shows with check runs gets a correction note giving the counts (25 notes, 1924 to 1948; MAR-18 and
   MAR-49 have no runs and keep "none"), and ROO-0 and ROO-13 get the RAL-128 note (1949, 1950).
+- [ ] **RAL-137: Viewer: a solid black page background, panels keep their colours.** From Josh directly
+  (2026-11-09): the page's background is solid black, and the panels and other visual content keep their
+  current colour scheme. Done when: in both schemes the page behind the panels is `#000` with no aurora or
+  grid, the panels, bars and state colours are unchanged (RAL-91's colours), and text set straight on the
+  page (the header, section headings, their muted lines) uses `--on-page` colours that meet WCAG AA on
+  black in both schemes; with the viewer's browser tests passing.
+- [ ] **RAL-138: Viewer: reactive, agentic visual cues for live state.** From Josh directly (2026-11-09):
+  research visual techniques that read as "reactive/agentic", and use them. From the watchman's scope: every
+  cue is tied to a real change in the ledger or roster (a new record arriving, a session going busy or
+  idle, a hold in force, a check correction), nothing animates while nothing changes, motion respects
+  `prefers-reduced-motion`, and nothing is loaded from elsewhere (the page's CSP). Done when: the PR body
+  gives the research and why each cue was chosen; the cues are in the viewer with a browser test that a
+  change triggers its cue and an unchanged poll triggers none; and the PR shows them, in screenshots or a
+  short recording.
