@@ -924,3 +924,10 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   `project_changes`, through its close; the viewer's rally panel lists the changes, declared; docs/service.md's
   rollback table names it; with ledger, service and headless Chrome tests. Along with it, docs/service.md's
   table gains RAL-129's re-claim and RAL-130's `assign`, which it was missing.
+- [ ] **RAL-136: The viewer shows the holds, conditions and grants in force.** From the watchman on 2026-11-09,
+  during the Marshal soak: the viewer had no sign of a standing record, so MAR-77's deploy hold and the cutover
+  hold (1859) were only in `rally brief`. Done when: the service serves `/v1/standings`, a light read of the
+  holds, conditions and grants not ended, each as declared with who declared it; the viewer reads it on every
+  refresh and shows "Standing in force" beside the rally, holds first, each with what it's on, what releases it
+  or its scope, its record and age, labelled declared, and says so when the service is older; an ended one isn't
+  shown; with a unit test and a headless Chrome test, and docs/web.md.
