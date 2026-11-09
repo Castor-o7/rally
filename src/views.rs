@@ -1402,9 +1402,6 @@ mod tests {
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
-    /// RAL-27: the story list carries each story's latest evidence, declared, with Rally's check
-    /// of that submission, observed, and not a check of an earlier one.
-    #[test]
     /// RAL-136: only what's in force is listed, each as declared, with who declared it.
     #[test]
     fn standings_lists_what_is_in_force() {
@@ -1430,6 +1427,8 @@ mod tests {
         assert_eq!(rows[0]["kind"], "declared");
     }
 
+    /// RAL-27: the story list carries each story's latest evidence, declared, with Rally's check
+    /// of that submission, observed, and not a check of an earlier one.
     #[test]
     fn the_story_list_shows_the_latest_evidence_and_its_own_check() {
         let team = |body: Value| as_kind(Kind::Declared, "author", body);

@@ -289,8 +289,6 @@ function renderLedger(ledger, backup, now, untrusted, rally) {
   root.append(pastForm(check ? check.head.seq : ledger.as_of));
 }
 
-// What's in the current rally and why, or why it couldn't be told (RAL-69), and the past
-// rallies, each kept whole (RAL-76).
 // The holds, conditions and grants in force (RAL-136), each as its writer declared it, shown
 // beside the rally because they decide what may happen in it. A grant confers no authority.
 function standingBox(standings, now) {
@@ -319,6 +317,8 @@ function standingBox(standings, now) {
   return box;
 }
 
+// What's in the current rally and why, or why it couldn't be told (RAL-69), and the past
+// rallies, each kept whole (RAL-76).
 function rallyLine(rally, otherStories) {
   const box = el("div", "group");
   if (rally && rally.rallies_unavailable) {
