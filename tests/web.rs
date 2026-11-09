@@ -2092,6 +2092,98 @@ fn a_refresh_keeps_every_unchanged_node_and_fixes_what_changed() {
     assert_eq!(probe["typed"], "7", "{probe}");
 }
 
+/// RAL-138: a change between polls cues what changed, and an unchanged poll cues nothing. The story
+/// whose state moved, the legend count that moved and the live indicator (a new record) each get a
+/// cue; a redraw with nothing new leaves no cue anywhere.
+#[test]
+fn a_change_cues_what_changed_and_an_unchanged_poll_cues_nothing() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start_after("[]", None, 60, |db, dir| {
+        let write = |args: &[&str]| {
+            let out = on(db, dir)
+                .args(["--credential", "a1", "--as", "author"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        write(&[
+            "open-rally",
+            "--name",
+            "test",
+            "--project",
+            "RAL",
+            "--team",
+            "rally",
+        ]);
+        let evidence = "Castor-o7/rally@0123456789abcdef0123456789abcdef01234567";
+        for id in ["RAL-1", "RAL-2"] {
+            write(&["ready", id]);
+            write(&["claim", id, "--team", "rally"]);
+            write(&["submit", id, "--team", "rally", "--evidence", evidence, "--not-checkable"]);
+        }
+    });
+    let probe = r##"(async () => {
+      for (let i = 0; i < 100 && !document.querySelector("#ledger tbody tr"); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const redraw = (status) => {
+        const legendBefore = legendCounts();
+        show(status, Date.now());
+        cueChanges(status, legendBefore);
+      };
+      const cued = () => [...document.querySelectorAll("[class*='cue-']")]
+        .map((n) => (n.id || n.textContent.trim().slice(0, 24)) + ":" + [...n.classList].filter((c) => c.startsWith("cue-")).join(","));
+      // The first poll drew already: as the next one would, it brings one record and RAL-2 verified.
+      const status = structuredClone(lastStatus);
+      status.ledger.as_of += 1;
+      status.ledger.stories["RAL-2"].state = "verified";
+      redraw(status);
+      const changed = cued();
+      const row = storyRow("RAL-2");
+      const colour = row ? row.style.getPropertyValue("--cue") : null;
+      // Wait out the cues, then poll again with nothing new.
+      await new Promise((r) => setTimeout(r, 2700));
+      const afterwards = cued();
+      redraw(structuredClone(status));
+      // With the cues gone, nothing on the page is animating: the page idles between changes.
+      await new Promise((r) => setTimeout(r, 2700));
+      const running = document.getAnimations().filter((a) => a.playState === "running").length;
+      return { changed, colour, afterwards, unchanged: cued(), running };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    let changed: Vec<String> = serde_json::from_value(probe["changed"].clone()).unwrap();
+    assert!(
+        changed.iter().any(|c| c == "freshness:cue-arrive"),
+        "a new record cues the live indicator: {probe}"
+    );
+    assert!(
+        changed.iter().any(|c| c.starts_with("RAL-2") && c.ends_with("cue-changed")),
+        "the story that moved is cued: {probe}"
+    );
+    assert!(
+        !changed.iter().any(|c| c.starts_with("RAL-1")),
+        "the story that didn't move isn't: {probe}"
+    );
+    assert!(
+        changed.iter().filter(|c| c.ends_with("cue-count")).count() == 2,
+        "In review and Verified moved, and only they are cued: {probe}"
+    );
+    assert_eq!(probe["colour"], "var(--s-verified)", "{probe}");
+    assert_eq!(probe["afterwards"], json!([]), "a cue goes by itself: {probe}");
+    assert_eq!(probe["unchanged"], json!([]), "an unchanged poll cues nothing: {probe}");
+    assert_eq!(probe["running"], 0, "nothing animates while nothing changes: {probe}");
+    assert!(
+        changed.iter().any(|c| c.ends_with("cue-arrive") && !c.starts_with("freshness")),
+        "the sigil turns for a new record: {probe}"
+    );
+}
+
 /// Writes an executable `name` in `dir` that prints `stdout` and exits with `code`, standing in
 /// for a shim's `roster`.
 fn fake_roster_command(dir: &std::path::Path, name: &str, stdout: &str, code: i32) -> String {

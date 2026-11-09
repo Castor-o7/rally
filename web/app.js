@@ -1506,6 +1506,90 @@ function reloadForNewCode(status, reload = () => location.reload()) {
   return true;
 }
 
+// RAL-138: reactive cues. Each cue marks one real change between two polls (a new record, a story
+// whose state or check changed, a count that moved, a session going busy or idle) and then goes:
+// nothing animates while nothing changes. With prefers-reduced-motion the cue is a still outline for
+// the same few seconds instead of a movement (app.css).
+const CUE_MS = 2400;
+let cueBefore = null;
+
+function cueSnapshot(status) {
+  const stories = {};
+  for (const [id, story] of Object.entries((status.ledger && status.ledger.stories) || {})) {
+    const check = story.evidence && story.evidence.check;
+    stories[id] = { state: story.state, check: JSON.stringify(check === undefined ? null : check) };
+  }
+  const sessions = {};
+  for (const session of (status.roster && status.roster.sessions) || []) {
+    if (session.nickname) sessions[session.nickname] = session.activity || "";
+  }
+  return { seq: status.ledger ? status.ledger.as_of : null, stories, sessions };
+}
+
+// What the board's legend says now, by state, to tell which counts a redraw moved.
+function legendCounts() {
+  const counts = {};
+  for (const key of document.querySelectorAll("#ledger .legend span")) {
+    const swatch = key.querySelector("i");
+    if (swatch) counts[swatch.className] = key.textContent;
+  }
+  return counts;
+}
+
+// Mark `node` for one cue. The colour is set with setProperty, which the page's CSP allows.
+function cue(node, kind, colour) {
+  if (!node) return;
+  if (colour) node.style.setProperty("--cue", colour);
+  node.classList.remove("cue-" + kind);
+  void node.offsetWidth; // so the same cue can play again on the next change
+  node.classList.add("cue-" + kind);
+  clearTimeout(node.cueTimer);
+  node.cueTimer = setTimeout(() => node.classList.remove("cue-" + kind), CUE_MS);
+}
+
+// A story's row in the board's Evidence table, or its line in a project page's story list.
+function storyRow(id) {
+  return [...document.querySelectorAll("#ledger tbody tr")]
+    .find((row) => row.cells[0] && row.cells[0].textContent.trim() === id)
+    || [...document.querySelectorAll(".stories li")]
+      .find((line) => { const key = line.querySelector(".story-id"); return key && key.textContent.trim() === id; });
+}
+
+function sessionRow(nickname) {
+  return [...document.querySelectorAll("tbody tr")].find((row) => {
+    const first = row.cells[0] && row.cells[0].querySelector("span");
+    return first && first.firstChild && first.firstChild.nodeValue === nickname;
+  });
+}
+
+function cueChanges(status, legendBefore) {
+  const now = cueSnapshot(status);
+  const before = cueBefore;
+  cueBefore = now;
+  if (!before) return; // the first draw: nothing has changed yet
+  if (now.seq !== before.seq) {
+    cue(document.getElementById("freshness"), "arrive");
+    cue(document.querySelector(".sigil"), "arrive");
+  }
+  for (const [id, story] of Object.entries(now.stories)) {
+    const was = before.stories[id];
+    if (!was || was.state !== story.state || was.check !== story.check) {
+      cue(storyRow(id), "changed", "var(--s-" + story.state + ")");
+    }
+  }
+  const legendNow = legendCounts();
+  for (const key of document.querySelectorAll("#ledger .legend span")) {
+    const swatch = key.querySelector("i");
+    if (swatch && legendBefore[swatch.className] !== undefined
+      && legendBefore[swatch.className] !== legendNow[swatch.className]) cue(key, "count");
+  }
+  for (const [nickname, activity] of Object.entries(now.sessions)) {
+    if (before.sessions[nickname] !== undefined && before.sessions[nickname] !== activity) {
+      cue(sessionRow(nickname), "activity", activity === "busy" ? "var(--arc-2)" : "var(--text-2)");
+    }
+  }
+}
+
 async function refresh() {
   let status;
   try {
@@ -1527,7 +1611,9 @@ async function refresh() {
     // "Updated" says when the page was last drawn, so it moves only when it is.
     if (!busyReading()) {
       const open = openSections();
+      const legendBefore = legendCounts();
       show(status, now);
+      cueChanges(status, legendBefore);
       reopen(open);
       drawnAt = now;
     }
