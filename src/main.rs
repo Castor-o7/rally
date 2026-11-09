@@ -389,6 +389,14 @@ enum Command {
         #[command(flatten)]
         digest: DigestCheck,
     },
+    /// Where each project's roadmap stands (RAL-129): drafting, waiting for clearance, cleared at
+    /// a commit, sent back, or revised after a clearance. A project's roadmap is its story
+    /// <PREFIX>-0, submitted, cleared and sent back as any story is. Without a prefix, the open
+    /// rally's projects. Read-only. See docs/clearance.md
+    Roadmap {
+        /// Project prefixes, such as ROO. Defaults to the open rally's projects.
+        prefixes: Vec<String>,
+    },
     /// Submissions waiting for a reader, oldest first, with the evidence and any requested reads'
     /// commits to read (RAL-51).
     Waiting,
@@ -2275,6 +2283,44 @@ fn next(
     Ok(serde_json::to_string_pretty(&result)?)
 }
 
+/// The open rally's projects, from `views::rallies`, if one is open.
+fn open_rally_projects(rallies: &Value) -> Option<Vec<String>> {
+    let projects = rallies["open"]["projects"].as_array()?;
+    Some(
+        projects
+            .iter()
+            .filter_map(|p| p.as_str().map(str::to_owned))
+            .collect(),
+    )
+}
+
+/// Where each project's roadmap stands (RAL-129), read from its story `<PREFIX>-0`. A roadmap
+/// that can't be read says why rather than passing for one that doesn't exist.
+fn read_roadmaps(backend: &Backend, prefixes: &[String]) -> Vec<Value> {
+    prefixes
+        .iter()
+        .map(|prefix| {
+            let id = rally::ledger::roadmap_story(prefix);
+            let read = backend.read_value(
+                &format!("/v1/stories/{}", encode(&id)),
+                None,
+                &Page::default(),
+                |ledger, page| views::stories(ledger, Some(&id), page),
+            );
+            match read {
+                Ok(value) => rally::roadmaps::summarize(prefix, Some(&value["detail"])),
+                Err(error) if error.to_string().contains("isn't in the ledger") => {
+                    rally::roadmaps::summarize(prefix, None)
+                }
+                Err(error) => json!({
+                    "project": prefix, "story": id, "stage": "unread",
+                    "note": format!("couldn't be read: {error}"),
+                }),
+            }
+        })
+        .collect()
+}
+
 /// The reply's JSON, or the service's reason for refusing.
 fn reply_value(reply: &client::Reply) -> Result<Value, Box<dyn std::error::Error>> {
     let value: Value = serde_json::from_str(&reply.body)
@@ -3780,10 +3826,31 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             if let Some(note) = note {
                 report["rally"]["projects_note"] = json!(note);
             }
+            // Each of the open rally's projects' roadmaps, so the watchman sees which wait for
+            // clearance (RAL-129).
+            if let Some(projects) = rallies.as_ref().and_then(open_rally_projects)
+                && let Ok(backend) = Backend::choose(location.as_ref(), &config, false)
+            {
+                report["roadmaps"] = json!(read_roadmaps(&backend, &projects));
+            }
             let now = report["now_ms"].as_i64().unwrap_or_default();
             report["digest"] =
                 digest_check(&digest, &report["watchmen"], &config_path(cli.config)?, now);
             return Ok(report.to_string());
+        }
+        Command::Roadmap { prefixes } => {
+            let config = config_path(cli.config)?;
+            let backend = Backend::choose(location.as_ref(), &config, false)?;
+            let prefixes = if prefixes.is_empty() {
+                let rallies =
+                    backend.read_value("/v1/rallies", None, &Page::default(), views::rallies)?;
+                open_rally_projects(&rallies)
+                    .ok_or("no rally is open, so name the projects: rally roadmap <PREFIX>...")?
+            } else {
+                prefixes
+            };
+            let report = rally::roadmaps::report(read_roadmaps(&backend, &prefixes));
+            return Ok(serde_json::to_string_pretty(&report)?);
         }
         Command::Waiting => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;

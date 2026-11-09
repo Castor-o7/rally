@@ -2521,6 +2521,14 @@ fn transition(
                 State::Ready => {}
                 // A sent-back story returns to the same team.
                 State::SentBack => require_holder(story, id, team)?,
+                // A project's roadmap is revised as the work goes (RAL-129): a cleared one can be
+                // claimed again, by any team, and goes back for clearance. The clearance stays in
+                // the history, where `rally roadmap` finds it as the last one cleared.
+                State::Verified if is_roadmap_story(id) => {
+                    story.verified_commit = None;
+                    story.also_read.clear();
+                    story.merged_reads.clear();
+                }
                 from => return Err(refuse(from)),
             }
             story.state = State::Claimed;
@@ -3664,6 +3672,18 @@ fn has_leading_zero(id: &str) -> bool {
 /// since one can come to name two commits.
 fn is_commit(commit: &str) -> bool {
     matches!(commit.len(), 40 | 64) && commit.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The story that stands for a project's roadmap (RAL-129): number 0 of its prefix, such as
+/// `ROO-0`. A team submits the roadmap as its evidence and a reader clears it with a verify, as
+/// any story; unlike other stories, a cleared roadmap can be claimed again to revise it.
+pub fn roadmap_story(prefix: &str) -> String {
+    format!("{prefix}-0")
+}
+
+/// Whether `id` is a project's roadmap story, `<PREFIX>-0` (RAL-129).
+pub fn is_roadmap_story(id: &str) -> bool {
+    is_story_id(id) && id.rsplit_once('-').is_some_and(|(_, number)| number == "0")
 }
 
 fn is_story_id(id: &str) -> bool {
@@ -6093,6 +6113,64 @@ mod tests {
                 Err(LedgerError::InvalidTransition { .. })
             ));
         }
+    }
+
+    /// RAL-129: a cleared roadmap is claimed again to revise it, by any team, and goes back for
+    /// clearance; an ordinary verified story still can't be claimed.
+    #[test]
+    fn a_cleared_roadmap_can_be_claimed_again_to_revise_it() {
+        let body = |change: &str, story: &str| json!({"change": change, "story": story});
+        let claim_as = |story: &str, team_name: &str| {
+            team(json!({"change": "claim", "story": story, "team": team_name}))
+        };
+        let submit_of = |story: &str| {
+            team(
+                json!({"change": "submit", "story": story, "team": "rustdaw",
+                        "evidence": format!("Castor-o7/RootyRoopsDAW@{COMMIT}")}),
+            )
+        };
+        let verify_of = |story: &str, commit: &str| {
+            record(
+                Kind::Verified,
+                "watch",
+                json!({"change": "verify", "story": story, "note": "cleared", "commit": commit}),
+            )
+        };
+        assert!(is_roadmap_story("ROO-0"));
+        assert!(!is_roadmap_story("ROO-10") && !is_roadmap_story("roo-0"));
+        assert_eq!(roadmap_story("ROO"), "ROO-0");
+
+        let mut ledger = Ledger::default();
+        for r in [
+            team(body("ready", "ROO-0")),
+            claim_as("ROO-0", "rustdaw"),
+            submit_of("ROO-0"),
+            verify_of("ROO-0", COMMIT),
+        ] {
+            apply_next(&mut ledger, &r).unwrap();
+        }
+        assert_eq!(ledger.stories()["ROO-0"].state, State::Verified);
+        // Another team takes up the revision.
+        apply_next(&mut ledger, &claim_as("ROO-0", "rootyroops")).unwrap();
+        let story = &ledger.stories()["ROO-0"];
+        assert_eq!(story.state, State::Claimed);
+        assert_eq!(story.verified_commit, None);
+        assert_eq!(story.team.as_deref(), Some("rootyroops"));
+
+        // An ordinary story stays as it was.
+        let mut ledger = Ledger::default();
+        for r in [
+            team(body("ready", "ROO-3")),
+            claim_as("ROO-3", "rustdaw"),
+            submit_of("ROO-3"),
+            verify_of("ROO-3", COMMIT),
+        ] {
+            apply_next(&mut ledger, &r).unwrap();
+        }
+        assert!(matches!(
+            apply_next(&mut ledger, &claim_as("ROO-3", "rustdaw")),
+            Err(LedgerError::InvalidTransition { .. })
+        ));
     }
 
     #[test]

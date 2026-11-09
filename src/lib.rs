@@ -16,6 +16,7 @@ pub mod lock_holder;
 pub mod next;
 pub mod record;
 pub mod retry;
+pub mod roadmaps;
 #[doc(hidden)]
 pub mod scratch_pg;
 pub mod secrets;
