@@ -1271,7 +1271,8 @@ fn the_board_keeps_its_ages_current_and_shows_commits_short() {
         ageCellWraps: ageCell ? getComputedStyle(ageCell).whiteSpace : null,
         // RAL-96: a state shows once, as a dot and its name.
         stateCell: (() => {
-          const pill = document.querySelector("#ledger .state-pill");
+          // The board's table, not the Activity strip's lines (RAL-140).
+          const pill = document.querySelector("#ledger table .state-pill");
           const cell = pill?.closest("td");
           const header = cell && cell.closest("table").querySelectorAll("th")[cell.cellIndex];
           return pill && { text: cell.textContent.trim(), dot: Boolean(pill.querySelector(".dot.s-in_review")),
@@ -2182,6 +2183,81 @@ fn a_change_cues_what_changed_and_an_unchanged_poll_cues_nothing() {
         changed.iter().any(|c| c.ends_with("cue-arrive") && !c.starts_with("freshness")),
         "the sigil turns for a new record: {probe}"
     );
+}
+
+/// RAL-140: the Activity strip lists the rally's busy sessions with what they say they're doing, as
+/// text, and the latest story changes, newest first; a redraw that changes a story cues its line there.
+#[test]
+fn the_activity_strip_shows_who_is_working_and_what_just_changed() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start_after("[]", None, 60, |db, dir| {
+        let write = |args: &[&str]| {
+            let out = on(db, dir)
+                .args(["--credential", "a1", "--as", "author"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        write(&[
+            "open-rally",
+            "--name",
+            "test",
+            "--project",
+            "RAL",
+            "--team",
+            "rally",
+        ]);
+        write(&["ready", "RAL-1"]);
+        write(&["ready", "RAL-2"]);
+        write(&["claim", "RAL-2", "--team", "rally"]);
+    });
+    let probe = r##"(async () => {
+      for (let i = 0; i < 100 && !document.querySelector("#ledger .activity"); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const redraw = (status) => {
+        const legendBefore = legendCounts();
+        show(status, Date.now());
+        cueChanges(status, legendBefore);
+      };
+      const status = structuredClone(lastStatus);
+      status.roster = { sessions: [
+        { nickname: "busy-bee", project: "rally", activity: "busy", activity_at: Date.now() - 90000,
+          current_task: "<b>fixing</b> the bar" },
+        { nickname: "new-moth", project: "rally", activity: "busy", current_task: "" },
+        { nickname: "idle-ox", project: "rally", activity: "idle", activity_at: Date.now() - 5000 },
+      ] };
+      redraw(status);
+      const now = [...document.querySelectorAll(".activity-now li")].map((li) => li.textContent);
+      const injected = document.querySelector(".activity-now b") !== null;
+      const recent = [...document.querySelectorAll(".activity-recent li")].map((li) => li.dataset.story);
+      // The next poll: RAL-1 is claimed, so it's the newest change.
+      const next = structuredClone(status);
+      next.ledger.as_of += 1;
+      next.ledger.stories["RAL-1"].state = "claimed";
+      next.ledger.stories["RAL-1"].last = next.ledger.as_of;
+      redraw(next);
+      const recentAfter = [...document.querySelectorAll(".activity-recent li")].map((li) => li.dataset.story);
+      const cued = document.querySelector(".activity li[data-story='RAL-1']").classList.contains("cue-changed");
+      return { now, injected, recent, recentAfter, cued };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    let now: Vec<String> = serde_json::from_value(probe["now"].clone()).unwrap();
+    assert_eq!(now.len(), 2, "only the busy sessions: {probe}");
+    assert!(now[0].contains("busy-bee") && now[0].contains("busy for"), "{probe}");
+    assert!(now[0].contains("<b>fixing</b> the bar"), "the task shows as text: {probe}");
+    assert_eq!(probe["injected"], false, "agent-written text is never markup: {probe}");
+    assert!(now[1].contains("new-moth") && now[1].contains("since unknown"), "{probe}");
+    assert!(!now.iter().any(|n| n.contains("idle-ox")), "{probe}");
+    assert_eq!(probe["recent"], json!(["RAL-2", "RAL-1"]), "newest first: {probe}");
+    assert_eq!(probe["recentAfter"], json!(["RAL-1", "RAL-2"]), "{probe}");
+    assert_eq!(probe["cued"], true, "the change is cued in the strip: {probe}");
 }
 
 /// Writes an executable `name` in `dir` that prints `stdout` and exits with `code`, standing in

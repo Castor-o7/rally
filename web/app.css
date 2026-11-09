@@ -345,13 +345,30 @@ main > section:nth-child(4) { animation-delay: 0.18s; }
 @keyframes cue-turn { from { transform: rotate(0deg); } to { transform: rotate(120deg); } }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
+/* RAL-140: the Activity strip, at the top of the rally's status. Two columns, stacked when narrow. */
+.activity {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px 24px;
+  margin: 0 0 16px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+.activity h3 { font: 600 11px/1.3 var(--mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--arc-2); }
+.activity .muted { font-size: 12.5px; }
+.activity-list { list-style: none; margin: 6px 0 0; padding: 0; font-size: 13px; }
+.activity-list li { padding: 4px 0 4px 8px; border-left: 2px solid var(--line); overflow-wrap: anywhere; unicode-bidi: isolate; }
+.activity-list li + li { margin-top: 2px; }
+.activity-who { font: 600 12.5px var(--mono); }
+.activity-task { display: inline-block; margin-top: 1px; }
+
 /* RAL-138: reactive cues. app.js adds a cue class for one real change and takes it off after
    2.4 s, so these play once per change and nothing runs between changes. --cue is the colour of what
    changed: a story's new state, or a session's activity. */
 .cue-arrive .dot { animation: cue-ping 1.2s ease-out 1; }
 .cue-arrive { animation: cue-edge 2.4s ease-out 1; }
-tbody tr.cue-changed, .stories li.cue-changed { animation: cue-trace 2.4s ease-out 1; }
-tbody tr.cue-activity { animation: cue-trace 2.4s ease-out 1; }
+tbody tr.cue-changed, .stories li.cue-changed, .activity li.cue-changed { animation: cue-trace 2.4s ease-out 1; }
+tbody tr.cue-activity, .activity li.cue-activity { animation: cue-trace 2.4s ease-out 1; }
 .legend .cue-count { animation: cue-count 2.4s ease-out 1; }
 @keyframes cue-ping {
   0% { text-shadow: 0 0 0 var(--good), 0 0 8px var(--good); }
@@ -376,7 +393,8 @@ tbody tr.cue-activity { animation: cue-trace 2.4s ease-out 1; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   /* No movement: the same cue is a still outline for the 2.4 s app.js keeps the class. */
   .cue-arrive, .legend .cue-count { outline: 1px solid var(--arc-2); outline-offset: 2px; }
-  tbody tr.cue-changed, .stories li.cue-changed, tbody tr.cue-activity { box-shadow: inset 3px 0 0 var(--cue, var(--arc-2)); }
+  tbody tr.cue-changed, .stories li.cue-changed, .activity li.cue-changed, tbody tr.cue-activity,
+  .activity li.cue-activity { box-shadow: inset 3px 0 0 var(--cue, var(--arc-2)); }
 }
 
 /* A phone: tighter panels, and the header's two lines stack. */
