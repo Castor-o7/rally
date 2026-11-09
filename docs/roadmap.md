@@ -885,3 +885,10 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   stories; the session-start briefing names the open rally, the team's project and its roadmap state, any story
   assigned to the team, and the cycle in four lines; `rally init`'s block describes the cycle; `rally brief`
   lists, for the watchman, each project in the open rally whose roadmap is uncleared or revised; with tests.
+- [ ] **RAL-132: An evidence check that finds no CI yet looks again before recording none.** From
+  silken-beetle's watch of the viewer on 2026-11-09: MAR-61 (9a8f5e1), MAR-62 and five other Marshal stories
+  showed "CI none" for good, while GitHub has 5 of 5 check runs passed on each. MAR-61's check ran a second after
+  its submit (1723, 1724) and its runs started 7 minutes later. Done when: a check that finds no check runs and
+  no statuses is looked for again, as pending CI is, until the ceiling (`--evidence-ci-wait`, 30 minutes); runs
+  appearing in that time are recorded as they stand; at the ceiling `none` is recorded with a reason saying no CI
+  appeared within it; with a unit test and docs/evidence.md.

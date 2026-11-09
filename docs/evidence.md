@@ -15,7 +15,8 @@ Evidence written as `owner/repo@<full commit>` (40 or 64 hex digits) is checked 
 - **`names_story`:** the commit's message, or the title of a pull request containing it, names the story ID as a
   whole word (`RAL-5`, not `RAL-50`).
 - **`ci`:** what the commit's check runs and combined status say together: `passed`, `failed`, `pending`, or
-  `none` when it has neither.
+  `none` when it has neither. A submission often comes before its CI starts, so `none` is looked for again as
+  `pending` is, until the wait runs out, and only then recorded, with the reason (RAL-132).
 
 Evidence in any other form is recorded as `checkable: false`, with the reason. What a team didn't test goes in
 its own field, `rally submit --untested "..."`, not in the evidence.
