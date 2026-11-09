@@ -7,22 +7,43 @@ information and the environment runs through all of it. A visually appealing web
 ledger and past ones.
 
 IDs are permanent. Don't reuse or renumber them, so they aren't in numeric order below. A story without
-a "done when" line isn't ready to claim. Until Rally can track itself, stories follow the process in
-Muster's `docs/board.md`.
+a "done when" line isn't ready to claim.
+
+Rally tracks itself. Its ledger is the source of truth for every project in `web/projects.json`, Rally's own
+included (the operator, 2026-11-06; RAL-24, RAL-9). The hand-kept board is archived in Muster's
+`docs/board-archive-2026-11-06.md`, and Muster is frozen while the muster moves to Marshal. So stories follow
+the way of working in this repository's CLAUDE.md: claim, submit at a commit, a reader other than the author
+verifies at that commit (the watchman, while one is designated), then merge. The roadmap itself is cleared the
+same way, as story RAL-0 ([clearance.md](clearance.md)), and a tick means the story is verified and merged.
 
 The operator agreed the design and threat model on 2026-11-02. Later phases' "done when" lines can
 still be refined as each story is taken.
 
-## Depends on Muster
+## Depends on Muster and Marshal
 
-- **MUS-3: Stable identity across restarts.** Claims shouldn't go stale when a session restarts.
-- **MUS-4: Show dead watchers.** Needed to tell a gone agent from a quiet one.
-- **MUS-44: Let other programs read the observed roster.** Rally's way to read session facts.
-- **MUS-43: Give muster messages a deterministic structure.** May shape Rally's notifications. RAL-8's digest format, approved by the operator on 2026-11-05, is in [digest.md](digest.md).
-- **MUS-12: Give the watchman a read-only GitHub token.** Relevant to RAL-18.
-- **MUS-39: Show that a terminal message came from the operator.** Limits what RAL-6 can prove today.
+Muster is frozen (the Muster to Marshal cutover, hold 1859), and Marshal is the line that's moving. Rally
+reads and tells through either daemon (RAL-120, RAL-126). What Rally needed from Muster, and where it lives now:
 
-## What a first deployment needs
+- **MUS-3: Stable identity across restarts.** Done in Muster, and carried into Marshal as MAR-9's stable
+  nickname. Rally ties a restarted session to its old nickname with `rally rally-session --succeeds` (RAL-110).
+- **MUS-4: Show dead watchers.** Rally reads wake and activity from whichever roster gives them (RAL-7,
+  RAL-120, RAL-124), and says when a roster couldn't be read. Rally doesn't wait on Muster for more.
+- **MUS-44: Let other programs read the observed roster.** Done. Rally now reads the union of every roster
+  source it's given, Muster's and Marshal's (RAL-126), so this no longer depends on Muster alone.
+- **MUS-43: Give muster messages a deterministic structure.** Rally doesn't wait on it: RAL-8's digest
+  format, approved by the operator on 2026-11-05, is in [digest.md](digest.md), and it's sent through either
+  shim (RAL-120).
+- **MUS-12: Give the watchman a read-only GitHub token.** Done for the service (RAL-18). It's still a token
+  that can't see private repositories such as RootyRoopsDAW, which Rally says rather than guesses (RAL-128).
+- **MUS-39: Show that a terminal message came from the operator.** Not in Rally's hands, and whether Marshal
+  carries it isn't recorded here. Until something does, it limits what RAL-6 can prove: a relayed approval
+  is only as good as its relay, so Rally records how each answer came (`--direct` or `--relayed-by`).
+
+## History: what the first deployment needed
+
+Done. Rally's first record on Murph is from 2026-11-04, the operator retired the hand-kept board on
+2026-11-06 (RAL-24, RAL-9), and every project in `web/projects.json` has been tracked by the ledger since. Kept
+as written then:
 
 Rally can run on Murph, as the ledger of record for Rally's own stories first, once these are done:
 
@@ -257,7 +278,10 @@ The bones. Everything later reads from this.
   2026-11-06, relayed by the watchman: archive the old table, don't import it): the table is archived
   unchanged in Muster's `docs/board-archive-2026-11-06.md`, with Version 0's table section from
   `docs/board.md`; the watchman no longer needs it; and Muster's `docs/board.md` says Rally's ledger is the
-  board, read in the viewer or with `rally show` and `rally brief`. Muster's part is Castor-o7/muster#194.
+  board, read in the viewer or with `rally show` and `rally brief`. Muster's part is Castor-o7/muster#194. Done
+  there: #194 merged on 2026-11-07 as a120efc, with `docs/board-archive-2026-11-06.md` and `docs/board.md`
+  saying Rally is the source of truth; submitted to the watchman for its read on 2026-11-09, and ticked once
+  it's verified.
 
 ## Phase 4: The web app
 
@@ -924,14 +948,14 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   `project_changes`, through its close; the viewer's rally panel lists the changes, declared; docs/service.md's
   rollback table names it; with ledger, service and headless Chrome tests. Along with it, docs/service.md's
   table gains RAL-129's re-claim and RAL-130's `assign`, which it was missing.
-- [ ] **RAL-136: The viewer shows the holds, conditions and grants in force.** From the watchman on 2026-11-09,
+- [x] **RAL-136: The viewer shows the holds, conditions and grants in force.** Merged in #216 (aaabbe2). From the watchman on 2026-11-09,
   during the Marshal soak: the viewer had no sign of a standing record, so MAR-77's deploy hold and the cutover
   hold (1859) were only in `rally brief`. Done when: the service serves `/v1/standings`, a light read of the
   holds, conditions and grants not ended, each as declared with who declared it; the viewer reads it on every
   refresh and shows "Standing in force" beside the rally, holds first, each with what it's on, what releases it
   or its scope, its record and age, labelled declared, and says so when the service is older; an ended one isn't
   shown; with a unit test and a headless Chrome test, and docs/web.md.
-- [ ] **RAL-137: Viewer: a solid black page background, panels keep their colours.** From Josh directly
+- [x] **RAL-137: Viewer: a solid black page background, panels keep their colours.** Merged in #218 (72b8f10). From Josh directly
   (2026-11-09): the page's background is solid black, and the panels and other visual content keep their
   current colour scheme. Done when: in both schemes the page behind the panels is `#000` with no aurora or
   grid, the panels, bars and state colours are unchanged (RAL-91's colours), and text set straight on the
@@ -945,3 +969,12 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   gives the research and why each cue was chosen; the cues are in the viewer with a browser test that a
   change triggers its cue and an unchanged poll triggers none; and the PR shows them, in screenshots or a
   short recording.
+- [ ] **RAL-140: Viewer: an Activity strip shows who's working now and what just changed.** From Josh directly
+  (2026-11-09), following RAL-138's research: presence and attribution are the clearest agentic cues. Done when:
+  at the top of the rally's status, "Now" lists the rally's sessions whose activity is busy, each with its
+  nickname, how long it's been busy (declared; "since unknown" when `activity_at` is missing) and its
+  `current_task` drawn as text, never markup, since it's agent-written; "Just now" lists the 6 latest story
+  changes from the ledger, newest first, each with its state, team, record and age; both are drawn only from
+  `/api/status`; RAL-138's cues light a changed story or session in the strip, and nothing animates while nothing
+  changes; with a browser test of the busy list, text-only tasks, "since unknown", newest-first order and the
+  cue on a redraw.
