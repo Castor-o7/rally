@@ -324,7 +324,7 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   `the_roster_is_every_sources_union_and_says_which_were_read` and
   `the_roster_shows_every_source_and_keeps_each_sources_labels` (headless Chrome) cover the viewer. Sending is
   unchanged.
-- [ ] **RAL-127: cutover.md's gap table is current with Marshal main.** From robust-warbler's survey of
+- [x] **RAL-127: cutover.md's gap table is current with Marshal main.** Merged in #206 (7f0a54d). From robust-warbler's survey of
   [cutover.md](cutover.md) against Marshal main `700a1b2`, relayed by the watchman on 2026-11-09: the table still
   said MAR-9, MAR-36 and MAR-43 were "merging" and MUS-47 was "being ported". Docs only. Done when: each gap row
   names its story's state and merge commit as of current Marshal main; step 1 points at Marshal's
@@ -344,13 +344,13 @@ Read-only. Changes go through the ledger's commands, so a flaw in the web app ca
   send-back's reading team or writer, shown beside it like any annotation, and the refusal says who may annotate it; a
   part's verifier can add `--also-read` while the part is Verified and the story isn't; tests cover a verifier
   annotating its own read, an unrelated team refused, and the part's also-read; and the viewer shows the annotation.
-- [ ] **RAL-124: The viewer says how long each session has been busy or idle.** From the watchman on 2026-11-08,
+- [x] **RAL-124: The viewer says how long each session has been busy or idle.** Merged in #201 (b4c69a3). From the watchman on 2026-11-08,
   the part of RAL-38 that doesn't wait on the cutover. `activity` had no time of its own, and `last_activity_at` is the
   last tool or prompt, not when a session turned busy or idle. Marshal's side is MAR-58 (the shim declares
   `activity_at`). Done when: the roster carries `activity_at` from either schema, declared, when the shim gives it;
   the page reads "busy for 3m", counting on, and "since unknown" without it; a unit test covers both schemas and a
   headless Chrome test both cases.
-- [ ] **RAL-125: The viewer fits a phone.** From the watchman's read of RAL-115 on 2026-11-08: at about 500 pixels a
+- [x] **RAL-125: The viewer fits a phone.** Merged in #203 (b7ad7dd). From the watchman's read of RAL-115 on 2026-11-08: at about 500 pixels a
   panel's edge and the Evidence table's last column looked clipped. Measured over CDP at a 390-pixel viewport on the
   live board, nothing runs past the window outside a table's own scroll box: the look at 500 was the 15-pixel
   scrollbar over a full-page capture, and the table scrolls sideways as RAL-111 intends. Done when: the
@@ -853,15 +853,15 @@ watchman for verification and clearance; once the roadmap is accepted, the watch
 its tasks; and the cycle continues, the roadmap revised as needed to reach the project's goal. The design
 principles named were durable, accurate and reactive. Found in rally 0x7 by plush-tortoise.
 
-- [ ] **RAL-128: The evidence check says a repository it can't see is unseen, not that the commit doesn't
-  exist.** In rally 0x7 every RootyRoopsDAW submission (records 1650, 1732, 1734) was observed as
+- [x] **RAL-128: The evidence check says a repository it can't see is unseen, not that the commit doesn't
+  exist.** Merged in #207 (9a4a958). In rally 0x7 every RootyRoopsDAW submission (records 1650, 1732, 1734) was observed as
   `exists: false`, though each commit exists. The repository is private and the service's token gets a 404 from
   it, and GitHub uses the same 404 for a missing commit. Done when: after a 404 or 422 on the commit, the check
   reads the repository (a GET); only when the token sees it is `exists` recorded false; when it doesn't,
   `exists` is left out, the reason says the repository isn't visible to the token so the commit's existence is
   unknown, and the check isn't retried; a read that fails is retried as before; with a unit test and a test of
   the client's two GETs, and docs/evidence.md.
-- [ ] **RAL-129: A project's roadmap is submitted to the watchman and cleared at a commit.** A project's
+- [x] **RAL-129: A project's roadmap is submitted to the watchman and cleared at a commit.** Merged in #208 (f7f6664). A project's
   roadmap is its story `<PREFIX>-0`, so submitting, clearing, sending back, waiting and the watchman/peer
   labels are those of any story. Done when: a cleared `<PREFIX>-0`, and no other Verified story, can be claimed
   again to revise it, and goes back for clearance; `rally roadmap [PREFIX...]`, read-only, gives each project's
@@ -870,7 +870,7 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   it at which commit, the last clearance during a revision, and what to run next; a roadmap that can't be read
   says so and isn't reported as missing; `rally brief` lists the open rally's roadmaps; docs/clearance.md
   describes the cycle; with tests of the ledger rule and of each stage.
-- [ ] **RAL-130: The watchman assigns a cleared roadmap's stories, and `rally next` offers them first.**
+- [x] **RAL-130: The watchman assigns a cleared roadmap's stories, and `rally next` offers them first.** Merged in #210 (f9e3e3b).
   Depends on RAL-129. Done when: `rally assign <STORY> --team <team> --note` records, as declared, that the
   story is assigned to the team, taken by the service only from those who may open a rally (the operator or the
   watchman, RAL-77); the assignment claims nothing and confers no authority; `rally show` gives it; `rally next
@@ -879,7 +879,7 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   and that it may still be claimed; an assigned story that's blocked says why; an assignment stays until `rally
   assign <STORY> --team <team> --end --note`, a newer assignment of the story, or the story's merge; with tests
   of the ledger, the service's rule and the pick.
-- [ ] **RAL-131: A team new to the rally is told the cycle: roadmap, clearance, assignment, revision.**
+- [x] **RAL-131: A team new to the rally is told the cycle: roadmap, clearance, assignment, revision.** Merged in #211 (39e391b).
   Depends on RAL-129 and RAL-130. Done when: `rally next --team` gives `project_roadmap`, and while the
   project's roadmap isn't cleared (and isn't being revised from a clearance) leads with `roadmap_first`, saying
   so and what to run; the session-start briefing names the open rally and its projects, each project's roadmap
@@ -888,14 +888,14 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   the open rally's roadmaps (RAL-129); with tests. With it, from the watchman's read of RAL-130: an assigned
   story waiting on an unfinished one it depends on isn't offered, and says why; docs/clearance.md says the
   openers rule limits by credential, so by machine where sessions share one.
-- [ ] **RAL-132: An evidence check that finds no CI yet looks again before recording none.** From
+- [x] **RAL-132: An evidence check that finds no CI yet looks again before recording none.** Merged in #209 (84d5921). From
   silken-beetle's watch of the viewer on 2026-11-09: MAR-61 (9a8f5e1), MAR-62 and five other Marshal stories
   showed "CI none" for good, while GitHub has 5 of 5 check runs passed on each. MAR-61's check ran a second after
   its submit (1723, 1724) and its runs started 7 minutes later. Done when: a check that finds no check runs and
   no statuses is looked for again, as pending CI is, until the ceiling (`--evidence-ci-wait`, 30 minutes); runs
   appearing in that time are recorded as they stand; at the ceiling `none` is recorded with a reason saying no CI
   appeared within it; with a unit test and docs/evidence.md.
-- [ ] **RAL-133: The viewer picks up a change to its projects file without a restart.** From silken-beetle's
+- [x] **RAL-133: The viewer picks up a change to its projects file without a restart.** Merged in #212 (fada36c). From silken-beetle's
   watch of the viewer on 2026-11-09 (finding 4): rally 0x7 opened with ROO, and ROO was added to
   `~/.config/rally/projects.json` that same second, but the viewer had read `--projects` once, at its start 4
   hours earlier, so it showed "In this rally without a roadmap in the viewer's project list: ROO" and no ROO
@@ -903,7 +903,7 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   changed, reads it again and reads its roadmaps at once, keeping each project's last reading by prefix; a
   version that can't be read or isn't a list keeps the list before, and the page says why; `/api/status`
   gives `projects_file`, observed; with a test of the reload and docs/web.md.
-- [ ] **RAL-134: A correction of Rally's evidence check shows beside the check on the viewer.** From
+- [x] **RAL-134: A correction of Rally's evidence check shows beside the check on the viewer.** Merged in #213 (3e04f74). From
   silken-beetle's watch of the viewer after RAL-133 went live: the correction notes beside the "no such commit"
   checks (1646, 1650, 1732, 1734) didn't show in the Evidence table, so a reader still saw "no such commit"
   with nothing against it, and checks recorded "CI none" before RAL-132 stay that way. Done when: the story list
@@ -912,7 +912,7 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   (declared)"; with a unit test. Alongside, outside the code: each MAR check showing "CI none" whose commit
   GitHub shows with check runs gets a correction note giving the counts (25 notes, 1924 to 1948; MAR-18 and
   MAR-49 have no runs and keep "none"), and ROO-0 and ROO-13 get the RAL-128 note (1949, 1950).
-- [ ] **RAL-135: A project is added to or removed from the open rally.** The operator, 2026-11-09, asking why
+- [x] **RAL-135: A project is added to or removed from the open rally.** Merged in #215 (b3838f0). The operator, 2026-11-09, asking why
   RAL wasn't on rally 0x7's board: rally 0x7 opened with MAR and ROO, and a rally's projects were fixed when it
   opened, so a team joining later could only be shown by closing and reopening the rally. "this is a necessary
   feature since rally is meant to model and display a dynamic development environment, while being a
