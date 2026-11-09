@@ -1572,6 +1572,9 @@ pub fn shape_roster(value: &Value, read_at_ms: u64) -> Value {
                 // When the task was set, from a shim that reports it (MUS-101).
                 "current_task_at": declared["current_task_at"],
                 "activity": declared["activity"],
+                // When the session declared its activity last changed, from a shim that says
+                // (MAR-58); without it, the page says "since unknown" rather than guess (RAL-124).
+                "activity_at": declared["activity_at"],
                 "last_activity_at": declared["last_activity_at"],
                 "last_tool": declared["last_tool"],
                 "last_tool_at": declared["last_tool_at"],
@@ -3424,6 +3427,25 @@ mod tests {
                          "last_activity_at": 51, "last_tool": "Bash", "last_tool_at": 41,
                          "current_task": "MAR-16"},
         }]})
+    }
+
+    /// RAL-124: when a session's activity last changed is carried from either roster when the shim
+    /// declares it (MAR-58), and left blank, never taken from the last tool or prompt, when it doesn't.
+    #[test]
+    fn activity_at_is_carried_when_declared_and_never_guessed() {
+        for (name, roster) in [("muster", muster_roster()), ("marshal", marshal_roster())] {
+            let shaped = &shape_roster(&roster, 9)["sessions"][0];
+            assert!(shaped["activity_at"].is_null(), "{name}: {shaped}");
+            assert!(!shaped["last_activity_at"].is_null(), "{name}");
+            let mut declaring = roster.clone();
+            declaring["sessions"][0]["declared"]["activity_at"] = json!(45);
+            let shaped = &shape_roster(&declaring, 9)["sessions"][0];
+            assert_eq!(shaped["activity_at"], 45, "{name}: {shaped}");
+            assert_eq!(
+                shaped["activity"],
+                roster["sessions"][0]["declared"]["activity"]
+            );
+        }
     }
 
     #[test]
