@@ -356,6 +356,16 @@ pub enum Change {
         end: bool,
         note: String,
     },
+    /// Someone adds a project to the open rally by its story prefix, or with `remove` takes one out
+    /// (RAL-135), so the rally can follow a team joining or leaving it. Declared; the service takes
+    /// it only from those who may open a rally. The rally's projects change from this record on,
+    /// and the change is kept with the rally.
+    RallyProject {
+        project: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        remove: bool,
+        note: String,
+    },
     /// Anyone records a major event of the open rally (RAL-104): a one-line headline, how serious
     /// it is, and what backs it (record numbers, pull requests, commits or files), if anything.
     /// Declared, like any other claim. It belongs to the open rally, and stays with it once closed.
@@ -391,6 +401,7 @@ impl Change {
             | Self::OpenRally { .. }
             | Self::CloseRally { .. }
             | Self::RallySession { .. }
+            | Self::RallyProject { .. }
             | Self::Event { .. }
             | Self::Shelve { .. }
             | Self::OperatorAway { .. }
@@ -816,6 +827,25 @@ pub struct Rally {
     /// Sessions added to or removed from the rally since it opened, oldest first (RAL-110).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<RallySessionEntry>,
+    /// The projects it opened with, when projects were added or removed since (RAL-135).
+    /// `projects` is always the current list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opened_with: Option<Vec<String>>,
+    /// Projects added to or removed from the rally since it opened, oldest first (RAL-135).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub project_changes: Vec<RallyProjectEntry>,
+}
+
+/// One project added to or removed from an open rally (RAL-135).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RallyProjectEntry {
+    pub seq: u64,
+    pub kind: Kind,
+    pub source: Source,
+    pub at_ms: i64,
+    pub project: String,
+    pub remove: bool,
+    pub note: String,
 }
 
 /// One session added to or removed from an open rally (RAL-110). Names are folded.
@@ -2192,6 +2222,8 @@ impl Ledger {
                     events: Vec::new(),
                     recorded_as: BTreeMap::new(),
                     sessions: Vec::new(),
+                    opened_with: None,
+                    project_changes: Vec::new(),
                 });
                 self.last_seq = seq;
                 return Ok(());
@@ -2235,6 +2267,54 @@ impl Ledger {
                     session: name_key(&session),
                     remove,
                     succeeds: succeeds.as_deref().map(name_key),
+                    note,
+                });
+                self.last_seq = seq;
+                return Ok(());
+            }
+            Change::RallyProject {
+                project,
+                remove,
+                note,
+            } => {
+                require_kind(record, Kind::Declared)?;
+                let open = self
+                    .rallies
+                    .last_mut()
+                    .filter(|rally| rally.closed.is_none())
+                    .ok_or(LedgerError::NoRallyOpen)?;
+                let present = open.projects.contains(&project);
+                if remove {
+                    if !present {
+                        return Err(LedgerError::InvalidChange(format!(
+                            "{project} isn't in the open rally, so it can't be removed"
+                        )));
+                    }
+                    if open.projects.len() == 1 {
+                        return Err(LedgerError::InvalidChange(format!(
+                            "{project} is the open rally's only project: close the rally instead"
+                        )));
+                    }
+                } else if present {
+                    return Err(LedgerError::InvalidChange(format!(
+                        "{project} is already in the open rally"
+                    )));
+                }
+                if open.opened_with.is_none() {
+                    open.opened_with = Some(open.projects.clone());
+                }
+                if remove {
+                    open.projects.retain(|p| p != &project);
+                } else {
+                    open.projects.push(project.clone());
+                }
+                open.project_changes.push(RallyProjectEntry {
+                    seq,
+                    kind: record.kind(),
+                    source: record.source().clone(),
+                    at_ms: record.at_ms(),
+                    project,
+                    remove,
                     note,
                 });
                 self.last_seq = seq;
@@ -2538,6 +2618,7 @@ fn transition(
         | Change::OpenRally { .. }
         | Change::CloseRally { .. }
         | Change::RallySession { .. }
+        | Change::RallyProject { .. }
         | Change::Event { .. }
         | Change::Shelve { .. }
         | Change::OperatorAway { .. }
@@ -3177,6 +3258,7 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
             | Change::OpenRally { .. }
             | Change::CloseRally { .. }
             | Change::RallySession { .. }
+            | Change::RallyProject { .. }
             | Change::Event { .. }
             | Change::Shelve { .. }
             | Change::OperatorAway { .. }
@@ -3313,6 +3395,16 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
                 return Err(LedgerError::ControlCharacter("backing"));
             }
             &[("headline", headline)]
+        }
+        Change::RallyProject { project, note, .. } => {
+            // A prefix as `open_rally` takes one (RAL-135).
+            if project.is_empty()
+                || project.len() > 16
+                || !project.chars().all(|c| c.is_ascii_uppercase())
+            {
+                return Err(LedgerError::InvalidRallyProjects);
+            }
+            &[("note", note)]
         }
         Change::OpenRally {
             name,
@@ -3498,6 +3590,7 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
             text.push(("note", name));
             text.extend(teams.iter().map(|team| ("team", team.as_str())));
         }
+        Change::RallyProject { note, .. } => text.push(("note", note)),
         // Session nicknames are held to a team name's limits (RAL-110).
         Change::RallySession {
             session,
@@ -4301,6 +4394,68 @@ mod tests {
         let close = json!({"change": "close_rally", "note": "done"});
         ledger.apply(4, &session(close)).unwrap();
         assert_eq!(ledger.rallies()[0].sessions.len(), 2);
+    }
+
+    /// RAL-135: a project is added to or removed from the open rally, and only an open one; the
+    /// rally's projects change from that record, what it opened with is kept, and so is each change.
+    #[test]
+    fn a_project_is_added_to_or_removed_from_the_open_rally() {
+        let by = |body: serde_json::Value| record(Kind::Declared, "mellow-weevil", body);
+        let add = |p: &str| json!({"change": "rally_project", "project": p, "note": "joins"});
+        let remove = |p: &str| json!({"change": "rally_project", "project": p, "remove": true, "note": "leaves"});
+        let mut ledger = Ledger::default();
+        assert_eq!(
+            ledger.check(1, &by(add("RAL"))),
+            Err(LedgerError::NoRallyOpen)
+        );
+        let open = json!({"change": "open_rally", "name": "0x7", "projects": ["MAR", "ROO"]});
+        ledger.apply(1, &by(open)).unwrap();
+        for bad in [
+            add("MAR"),
+            add("ral"),
+            add(""),
+            remove("CAT"),
+            json!({"change": "rally_project", "project": "RAL", "note": " "}),
+        ] {
+            assert!(ledger.check(2, &by(bad.clone())).is_err(), "{bad}");
+        }
+        assert!(
+            ledger
+                .check(2, &record(Kind::Verified, "x", add("RAL")))
+                .is_err(),
+            "declared only"
+        );
+        ledger.apply(2, &by(add("RAL"))).unwrap();
+        let rally = ledger.open_rally().unwrap();
+        assert_eq!(rally.projects, ["MAR", "ROO", "RAL"]);
+        assert_eq!(
+            rally.opened_with.as_deref(),
+            Some(&["MAR".to_owned(), "ROO".to_owned()][..])
+        );
+        ledger.apply(3, &by(remove("MAR"))).unwrap();
+        ledger.apply(4, &by(remove("ROO"))).unwrap();
+        // The last project can't be removed: that's closing the rally.
+        assert!(ledger.check(5, &by(remove("RAL"))).is_err());
+        let rally = ledger.open_rally().unwrap();
+        assert_eq!(rally.projects, ["RAL"]);
+        assert_eq!(rally.project_changes.len(), 3);
+        assert_eq!(
+            (
+                rally.project_changes[0].seq,
+                rally.project_changes[0].remove
+            ),
+            (2, false)
+        );
+        assert_eq!(rally.project_changes[1].project, "MAR");
+        // Kept with the rally once it closes, and the same records rebuild the same state.
+        ledger
+            .apply(5, &by(json!({"change": "close_rally", "note": "done"})))
+            .unwrap();
+        assert_eq!(ledger.rallies()[0].project_changes.len(), 3);
+        assert_eq!(
+            ledger.check(6, &by(add("CAT"))),
+            Err(LedgerError::NoRallyOpen)
+        );
     }
 
     #[test]

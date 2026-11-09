@@ -912,3 +912,15 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   (declared)"; with a unit test. Alongside, outside the code: each MAR check showing "CI none" whose commit
   GitHub shows with check runs gets a correction note giving the counts (25 notes, 1924 to 1948; MAR-18 and
   MAR-49 have no runs and keep "none"), and ROO-0 and ROO-13 get the RAL-128 note (1949, 1950).
+- [ ] **RAL-135: A project is added to or removed from the open rally.** The operator, 2026-11-09, asking why
+  RAL wasn't on rally 0x7's board: rally 0x7 opened with MAR and ROO, and a rally's projects were fixed when it
+  opened, so a team joining later could only be shown by closing and reopening the rally. "this is a necessary
+  feature since rally is meant to model and display a dynamic development environment, while being a
+  verifieable ledger of work for the agent teams that are participating in the rally". Done when: `rally
+  rally-project add|remove <PREFIX> --note` records, declared, a project joining or leaving the open rally,
+  taken by the service only from those who may open a rally; refused with no rally open, for a prefix already
+  in (add) or not in (remove), and for the last project; the rally's `projects` change from that record, so the
+  board, brief, roadmaps and session briefing follow it; the rally keeps `opened_with` and each change in
+  `project_changes`, through its close; the viewer's rally panel lists the changes, declared; docs/service.md's
+  rollback table names it; with ledger, service and headless Chrome tests. Along with it, docs/service.md's
+  table gains RAL-129's re-claim and RAL-130's `assign`, which it was missing.

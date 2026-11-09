@@ -740,6 +740,19 @@ fn with_rally_openers_only_those_credentials_open_or_close_a_rally() {
         "frank-crocodile"
     );
     assert_eq!(rallies["open"]["sessions"].as_array().unwrap().len(), 1);
+    // RAL-135: adding a project to the open rally is held to the same rule.
+    let project = json!({"change": "rally_project", "project": "MUS", "note": "joins"});
+    assert_eq!(write(&a1, "w", "declared", project.clone()).status, 403);
+    let added = write(&watchman, "w", "declared", project);
+    assert_eq!(added.status, 200, "{}", added.body);
+    let rallies: Value = serde_json::from_str(&call(&a1, "GET", "/v1/rallies", None).body).unwrap();
+    assert!(
+        rallies["open"]["projects"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("MUS")),
+        "{rallies}"
+    );
     // RAL-130: assigning a story is held to the same rule.
     let story = json!({"change": "ready", "story": "RAL-9"});
     assert_eq!(write(&a1, "w", "declared", story).status, 200);
