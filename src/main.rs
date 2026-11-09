@@ -2283,7 +2283,6 @@ fn next(
     Ok(serde_json::to_string_pretty(&result)?)
 }
 
-/// The reply's JSON, or the service's reason for refusing.
 /// The open rally's projects, from `views::rallies`, if one is open.
 fn open_rally_projects(rallies: &Value) -> Option<Vec<String>> {
     let projects = rallies["open"]["projects"].as_array()?;
@@ -2322,6 +2321,7 @@ fn read_roadmaps(backend: &Backend, prefixes: &[String]) -> Vec<Value> {
         .collect()
 }
 
+/// The reply's JSON, or the service's reason for refusing.
 fn reply_value(reply: &client::Reply) -> Result<Value, Box<dyn std::error::Error>> {
     let value: Value = serde_json::from_str(&reply.body)
         .map_err(|_| format!("the service sent an unreadable reply ({})", reply.status))?;
