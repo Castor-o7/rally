@@ -872,10 +872,13 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   describes the cycle; with tests of the ledger rule and of each stage.
 - [ ] **RAL-130: The watchman assigns a cleared roadmap's stories, and `rally next` offers them first.**
   Depends on RAL-129. Done when: `rally assign <STORY> --team <team> --note` records, as declared, that the
-  story is assigned to the team; `rally next --team` offers the team's own sent-back work, then stories assigned
-  to it, then the roadmap order as before, saying which rule picked it; an assignment confers no authority and
-  doesn't claim the story, and another team may still claim it, which `next` and `show` say; an assignment
-  stays until `rally assign <STORY> --end --note`, a newer assignment of the story, or the story's merge; with tests.
+  story is assigned to the team, taken by the service only from those who may open a rally (the operator or the
+  watchman, RAL-77); the assignment claims nothing and confers no authority; `rally show` gives it; `rally next
+  --team` offers the team's own sent-back work, then ready and unblocked stories assigned to it, then the
+  roadmap order as before, saying which rule picked it; a story assigned to another team is skipped, saying so
+  and that it may still be claimed; an assigned story that's blocked says why; an assignment stays until `rally
+  assign <STORY> --team <team> --end --note`, a newer assignment of the story, or the story's merge; with tests
+  of the ledger, the service's rule and the pick.
 - [ ] **RAL-131: A team new to the rally is told the cycle: roadmap, clearance, assignment, revision.**
   Depends on RAL-129 and RAL-130. Done when: `rally next --team` for a project whose roadmap isn't cleared says
   so, and what to run (draft it with "done when" lines, then `rally roadmap submit`), before offering its

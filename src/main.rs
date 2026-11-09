@@ -778,6 +778,21 @@ enum Command {
         #[arg(long)]
         commit: String,
     },
+    /// Assign a story to a team (RAL-130), or with --end end its assignment. Normally the
+    /// watchman's, once the project's roadmap is cleared (RAL-129); the service takes it only from
+    /// those who may open a rally. Declared: it claims nothing and confers no authority, and
+    /// `rally next` offers the team its assigned stories ahead of roadmap order. A newer
+    /// assignment replaces it, and the story's merge ends it.
+    Assign {
+        story: String,
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        note: String,
+        /// End the story's assignment to --team.
+        #[arg(long)]
+        end: bool,
+    },
     /// Record that you read the commit merged for a Verified story, when it isn't one the
     /// verification covers (RAL-85), such as a head that took a merge of main after the read. It's
     /// your own read, shown beside the verification; anyone who isn't an author can write it,
@@ -3979,6 +3994,15 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             }
             (Kind::Declared, body)
         }
+        Command::Assign {
+            story,
+            team,
+            note,
+            end,
+        } => (
+            Kind::Declared,
+            json!({"change": "assign", "story": story, "team": team, "note": note, "end": end}),
+        ),
         Command::Merge { story, commit } => (
             Kind::Declared,
             json!({"change": "merge", "story": story, "commit": commit}),

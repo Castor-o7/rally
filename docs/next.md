@@ -15,9 +15,11 @@ for an hour and then revisted after the hour has elapsed", and said the count st
 The next story is, in order:
 
 1. one of the team's own that was **sent back**, which comes ahead of new work;
-2. a story the team **shelved whose question the operator has since answered**, oldest shelf first;
-3. the **first story in roadmap order** that's unticked, has an ID, isn't claimed, in review or verified in the
-   ledger, and isn't skipped.
+2. a story **assigned to the team** (RAL-130, `rally assign`), ready and not blocked, in roadmap order and then
+   oldest assignment first;
+3. a story the team **shelved whose question the operator has since answered**, oldest shelf first;
+4. the **first story in roadmap order** that's unticked, has an ID, isn't claimed, in review or verified in the
+   ledger, isn't assigned to another team, and isn't skipped.
 
 The team's own claimed and in-review stories are listed as `current`, above the pick.
 
@@ -25,6 +27,8 @@ The team's own claimed and in-review stories are listed as `current`, above the 
 
 A story is skipped, with the reason shown, when:
 
+- it's assigned to another team (declared; it can still be claimed by agreement), see
+  [clearance.md](clearance.md);
 - another team holds it, it's in review, or it's verified and waiting for its tick;
 - it has an open blocker on another team or story, including another team's question to the operator;
 - its text says `Depends on X` and X is neither ticked on this roadmap nor verified or merged in the ledger.

@@ -740,6 +740,15 @@ fn with_rally_openers_only_those_credentials_open_or_close_a_rally() {
         "frank-crocodile"
     );
     assert_eq!(rallies["open"]["sessions"].as_array().unwrap().len(), 1);
+    // RAL-130: assigning a story is held to the same rule.
+    let story = json!({"change": "ready", "story": "RAL-9"});
+    assert_eq!(write(&a1, "w", "declared", story).status, 200);
+    let assign = json!({"change": "assign", "story": "RAL-9", "team": "rally", "note": "yours"});
+    let refused = write(&a1, "w", "declared", assign.clone());
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert!(refused.body.contains("assigns a story"), "{}", refused.body);
+    let assigned = write(&watchman, "w", "declared", assign);
+    assert_eq!(assigned.status, 200, "{}", assigned.body);
     let close = json!({"change": "close_rally", "note": "stood down"});
     assert_eq!(write(&a1, "w", "declared", close.clone()).status, 403);
     let rallies: Value = serde_json::from_str(&call(&a1, "GET", "/v1/rallies", None).body).unwrap();

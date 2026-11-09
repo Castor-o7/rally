@@ -718,11 +718,13 @@ async fn write_record(
             Err(error) => return failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         }
     }
-    // Only the operator or the watchman opens or closes a rally (RAL-77), or adds or removes one
-    // of its sessions (RAL-110), backfilled or not.
+    // Only the operator or the watchman opens or closes a rally (RAL-77), adds or removes one
+    // of its sessions (RAL-110), or assigns a story (RAL-130), backfilled or not.
     let applied = applied_change(&body);
-    let rally_change =
-        applied == "open_rally" || applied == "close_rally" || applied == "rally_session";
+    let rally_change = applied == "open_rally"
+        || applied == "close_rally"
+        || applied == "rally_session"
+        || applied == "assign";
     if rally_change && let Err(refused) = may_open_rallies(&service, &identity.credential).await {
         return *refused;
     }
@@ -1347,8 +1349,9 @@ async fn may_open_rallies(service: &Arc<Service>, credential: &str) -> Result<()
     Err(Box::new(failure(
         StatusCode::FORBIDDEN,
         format!(
-            "only the operator or the watchman opens or closes a rally: {credential} isn't in \
-             the service's --rally-openers, nor bound to a designated watchman"
+            "only the operator or the watchman opens or closes a rally, changes its sessions or \
+             assigns a story: {credential} isn't in the service's --rally-openers, nor bound to a \
+             designated watchman"
         ),
     )))
 }
