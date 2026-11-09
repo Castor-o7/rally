@@ -273,15 +273,14 @@ The bones. Everything later reads from this.
   Decided by the operator on 2026-11-06: Rally is the source of truth for every project in `web/projects.json`,
   and the hand-kept board retires (design, open question 4). The ledger already tracks MUS, MAR, CAT and DSM
   stories.
-- [ ] **RAL-9: Replace the hand-kept table.** Depends on RAL-24. The current table is
+- [x] **RAL-9: Replace the hand-kept table.** Done in Castor-o7/muster#194 (a120efc), verified 2026-11-09 (2200). Depends on RAL-24. The current table is
   `~/Documents/Caster/muster-board.md` on the operator's Mac. Done when (changed by the operator on
   2026-11-06, relayed by the watchman: archive the old table, don't import it): the table is archived
   unchanged in Muster's `docs/board-archive-2026-11-06.md`, with Version 0's table section from
   `docs/board.md`; the watchman no longer needs it; and Muster's `docs/board.md` says Rally's ledger is the
   board, read in the viewer or with `rally show` and `rally brief`. Muster's part is Castor-o7/muster#194. Done
   there: #194 merged on 2026-11-07 as a120efc, with `docs/board-archive-2026-11-06.md` and `docs/board.md`
-  saying Rally is the source of truth; submitted to the watchman for its read on 2026-11-09, and ticked once
-  it's verified.
+  saying Rally is the source of truth; submitted to the watchman for its read on 2026-11-09 and verified (2200).
 
 ## Phase 4: The web app
 
