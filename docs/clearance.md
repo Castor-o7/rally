@@ -24,7 +24,8 @@ number 0, `<PREFIX>-0`.
    `rally assign ROO-3 --team rustdaw --note "..."`. The service takes an assignment only from those who may
    open a rally. That rule goes by pairing credential, not by role, so where sessions share a credential (every
    Murph session uses `murph`) it limits by machine: any session there may assign, and the record's declared
-   name says who did. An assignment is declared: it doesn't claim the story, and it confers no authority.
+   name says who did. The guard is only as tight as the service's `--rally-openers`: unset, any paired credential may assign, as
+   it may open or close a rally, and each reply warns so. An assignment is declared: it doesn't claim the story, and it confers no authority.
    `rally next --team rustdaw` offers stories in this order: the team's sent-back work first, then the
    ready, unblocked stories assigned to it, then roadmap order. A story assigned to another team is skipped,
    and the skip says so; it can still be claimed by agreement. `rally assign ROO-3 --team rustdaw --end
