@@ -21,6 +21,10 @@ Evidence written as `owner/repo@<full commit>` (40 or 64 hex digits) is checked 
 Evidence in any other form is recorded as `checkable: false`, with the reason. What a team didn't test goes in
 its own field, `rally submit --untested "..."`, not in the evidence.
 
+A check is never rewritten. When one is wrong, such as `exists: false` from before RAL-128, or `ci: none` from
+before RAL-132, anyone can say so with `rally correct <STORY> --corrects <check record> --note "..."`. The story
+list gives the corrections beside the check, declared, and the viewer shows them after it (RAL-134).
+
 ## At submit, and correcting it (RAL-71)
 
 `rally submit` and `rally amend` check the evidence before anything is written: it must be
