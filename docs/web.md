@@ -79,6 +79,13 @@ animation only turns or fades a box of its own, which the compositor does withou
 page's CSP requires, so there are no web fonts: the font stacks name ones the machine may have, and fall back to the
 system's. A section fades up only when it's first drawn; a poll patches it in place (RAL-89), so it never replays.
 
+## Narrow windows (RAL-111, RAL-125)
+
+The page fits any window from a phone's 390 pixels up. Wide tables scroll sideways inside their own box, and
+the page itself never does. A headless Chrome test checks it at 800 pixels and at 390, emulated as a mobile
+viewport because Chrome won't make a window narrower than 500. The test fails if anything outside a table's box
+runs past the window. Reaching the page from a phone is a separate matter, RAL-34.
+
 ## How to read the figures
 
 - **Roadmap ticks** are counted from each project's roadmap file, with the file, commit and read time
@@ -100,11 +107,12 @@ system's. A section fades up only when it's first drawn; a poll patches it in pl
   figure names. Green only ever means Verified, so a ticked box the ledger hasn't verified can't pass for one.
   A headless Chrome test reads every bar's computed colour in the light and dark schemes.
 - **Teams** show what's declared to the ledger, and the roster with its source's own labels (RAL-116). The roster
-  is read with the first of `--roster-from` (or `RALLY_ROSTER_FROM`, comma-separated; by default
-  `marshal-shim,muster-shim`) whose `<command> roster` gives one, and the panel says which it read and why any
-  before it weren't: with no sessions on Marshal's daemon, `marshal-shim roster` fails and Muster's is shown. The
-  command that last worked is asked first, and those before it only every 5 minutes, since a failing one can take
-  its whole limit (RAL-117); the panel says so. Muster's roster labels each fact attested, declared or observed;
+  is every command's in `--roster-from` (or `RALLY_ROSTER_FROM`, comma-separated; by default
+  `marshal-shim,muster-shim`), each run as `<command> roster`, shown together (RAL-126): while sessions move from
+  Muster's daemon to Marshal's, both have some. Each row says which roster it came from ("via marshal-shim"); a
+  session on both is shown once, from the more recently active, saying it's also on the other. The panel says which
+  were read and why any weren't. One that fails is asked again only every 5 minutes, since a failing one can take
+  its whole limit (RAL-117), unless no other answers; the panel says so. Muster's roster labels each fact attested, declared or observed;
   Marshal's declared or recorded, with the machine declared. The roster lists each team's session (RAL-99) with
   when it connected, the directory it was started in (home folder as `~`, the whole path on hover), its project
   and branch, its machine, its status (busy or idle, and for how long when the shim declares when that changed, `activity_at`

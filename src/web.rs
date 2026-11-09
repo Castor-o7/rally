@@ -1404,24 +1404,22 @@ fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
 /// which is frozen but still where the sessions are until they move to Marshal's daemon.
 pub const DEFAULT_ROSTER_FROM: [&str; 2] = crate::shims::DEFAULT;
 
-/// How often a roster command earlier in the list than the one that last worked is asked again
-/// (RAL-117). Between those, it isn't asked, since a failing one can take its whole limit.
+/// How often a roster command that failed is asked again (RAL-117, RAL-126). Between those it isn't
+/// asked, since a failing one can take its whole limit; one that answers is asked every refresh.
 pub const ROSTER_RETRY_EARLIER: Duration = Duration::from_secs(5 * 60);
 
-/// Which roster command last gave a roster, and when the commands before it were last asked
-/// (RAL-117).
+/// When each roster command that failed last failed (RAL-126).
 #[derive(Clone, Debug, Default)]
 pub struct RosterMemory {
-    /// The command that last gave a roster.
-    pub worked: Option<String>,
-    /// When the commands before it were last asked, in milliseconds.
-    pub earlier_asked_at_ms: u64,
+    /// By command, in milliseconds.
+    pub failed_at_ms: BTreeMap<String, u64>,
 }
 
-/// Reads the roster with the first of `from` that gives one, keeping only fields the page shows
-/// and the source's own labels for them. Each command is run as `<command> roster`. The result
-/// says which one was read, and why any before it weren't (RAL-116). The one that last worked is
-/// asked first; those before it only every [`ROSTER_RETRY_EARLIER`] (RAL-117).
+/// Reads the roster with every one of `from`, each run as `<command> roster`, and shows their union
+/// (RAL-126): while sessions move from Muster's daemon to Marshal's, both have some. Each row keeps
+/// its source's own labels and names the source; a session on both is shown once. The result says
+/// which commands were read, and why any weren't. A command that failed is asked again only every
+/// [`ROSTER_RETRY_EARLIER`], unless none of the others answers.
 fn read_roster(from: &[String], memory: &mut RosterMemory) -> Value {
     read_roster_with(from, memory, now_ms(), ROSTER_RETRY_EARLIER, |command| {
         let mut run = Command::new(command);
@@ -1436,83 +1434,84 @@ pub fn read_roster_with(
     from: &[String],
     memory: &mut RosterMemory,
     now_ms: u64,
-    retry_earlier: Duration,
+    retry: Duration,
     mut run: impl FnMut(&str) -> Result<Vec<u8>, String>,
 ) -> Value {
+    let retry_ms = retry.as_millis() as u64;
+    let resting = |command: &String, memory: &RosterMemory| {
+        memory
+            .failed_at_ms
+            .get(command)
+            .is_some_and(|at| now_ms.saturating_sub(*at) < retry_ms)
+    };
+    let mut ask = |command: &String, memory: &mut RosterMemory| -> Result<Value, String> {
+        let result = match run(command) {
+            Err(error) => Err(format!("couldn't be read ({error})")),
+            Ok(output) => match serde_json::from_slice::<Value>(&output) {
+                Err(_) => Err("couldn't be read: it wasn't JSON".to_owned()),
+                Ok(value) if shape_roster(&value, now_ms)["available"] == json!(true) => Ok(value),
+                Ok(_) => Err("has an unknown format".to_owned()),
+            },
+        };
+        match &result {
+            Ok(_) => memory.failed_at_ms.remove(command),
+            Err(_) => memory.failed_at_ms.insert(command.clone(), now_ms),
+        };
+        result
+    };
+    let mut rosters = Vec::new();
     let mut passed_over = Vec::new();
-    // The commands before the one that last worked are skipped until it's time to ask them again,
-    // and asked after it, in case it fails.
-    let start = memory
-        .worked
-        .as_ref()
-        .and_then(|worked| from.iter().position(|c| c == worked))
-        .unwrap_or(0);
-    let retry_due =
-        now_ms.saturating_sub(memory.earlier_asked_at_ms) >= retry_earlier.as_millis() as u64;
-    let order: Vec<&String> = if start == 0 || retry_due {
-        if start > 0 {
-            memory.earlier_asked_at_ms = now_ms;
+    let mut rested = Vec::new();
+    for command in from {
+        if resting(command, memory) {
+            rested.push(command);
+            continue;
         }
-        from.iter().collect()
-    } else {
-        let minutes = retry_earlier.as_secs().div_ceil(60);
-        for command in &from[..start] {
+        match ask(command, memory) {
+            Ok(value) => rosters.push((command.clone(), value)),
+            Err(reason) => passed_over.push(json!({"command": command, "reason": reason})),
+        }
+    }
+    // With nothing else answering, the resting ones are asked after all.
+    let minutes = retry.as_secs().div_ceil(60);
+    for command in rested {
+        if rosters.is_empty() {
+            match ask(command, memory) {
+                Ok(value) => rosters.push((command.clone(), value)),
+                Err(reason) => passed_over.push(json!({"command": command, "reason": reason})),
+            }
+        } else {
             passed_over.push(json!({"command": command, "reason": format!(
                 "wasn't asked: it failed lately, and is asked again every {minutes} minutes"
             )}));
         }
-        from[start..].iter().chain(&from[..start]).collect()
-    };
-    for command in order {
-        if passed_over.iter().any(|p| p["command"] == json!(command)) {
-            // Skipped above, and asked now only because every later one failed.
-            passed_over.retain(|p| p["command"] != json!(command));
-        }
-        let reason = match run(command) {
-            Err(error) => format!("couldn't be read ({error})"),
-            Ok(output) => match serde_json::from_slice::<Value>(&output) {
-                Err(_) => "couldn't be read: it wasn't JSON".to_owned(),
-                Ok(value) => {
-                    let mut shaped = shape_roster(&value, now_ms);
-                    if shaped["available"] == json!(true) {
-                        if memory.worked.as_ref() != Some(command) {
-                            // A newly working command's earlier ones were just asked.
-                            memory.earlier_asked_at_ms = now_ms;
-                        }
-                        memory.worked = Some(command.clone());
-                        shaped["source"] = json!(command);
-                        shaped["passed_over"] = json!(passed_over);
-                        return shaped;
-                    }
-                    shaped["reason"]
-                        .as_str()
-                        .unwrap_or("has an unknown format")
-                        .to_owned()
-                }
-            },
-        };
-        passed_over.push(json!({"command": command, "reason": reason}));
     }
-    memory.worked = None;
-    let tried: Vec<String> = passed_over
-        .iter()
-        .map(|p| {
-            format!(
-                "{}'s roster {}",
-                p["command"].as_str().unwrap_or(""),
-                p["reason"].as_str().unwrap_or("")
-            )
-        })
-        .collect();
-    json!({
-        "available": false,
-        "reason": if tried.is_empty() {
-            "no roster command is set.".to_owned()
-        } else {
-            format!("{}.", tried.join("; "))
-        },
-        "passed_over": passed_over,
-    })
+    if rosters.is_empty() {
+        let tried: Vec<String> = passed_over
+            .iter()
+            .map(|p| {
+                format!(
+                    "{}'s roster {}",
+                    p["command"].as_str().unwrap_or(""),
+                    p["reason"].as_str().unwrap_or("")
+                )
+            })
+            .collect();
+        return json!({
+            "available": false,
+            "reason": if tried.is_empty() {
+                "no roster command is set.".to_owned()
+            } else {
+                format!("{}.", tried.join("; "))
+            },
+            "passed_over": passed_over,
+        });
+    }
+    let sources: Vec<&String> = rosters.iter().map(|(command, _)| command).collect();
+    let mut shaped = shape_roster(&json!({"sessions": crate::shims::merge(&rosters)}), now_ms);
+    shaped["sources"] = json!(sources);
+    shaped["passed_over"] = json!(passed_over);
+    shaped
 }
 
 /// Keeps only the fields the page shows, under the source's own labels (RAL-116). Muster's
@@ -1558,6 +1557,10 @@ pub fn shape_roster(value: &Value, read_at_ms: u64) -> Value {
                 "declared"
             };
             json!({
+                "session_id": session["session_id"],
+                // Which roster it came from, and any other it's also on (RAL-126).
+                "source": session["source"],
+                "also_on": session["also_on"],
                 "project": declared["project"],
                 "nickname": session["nickname"],
                 "machine": machine,
@@ -3494,45 +3497,84 @@ mod tests {
     }
 
     #[test]
-    fn the_roster_falls_back_and_says_which_it_read() {
+    fn the_roster_is_every_sources_union_and_says_which_were_read() {
         let from = vec!["marshal-shim".to_owned(), "muster-shim".to_owned()];
-        // Marshal's daemon has no sessions yet: marshal-shim fails, so Muster's is read.
-        let mut asked = Vec::new();
+        let empty_marshal = json!({"read_at": 1, "sessions": []})
+            .to_string()
+            .into_bytes();
+        let ids = |roster: &Value| -> Vec<String> {
+            roster["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["nickname"].as_str().unwrap_or("").to_owned())
+                .collect()
+        };
+        // Marshal's daemon is up with nobody on it: Muster's sessions are still shown (RAL-126).
         let roster = read_roster_with(
             &from,
             &mut RosterMemory::default(),
             0,
             ROSTER_RETRY_EARLIER,
-            |command| {
-                asked.push(command.to_owned());
-                match command {
-                    "marshal-shim" => Err("exit status 1: no roster within 10s".to_owned()),
-                    _ => Ok(muster_roster().to_string().into_bytes()),
-                }
+            |command| match command {
+                "marshal-shim" => Ok(empty_marshal.clone()),
+                _ => Ok(muster_roster().to_string().into_bytes()),
             },
         );
-        assert_eq!(asked, ["marshal-shim", "muster-shim"]);
         assert_eq!(roster["available"], true);
-        assert_eq!(roster["source"], "muster-shim");
+        assert_eq!(roster["sources"], json!(["marshal-shim", "muster-shim"]));
+        assert_eq!(ids(&roster), ["plush-tortoise"]);
+        assert_eq!(roster["sessions"][0]["source"], "muster-shim");
+        assert_eq!(roster["passed_over"], json!([]));
+        // Both populated: both teams, each naming its source and keeping its own labels.
+        let roster = read_roster_with(
+            &from,
+            &mut RosterMemory::default(),
+            0,
+            ROSTER_RETRY_EARLIER,
+            |command| match command {
+                "marshal-shim" => Ok(marshal_roster().to_string().into_bytes()),
+                _ => Ok(muster_roster().to_string().into_bytes()),
+            },
+        );
+        assert_eq!(ids(&roster), ["wise-leopard", "plush-tortoise"]);
+        assert_eq!(roster["sessions"][0]["source"], "marshal-shim");
+        assert_eq!(roster["sessions"][0]["machine_label"], "declared");
+        assert_eq!(roster["sessions"][1]["source"], "muster-shim");
+        assert_eq!(roster["sessions"][1]["machine_label"], "attested");
+        // One failing: the other's sessions are shown, and the failure is listed as passed over.
+        let roster = read_roster_with(
+            &from,
+            &mut RosterMemory::default(),
+            0,
+            ROSTER_RETRY_EARLIER,
+            |command| match command {
+                "marshal-shim" => Err("it reported a failure".to_owned()),
+                _ => Ok(muster_roster().to_string().into_bytes()),
+            },
+        );
+        assert_eq!(roster["sources"], json!(["muster-shim"]));
         assert_eq!(roster["passed_over"][0]["command"], "marshal-shim");
         let why = roster["passed_over"][0]["reason"].as_str().unwrap();
-        assert!(why.contains("no roster within 10s"), "{why}");
-        // With Marshal's roster read, Muster's isn't asked, and nothing was passed over.
-        let mut asked = Vec::new();
+        assert!(why.contains("it reported a failure"), "{why}");
+        // A session on both is shown once, from the more recently active, naming the other.
+        let mut moved = marshal_roster();
+        moved["sessions"][0]["session_id"] = json!("s1");
+        moved["sessions"][0]["declared"]["last_activity_at"] = json!(60);
         let roster = read_roster_with(
             &from,
             &mut RosterMemory::default(),
             0,
             ROSTER_RETRY_EARLIER,
-            |command| {
-                asked.push(command.to_owned());
-                Ok(marshal_roster().to_string().into_bytes())
+            |command| match command {
+                "marshal-shim" => Ok(moved.to_string().into_bytes()),
+                _ => Ok(muster_roster().to_string().into_bytes()),
             },
         );
-        assert_eq!(asked, ["marshal-shim"]);
-        assert_eq!(roster["source"], "marshal-shim");
-        assert_eq!(roster["passed_over"], json!([]));
-        // Output that isn't a roster is passed over too.
+        assert_eq!(roster["sessions"].as_array().unwrap().len(), 1, "{roster}");
+        assert_eq!(roster["sessions"][0]["source"], "marshal-shim");
+        assert_eq!(roster["sessions"][0]["also_on"], json!(["muster-shim"]));
+        // Nothing answers: said, with each one's reason.
         let roster = read_roster_with(
             &from,
             &mut RosterMemory::default(),
@@ -3556,12 +3598,10 @@ mod tests {
     }
 
     #[test]
-    fn the_roster_source_that_worked_is_asked_first_and_earlier_ones_now_and_then() {
+    fn a_failing_source_is_asked_again_only_now_and_then() {
         let from = vec!["marshal-shim".to_owned(), "muster-shim".to_owned()];
         let retry = Duration::from_secs(300);
         let mut memory = RosterMemory::default();
-        // Marshal's has no sessions, Muster's has: each refresh records what it asked.
-        let mut marshal_works = false;
         let refresh = |memory: &mut RosterMemory, now_ms: u64, marshal_works: bool| {
             let mut asked = Vec::new();
             let roster = read_roster_with(&from, memory, now_ms, retry, |command| {
@@ -3576,40 +3616,27 @@ mod tests {
             });
             (asked, roster)
         };
-        // The first refresh asks both, and falls back.
-        let (asked, roster) = refresh(&mut memory, 0, marshal_works);
+        // Both are asked; Marshal's fails.
+        let (asked, _) = refresh(&mut memory, 0, false);
         assert_eq!(asked, ["marshal-shim", "muster-shim"]);
-        assert_eq!(roster["source"], "muster-shim");
-        // The next asks Muster's first, and only it; the page still says why Marshal's wasn't read.
-        let (asked, roster) = refresh(&mut memory, 30_000, marshal_works);
+        // Within five minutes it isn't asked, and the page says why.
+        let (asked, roster) = refresh(&mut memory, 30_000, false);
         assert_eq!(asked, ["muster-shim"]);
-        assert_eq!(roster["source"], "muster-shim");
-        assert_eq!(roster["passed_over"][0]["command"], "marshal-shim");
         let why = roster["passed_over"][0]["reason"].as_str().unwrap();
         assert!(why.contains("asked again every 5 minutes"), "{why}");
-        // Five minutes after Marshal's was last asked, it's asked again, first.
-        let (asked, _) = refresh(&mut memory, 300_000, marshal_works);
+        // Five minutes on, it's asked again; once it answers, both are asked every refresh.
+        let (asked, roster) = refresh(&mut memory, 300_000, true);
         assert_eq!(asked, ["marshal-shim", "muster-shim"]);
-        let (asked, _) = refresh(&mut memory, 330_000, marshal_works);
-        assert_eq!(asked, ["muster-shim"], "not again until five minutes on");
-        // Once Marshal's answers at a retry, it's used, and asked first from then on.
-        marshal_works = true;
-        let (asked, roster) = refresh(&mut memory, 600_000, marshal_works);
-        assert_eq!(asked, ["marshal-shim"]);
-        assert_eq!(roster["source"], "marshal-shim");
-        assert_eq!(roster["passed_over"], json!([]));
-        let (asked, _) = refresh(&mut memory, 630_000, marshal_works);
-        assert_eq!(asked, ["marshal-shim"]);
+        assert_eq!(roster["sources"], json!(["marshal-shim", "muster-shim"]));
+        let (asked, _) = refresh(&mut memory, 330_000, true);
+        assert_eq!(asked, ["marshal-shim", "muster-shim"]);
     }
 
     #[test]
-    fn a_remembered_source_that_fails_falls_through_to_the_rest() {
+    fn a_resting_source_is_asked_when_nothing_else_answers() {
         let from = vec!["marshal-shim".to_owned(), "muster-shim".to_owned()];
-        let mut memory = RosterMemory {
-            worked: Some("muster-shim".to_owned()),
-            earlier_asked_at_ms: 0,
-        };
-        // Muster's fails before the retry is due: Marshal's is asked after it, rather than nothing.
+        let mut memory = RosterMemory::default();
+        memory.failed_at_ms.insert("marshal-shim".to_owned(), 0);
         let mut asked = Vec::new();
         let roster = read_roster_with(
             &from,
@@ -3620,34 +3647,13 @@ mod tests {
                 asked.push(command.to_owned());
                 match command {
                     "marshal-shim" => Ok(marshal_roster().to_string().into_bytes()),
-                    _ => Err("it reported a failure".to_owned()),
+                    _ => Err("down".to_owned()),
                 }
             },
         );
         assert_eq!(asked, ["muster-shim", "marshal-shim"]);
-        assert_eq!(roster["source"], "marshal-shim");
-        assert_eq!(memory.worked.as_deref(), Some("marshal-shim"));
-        // Only the real reason is given for Muster's, not the skip.
-        assert_eq!(
-            roster["passed_over"].as_array().unwrap().len(),
-            1,
-            "{roster}"
-        );
-        assert_eq!(roster["passed_over"][0]["command"], "muster-shim");
-        // When nothing works, nothing is remembered, and the next refresh asks in order.
-        let mut asked = Vec::new();
-        let roster = read_roster_with(
-            &from,
-            &mut memory,
-            90_000,
-            ROSTER_RETRY_EARLIER,
-            |command| {
-                asked.push(command.to_owned());
-                Err("down".to_owned())
-            },
-        );
-        assert_eq!(roster["available"], false);
-        assert!(memory.worked.is_none());
+        assert_eq!(roster["sources"], json!(["marshal-shim"]));
+        assert!(!memory.failed_at_ms.contains_key("marshal-shim"));
     }
 
     #[cfg(unix)]

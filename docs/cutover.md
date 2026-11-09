@@ -22,8 +22,8 @@ seen listening on `127.0.0.1:6155` only. So a1 can't join Marshal before the off
 | 2 | `~/.claude.json` MCP server `muster` | `muster-shim` on stdio: the `mcp__muster__*` tools and `muster://` resources | MCP server `marshal`: `marshal-shim`, with `MARSHAL_DAEMON_ADDRESS` (default `ws://localhost:6155`) |
 | 3 | `muster-daemon.service` | `0.0.0.0:6255`, TLS on, Postgres db `muster` on the `marshal-pg` socket, `MUSTER_OPERATOR` set | `marshal-daemon.service`, already running: `127.0.0.1:6155` (a drop-in, decided above), plain, Postgres db `marshal` |
 | 4 | `~/.config/muster/` | `local-token`, and per-session `channels-`, `health-`, `nickname-` and `waiter-` files | `~/.config/marshal/` already has its own per-session files, and no token, since there's no gate |
-| 5 | Rally's viewer (`rally web`, `rally view`) | Since RAL-116, reads `marshal-shim roster` first and falls back to `muster-shim roster` (`--roster-from`, `RALLY_ROSTER_FROM`) | Nothing to change: it moves by itself once Marshal has sessions |
-| 6 | `rally wake`, `rally digest`, `rally stalls` and `rally brief` (`src/shims.rs`) | Since RAL-120, read the roster and send through `marshal-shim` first, falling back to `muster-shim` (`RALLY_ROSTER_FROM`); a send falls back only when the first says nothing was sent | Nothing to change: they move by themselves once Marshal has sessions |
+| 5 | Rally's viewer (`rally web`, `rally view`) | Since RAL-126, reads every roster in `--roster-from` (`RALLY_ROSTER_FROM`, by default `marshal-shim,muster-shim`) and shows their union, each row naming its source | Nothing to change: sessions show from whichever daemon they're on |
+| 6 | `rally wake`, `rally digest`, `rally stalls` and `rally brief` (`src/shims.rs`) | Since RAL-126, read every roster and merge them, each row naming its source; since RAL-120, send through `marshal-shim` first, falling back to `muster-shim` only when the first says nothing was sent | Nothing to change: they see sessions on both daemons |
 | 7 | Rally's SessionStart hook (`rally session-start`, docs/session-hook.md) | Reads the ledger only | Nothing to change |
 | 8 | `rally.service` | Rally's own service on `192.168.1.241:6300`. It shares only the `marshal-pg` Postgres with the daemons | Nothing to change |
 | 9 | Claude Code plugins | Only the LSP plugins are enabled. Muster is wired by hand (rows 1 and 2), not by a plugin | Either install Marshal's plugin, or wire it by hand the same way. Not both, or every hook runs twice (MAR-36 would catch it) |
@@ -38,18 +38,23 @@ same as rows 1, 2 and 4.
 
 ## What Marshal can't do yet
 
+Last checked 2026-11-09 against Marshal's fork main at `700a1b2` and the ledger (RAL-127). Each row names
+its story's state in Rally and, where it's merged, its merge commit on Castor-o7/marshal.
+
 | Gap | Story | Effect on the move |
 |---|---|---|
-| TLS | MAR-23 (waits on myko#129) | a1 can't join until then. Marshal listens on Murph only (above) |
-| Per-machine pairing | MAR-24 (after MAR-23) | No gate, so the roster has no `attested` or `observed` facts, and Rally's viewer shows declared and recorded only (RAL-116) |
-| Nickname kept across a restart | MAR-9, verified, merging 2026-11-08 | Until it's merged, a restarted session gets a new nickname. Rally already records a restart with `rally rally-session add --succeeds` (RAL-108) |
+| TLS | MAR-23, ready, not started: waits on myko#129 | a1 can't join until then. Marshal listens on Murph only (above) |
+| Per-machine pairing | MAR-24, ready, not started: after MAR-23 | No gate, so the roster has no `attested` or `observed` facts, and Rally's viewer shows declared and recorded only (RAL-116) |
+| Nickname kept across a restart | MAR-9, verified, merged (`83f5202`, #31) | Done: a restarted session keeps its nickname. The watchman still records each move with `rally rally-session add --succeeds` (RAL-108), since a move to another daemon is a new session |
 | Message history and unread mail carried over | RAL-122, decided: option A | Nothing copies mail between the `muster` and `marshal` databases. Each session reads its Muster mail before it moves, and the Marshal team runs a check before each move and before step 7 ([mail-carryover.md](mail-carryover.md)) |
-| Unread mail across a Marshal daemon restart | MAR-14, merged | Postgres keeps it, and MAR-14's restart cells show it. Still checked on Murph in step 1 |
-| A restarted session's unread mail follows it to its successor | Muster's MUS-47, being ported (eager-cobra), on top of MAR-9 | Until it lands, a session reads its unread mail before it restarts |
-| A message never offered twice | MAR-3, merged | Done |
-| Idle overnight wake on Marshal's hooks | MAR-5, shelved by the operator | Idle wake is shown instead in step 1's test session |
-| A daemon write before the session is ready, retried | MAR-43, verified, merging 2026-11-08 | Once merged, nothing to do |
-| A health check | MAR-36, verified, merging 2026-11-08 | Once merged, `marshal-shim doctor` confirms each session is wired once |
+| Unread mail across a Marshal daemon restart | MAR-14, verified, merged (`8231de7`, #12) | Postgres keeps it, and MAR-14's restart cells show it. Still checked on Murph in step 1 |
+| A restarted session's unread mail follows it to its successor | MAR-42 (Muster's MUS-47), verified, merged (`cd3c87e`, #43) | Done, within Marshal. It doesn't carry mail from Muster: that's RAL-122's check, above |
+| A message never offered twice | MAR-3, verified, merged (`cd0c44e`, #10) | Done |
+| Idle overnight wake on Marshal's hooks | MAR-5, shelved by the operator (ready in Rally, not started) | Idle wake is shown instead in step 1's test session |
+| A daemon write before the session is ready, retried | MAR-43, verified, merged (`6fb0bfa`, #38) | Done |
+| A health check | MAR-36, verified, merged (`7c25d42`, #23) | Done: `marshal-shim doctor` confirms each session is wired once |
+| The health check reads a project's own wiring | MAR-60, verified, merged (`2271713`, #58) | Done: doctor also checks a project-local `.claude/settings.json` and `.mcp.json`, which is how step 1 and each move are wired |
+| What "a full day with no traffic" means at step 7 | MAR-65, in review | Defined in Marshal's [muster-no-traffic-check.md](https://github.com/Castor-o7/marshal/blob/main/docs/muster-no-traffic-check.md), with a read-only query |
 
 ## The order: a session is never unreachable
 
@@ -63,7 +68,10 @@ the two while they're mixed.
 1. **Prove one session.** Start a fresh test session wired only to Marshal: the MCP server `marshal`, and the
    five hooks from `marshal-shim`, in a project-local `.claude/settings.json` so nothing user-wide changes.
    Check that it appears in `marshal-shim roster`, wakes when idle on `marshal-shim tell`, and that its
-   unread mail survives `systemctl --user restart marshal-daemon`.
+   unread mail survives `systemctl --user restart marshal-daemon`. Marshal's
+   [cutover-test-session.md](https://github.com/Castor-o7/marshal/blob/main/docs/cutover-test-session.md)
+   (MAR-59) is the kit for this, and `marshal-shim doctor`, run in the test session's directory, checks its
+   project-local wiring (MAR-60).
 2. **Rally reads both.** Land a Rally story so `rally wake` and `rally digest` take `--roster-from` and a
    `tell` command like the viewer (row 6). The viewer already prefers Marshal (RAL-116).
    **Before every move in steps 3 and 4 (RAL-122, option A):** the session reads and acks its Muster inbox,
@@ -80,7 +88,9 @@ the two while they're mixed.
 6. **a1, at the official swap.** The operator decided a1 and macOS testing, MAR-35 included, happen at the
    official swap to Marshal, once MAR-23 and MAR-24 let a1 reach the daemon.
 7. **Retire Muster.** First the Marshal team runs the mail check a last time, and relays anything left. Then,
-   only after a full day with no traffic on Muster: stop `muster-daemon.service`, but
+   only after a full day with no traffic on Muster, as Marshal's
+   [muster-no-traffic-check.md](https://github.com/Castor-o7/marshal/blob/main/docs/muster-no-traffic-check.md)
+   defines it and checks it (MAR-65): stop `muster-daemon.service`, but
    don't disable it, and keep its database and binaries for rollback. End the hold in Rally.
 
 ## Rollback

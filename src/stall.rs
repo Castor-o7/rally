@@ -77,6 +77,8 @@ impl Facts {
             .iter()
             .map(|session| {
                 json!({
+                    // The roster it came from (RAL-126).
+                    "source": session.source,
                     "wake": session.wake,
                     "wake_kind": if session.wake.as_deref() == Some("waiting") { "observed" }
                                  else { "declared" },
@@ -271,6 +273,7 @@ mod tests {
         Session {
             activity: Some(activity.into()),
             wake: Some(wake.into()),
+            source: None,
         }
     }
 

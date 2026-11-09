@@ -44,6 +44,8 @@ pub struct Team {
 pub struct Session {
     pub activity: Option<String>,
     pub wake: Option<String>,
+    /// The roster it came from, such as `marshal-shim` (RAL-126).
+    pub source: Option<String>,
 }
 
 impl Session {
@@ -179,6 +181,7 @@ pub fn sessions_of(roster: &Value, names: &[String]) -> Vec<Session> {
         .map(|session| Session {
             activity: session["declared"]["activity"].as_str().map(str::to_owned),
             wake: session["wake"].as_str().map(str::to_owned),
+            source: session["source"].as_str().map(str::to_owned),
         })
         .collect()
 }
@@ -215,6 +218,7 @@ mod tests {
         Session {
             activity: Some("idle".into()),
             wake: Some("waiting".into()),
+            source: None,
         }
     }
 
@@ -247,6 +251,7 @@ mod tests {
         let busy = Session {
             activity: Some("busy".into()),
             wake: Some("waiting".into()),
+            source: None,
         };
         assert!(!busy.idle());
         let mut working = team();
@@ -259,6 +264,7 @@ mod tests {
         let unknown = Session {
             activity: None,
             wake: Some("waiting".into()),
+            source: None,
         };
         assert!(unknown.idle());
         let mut quiet = team();
@@ -288,6 +294,7 @@ mod tests {
         working.sessions = vec![Session {
             activity: Some("busy".into()),
             wake: Some("busy".into()),
+            source: None,
         }];
         working.claims = vec![("RAL-54".into(), 0)];
         let before = (30 * MIN) as i64 - 1;
@@ -335,6 +342,7 @@ mod tests {
         asleep.sessions = vec![Session {
             activity: Some("idle".into()),
             wake: Some("none".into()),
+            source: None,
         }];
         let decision = decide(&asleep, times(), 0);
         assert!(matches!(&decision, Decision::CantWake(why) if why.contains("wake: none")));

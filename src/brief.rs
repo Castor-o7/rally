@@ -297,6 +297,9 @@ pub fn rally_section(
                 "project": project_of(session),
                 "activity": session["declared"]["activity"],
                 "working_on": session["declared"]["current_task"],
+                // The roster it came from, and any other it's also on (RAL-126).
+                "source": session["source"],
+                "also_on": session["also_on"],
             });
             if let Some(open) = &open {
                 let members = crate::web::rally_members(open, roster_names.as_ref()).names;

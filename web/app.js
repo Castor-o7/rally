@@ -1345,13 +1345,22 @@ function rosterProject(name, branch) {
 
 // Busy or idle, as the session declares it, and whether a message would wake it,
 // observed only when the daemon holds its wait.
-// Which command the roster was read with, and why any tried before it weren't (RAL-116).
+// Which commands the roster was read with, and why any weren't (RAL-116, RAL-126): the panel shows
+// every source's sessions together.
 function rosterSource(roster) {
-  const line = el("p", "muted figure", "Read with " + (roster.source || "an unnamed command") + " roster.");
+  const sources = roster.sources || (roster.source ? [roster.source] : []);
+  const line = el("p", "muted figure", "Read with " + (sources.length
+    ? sources.map((s) => s + " roster").join(" and ") : "an unnamed command") + ".");
   for (const passed of roster.passed_over || []) {
-    line.append(" ", el("span", "roster-fallback", passed.command + "'s roster " + passed.reason + ", so it fell back."));
+    line.append(" ", el("span", "roster-fallback", passed.command + "'s roster " + passed.reason
+      + ", so its sessions aren't shown."));
   }
   return line;
+}
+
+// The roster a row came from, shortened to the command's name, and any other it's also on.
+function sourceName(command) {
+  return String(command || "").split("/").pop();
 }
 
 // A fact with its label beside it, for a cell holding facts under more than one label.
@@ -1365,6 +1374,11 @@ function labelled(label, ...content) {
 function rosterTeam(session, now) {
   const span = el("span");
   span.append(session.nickname || "");
+  if (session.source) {
+    const also = (session.also_on || []).map(sourceName);
+    span.append(el("br"), el("span", "muted roster-source", "via " + sourceName(session.source)
+      + (also.length ? ", also on " + also.join(", ") : "")));
+  }
   if (session.connected_at) {
     span.append(el("br"), el("span", "muted", [labelled("declared", "connected ", ago(session.connected_at, now))]));
   }
