@@ -994,3 +994,16 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   move it is, with the command; `rally show` gives `close_due` on such a story, in the list and the detail;
   `rally waiting` lists them under `closes_due`, since they wait on a team, not a reader; a merge recorded in
   between changes none of it; docs/parts.md says so; with ledger and view tests.
+- [ ] **RAL-142: Viewer: ambient outlines and more magitech motion, kept light.** From Josh directly (2026-11-09):
+  "more moving panel outlines, more sleek magic", "reactive, sleek, neofuturism meets magitechnology"; the layout,
+  level of detail, colours and function stay as they are, which Josh called successful. Under RAL-26 (the look is
+  the operator's to approve). The watchman relaxed RAL-138's "nothing animates while nothing changes" for this story
+  alone: the ambient outlines may run, and must cost under a few percent of one core in headless Chrome. Done when:
+  every panel has an edge along which two thin lights run, out of phase, as boxes of their own that only translate
+  (RAL-118: the compositor alone, no filter on anything that moves); a cue (a new record, a story's state change)
+  sends one bright pass in the change's colour along the panel it belongs to, with the colour set by `setProperty`
+  (RAL-139); the edge is the panel's first child so a patch keeps it and the motion never restarts on a poll; it's
+  hidden from assistive technology and gone under `prefers-reduced-motion`; the meaning colours are byte-identical
+  (RAL-91's test) and the CSP is unchanged; a browser test checks one edge per panel, that only its lights run while
+  nothing changes and only by `transform`, and that a redraw keeps the same edge; and the PR states the idle CPU
+  share and scrolling frame rate measured in headless Chrome, before and after.

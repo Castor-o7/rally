@@ -69,8 +69,9 @@ agreed with the operator (RAL-26).
 ## The look (RAL-115)
 
 The viewer's style is "modern sci-fi magitech", from the operator on 2026-11-08, and serves the dashboard pillar of
-[ideals.md](ideals.md) (P6 to P10): smoked-glass panels with corner brackets over a faint grid and two slow auroras, section
-names in spaced monospace capitals after a small rune, and a live indicator that breathes while polls arrive. The
+[ideals.md](ideals.md) (P6 to P10): smoked-glass panels with corner brackets on a solid black page (RAL-137), section
+names in spaced monospace capitals after a small rune and a measure-like rule, and a live indicator that pings when a
+record arrives (RAL-138). The
 decoration has colours of its own (`--arc-1`, `--arc-2`), which never stand for a meaning: every state colour and
 `--ticked` keep the values RAL-91's test reads, and a bar's sheen is a shadow, so its background is exactly its
 meaning's colour. Motion stops under `prefers-reduced-motion`. And it must stay light (RAL-118): no `backdrop-filter`, which
@@ -78,6 +79,19 @@ recomputed a blur under every panel on every scrolled frame; no filter on anythi
 animation only turns or fades a box of its own, which the compositor does without the page repainting. Everything is served by the viewer itself, as the
 page's CSP requires, so there are no web fonts: the font stacks name ones the machine may have, and fall back to the
 system's. A section fades up only when it's first drawn; a poll patches it in place (RAL-89), so it never replays.
+
+**Motion** (RAL-138, RAL-142). Nothing animates while nothing changes, with one agreed exception: the ambient
+outlines. Each panel has an edge (`.edge`, its first child, so a patch keeps it and the motion never restarts on a
+poll) along which two thin lights run, one along the top and one back along the bottom, out of phase, over nine
+seconds. Each light is a small box that only translates, so the compositor moves it without the page repainting,
+and it moves in steps, twenty a second, so the compositor draws a third of the frames it would for continuous
+motion; measured in headless Chrome, the page's idle cost with them is a few percent of one core above a still
+page (the numbers are in the PR for RAL-142). Everything else moves only
+on a cue: a new record pings the live indicator, turns the sigil once and sends one bright green pass along the board's
+outline; a story whose state changed lights its row and sends one pass in the state's colour along the panel around
+it; a session going busy or idle lights its row. A cue's colour is set with `style.setProperty`, since the page's
+CSP applies no whole `style` attribute (RAL-139). Under `prefers-reduced-motion` the edges are hidden and a cue is a
+still outline for the same few seconds.
 
 ## Narrow windows (RAL-111, RAL-125)
 

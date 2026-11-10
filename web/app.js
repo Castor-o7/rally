@@ -56,6 +56,16 @@ function el(tag, className, text) {
   return node;
 }
 
+// RAL-142: a panel's edge, where the ambient outlines run (app.css `.edge`). It's the panel's first
+// child, so a patch (drawPatched) keeps it in place and its motion never restarts on a poll. It holds
+// nothing a reader uses, so it's hidden from assistive technology.
+function framed(panel) {
+  const edge = el("i", "edge");
+  edge.setAttribute("aria-hidden", "true");
+  panel.append(edge);
+  return panel;
+}
+
 // An age that keeps itself current (RAL-90): the ticker below rewrites it every second from
 // its timestamp, so "12s ago" doesn't stand still until the next poll.
 function ago(ms, now, form) {
@@ -582,7 +592,7 @@ function renderPast(moment, untrusted) {
     + (past.now ? " The ledger is at record " + past.now + " now. " : " ")
     + (past.untrusted_text || untrusted)));
 
-  const later = el("section", "panel");
+  const later = framed(el("section", "panel"));
   later.append(el("h3", "", "Corrected later"));
   const corrections = past.corrections || [];
   if (past.corrections_unavailable) {
@@ -609,7 +619,7 @@ function renderPast(moment, untrusted) {
     later.append(el("p", "muted", "Nothing recorded since corrects what the ledger held then."));
   }
 
-  const stories = el("section", "panel");
+  const stories = framed(el("section", "panel"));
   stories.append(el("h3", "", "Stories then"));
   const rows = Object.entries(past.stories || {}).filter(([id]) => onBoard(id));
   if (rows.length) {
@@ -622,7 +632,7 @@ function renderPast(moment, untrusted) {
     stories.append(el("p", "warning", "⚠ More stories or teams than the viewer reads; only the first are shown."));
   }
 
-  const teams = el("section", "panel");
+  const teams = framed(el("section", "panel"));
   teams.append(el("h3", "", "Teams then"));
   const teamRows = Object.entries(past.teams || {}).filter(([name]) => teamOnBoard(name));
   if (teamRows.length) {
@@ -633,7 +643,7 @@ function renderPast(moment, untrusted) {
     teams.append(el("p", "muted", "No team had declared a state yet."));
   }
 
-  const blockers = el("section", "panel");
+  const blockers = framed(el("section", "panel"));
   blockers.append(el("h3", "", "Open blockers then"));
   const open = (past.blockers || []).filter((b) => !rally || teamOnBoard(b.team) || onBoard(b.story));
   if (open.length) {
@@ -668,7 +678,7 @@ function renderRoadmaps(projects, now, rally, projectsFile) {
       + unlisted.join(", ") + "."));
   }
   for (const project of shown) {
-    const card = el("article", "roadmap");
+    const card = framed(el("article", "roadmap"));
     const head = el("div", "roadmap-head");
     const title = el("h3");
     const link = el("a", "", project.name);
@@ -1033,7 +1043,7 @@ function storyList(stories) {
 // One roadmap's progress for planning (RAL-23). Shows what couldn't be read rather than zeros, and
 // never compares this roadmap with another.
 function progressPanel(progress, untrusted, now) {
-  const panel = el("section", "panel");
+  const panel = framed(el("section", "panel"));
   panel.append(el("h3", "", "Progress"));
   if (!progress) {
     panel.append(el("p", "muted", "Not read yet."));
@@ -1094,7 +1104,7 @@ function renderProject(status, prefix, now) {
   }
   root.append(el("h2", "", project.name + " · " + project.prefix));
 
-  const roadmap = el("section", "panel");
+  const roadmap = framed(el("section", "panel"));
   roadmap.append(el("h3", "", "Roadmap"));
   const stories = project.stories || [];
   if (project.boxes && project.boxes.total > 0) {
@@ -1127,7 +1137,7 @@ function renderProject(status, prefix, now) {
   root.append(roadmap);
   root.append(progressPanel(project.progress, status.untrusted_text, now));
 
-  const ledger = el("section", "panel");
+  const ledger = framed(el("section", "panel"));
   ledger.append(el("h3", "", "Ledger records"));
   const records = status.ledger.available && status.ledger.stories
     ? Object.entries(status.ledger.stories).filter(([id]) => id.startsWith(project.prefix + "-")) : [];
@@ -1139,11 +1149,11 @@ function renderProject(status, prefix, now) {
       + project.prefix + " is recorded here."));
   }
 
-  const day = el("section", "panel");
+  const day = framed(el("section", "panel"));
   day.append(el("h3", "", "The team's day"));
   day.append(summaryBlock(project.summary, status.untrusted_text, now));
 
-  const facts = el("section", "panel");
+  const facts = framed(el("section", "panel"));
   facts.append(el("h3", "", "From the repository"));
   const merged = project.merged || {};
   if (merged.prs && merged.prs.length) {
@@ -1255,9 +1265,13 @@ let drafts = null;
 // Where a section's render draws: its detached copy during a patched draw, or the page's own,
 // emptied, otherwise.
 function drawing(id) {
-  if (drafts && drafts[id]) return drafts[id];
+  if (drafts && drafts[id]) {
+    if (drafts[id].classList.contains("panel") && !drafts[id].querySelector(":scope > .edge")) framed(drafts[id]);
+    return drafts[id];
+  }
   const live = document.getElementById(id);
   live.replaceChildren();
+  if (live.classList.contains("panel")) framed(live);
   return live;
 }
 
@@ -1674,11 +1688,17 @@ function cueChanges(status, legendBefore) {
   if (now.seq !== before.seq) {
     cue(document.getElementById("freshness"), "arrive");
     cue(document.querySelector(".sigil"), "arrive");
+    // The board's outline makes one bright pass when a record arrives (RAL-142).
+    cue(document.getElementById("ledger"), "sweep", "var(--good)");
   }
   for (const [id, story] of Object.entries(now.stories)) {
     const was = before.stories[id];
     if (!was || was.state !== story.state || was.check !== story.check) {
-      for (const row of storyRows(id)) cue(row, "changed", "var(--s-" + story.state + ")");
+      for (const row of storyRows(id)) {
+        cue(row, "changed", "var(--s-" + story.state + ")");
+        // And the panel around it sweeps once in the same colour (RAL-142).
+        cue(row.closest(".panel, .roadmap"), "sweep", "var(--s-" + story.state + ")");
+      }
     }
   }
   const legendNow = legendCounts();
