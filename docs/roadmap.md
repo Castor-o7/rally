@@ -994,3 +994,13 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   move it is, with the command; `rally show` gives `close_due` on such a story, in the list and the detail;
   `rally waiting` lists them under `closes_due`, since they wait on a team, not a reader; a merge recorded in
   between changes none of it; docs/parts.md says so; with ledger and view tests.
+- [ ] **RAL-143: A deployed service names who may open or close a rally.** From Josh directly (2026-11-11), after
+  the watchman found Murph's service had run with `--rally-openers` unset since RAL-77 (the 11-06 drop-in
+  naming `josh,watchman` was shelved and never restored), so any paired credential, every team on Murph
+  included, could open or close a rally, and nothing but a line in each answer said so. Josh: fix it so future
+  rallies don't start like that. Done when: `rally serve` with `--rally-openers` unset refuses to start unless
+  it's given an explicit opt-out (such as `--rally-openers-any`), naming the rule and docs/service.md;
+  docs/deploy-murph.md installs the openers setting with the unit, and the deploy's check fails without it;
+  `rally rallies` and the viewer show who may open (`who_may_open`) at the top, not only inside answers;
+  docs/service.md says so; with a service test that an unset list refuses to start, an opt-out starts with
+  the warning, and a listed credential is the only non-watchman one an `open-rally` accepts.
