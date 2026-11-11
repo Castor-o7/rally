@@ -110,7 +110,7 @@ pub struct Section {
 
 /// A fence line's character, its length and what follows it: three or more backticks or tildes,
 /// indented by at most three spaces. A backtick fence's info string can't hold a backtick.
-fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
+pub(crate) fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
     let indent = line.len() - line.trim_start_matches(' ').len();
     if indent > 3 {
         return None;

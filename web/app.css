@@ -157,7 +157,16 @@ h2::before {
   background: var(--arc-glow);
   box-shadow: 0 0 8px var(--arc-2);
 }
-h2::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--edge), transparent); }
+/* The rule is a measure: a fading line with ticks under it, like an instrument's scale (RAL-142). */
+h2::after {
+  content: "";
+  flex: 1;
+  height: 5px;
+  background:
+    linear-gradient(90deg, var(--edge), transparent) 0 0 / 100% 1px no-repeat,
+    repeating-linear-gradient(90deg, var(--edge) 0 1px, transparent 1px 14px) 0 0 / 100% 100% no-repeat;
+  mask: linear-gradient(90deg, #000, transparent 70%);
+}
 h3 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: 0.01em; }
 p { margin: 0; }
 .muted { color: var(--text-2); font-size: 13px; }
@@ -187,6 +196,53 @@ p { margin: 0; }
 .panel::before, .roadmap::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; border-top-left-radius: 12px; }
 .panel::after, .roadmap::after { right: -1px; bottom: -1px; border-width: 0 1px 1px 0; border-bottom-right-radius: 12px; }
 .roadmap:hover, .panel:hover { border-color: var(--edge); box-shadow: var(--shadow), 0 0 0 1px var(--arc-glow), 0 0 32px var(--arc-glow); }
+
+/* RAL-142: the ambient outlines. Each panel's edge (app.js `framed`) is a clipped box over the panel's
+   border, and two thin lights run along it: one along the top edge, one back along the bottom, out of
+   phase. Each light is a small box of its own that only translates and fades, so the compositor moves
+   it without the page repainting (RAL-118); the whole page's motion while nothing changes is these.
+   It's the one exception to RAL-138's "nothing animates while nothing changes", agreed with the
+   watchman for this story, and it stops under prefers-reduced-motion. When something in the panel
+   changes (a story's state, a new record on the board), both lights make one fast, bright pass in the
+   colour of the change (--cue, set with setProperty as the CSP needs), then the ambient run resumes. */
+.edge {
+  position: absolute;
+  inset: -1px;
+  overflow: hidden;
+  border-radius: 12px;
+  pointer-events: none;
+}
+.edge::before, .edge::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  width: 28%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--arc-2) 50%, transparent);
+  box-shadow: 0 0 6px var(--arc-2);
+  opacity: 0.85;
+  will-change: transform;
+  /* In steps, not continuously: the compositor draws a frame only when a light moves, so this runs
+     at 20 frames a second rather than 60, a third of the cost, and the 6-pixel steps of a soft light
+     read as a shimmer. Measured in the PR for RAL-142. */
+  animation: edge-run 9s steps(180) infinite;
+}
+.edge::before { top: 0; }
+.edge::after { bottom: 0; background: linear-gradient(90deg, transparent, var(--arc-1) 50%, transparent); box-shadow: 0 0 6px var(--arc-1); animation-direction: reverse; animation-delay: -4.5s; }
+/* 357.14% of a light's own width (28%) is the panel's width, so the light leaves at the far edge. */
+@keyframes edge-run {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(357.14%); }
+}
+.cue-sweep > .edge::before, .cue-sweep > .edge::after {
+  background: linear-gradient(90deg, transparent, var(--cue, var(--arc-2)) 50%, transparent);
+  box-shadow: 0 0 8px var(--cue, var(--arc-2));
+  animation: edge-run 1.2s cubic-bezier(0.2, 0.7, 0.2, 1) 1;
+}
+.cue-sweep > .edge::after { animation-direction: reverse; animation-delay: 0s; }
+
+/* A faint sheen along each panel's top, like light on glass: still, so it costs nothing. */
+.panel, .roadmap { background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 36px); }
 .roadmap-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .roadmap-head h3 a, .roadmap-head a { font-size: 15px; text-decoration: none; }
 .roadmap-head > :last-child { font: 600 11px var(--mono); letter-spacing: 0.14em; color: var(--text-2); }
@@ -396,6 +452,8 @@ tbody tr.cue-activity, .activity li.cue-activity { animation: cue-trace 2.4s eas
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+  /* The ambient outlines are movement and nothing else, so they go entirely (RAL-142). */
+  .edge { display: none; }
   /* No movement: the same cue is a still outline for the 2.4 s app.js keeps the class. */
   .cue-arrive, .legend .cue-count { outline: 1px solid var(--arc-2); outline-offset: 2px; }
   tbody tr.cue-changed, .stories li.cue-changed, .activity li.cue-changed, tbody tr.cue-activity,

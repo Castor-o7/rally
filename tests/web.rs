@@ -2218,9 +2218,11 @@ fn a_change_cues_what_changed_and_an_unchanged_poll_cues_nothing() {
       await new Promise((r) => setTimeout(r, 2700));
       const afterwards = cued();
       redraw(structuredClone(status));
-      // With the cues gone, nothing on the page is animating: the page idles between changes.
+      // With the cues gone, nothing on the page is animating but the ambient outlines (RAL-142, the
+      // agreed exception): the page idles between changes.
       await new Promise((r) => setTimeout(r, 2700));
-      const running = document.getAnimations().filter((a) => a.playState === "running").length;
+      const running = document.getAnimations()
+        .filter((a) => a.playState === "running" && !a.effect.target.classList.contains("edge")).length;
       return { changed, colour, afterwards, unchanged: cued(), running };
     })()"##;
     let seen = in_browser(&viewer, &chrome, Some(probe));
@@ -2264,6 +2266,75 @@ fn a_change_cues_what_changed_and_an_unchanged_poll_cues_nothing() {
             .iter()
             .any(|c| c.ends_with("cue-arrive") && !c.starts_with("freshness")),
         "the sigil turns for a new record: {probe}"
+    );
+}
+
+/// RAL-142: the ambient outlines. Every panel has one edge, first among its children so a patch keeps
+/// it (and its motion never restarts on a poll); its two lights are the only animations running while
+/// nothing changes, and they only move (transform), which the compositor does alone (RAL-118); they're
+/// hidden from assistive technology; and the page still draws its frames while they run.
+#[test]
+fn the_panel_outlines_run_on_their_own_and_only_by_moving() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start();
+    let probe = r##"(async () => {
+      for (let i = 0; i < 100 && !document.querySelector("#ledger .edge"); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      // Let the sections' first-draw fade-up (0.5 s, RAL-89) finish: it's a first draw, not idling.
+      await new Promise((r) => setTimeout(r, 900));
+      const panels = [...document.querySelectorAll(".panel, .roadmap")];
+      const edges = panels.map((p) => [...p.children].filter((c) => c.classList.contains("edge")).length);
+      const first = panels.every((p) => p.firstElementChild && p.firstElementChild.classList.contains("edge"));
+      const ariaHidden = [...document.querySelectorAll(".edge")].every((e) => e.getAttribute("aria-hidden") === "true");
+      const running = document.getAnimations().filter((a) => a.playState === "running");
+      const onEdges = running.filter((a) => a.effect.target.classList.contains("edge"));
+      const skip = ["offset", "computedOffset", "easing", "composite"];
+      const props = [...new Set(onEdges.flatMap((a) => a.effect.getKeyframes().flatMap((k) => Object.keys(k))))]
+        .filter((k) => !skip.includes(k)).sort();
+      let frames = 0;
+      const started = performance.now();
+      await new Promise((done) => {
+        const frame = () => { frames++; if (performance.now() - started < 1000) requestAnimationFrame(frame); else done(); };
+        requestAnimationFrame(frame);
+      });
+      const before = document.querySelector("#ledger > .edge");
+      show(lastStatus, Date.now());
+      const same = before === document.querySelector("#ledger > .edge");
+      // A moment's settle, or Chrome is asked to close mid-frame and takes longer than the script waits.
+      await new Promise((r) => setTimeout(r, 1000));
+      return { panels: panels.length, edges, first, ariaHidden, running: running.length,
+        onEdges: onEdges.length, props, frames, same };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    let panels = probe["panels"].as_u64().unwrap();
+    assert!(panels >= 3, "the board's panels are drawn: {probe}");
+    let edges: Vec<u64> = serde_json::from_value(probe["edges"].clone()).unwrap();
+    assert!(edges.iter().all(|&n| n == 1), "one edge per panel: {probe}");
+    assert_eq!(probe["first"], true, "the edge is the first child: {probe}");
+    assert_eq!(probe["ariaHidden"], true, "{probe}");
+    assert_eq!(
+        probe["onEdges"].as_u64().unwrap(),
+        2 * panels,
+        "two lights run on every panel: {probe}"
+    );
+    assert_eq!(
+        probe["running"], probe["onEdges"],
+        "nothing else animates while nothing changes: {probe}"
+    );
+    assert_eq!(
+        probe["props"],
+        json!(["transform"]),
+        "the lights only move: {probe}"
+    );
+    assert!(
+        probe["frames"].as_u64().unwrap() >= 24,
+        "the page keeps drawing frames while they run: {probe}"
+    );
+    assert_eq!(
+        probe["same"], true,
+        "a redraw keeps the edge, so its motion never restarts: {probe}"
     );
 }
 

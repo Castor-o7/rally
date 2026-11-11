@@ -994,6 +994,19 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   move it is, with the command; `rally show` gives `close_due` on such a story, in the list and the detail;
   `rally waiting` lists them under `closes_due`, since they wait on a team, not a reader; a merge recorded in
   between changes none of it; docs/parts.md says so; with ledger and view tests.
+- [ ] **RAL-142: Viewer: ambient outlines and more magitech motion, kept light.** From Josh directly (2026-11-09):
+  "more moving panel outlines, more sleek magic", "reactive, sleek, neofuturism meets magitechnology"; the layout,
+  level of detail, colours and function stay as they are, which Josh called successful. Under RAL-26 (the look is
+  the operator's to approve). The watchman relaxed RAL-138's "nothing animates while nothing changes" for this story
+  alone: the ambient outlines may run, and must cost under a few percent of one core in headless Chrome. Done when:
+  every panel has an edge along which two thin lights run, out of phase, as boxes of their own that only translate
+  (RAL-118: the compositor alone, no filter on anything that moves); a cue (a new record, a story's state change)
+  sends one bright pass in the change's colour along the panel it belongs to, with the colour set by `setProperty`
+  (RAL-139); the edge is the panel's first child so a patch keeps it and the motion never restarts on a poll; it's
+  hidden from assistive technology and gone under `prefers-reduced-motion`; the meaning colours are byte-identical
+  (RAL-91's test) and the CSP is unchanged; a browser test checks one edge per panel, that only its lights run while
+  nothing changes and only by `transform`, and that a redraw keeps the same edge; and the PR states the idle CPU
+  share and scrolling frame rate measured in headless Chrome, before and after.
 - [ ] **RAL-143: A deployed service names who may open or close a rally.** From Josh directly (2026-11-11), after
   the watchman found Murph's service had run with `--rally-openers` unset since RAL-77 (the 11-06 drop-in
   naming `josh,watchman` was shelved and never restored), so any paired credential, every team on Murph
@@ -1054,3 +1067,13 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   - **Proof:** a real pull request on each of the four repos shows its `local/*` statuses go green with no
     Actions run started (the Actions runs list for that sha is empty), and merges under the updated ruleset; and
     a deliberately failing commit on a scratch branch shows `local/check` red with its log.
+- [ ] **RAL-145: `rally next` and `rally new-story` find a project's own roadmap, tables included.** From the
+  watchman (2026-11-11, issue 1.38): in DiscoSim's checkout `rally next --team <t>` failed with "can't read
+  docs/roadmap.md", since DiscoSim keeps its roadmap at `docs/design/99-roadmap.md`; given that path, it then
+  found "no stories with IDs", because that roadmap is tables, not a checklist. `rally new-story DSM` read no
+  written numbers for the same reasons. Done when: without `--roadmap`, both take the projects list's `path` for
+  the prefix (or, for `next` without `--prefix`, for the checkout's `origin` repo), falling back to
+  `docs/roadmap.md`, and `next` says which in `roadmap_from`; a roadmap with no checklist stories is read from
+  its tables' `ID`/`Story`/`Depends on`/`Done when` columns, done coming from the ledger; checklist roadmaps
+  pick as before; docs/next.md says so; with unit tests for the path order and for a DiscoSim-shaped table
+  roadmap, and `rally next` in the DiscoSim checkout offering a DSM story.

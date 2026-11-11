@@ -1,8 +1,21 @@
 # Picking the next story (RAL-56)
 
 `rally next --team <team>` gives a team its next story by a rule it can follow without a watchman. It runs in the
-team's checkout, reading the roadmap there (`--roadmap`, `docs/roadmap.md` by default) and the ledger through the
-paired service. It writes nothing: when a skip or a shelve should be recorded, it says which command to run.
+team's checkout, reading the roadmap there and the ledger through the paired service. It writes nothing: when a
+skip or a shelve should be recorded, it says which command to run.
+
+Which roadmap (RAL-145): `--roadmap` if given; otherwise the `path` the projects list gives for `--prefix`, or,
+without `--prefix`, for the project whose `repo` is the checkout's `origin`; otherwise `docs/roadmap.md`. The
+projects list is `--projects`, else `projects.json` beside the pairing, else the built-in list, as for the
+viewer. The answer's `roadmap_from` says which applied. `rally new-story` finds its roadmap the same way, by its
+prefix.
+
+A roadmap is read as a checklist (`- [ ] **RAL-1: Title.** …`) or, when it has no checklist stories, as tables
+(RAL-145), as DiscoSim's `docs/design/99-roadmap.md` is: each row whose `ID` column holds a story ID, titled by
+its `Story` column, with its `Depends on` and `Done when` columns read as a checklist item's would be. A table
+has no boxes, so whether its stories are done is the ledger's to say (verified or merged). A story in two tables
+keeps its first row; rows inside fenced code, and tables without an `ID` column, aren't stories. A checklist
+roadmap's tables are never read as stories.
 
 The rule comes from the operator's question of 2026-11-05, whether a rally can run without a watchman, and the
 operator's caveat: "if the operator doesn't respond within a certain reasonable window of time then shelve the
