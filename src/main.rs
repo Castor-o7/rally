@@ -661,12 +661,17 @@ enum Command {
     Next {
         #[arg(long, env = "RALLY_TEAM")]
         team: String,
-        /// The roadmap to pick from.
-        #[arg(long, default_value = "docs/roadmap.md")]
-        roadmap: PathBuf,
+        /// The roadmap to pick from. Without it, the projects list's path for --prefix, or for the
+        /// project whose repo is this checkout's origin, and otherwise docs/roadmap.md (RAL-145).
+        #[arg(long)]
+        roadmap: Option<PathBuf>,
         /// The story ID prefix, such as RAL. Without it, the one most of the roadmap's stories use.
         #[arg(long)]
         prefix: Option<String>,
+        /// The projects list that gives each project's roadmap path, instead of projects.json
+        /// beside the pairing or the built-in list.
+        #[arg(long)]
+        projects: Option<PathBuf>,
     },
     /// Take the next free story number for a prefix, as a new ready story with a title (RAL-55).
     /// Prints the story's ID. Two teams asking at once get different numbers. IDs written by hand
@@ -676,13 +681,18 @@ enum Command {
         prefix: String,
         #[arg(long)]
         title: String,
-        /// The prefix's roadmap, so a number already written there isn't handed out.
-        #[arg(long, default_value = "docs/roadmap.md")]
-        roadmap: PathBuf,
+        /// The prefix's roadmap, so a number already written there isn't handed out. Without it,
+        /// the projects list's path for the prefix, and otherwise docs/roadmap.md (RAL-145).
+        #[arg(long)]
+        roadmap: Option<PathBuf>,
         /// The GitHub repository, as owner/repo, whose open pull requests' roadmaps are read too
         /// (RAL-68). Defaults to this checkout's `origin` on github.com.
         #[arg(long)]
         repo: Option<String>,
+        /// The projects list that gives each project's roadmap path, instead of projects.json
+        /// beside the pairing or the built-in list.
+        #[arg(long)]
+        projects: Option<PathBuf>,
     },
     /// Prompts for the watchman from Muster's roster and Rally's records (RAL-7): each row of the
     /// design's stall table that holds for a team, and whether every team is waiting at once, as
@@ -1513,6 +1523,64 @@ fn github_repo(url: &str) -> Option<String> {
     rally::evidence::valid_repo(repo).then(|| repo.to_owned())
 }
 
+/// This checkout's `origin`, as `owner/repo`, if it's on github.com.
+fn origin_repo() -> Option<String> {
+    std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()
+        .and_then(|out| github_repo(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// The roadmap `rally next` and `rally new-story` read, and where its path came from (RAL-145):
+/// `--roadmap`; else the projects list's path for `prefix`, or, without a prefix, for the project
+/// whose repo is this checkout's origin; else `docs/roadmap.md`. A projects list that's there
+/// but can't be read is an error, never a quiet fall back.
+fn roadmap_path(
+    roadmap: Option<PathBuf>,
+    prefix: Option<&str>,
+    projects: Option<&Path>,
+    config: &Path,
+    origin: impl FnOnce() -> Option<String>,
+) -> Result<(PathBuf, String), Box<dyn std::error::Error>> {
+    if let Some(roadmap) = roadmap {
+        return Ok((roadmap, "--roadmap".to_owned()));
+    }
+    let file = match projects {
+        Some(path) => Some(path.to_owned()),
+        None => default_projects_file(config)?,
+    };
+    let text = match &file {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|e| format!("couldn't read the projects list {}: {e}", path.display()))?,
+        None => DEFAULT_PROJECTS.to_owned(),
+    };
+    let list: Vec<Project> = serde_json::from_str(&text)
+        .map_err(|error| format!("the projects list isn't a list of projects: {error}"))?;
+    let source = file.map_or_else(
+        || "the built-in projects list".to_owned(),
+        |path| path.display().to_string(),
+    );
+    let found = match prefix {
+        Some(prefix) => list
+            .iter()
+            .find(|project| project.prefix.eq_ignore_ascii_case(prefix))
+            .map(|project| (project, format!("{source}, for {}", project.prefix))),
+        None => origin().and_then(|repo| {
+            list.iter()
+                .find(|project| project.repo.eq_ignore_ascii_case(&repo))
+                .map(|project| (project, format!("{source}, for {repo}")))
+        }),
+    };
+    Ok(match found {
+        Some((project, from)) => (PathBuf::from(&project.path), from),
+        None => (
+            PathBuf::from("docs/roadmap.md"),
+            "the default: no project in the projects list matched".to_owned(),
+        ),
+    })
+}
+
 /// What the service read of open pull requests' roadmaps (RAL-68), or why it couldn't.
 fn open_pull_ids(backend: &Backend, repo: Option<&str>, roadmap: &Path, prefix: &str) -> Value {
     let not = |reason: &str| json!({"checked": false, "reason": reason});
@@ -1521,11 +1589,7 @@ fn open_pull_ids(backend: &Backend, repo: Option<&str>, roadmap: &Path, prefix: 
     };
     let repo = match repo {
         Some(repo) => Some(repo.to_owned()),
-        None => std::process::Command::new("git")
-            .args(["remote", "get-url", "origin"])
-            .output()
-            .ok()
-            .and_then(|out| github_repo(&String::from_utf8_lossy(&out.stdout))),
+        None => origin_repo(),
     };
     let Some(repo) = repo else {
         return not("no GitHub repository: give --repo owner/repo");
@@ -2280,13 +2344,17 @@ fn wake_pass(
 
 fn next(
     team: &str,
-    roadmap: &Path,
+    (roadmap, roadmap_from): &(PathBuf, String),
     prefix: Option<String>,
     location: Option<&Location>,
     config: &Path,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let text = std::fs::read_to_string(roadmap)
-        .map_err(|e| format!("can't read {}: {e}", roadmap.display()))?;
+    let text = std::fs::read_to_string(roadmap).map_err(|e| {
+        format!(
+            "can't read {} (from {roadmap_from}): {e}; give --roadmap or --prefix",
+            roadmap.display()
+        )
+    })?;
     let prefix = match prefix {
         Some(prefix) => prefix,
         None => rally::next::prefix_of(&text).ok_or_else(|| {
@@ -2316,6 +2384,7 @@ fn next(
         result["project_roadmap"] = summary;
     }
     result["roadmap"] = json!(roadmap);
+    result["roadmap_from"] = json!(roadmap_from);
     result["prefix"] = json!(prefix);
     result["untrusted_text"] = json!(views::UNTRUSTED_TEXT);
     Ok(serde_json::to_string_pretty(&result)?)
@@ -3822,8 +3891,16 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             title,
             roadmap,
             repo,
+            projects,
         } => {
             let config = config_path(cli.config)?;
+            let (roadmap, _) = roadmap_path(
+                roadmap,
+                Some(&prefix),
+                projects.as_deref(),
+                &config,
+                origin_repo,
+            )?;
             return new_story(
                 &prefix,
                 &title,
@@ -3838,14 +3915,17 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             team,
             roadmap,
             prefix,
+            projects,
         } => {
-            return next(
-                &team,
-                &roadmap,
-                prefix,
-                location.as_ref(),
-                &config_path(cli.config)?,
-            );
+            let config = config_path(cli.config)?;
+            let roadmap = roadmap_path(
+                roadmap,
+                prefix.as_deref(),
+                projects.as_deref(),
+                &config,
+                origin_repo,
+            )?;
+            return next(&team, &roadmap, prefix, location.as_ref(), &config);
         }
         Command::Past { as_of } => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
@@ -4154,4 +4234,55 @@ fn now_ms() -> Result<i64, Box<dyn std::error::Error>> {
     Ok(i64::try_from(
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_roadmap_path_comes_from_the_flag_the_prefix_the_origin_then_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("client.json");
+        let none = || -> Option<String> { panic!("the origin isn't asked for") };
+        let (path, from) =
+            roadmap_path(Some("mine.md".into()), Some("DSM"), None, &config, none).unwrap();
+        assert_eq!(
+            (path, from.as_str()),
+            (PathBuf::from("mine.md"), "--roadmap")
+        );
+
+        std::fs::write(
+            dir.path().join("projects.json"),
+            r#"[{"name": "DiscoSim", "prefix": "DSM", "repo": "Castor-o7/DiscoSim",
+                 "path": "docs/design/99-roadmap.md", "tick_meaning": "Verified"}]"#,
+        )
+        .unwrap();
+        let (path, from) = roadmap_path(None, Some("dsm"), None, &config, none).unwrap();
+        assert_eq!(path, PathBuf::from("docs/design/99-roadmap.md"));
+        assert!(from.ends_with("projects.json, for DSM"), "{from}");
+        let origin = || Some("castor-o7/discosim".to_owned());
+        let (path, _) = roadmap_path(None, None, None, &config, origin).unwrap();
+        assert_eq!(path, PathBuf::from("docs/design/99-roadmap.md"));
+        let elsewhere = || Some("Castor-o7/elsewhere".to_owned());
+        let (path, from) = roadmap_path(None, None, None, &config, elsewhere).unwrap();
+        assert_eq!(path, PathBuf::from("docs/roadmap.md"));
+        assert!(from.starts_with("the default"), "{from}");
+
+        // Without a projects file beside the pairing, the built-in list.
+        let (path, from) = roadmap_path(
+            None,
+            Some("RAL"),
+            None,
+            &dir.path().join("x/client.json"),
+            none,
+        )
+        .unwrap();
+        assert_eq!(path, PathBuf::from("docs/roadmap.md"));
+        assert!(from.starts_with("the built-in projects list"), "{from}");
+
+        // A projects list that won't parse is an error, not a quiet default.
+        std::fs::write(dir.path().join("projects.json"), "not json").unwrap();
+        assert!(roadmap_path(None, Some("DSM"), None, &config, none).is_err());
+    }
 }
