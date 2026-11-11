@@ -151,6 +151,30 @@ class DriftTests(unittest.TestCase):
         self.assertIn("`notify`", problems[0])      # no needs and no gate
         self.assertIn("`report`", problems[1])      # always() runs it even when release is skipped
 
+    def test_a_public_repository_keeps_its_hosted_triggers_but_not_larger_runners(self):
+        public = 'hosted_runs = "public repository: standard runners bill nothing"\n' + CONFIG
+        write(self.root, ".ci/local.toml", public)
+        write(self.root, ".github/workflows/ci.yml", WORKFLOW.replace(
+            "  workflow_dispatch:", "  push:\n    branches: [main]\n  pull_request:"))
+        write(self.root, ".github/workflows/other.yml", "on: push\njobs: {}\n")
+        self.assertEqual(ci_local.check_config(self.root), [])
+        write(self.root, ".github/workflows/big.yml", """
+            on: push
+            jobs:
+              fast:
+                runs-on: ubuntu-latest-8-cores
+              wide:
+                runs-on: {group: x, labels: [windows-2022-xlarge]}
+              arm:
+                runs-on: ubuntu-24.04-arm
+        """)
+        problems = ci_local.check_config(self.root)
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn("`fast`", problems[0])
+        self.assertIn("`wide`", problems[1])
+        with self.assertRaisesRegex(ValueError, "say why"):
+            ci_local.parse_config('hosted_runs = " "\n' + CONFIG)
+
     def test_an_exemption_needs_a_reason_and_a_workflow(self):
         with self.assertRaisesRegex(ValueError, "say why"):
             ci_local.parse_config(CONFIG + '[exempt]\n"release.yml" = ""\n')

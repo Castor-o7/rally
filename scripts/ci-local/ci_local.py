@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ci-local: the projects' CI, run on Murph instead of GitHub Actions (RAL-144).
+"""ci-local: the projects' CI, run on Murph beside (or, on a private repository, instead of) GitHub Actions (RAL-144).
 
 Watches the repositories in repos.toml. For each push to main, and each open pull request whose
 branch lives in the same repository (never a fork's), it checks out the commit, runs the jobs its
@@ -50,6 +50,9 @@ CONFIG_PATH = ".ci/local.toml"
 API = "https://api.github.com"
 # Triggers a workflow may keep (RAL-144: none of them spends minutes on its own).
 ALLOWED_TRIGGERS = {"workflow_dispatch", "workflow_call"}
+# Runner labels that bill even on a public repository: GitHub's larger runners, named with their
+# size, such as `ubuntu-latest-4-cores` or `windows-2022-xlarge`.
+PAID_RUNNER = re.compile(r"(^|-)(x*large|\d+-cores?|gpu)($|-)")
 
 
 def log(*parts: object) -> None:
@@ -78,6 +81,9 @@ class RepoConfig:
     workflows: list[str]
     jobs: dict[str, Job]
     exempt: dict[str, str] = field(default_factory=dict)   # workflow -> why it may keep a trigger
+    # Why GitHub's hosted runs may stay on (a public repository, where standard runners bill
+    # nothing); empty when every workflow must be dispatch-only.
+    hosted_runs: str = ""
 
     def runnable(self) -> list[Job]:
         """Jobs with commands to run here (not manual, not aggregates)."""
@@ -89,7 +95,7 @@ class RepoConfig:
 
 def parse_config(text: str) -> RepoConfig:
     data = tomllib.loads(text)
-    unknown = set(data) - {"workflows", "jobs", "exempt"}
+    unknown = set(data) - {"workflows", "jobs", "exempt", "hosted_runs"}
     if unknown:
         raise ValueError(f"unknown keys in {CONFIG_PATH}: {sorted(unknown)}")
     jobs: dict[str, Job] = {}
@@ -114,7 +120,11 @@ def parse_config(text: str) -> RepoConfig:
     for wf, why in exempt.items():
         if not isinstance(why, str) or not why.strip():
             raise ValueError(f"exempt workflow {wf}: say why")
-    return RepoConfig(workflows=list(data.get("workflows", [])), jobs=jobs, exempt=exempt)
+    hosted_runs = data.get("hosted_runs", "")
+    if "hosted_runs" in data and (not isinstance(hosted_runs, str) or not hosted_runs.strip()):
+        raise ValueError("hosted_runs: say why GitHub's hosted runs may stay on")
+    return RepoConfig(workflows=list(data.get("workflows", [])), jobs=jobs, exempt=exempt,
+                      hosted_runs=hosted_runs)
 
 
 def load_repos(path: Path = HERE / "repos.toml") -> dict[str, str]:
@@ -164,6 +174,19 @@ def ungated_jobs(doc: dict) -> set[str]:
     return {j for j in jobs if not is_gated(j)}
 
 
+def paid_runners(doc: dict) -> list[tuple[str, str]]:
+    """(job, label) for each job whose `runs-on` names a larger runner, which bills even on a
+    public repository."""
+    found = []
+    for name, spec in (doc.get("jobs") or {}).items():
+        runs_on = (spec or {}).get("runs-on", [])
+        if isinstance(runs_on, dict):
+            runs_on = runs_on.get("labels", [])
+        labels = [runs_on] if isinstance(runs_on, str) else list(runs_on or [])
+        found += [(name, str(label)) for label in labels if PAID_RUNNER.search(str(label))]
+    return found
+
+
 def check_config(checkout: Path) -> list[str]:
     """Problems with a checkout's local CI config; empty when it's in step with its workflows."""
     import yaml  # only the drift check needs it; the runner itself doesn't
@@ -181,7 +204,13 @@ def check_config(checkout: Path) -> list[str]:
     for name in on_disk:
         doc = yaml.safe_load((wf_dir / name).read_text()) or {}
         spend = workflow_triggers(doc) - ALLOWED_TRIGGERS
-        if spend and name in cfg.exempt:
+        if cfg.hosted_runs:
+            # A public repository's standard runners bill nothing, so its workflows keep their
+            # triggers; only a larger runner would spend.
+            for job, label in paid_runners(doc):
+                problems.append(f"{name}: job `{job}` runs on `{label}`, a larger runner, which "
+                                f"bills even on a public repository")
+        elif spend and name in cfg.exempt:
             # Allowed only when no job can run here: each is gated to another repository (marshal's
             # upstream workflows, kept as upstream wrote them, run on upstream's runners only).
             for job in sorted(ungated_jobs(doc)):

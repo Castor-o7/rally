@@ -1,9 +1,10 @@
 name: CI
 
-# CI runs on Murph now (RAL-144): ci-local runs these jobs from .ci/local.toml and posts
-# `local/check` and `local/dependency-audit`. This workflow stays only to be run by hand.
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always

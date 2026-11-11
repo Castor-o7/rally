@@ -1,7 +1,9 @@
 # Rally's CI, run on Murph by ci-local (RAL-144; docs/ci-local.md). One job per job in
-# .github/workflows/ci.yml, which now runs only by hand. Each posts the status `local/<job>`.
+# .github/workflows/ci.yml, which still runs on GitHub too. Each posts the status `local/<job>`.
 
 workflows = ["ci.yml"]
+# Josh, 2026-11-11: run both. Rally is public, so GitHub's standard runners bill nothing.
+hosted_runs = "public repository: GitHub's standard hosted runners bill nothing"
 
 [jobs.check]
 mem = "10G"

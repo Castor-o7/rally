@@ -1,8 +1,16 @@
 # ci-local: the projects' CI on Murph (RAL-144)
 
-GitHub Actions stopped being where CI runs. ci-local runs each project's CI on Murph and posts the
-results back to GitHub as commit statuses, so a pull request shows `local/check` (and the rest) the
-way it showed Actions' checks, and nothing spends Actions minutes.
+ci-local runs each project's CI on Murph and posts the results back to GitHub as commit statuses,
+so a pull request shows `local/check` (and the rest) next to Actions' checks. It was built when
+Josh's Actions minutes ran out (blocked until 2026-12-02, with a $0 budget). Only private
+repositories spend minutes, so:
+
+- **Public repositories (rally, marshal, muster) run both** (Josh, 2026-11-11). GitHub's standard
+  hosted runners bill nothing there, so their workflows keep their `push` and `pull_request`
+  triggers, and Actions' `check` stays the required check. `local/*` runs alongside, as a second
+  check that doesn't depend on GitHub. Each says so with `hosted_runs` in its `.ci/local.toml`.
+- **A private repository (RootyRoopsDAW)** has no `hosted_runs`. Its workflows run only by hand,
+  and `local/*` is its required check.
 
 It watches four repositories (`scripts/ci-local/repos.toml`): rally, marshal, muster and
 RootyRoopsDAW. DiscoSim isn't one of them: it keeps `dsm-gate`.
@@ -68,14 +76,16 @@ manual = "needs macOS: run the workflow by hand"
 
 A job has exactly one of `run` (a bash script, run with `-eo pipefail`), `needs` (an aggregate, as
 muster's `check` is in its workflow) or `manual` (not run here, and why). Murph is Linux, so macOS and Windows jobs are `manual`. They're still in their
-workflow, which can be run by hand (below).
+workflow, which runs on GitHub as before on a public repository and by hand on RootyRoopsDAW (below).
 
 **The drift check** runs before any job and posts `local/ci-config`. It fails when:
 
 - a job in one of the named `workflows` isn't in `.ci/local.toml`, as `run` or `manual`, so the
   two can't drift apart, or
-- any workflow in `.github/workflows` still has a trigger other than `workflow_dispatch` or
-  `workflow_call` (a `push`, `pull_request` or `schedule` would run on GitHub's runners on its own),
+- with `hosted_runs` set (a public repository), a job's `runs-on` names a larger runner (such as
+  `ubuntu-latest-8-cores` or `windows-2022-xlarge`), which bills even on a public repository, or
+- without `hosted_runs`, any workflow in `.github/workflows` still has a trigger other than
+  `workflow_dispatch` or `workflow_call` (a `push`, `pull_request` or `schedule` would run on GitHub's runners on its own),
   unless `.ci/local.toml` lists it under `[exempt]` with a reason **and** none of its jobs can run in
   this repository: each job's `if` names `github.repository == ...`, or every job it needs is gated
   that way and its `if` has no `always()`, `failure()` or `cancelled()`. marshal's upstream
@@ -126,7 +136,8 @@ and logs when it backs off and when it resumes.
 
 ## Releases, and the macOS and Windows jobs
 
-No workflow runs on its own any more: each one keeps only `workflow_dispatch`. To run one, use the
+On the public repositories, the workflows run on their own as before, macOS and Windows jobs
+included. On RootyRoopsDAW, each one keeps only `workflow_dispatch`. To run one by hand, use the
 repository's Actions tab, "Run workflow", or:
 
 ```bash
@@ -157,13 +168,13 @@ note above).
    systemctl --user daemon-reload && systemctl --user enable --now ci-local
    journalctl --user -u ci-local -f
    ```
-4. **Point each ruleset's required check at the local status.** The rulesets require `check` (rally,
-   muster) and `rust` (RootyRoopsDAW) from GitHub Actions (integration 15368), which a status from
-   Murph can't satisfy. In each repository's Settings → Rules → "Protect main" → Require status
-   checks, replace the check with `local/check` (`local/rust` on RootyRoopsDAW), with no source app
-   selected. marshal's main has no required check: add `local/check` there too if it should have one.
-5. **Optional**: in each repository's Settings → Actions → General, choose "Disable actions" (or
-   allow only the release workflows) so nothing can spend minutes even by mistake.
+4. **Point RootyRoopsDAW's required check at the local status.** Its ruleset requires `rust` from
+   GitHub Actions (integration 15368), which a status from Murph can't satisfy. In its Settings →
+   Rules → "Protect main" → Require status checks, replace it with `local/rust`, with no source app
+   selected. The public repositories keep Actions' `check` as the required check. Adding
+   `local/check` beside it is optional.
+5. **Optional, RootyRoopsDAW only**: in its Settings → Actions → General, allow only the workflows
+   that are run by hand, so nothing can spend minutes even by mistake.
 
 ## Updating the runner
 
