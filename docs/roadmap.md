@@ -1042,8 +1042,9 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
     `windows-native-wake` is `manual`, with `windows-cross-check` still run. A test checks every workflow job is
     either mapped in `.ci/local.toml` or listed as manual, so the two can't drift.
   - **Caps.** Every job runs in `systemd-run --user --scope -p MemoryMax=<cap> -p CPUQuota=<cap>`, with
-    `CARGO_TARGET_DIR` and `TMPDIR` under `~/.cache/ci/` (never `/tmp`, a RAM tmpfs on Murph), at most N jobs
-    at once machine-wide through a slot file beside `~/.config/dsm-heavy.slots`; it pauses new jobs while
+    `CARGO_TARGET_DIR` and `TMPDIR` under `~/.cache/ci/` (never `/tmp`, a RAM tmpfs on Murph), at most N CI
+    jobs at once through CI's own slots (`~/.config/ci-local.slots`), alongside `dsm-heavy`'s rather than
+    shared with them, with the memory floor as the guard both share (watchman's read of #227); it pauses new jobs while
     `MemAvailable` is under 6 GB, and while Josh's DiscoSim play window is open it doesn't pause (he plays for
     hours, and a paused queue is the bottleneck this removes) but runs one job at a time at `nice 19` with a
     lower `CPUQuota`.
@@ -1052,19 +1053,22 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
     limit, logging each back-off and when it resumes.
   - **One-shot.** `ci-local run <repo> <sha>` runs the same jobs for one sha by hand, writes logs to
     `~/.cache/ci/<repo>/<sha>/<job>.log`, and posts statuses only with `--post`.
-  - **No fallback, no spend.** Each repo's workflows keep only `workflow_dispatch` (so they can be run by hand)
-    and lose their `push`/`pull_request` triggers; no `runs-on` names a self-hosted label on a public repo
-    (marshal's `public-ci-*` and `release` self-hosted jobs reviewed and either dispatch-only or removed, with
-    the reason).
-  - **Josh's admin steps, named in the doc** (an agent can't do them): change each ruleset's required check
-    from the Actions-pinned `check`/`rust` to the status context `local/check`/`local/rust`; install the
+  - **No spend.** Josh, 2026-11-11 (to the lamplighter, after the timing API showed a public repo's run billed
+    0 ms under his $0 budget): run both on the public repos. rally, marshal and muster keep their hosted
+    `push`/`pull_request` triggers and Actions' required `check`, with `local/*` alongside, each declaring
+    `hosted_runs` in `.ci/local.toml`; the drift check fails if one of their jobs names a larger (billed) runner.
+    The private RootyRoopsDAW's workflows keep only `workflow_dispatch` and lose their `push`/`pull_request`
+    triggers. No `runs-on` names a self-hosted label on a public repo (marshal's `public-ci-*` and `release`
+    self-hosted jobs reviewed and either dispatch-only or removed, with the reason).
+  - **Josh's admin steps, named in the doc** (an agent can't do them): change RootyRoopsDAW's required check
+    from the Actions-pinned `rust` to the status context `local/rust` (the public repos keep Actions' `check`); install the
     runner's systemd user unit (auto mode refuses unit files to agents); and confirm the token it posts with
     is limited to commit statuses on those four repos.
   - **docs/ci-local.md** covers how it works, the caps, the one-shot, adding a repo, the admin steps and what
-    it doesn't do (forks, Windows), and how releases run once push triggers are gone (marshal's and muster's
-    `release.yml`: dispatched by hand, on hosted runners, which bill nothing on a public repo).
-  - **Proof:** a real pull request on each of the four repos shows its `local/*` statuses go green with no
-    Actions run started (the Actions runs list for that sha is empty), and merges under the updated ruleset; and
+    it doesn't do (forks, Windows), and which repos run both (public) and which run local only (private).
+  - **Proof:** a real pull request on each of the four repos shows its `local/*` statuses go green; on
+    RootyRoopsDAW with no Actions run started (the Actions runs list for that sha is empty), merging under the
+    updated ruleset, and on the public repos beside Actions' green `check`; and
     a deliberately failing commit on a scratch branch shows `local/check` red with its log.
 - [ ] **RAL-145: `rally next` and `rally new-story` find a project's own roadmap, tables included.** From the
   watchman (2026-11-11, issue 1.38): in DiscoSim's checkout `rally next --team <t>` failed with "can't read

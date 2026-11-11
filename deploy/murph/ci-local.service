@@ -1,0 +1,22 @@
+# ci-local (RAL-144): the projects' CI on Murph. See docs/ci-local.md.
+# Install (Josh; agents can't write unit files):
+#   install -D -m 644 deploy/murph/ci-local.service ~/.config/systemd/user/ci-local.service
+#   systemctl --user daemon-reload && systemctl --user enable --now ci-local
+[Unit]
+Description=ci-local: CI for rally, marshal, muster and RootyRoopsDAW on this machine
+After=network-online.target
+
+[Service]
+# A copy installed from a merged main (docs/ci-local.md, "Updating"), never a working tree,
+# so an unmerged branch can't change what the runner does.
+ExecStart=/usr/bin/python3 %h/.local/share/ci-local/ci_local.py serve
+Environment=PATH=%h/.cargo/bin:%h/.local/bin:/usr/local/bin:/usr/bin
+# A fine-grained token: commit statuses read/write and contents read, on the four repositories only.
+Environment=CI_LOCAL_TOKEN_FILE=%h/.config/ci-local/token
+Restart=on-failure
+RestartSec=30
+# The runner itself is small; each job gets its own capped scope.
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target

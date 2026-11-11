@@ -1,0 +1,34 @@
+# Rally's CI, run on Murph by ci-local (RAL-144; docs/ci-local.md). One job per job in
+# .github/workflows/ci.yml, which still runs on GitHub too. Each posts the status `local/<job>`.
+
+workflows = ["ci.yml"]
+# Josh, 2026-11-11: run both. Rally is public, so GitHub's standard runners bill nothing.
+hosted_runs = "public repository: GitHub's standard hosted runners bill nothing"
+
+[jobs.check]
+mem = "10G"
+cpu = "600%"
+timeout_min = 40
+postgres = true
+run = """
+export RALLY_TEST_POSTGRES_URL="$CI_POSTGRES_URL"
+export RALLY_TEST_PG_BIN="$CI_PG_BIN"
+# The viewer's sign-in test drives Murph's Chrome (a flatpak), and can't be skipped here.
+export RALLY_TEST_CHROME="flatpak run com.google.Chrome"
+export RALLY_TEST_BROWSER_REQUIRED=1
+# The socket test reads lsof when it's installed; the hosted job required it (RAL-107).
+if command -v lsof >/dev/null; then export RALLY_TEST_LSOF_REQUIRED=1; else echo "note: no lsof on this machine; the socket test reads /proc only"; fi
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+python3 -m unittest discover -s scripts/ci-local
+"""
+
+[jobs.dependency-audit]
+mem = "4G"
+cpu = "200%"
+timeout_min = 20
+run = """
+test "$(cargo deny --version)" = "cargo-deny 0.20.2" || cargo install --locked cargo-deny --version 0.20.2
+cargo deny check
+"""
