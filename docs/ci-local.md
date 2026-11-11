@@ -20,6 +20,23 @@ Each commit it hasn't run yet is run once:
   machine that holds the daemons and their tokens. That's why this isn't a self-hosted Actions
   runner.
 
+## Trust: who can run code on Murph
+
+Jobs run as `joshd`. A job can read everything in `~`: the daemons' tokens, the rally and muster
+credentials, SSH keys, Josh's saves. The scrubbed environment (below) keeps tokens from riding in
+on environment variables, but it isn't a sandbox, and nothing stops a job from reading a file.
+
+So **"same-repository branches only" is the whole security boundary**: anyone who can push a branch
+to rally, marshal, muster or RootyRoopsDAW can run code on Murph with Josh's account. Forks can't,
+because their pull requests are never run. Keep each repository's collaborators (Settings →
+Collaborators) to people and agents Josh would let run code on Murph. **Josh: confirm the four
+collaborator lists match that.**
+
+A job's environment is an allow-list (`PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TZ`,
+`XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, the Rust toolchain's `CARGO_HOME`/`RUSTUP_*`) plus
+the job's own `env`. Nothing whose name looks like a secret (`TOKEN`, `SECRET`, `PASSWORD`,
+`SSH_*`, `GH_*`, `GITHUB_*`) is passed, and a job's config can't ask for one.
+
 A new push to a pull request is a new commit, so it runs again. A commit already run isn't run
 again, even after a restart (`~/.cache/ci/state.json`). To run one again, use the one-shot below
 with `--post`.
@@ -79,10 +96,12 @@ Murph has 32 GB, no swap, and `/tmp` in RAM, and Josh plays DiscoSim on it.
 - `CARGO_TARGET_DIR` is `~/.cache/ci/target/<repo>/<job>`, kept between runs so builds are
   incremental. `TMPDIR` is a fresh `~/.cache/ci/tmp/...`, removed afterwards. Nothing builds in
   `/tmp`.
-- At most N jobs run at once machine-wide, through lock files in `~/.cache/ci/locks`, as
-  `dsm-heavy` does. N is the number in `~/.config/ci-local.slots` (default 2), re-read before each
-  job, so it can be turned down while something heavy runs.
-- No new job starts while `MemAvailable` is under 6 GB.
+- At most N CI jobs run at once, through lock files in `~/.cache/ci/locks`, as `dsm-heavy` does.
+  N is the number in `~/.config/ci-local.slots` (default 2), re-read before each job, so it can be
+  turned down while something heavy runs. These are CI's own slots, alongside `dsm-heavy`'s, not
+  shared with them: taking DiscoSim's slots would make the rally's teams wait on CI.
+- **The shared guard is memory**: no new CI job starts while `MemAvailable` is under 6 GB, whatever
+  else is running, and each job's `MemoryMax` bounds what it can take once started.
 - **While Josh's DiscoSim window is open**, jobs don't stop. They run one at a time, at `nice 19`,
   with CPU capped at 200%. Pausing would bring back the bottleneck this replaced.
 
@@ -127,9 +146,10 @@ note above).
    `/proc` only. Without `nc` and the mingw compiler, muster's and marshal's jobs that need them
    fail and say so.
 2. **A token**: a fine-grained personal access token for Castor-o7, limited to the four
-   repositories, with *Commit statuses: read and write* and *Contents: read*, in
-   `~/.config/ci-local/token` (mode 600). Without the file the runner uses `gh auth token`, which
-   can do far more than it needs.
+   repositories, with *Commit statuses: read and write*, *Contents: read* and *Pull requests: read*,
+   in `~/.config/ci-local/token` (mode 600). It's what the runner posts with and fetches the private
+   repository with. Without it, `serve` and `run --post` refuse to start: they never fall back to
+   `gh`'s token, which can do far more. A `run` without `--post` needs no token.
 3. **Install the runner and its unit**:
    ```bash
    install -D -m 644 -t ~/.local/share/ci-local scripts/ci-local/ci_local.py scripts/ci-local/repos.toml

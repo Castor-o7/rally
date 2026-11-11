@@ -1029,8 +1029,9 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
     `windows-native-wake` is `manual`, with `windows-cross-check` still run. A test checks every workflow job is
     either mapped in `.ci/local.toml` or listed as manual, so the two can't drift.
   - **Caps.** Every job runs in `systemd-run --user --scope -p MemoryMax=<cap> -p CPUQuota=<cap>`, with
-    `CARGO_TARGET_DIR` and `TMPDIR` under `~/.cache/ci/` (never `/tmp`, a RAM tmpfs on Murph), at most N jobs
-    at once machine-wide through a slot file beside `~/.config/dsm-heavy.slots`; it pauses new jobs while
+    `CARGO_TARGET_DIR` and `TMPDIR` under `~/.cache/ci/` (never `/tmp`, a RAM tmpfs on Murph), at most N CI
+    jobs at once through CI's own slots (`~/.config/ci-local.slots`), alongside `dsm-heavy`'s rather than
+    shared with them, with the memory floor as the guard both share (watchman's read of #227); it pauses new jobs while
     `MemAvailable` is under 6 GB, and while Josh's DiscoSim play window is open it doesn't pause (he plays for
     hours, and a paused queue is the bottleneck this removes) but runs one job at a time at `nice 19` with a
     lower `CPUQuota`.

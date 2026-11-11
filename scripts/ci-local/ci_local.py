@@ -285,15 +285,26 @@ class GitHub:
         return self._request("POST", f"/repos/{full}/statuses/{sha}", body)
 
 
-def token() -> str:
-    tok = os.environ.get("CI_LOCAL_TOKEN") or os.environ.get("GH_TOKEN")
-    if tok:
-        return tok
-    path = os.environ.get("CI_LOCAL_TOKEN_FILE")
-    if path:
-        return Path(path).read_text().strip()
-    return subprocess.run(["gh", "auth", "token"], check=True, capture_output=True,
-                          text=True).stdout.strip()
+TOKEN_FILE_DEFAULT = HOME / ".config" / "ci-local" / "token"
+
+
+def token_file() -> Path:
+    return Path(os.environ.get("CI_LOCAL_TOKEN_FILE") or TOKEN_FILE_DEFAULT)
+
+
+def token(posting: bool) -> str | None:
+    """The token for GitHub's API. Posting (serve, run --post) needs the fine-grained token in its
+    file and fails closed without it: never Josh's full-scope `gh` token. A run that doesn't post
+    uses no token at all for the API."""
+    path = token_file()
+    if path.exists():
+        if path.stat().st_mode & 0o077:
+            raise SystemExit(f"ci-local: {path} must be readable by its owner only (chmod 600)")
+        return path.read_text().strip()
+    if posting:
+        raise SystemExit(f"ci-local: posting statuses needs the fine-grained token in {path} "
+                         "(docs/ci-local.md, setting it up); it won't fall back to gh's token")
+    return None
 
 
 # --- The machine -----------------------------------------------------------------------------
@@ -371,11 +382,23 @@ class Slot:
 # --- Running a commit ------------------------------------------------------------------------
 
 
+# git asks this for credentials: the fine-grained token's file when there is one (it has Contents:
+# read on the four repositories), otherwise gh's (only for runs that don't post; the public
+# repositories need none).
+_FILE_HELPER = ('!f() { test "$1" = get || exit 0; echo username=x-access-token; '
+                'printf "password=%s\\n" "$(cat "$CI_LOCAL_TOKEN_FILE")"; }; f')
+
+
 def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-    return subprocess.run(["git", "-c", "credential.helper=", "-c",
-                           "credential.helper=!gh auth git-credential", *args],
-                          cwd=cwd, check=check, capture_output=True, text=True, env=env).stdout
+    if token_file().exists():
+        env["CI_LOCAL_TOKEN_FILE"] = str(token_file())
+        helper = _FILE_HELPER
+    else:
+        helper = "!gh auth git-credential"
+    return subprocess.run(["git", "-c", "credential.helper=", "-c", f"credential.helper={helper}",
+                           *args], cwd=cwd, check=check, capture_output=True, text=True,
+                          env=env).stdout
 
 
 _repo_locks: dict[str, threading.Lock] = {}
@@ -423,8 +446,19 @@ def _pct(q: str) -> int:
     return int(q.rstrip("%"))
 
 
-def job_env(name: str, job: Job, tmp: Path) -> dict[str, str]:
-    env = dict(os.environ)
+# What a job inherits from the runner: nothing else. Jobs run as joshd and can read ~ anyway
+# (docs/ci-local.md, "Trust"), but no token, agent socket or password rides in on the environment.
+ENV_ALLOW = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TERM",
+             # systemd-run --user and flatpak reach the user's manager and bus through these
+             "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+             "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"}
+ENV_SECRET = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY$|^SSH_|^GH_|^GITHUB_", re.I)
+
+
+def job_env(name: str, job: Job, tmp: Path, base: dict[str, str] | None = None) -> dict[str, str]:
+    base = dict(os.environ) if base is None else base
+    env = {k: v for k, v in base.items()
+           if (k in ENV_ALLOW or k.startswith("LC_")) and not ENV_SECRET.search(k)}
     env.update({
         "CI": "true",
         "CI_LOCAL": "1",
@@ -432,7 +466,10 @@ def job_env(name: str, job: Job, tmp: Path) -> dict[str, str]:
         "CARGO_TARGET_DIR": str(ROOT / "target" / name / job.name),
         "TMPDIR": str(tmp),
     })
-    env.update(job.env)
+    for k, v in job.env.items():
+        if ENV_SECRET.search(k):
+            raise ValueError(f"job {job.name}: env {k} looks like a secret; jobs get none")
+        env[k] = v
     return env
 
 
@@ -703,12 +740,12 @@ def main(argv: list[str] | None = None) -> int:
             ap.error(f"unknown repo {args.repo}; known: {', '.join(repos)}")
         if not re.fullmatch(r"[0-9a-f]{40}", args.sha):
             ap.error("give the full 40-character commit")
-        gh = GitHub(token()) if args.post else None
+        gh = GitHub(token(posting=True)) if args.post else None
         ok = run_commit(args.repo, repos[args.repo], args.sha, gh, only=args.job)
         print(f"ci-local: {args.repo}@{args.sha}: {'passed' if ok else 'FAILED'}; "
               f"logs in {ROOT / args.repo / args.sha}")
         return 0 if ok else 1
-    serve(repos, GitHub(token()), State(), once=args.once)
+    serve(repos, GitHub(token(posting=True)), State(), once=args.once)
     return 0
 
 

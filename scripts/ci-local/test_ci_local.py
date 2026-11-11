@@ -305,6 +305,24 @@ class CommandTests(unittest.TestCase):
         lo = ci_local.job_command(ci_local.Job(name="a", run="x", cpu="100%"), play=True)
         self.assertIn("CPUQuota=100%", lo)
 
+    def test_a_job_inherits_no_secrets_and_only_the_allow_list(self):
+        base = {"PATH": "/usr/bin", "HOME": "/home/x", "LANG": "C.UTF-8", "LC_ALL": "C",
+                "XDG_RUNTIME_DIR": "/run/user/1000", "GH_TOKEN": "t", "GITHUB_TOKEN": "t",
+                "CI_LOCAL_TOKEN": "t", "CI_LOCAL_TOKEN_FILE": "/f", "SSH_AUTH_SOCK": "/s",
+                "RALLY_DB_PASSWORD_FILE": "/p", "MY_SECRET": "s", "AWS_ACCESS_KEY": "k",
+                "PGPASSWORD": "p", "EDITOR": "vim", "LC_TOKEN": "sneaky"}
+        env = ci_local.job_env("rally", ci_local.Job(name="check", run="x"), Path("/t"), base=base)
+        for k in ("PATH", "HOME", "LANG", "LC_ALL", "XDG_RUNTIME_DIR"):
+            self.assertIn(k, env)
+        for k in ("GH_TOKEN", "GITHUB_TOKEN", "CI_LOCAL_TOKEN", "CI_LOCAL_TOKEN_FILE", "SSH_AUTH_SOCK",
+                  "RALLY_DB_PASSWORD_FILE", "MY_SECRET", "AWS_ACCESS_KEY", "PGPASSWORD", "EDITOR",
+                  "LC_TOKEN"):
+            self.assertNotIn(k, env)
+
+    def test_a_job_cant_ask_for_a_secret_by_name(self):
+        with self.assertRaisesRegex(ValueError, "looks like a secret"):
+            ci_local.job_env("rally", ci_local.Job(name="c", run="x", env={"GH_TOKEN": "x"}), Path("/t"), base={})
+
     def test_env_keeps_builds_out_of_tmp(self):
         job = ci_local.Job(name="check", run="x", env={"FOO": "1"})
         env = ci_local.job_env("rally", job, Path("/home/x/.cache/ci/tmp/t"))
@@ -312,6 +330,41 @@ class CommandTests(unittest.TestCase):
         self.assertTrue(env["CARGO_TARGET_DIR"].endswith("/target/rally/check"))
         self.assertFalse(env["CARGO_TARGET_DIR"].startswith("/tmp"))
         self.assertEqual((env["CI"], env["FOO"]), ("true", "1"))
+
+
+class TokenTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.file = Path(self.tmp.name) / "token"
+        self.old = os.environ.get("CI_LOCAL_TOKEN_FILE")
+        os.environ["CI_LOCAL_TOKEN_FILE"] = str(self.file)
+
+    def tearDown(self):
+        if self.old is None:
+            os.environ.pop("CI_LOCAL_TOKEN_FILE", None)
+        else:
+            os.environ["CI_LOCAL_TOKEN_FILE"] = self.old
+        self.tmp.cleanup()
+
+    def test_posting_fails_closed_without_the_token_file(self):
+        with self.assertRaises(SystemExit) as e:
+            ci_local.token(posting=True)
+        self.assertIn("won't fall back", str(e.exception))
+
+    def test_a_run_that_doesnt_post_needs_no_token(self):
+        self.assertIsNone(ci_local.token(posting=False))
+
+    def test_the_file_must_be_private(self):
+        self.file.write_text("tok\n")
+        self.file.chmod(0o644)
+        with self.assertRaisesRegex(SystemExit, "chmod 600"):
+            ci_local.token(posting=True)
+        self.file.chmod(0o600)
+        self.assertEqual(ci_local.token(posting=True), "tok")
+
+    def test_no_gh_fallback_anywhere(self):
+        src = (Path(__file__).parent / "ci_local.py").read_text()
+        self.assertNotIn('"gh", "auth", "token"', src)
 
 
 class TmpTests(unittest.TestCase):
