@@ -1066,3 +1066,13 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   - **Proof:** a real pull request on each of the four repos shows its `local/*` statuses go green with no
     Actions run started (the Actions runs list for that sha is empty), and merges under the updated ruleset; and
     a deliberately failing commit on a scratch branch shows `local/check` red with its log.
+- [ ] **RAL-145: `rally next` and `rally new-story` find a project's own roadmap, tables included.** From the
+  watchman (2026-11-11, issue 1.38): in DiscoSim's checkout `rally next --team <t>` failed with "can't read
+  docs/roadmap.md", since DiscoSim keeps its roadmap at `docs/design/99-roadmap.md`; given that path, it then
+  found "no stories with IDs", because that roadmap is tables, not a checklist. `rally new-story DSM` read no
+  written numbers for the same reasons. Done when: without `--roadmap`, both take the projects list's `path` for
+  the prefix (or, for `next` without `--prefix`, for the checkout's `origin` repo), falling back to
+  `docs/roadmap.md`, and `next` says which in `roadmap_from`; a roadmap with no checklist stories is read from
+  its tables' `ID`/`Story`/`Depends on`/`Done when` columns, done coming from the ledger; checklist roadmaps
+  pick as before; docs/next.md says so; with unit tests for the path order and for a DiscoSim-shaped table
+  roadmap, and `rally next` in the DiscoSim checkout offering a DSM story.

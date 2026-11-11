@@ -36,8 +36,25 @@ pub struct Item {
     text: String,
 }
 
-/// The ID prefix most of a roadmap's stories use, such as `RAL`.
+/// The ID prefix most of a roadmap's stories use, such as `RAL`. A roadmap with no checklist
+/// stories is counted by its table rows instead (RAL-145).
 pub fn prefix_of(roadmap: &str) -> Option<String> {
+    let mut counts = checklist_prefixes(roadmap);
+    if counts.is_empty() {
+        for row in table_rows(roadmap) {
+            if let Some((prefix, _)) = row.id.split_once('-') {
+                *counts.entry(prefix.to_owned()).or_default() += 1;
+            }
+        }
+    }
+    // Most stories first, then the first prefix alphabetically, so a tie always gives one answer.
+    counts
+        .into_iter()
+        .max_by(|(a, x), (b, y)| x.cmp(y).then(b.cmp(a)))
+        .map(|(prefix, _)| prefix)
+}
+
+fn checklist_prefixes(roadmap: &str) -> BTreeMap<String, usize> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for line in roadmap.lines() {
         let line = line.trim_start();
@@ -60,15 +77,21 @@ pub fn prefix_of(roadmap: &str) -> Option<String> {
             *counts.entry(prefix.to_owned()).or_default() += 1;
         }
     }
-    // Most stories first, then the first prefix alphabetically, so a tie always gives one answer.
     counts
-        .into_iter()
-        .max_by(|(a, x), (b, y)| x.cmp(y).then(b.cmp(a)))
-        .map(|(prefix, _)| prefix)
 }
 
 /// The roadmap's stories with an ID under `prefix`, in order, each with its whole item's text.
+/// A roadmap written as tables rather than a checklist, as DiscoSim's is, gives its table rows
+/// (RAL-145); a checklist roadmap's tables are never read as stories.
 pub fn items(roadmap: &str, prefix: &str) -> Vec<Item> {
+    let listed = checklist_items(roadmap, prefix);
+    if !listed.is_empty() {
+        return listed;
+    }
+    table_items(roadmap, prefix)
+}
+
+fn checklist_items(roadmap: &str, prefix: &str) -> Vec<Item> {
     let lines: Vec<&str> = roadmap.lines().collect();
     parse_stories(roadmap, prefix)
         .into_iter()
@@ -92,6 +115,159 @@ pub fn items(roadmap: &str, prefix: &str) -> Vec<Item> {
             })
         })
         .collect()
+}
+
+/// A story's row in a roadmap table: `| ID | Src | Story | Owner | Depends on |`, with the
+/// columns named by the table's header row (RAL-145).
+struct Row {
+    id: String,
+    title: String,
+    depends_on: Option<String>,
+    done_when: Option<String>,
+}
+
+const MAX_TABLE_TITLE_CHARS: usize = 200;
+
+fn table_items(roadmap: &str, prefix: &str) -> Vec<Item> {
+    let mut seen = std::collections::BTreeSet::new();
+    table_rows(roadmap)
+        .into_iter()
+        .filter(|row| row.id.split_once('-').is_some_and(|(p, _)| p == prefix))
+        // A story listed twice, as in a status table, keeps its first row.
+        .filter(|row| seen.insert(row.id.clone()))
+        .map(|row| {
+            // Written as a checklist item would be, so `depends_on` reads it the same way.
+            let mut text = format!("{}: {}.", row.id, row.title);
+            if let Some(depends) = &row.depends_on {
+                text.push_str(&format!(" Depends on {depends}."));
+            }
+            if let Some(done) = &row.done_when {
+                text.push_str(&format!(" Done when: {done}"));
+            }
+            Item {
+                id: row.id,
+                title: row.title,
+                // A table has no boxes: whether a story is done is the ledger's to say.
+                ticked: false,
+                text,
+            }
+        })
+        .collect()
+}
+
+/// Each table row whose `ID` column holds a story ID, in order, outside fenced code.
+fn table_rows(roadmap: &str) -> Vec<Row> {
+    let lines: Vec<&str> = roadmap.lines().collect();
+    let separator = |line: &str| {
+        let line = line.trim();
+        line.starts_with('|') && {
+            let cells = cells(line);
+            !cells.is_empty()
+                && cells.iter().all(|cell| {
+                    let dashes = cell.trim_matches(':');
+                    !dashes.is_empty() && dashes.chars().all(|c| c == '-')
+                })
+        }
+    };
+    let mut rows = Vec::new();
+    let mut header: Option<Vec<String>> = None;
+    let mut fence: Option<(char, usize)> = None;
+    for (index, line) in lines.iter().enumerate() {
+        match (fence, crate::web::fence_marker(line)) {
+            (None, Some((kind, length, _))) => {
+                fence = Some((kind, length));
+                continue;
+            }
+            (Some((open, open_length)), Some((kind, length, rest)))
+                if kind == open && length >= open_length && rest.trim().is_empty() =>
+            {
+                fence = None;
+                continue;
+            }
+            (Some(_), _) => continue,
+            (None, None) => {}
+        }
+        let trimmed = line.trim();
+        if !trimmed.starts_with('|') {
+            header = None;
+            continue;
+        }
+        if separator(trimmed) {
+            continue;
+        }
+        if lines.get(index + 1).is_some_and(|next| separator(next)) {
+            header = Some(
+                cells(trimmed)
+                    .iter()
+                    .map(|c| plain(c).to_lowercase())
+                    .collect(),
+            );
+            continue;
+        }
+        let Some(names) = &header else {
+            continue;
+        };
+        let row = cells(trimmed);
+        let column = |name: &str| {
+            names
+                .iter()
+                .position(|n| n == name)
+                .and_then(|i| row.get(i))
+                .map(|cell| plain(cell))
+                .filter(|cell| !cell.is_empty() && cell != "—" && cell != "-")
+        };
+        let Some(id) = column("id").filter(|id| is_story_id(id)) else {
+            continue;
+        };
+        let title = column("story")
+            .or_else(|| column("title"))
+            .unwrap_or_default()
+            .trim_end_matches('.')
+            .chars()
+            .take(MAX_TABLE_TITLE_CHARS)
+            .collect();
+        rows.push(Row {
+            id,
+            title,
+            depends_on: column("depends on"),
+            done_when: column("done when"),
+        });
+    }
+    rows
+}
+
+/// A table row's cells, between its outer pipes. `\|` is a pipe inside a cell.
+fn cells(line: &str) -> Vec<String> {
+    let inner = line.trim().strip_prefix('|').unwrap_or(line.trim());
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    let mut cells = vec![String::new()];
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&'|') => {
+                cells.last_mut().expect("never empty").push('|');
+                chars.next();
+            }
+            '|' => cells.push(String::new()),
+            _ => cells.last_mut().expect("never empty").push(c),
+        }
+    }
+    cells.iter().map(|cell| cell.trim().to_owned()).collect()
+}
+
+/// A cell's words without bold markers.
+fn plain(cell: &str) -> String {
+    cell.replace("**", "").trim().to_owned()
+}
+
+/// `PFX-12`: capital letters, a dash, digits.
+fn is_story_id(text: &str) -> bool {
+    text.split_once('-').is_some_and(|(prefix, number)| {
+        !prefix.is_empty()
+            && prefix.chars().all(|c| c.is_ascii_uppercase())
+            && !number.is_empty()
+            && number.chars().all(|c| c.is_ascii_digit())
+    })
 }
 
 /// The stories an item says it depends on, as `Depends on RAL-46`, `Depends on MUS-4 and MUS-44`
@@ -544,6 +720,106 @@ mod tests {
         json!({"seq": seq, "team": team, "story": story, "on_team": "operator",
                "note": "may we?", "at_ms": at_ms,
                "question": {"window_from_ms": at_ms, "shelved": false}})
+    }
+
+    /// Shaped like DiscoSim's docs/design/99-roadmap.md (RAL-145): tables, no boxes, and tables
+    /// with different columns, one with a `Done when` column.
+    const TABLES: &str = "\
+# DiscoSim v2 — Roadmap
+
+Story IDs are `DSM-N` (see DSM-1).
+
+## Milestone 3
+
+| ID | Src | Story | Owner | Depends on |
+|---|---|---|---|---|
+| DSM-1 | 06.B1 | Bench and golden runs, `run_tests.sh quick` | 06 | — |
+| DSM-2 | 06.B2 | `NightSim.step()` split \\| staged | 06 | DSM-1 |
+| DSM-3 | 03.1 | Generic `Station` | 03 | DSM-1, DSM-2 |
+
+```
+| ID | Story |
+|---|---|
+| DSM-99 | In a fence, so not a story |
+```
+
+### Status
+
+| Story | State |
+|---|---|
+| DSM-1 | verified |
+
+### 9a
+
+| ID | Story | Owner | Depends on | Done when |
+|---|---|---|---|---|
+| DSM-62 | **The first night can't open empty** | 06 | DSM-3 | Every route refuses. |
+| DSM-2 | A second row for DSM-2 | 06 | — | |
+";
+
+    #[test]
+    fn reads_a_roadmap_written_as_tables() {
+        assert_eq!(prefix_of(TABLES).as_deref(), Some("DSM"));
+        let found = items(TABLES, "DSM");
+        let ids: Vec<&str> = found.iter().map(|item| item.id.as_str()).collect();
+        // Not the fenced row, not the status table (no ID column), and DSM-2 once.
+        assert_eq!(ids, ["DSM-1", "DSM-2", "DSM-3", "DSM-62"]);
+        assert_eq!(
+            found[0].title,
+            "Bench and golden runs, `run_tests.sh quick`"
+        );
+        assert_eq!(found[1].title, "`NightSim.step()` split | staged");
+        assert_eq!(found[3].title, "The first night can't open empty");
+        assert!(found.iter().all(|item| !item.ticked));
+        assert!(depends_on(&found[0]).is_empty());
+        assert_eq!(depends_on(&found[1]), ["DSM-1"]);
+        assert_eq!(depends_on(&found[2]), ["DSM-1", "DSM-2"]);
+        assert_eq!(depends_on(&found[3]), ["DSM-3"]);
+        assert!(found[3].text.ends_with("Done when: Every route refuses."));
+        assert!(items(TABLES, "RAL").is_empty());
+    }
+
+    #[test]
+    fn a_table_roadmaps_pick_takes_done_from_the_ledger() {
+        let roadmap = items(TABLES, "DSM");
+        let one_done = stories(json!({"DSM-1": {"state": "verified"}}));
+        let ledger = Ledger {
+            stories: &one_done,
+            blockers: &[],
+            away: None,
+        };
+        let result = pick("disco", &roadmap, &ledger, Some(HOUR), 0);
+        assert_eq!(result["next"]["story"], "DSM-2");
+        // With DSM-2 another team's, DSM-3 waits on it and DSM-62 on DSM-3.
+        let taken = stories(json!({
+            "DSM-1": {"state": "verified"},
+            "DSM-2": {"state": "claimed", "team": "other"},
+        }));
+        let ledger = Ledger {
+            stories: &taken,
+            blockers: &[],
+            away: None,
+        };
+        let result = pick("disco", &roadmap, &ledger, Some(HOUR), 0);
+        let skipped = skipped(&result);
+        assert!(
+            skipped
+                .iter()
+                .any(|(id, why)| id == "DSM-3" && why.contains("DSM-2")),
+            "{skipped:?}"
+        );
+        assert!(result["next"].is_null(), "{result}");
+    }
+
+    #[test]
+    fn a_checklist_roadmaps_tables_are_not_stories() {
+        let mixed = format!("{ROADMAP}\n| ID | Story |\n|---|---|\n| RAL-77 | From a table |\n");
+        let ids: Vec<String> = items(&mixed, "RAL")
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(ids, ["RAL-1", "RAL-2", "RAL-3", "RAL-4", "RAL-5"]);
+        assert_eq!(prefix_of(&mixed).as_deref(), Some("RAL"));
     }
 
     fn run(stories: &serde_json::Map<String, Value>, blockers: &[Value], now: i64) -> Value {
