@@ -187,8 +187,13 @@ def paid_runners(doc: dict) -> list[tuple[str, str]]:
     return found
 
 
-def check_config(checkout: Path) -> list[str]:
-    """Problems with a checkout's local CI config; empty when it's in step with its workflows."""
+def check_config(checkout: Path, public: bool | None = None) -> list[str]:
+    """Problems with a checkout's local CI config; empty when it's in step with its workflows.
+
+    `public` is GitHub's answer for the repository: True public, False private, None not
+    confirmed. A checkout declares `hosted_runs` itself, so it's honoured only when GitHub says the
+    repository is public; otherwise it's a problem, and the workflows are held to the
+    dispatch-only rule as if it weren't there (a private repository's hosted runs bill)."""
     import yaml  # only the drift check needs it; the runner itself doesn't
 
     cfg_file = checkout / CONFIG_PATH
@@ -199,12 +204,19 @@ def check_config(checkout: Path) -> list[str]:
     except (ValueError, tomllib.TOMLDecodeError) as e:
         return [f"{CONFIG_PATH}: {e}"]
     problems = []
+    hosted = bool(cfg.hosted_runs) and public is True
+    if cfg.hosted_runs and public is False:
+        problems.append(f"{CONFIG_PATH}: hosted_runs set on a private repository, where GitHub's "
+                        f"hosted runs bill minutes")
+    elif cfg.hosted_runs and public is None:
+        problems.append(f"{CONFIG_PATH}: hosted_runs is set, but couldn't confirm with GitHub that "
+                        f"the repository is public")
     wf_dir = checkout / ".github" / "workflows"
     on_disk = sorted(p.name for p in wf_dir.glob("*.y*ml")) if wf_dir.is_dir() else []
     for name in on_disk:
         doc = yaml.safe_load((wf_dir / name).read_text()) or {}
         spend = workflow_triggers(doc) - ALLOWED_TRIGGERS
-        if cfg.hosted_runs:
+        if hosted:
             # A public repository's standard runners bill nothing, so its workflows keep their
             # triggers; only a larger runner would spend.
             for job, label in paid_runners(doc):
@@ -241,7 +253,7 @@ def check_config(checkout: Path) -> list[str]:
 class GitHub:
     """The few calls the runner needs, with ETags and a rate-limit floor."""
 
-    def __init__(self, token: str, opener=urllib.request.urlopen):
+    def __init__(self, token: str | None, opener=urllib.request.urlopen):
         self.token = token
         self.opener = opener
         self.etags: dict[str, tuple[str, object]] = {}
@@ -253,7 +265,8 @@ class GitHub:
                  conditional: bool = False):
         url = API + path
         req = urllib.request.Request(url, method=method)
-        req.add_header("Authorization", f"Bearer {self.token}")
+        if self.token:      # none: only public answers, as for anyone
+            req.add_header("Authorization", f"Bearer {self.token}")
         req.add_header("Accept", "application/vnd.github+json")
         req.add_header("X-GitHub-Api-Version", "2022-11-28")
         req.add_header("User-Agent", "ci-local")
@@ -308,6 +321,18 @@ class GitHub:
                 "fork": head_repo.get("full_name") != full,
             })
         return out
+
+    def is_public(self, full: str) -> bool | None:
+        """GitHub's word on whether the repository is public: True or False, or None when it
+        couldn't be asked or didn't say (a private repository asked without a token is a 404)."""
+        try:
+            repo = self._request("GET", f"/repos/{full}", conditional=True)
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            log(f"{full}: couldn't read the repository's visibility: {e}")
+            return None
+        if not isinstance(repo, dict) or not isinstance(repo.get("private"), bool):
+            return None
+        return repo["private"] is False and repo.get("visibility", "public") == "public"
 
     def post_status(self, full: str, sha: str, context: str, state: str, description: str):
         body = {"state": state, "context": context, "description": description[:140]}
@@ -567,7 +592,7 @@ def read_config_at(src: Path, sha: str) -> RepoConfig:
     return parse_config(text)
 
 
-def drift_at(src: Path, sha: str) -> list[str]:
+def drift_at(src: Path, sha: str, public: bool | None = None) -> list[str]:
     """The drift check against a commit, in a throwaway checkout of just the files it reads."""
     tmp = ROOT / "tmp" / f"config-{sha[:12]}"
     shutil.rmtree(tmp, ignore_errors=True)
@@ -583,7 +608,7 @@ def drift_at(src: Path, sha: str) -> list[str]:
                     subprocess.run(["tar", "-x", "-C", str(tmp)], input=one.stdout, check=True)
         else:
             subprocess.run(["tar", "-x", "-C", str(tmp)], input=archive.stdout, check=True)
-        return check_config(tmp)
+        return check_config(tmp, public)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -604,7 +629,14 @@ def run_commit(name: str, full: str, sha: str, gh: GitHub | None,
     with repo_lock(name):
         src = mirror(name, full)
         fetch(src, sha)
-    problems = drift_at(src, sha)
+    # Only a commit that declares hosted_runs needs GitHub's word that the repository is public:
+    # asked with the runner's token when posting, otherwise as anyone, which a public repo answers.
+    try:
+        declared = bool(read_config_at(src, sha).hosted_runs)
+    except Exception:      # no config, or one that won't parse: the drift check says which
+        declared = False
+    public = (gh or GitHub(None)).is_public(full) if declared else None
+    problems = drift_at(src, sha, public)
     if problems:
         log(f"{name}@{sha[:12]}: config: " + "; ".join(problems))
         post("local/ci-config", "failure", problems[0])
@@ -754,10 +786,12 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--job", action="append", help="only this job (repeatable)")
     c = sub.add_parser("check-config", help="the drift check for a checkout")
     c.add_argument("checkout", type=Path)
+    c.add_argument("--repo", help="owner/repo, asked on GitHub whether it's public (for hosted_runs)")
     args = ap.parse_args(argv)
 
     if args.cmd == "check-config":
-        problems = check_config(args.checkout)
+        public = GitHub(token(posting=False)).is_public(args.repo) if args.repo else None
+        problems = check_config(args.checkout, public)
         for p in problems:
             print(f"ci-local: {p}", file=sys.stderr)
         if not problems:

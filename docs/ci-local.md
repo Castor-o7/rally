@@ -82,6 +82,11 @@ workflow, which runs on GitHub as before on a public repository and by hand on R
 
 - a job in one of the named `workflows` isn't in `.ci/local.toml`, as `run` or `manual`, so the
   two can't drift apart, or
+- `hosted_runs` is set but GitHub doesn't confirm the repository is public. The checkout declares
+  it, so a private repository's branch could otherwise turn on billed runs just by saying so. The
+  runner asks `GET /repos/{owner}/{repo}` (with its token) for each commit that declares it. A
+  private answer, or no answer, is a problem, and the workflows are then held to the
+  dispatch-only rule below, or
 - with `hosted_runs` set (a public repository), a job's `runs-on` names a larger runner (such as
   `ubuntu-latest-8-cores` or `windows-2022-xlarge`), which bills even on a public repository, or
 - without `hosted_runs`, any workflow in `.github/workflows` still has a trigger other than
@@ -92,7 +97,9 @@ workflow, which runs on GitHub as before on a public repository and by hand on R
   `release.yml` and `public-ci-red-team.yml` are exempt this way: they're upstream's, kept as
   upstream wrote them, and on the fork a push only records skipped jobs.
 
-Run it on a checkout: `python3 scripts/ci-local/ci_local.py check-config <checkout>`.
+Run it on a checkout: `python3 scripts/ci-local/ci_local.py check-config <checkout> --repo
+owner/repo`. Without `--repo`, a checkout that sets `hosted_runs` fails, because nothing has
+confirmed the repository is public.
 
 ## Caps
 

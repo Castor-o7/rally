@@ -157,7 +157,15 @@ class DriftTests(unittest.TestCase):
         write(self.root, ".github/workflows/ci.yml", WORKFLOW.replace(
             "  workflow_dispatch:", "  push:\n    branches: [main]\n  pull_request:"))
         write(self.root, ".github/workflows/other.yml", "on: push\njobs: {}\n")
-        self.assertEqual(ci_local.check_config(self.root), [])
+        self.assertEqual(ci_local.check_config(self.root, public=True), [])
+        # Declared by the checkout, so honoured only on GitHub's word: a private repository's
+        # branch can't turn on billed runs by saying so, nor can one GitHub didn't answer for.
+        private = ci_local.check_config(self.root, public=False)
+        self.assertIn("hosted_runs set on a private repository", private[0])
+        self.assertTrue(any("ci.yml" in p and "pull_request" in p for p in private[1:]))
+        unknown = ci_local.check_config(self.root)
+        self.assertIn("couldn't confirm", unknown[0])
+        self.assertTrue(any("other.yml" in p for p in unknown[1:]))
         write(self.root, ".github/workflows/big.yml", """
             on: push
             jobs:
@@ -168,7 +176,7 @@ class DriftTests(unittest.TestCase):
               arm:
                 runs-on: ubuntu-24.04-arm
         """)
-        problems = ci_local.check_config(self.root)
+        problems = ci_local.check_config(self.root, public=True)
         self.assertEqual(len(problems), 2, problems)
         self.assertIn("`fast`", problems[0])
         self.assertIn("`wide`", problems[1])
@@ -249,6 +257,36 @@ class GitHubTests(unittest.TestCase):
         heads = gh.heads("Castor-o7/rally")
         self.assertEqual([(h["ref"], h["fork"]) for h in heads],
                          [("main", False), ("pull/7", False), ("pull/8", True), ("pull/9", True)])
+
+    def test_is_public_reads_githubs_answer_and_never_guesses(self):
+        def answering(status, body):
+            def opener(req, data=None, timeout=None):
+                self.assertEqual(req.full_url, ci_local.API + "/repos/Castor-o7/x")
+                if status != 200:
+                    raise urllib.error.HTTPError(req.full_url, status, "no", _headers({}), None)
+                return FakeResponse(body, {})
+            return opener
+        ask = lambda status, body=None: ci_local.GitHub("t", opener=answering(status, body)).is_public("Castor-o7/x")
+        self.assertIs(ask(200, {"private": False, "visibility": "public"}), True)
+        self.assertIs(ask(200, {"private": True, "visibility": "private"}), False)
+        self.assertIs(ask(200, {"private": False, "visibility": "internal"}), False)
+        self.assertIsNone(ask(404))                      # private, asked without access
+        self.assertIsNone(ask(500))
+        self.assertIsNone(ask(200, {"name": "x"}))       # no answer either way
+
+        def down(req, data=None, timeout=None):
+            raise urllib.error.URLError("no network")
+        self.assertIsNone(ci_local.GitHub(None, opener=down).is_public("Castor-o7/x"))
+
+    def test_without_a_token_no_authorization_is_sent(self):
+        seen = []
+
+        def opener(req, data=None, timeout=None):
+            seen.append(req.get_header("Authorization"))
+            return FakeResponse({"private": False}, {})
+        ci_local.GitHub(None, opener=opener).is_public("Castor-o7/x")
+        ci_local.GitHub("t", opener=opener).is_public("Castor-o7/x")
+        self.assertEqual(seen, [None, "Bearer t"])
 
     def test_a_second_poll_is_conditional_and_reuses_the_answer_on_304(self):
         fake = FakeGitHub()
