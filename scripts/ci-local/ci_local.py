@@ -448,13 +448,20 @@ export CI_PG_BIN="$(dirname "$(command -v pg_ctl)")"
 """
 
 
+def short_tmp(name: str, sha: str, job: str) -> Path:
+    """The job's TMPDIR: short, because tests put Unix sockets in it and a socket's path must fit
+    in 108 bytes (hosted runners' /tmp is 4). ~/.cache/ci/t/<10 hex> is about 32."""
+    import hashlib
+    return ROOT / "t" / hashlib.sha256(f"{name}@{sha}:{job}".encode()).hexdigest()[:10]
+
+
 def run_job(name: str, sha: str, job: Job, src: Path, stop: threading.Event) -> tuple[bool, str]:
     """Runs one job in its own checkout. Returns (passed, one-line summary)."""
     logdir = ROOT / name / sha
     logdir.mkdir(parents=True, exist_ok=True)
     logfile = logdir / f"{job.name}.log"
     work = ROOT / "work" / name / f"{sha[:12]}-{job.name}"
-    tmp = ROOT / "tmp" / f"{name}-{sha[:12]}-{job.name}"
+    tmp = short_tmp(name, sha, job.name)
     with Slot(stop) as slot:
         play = playing()
         for d in (work, tmp):

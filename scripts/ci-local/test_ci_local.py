@@ -314,6 +314,15 @@ class CommandTests(unittest.TestCase):
         self.assertEqual((env["CI"], env["FOO"]), ("true", "1"))
 
 
+class TmpTests(unittest.TestCase):
+    def test_tmpdir_leaves_room_for_unix_sockets(self):
+        t = ci_local.short_tmp("RootyRoopsDAW", "f" * 40, "windows-cross-check")
+        # marshal's codex_bridge test binds a socket some 60 bytes deep in TMPDIR; 108 is the limit.
+        self.assertLess(len(str(t)) + 60, 108)
+        self.assertNotEqual(t, ci_local.short_tmp("RootyRoopsDAW", "f" * 40, "rust"))
+        self.assertFalse(str(t).startswith("/tmp"))
+
+
 class StateTests(unittest.TestCase):
     def test_survives_a_restart(self):
         with tempfile.TemporaryDirectory() as d:
