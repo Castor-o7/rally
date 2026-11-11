@@ -1030,8 +1030,13 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
     either mapped in `.ci/local.toml` or listed as manual, so the two can't drift.
   - **Caps.** Every job runs in `systemd-run --user --scope -p MemoryMax=<cap> -p CPUQuota=<cap>`, with
     `CARGO_TARGET_DIR` and `TMPDIR` under `~/.cache/ci/` (never `/tmp`, a RAM tmpfs on Murph), at most N jobs
-    at once machine-wide through a slot file beside `~/.config/dsm-heavy.slots`; and it pauses new jobs while
-    `MemAvailable` is under 6 GB, or while Josh's DiscoSim play window is open.
+    at once machine-wide through a slot file beside `~/.config/dsm-heavy.slots`; it pauses new jobs while
+    `MemAvailable` is under 6 GB, and while Josh's DiscoSim play window is open it doesn't pause (he plays for
+    hours, and a paused queue is the bottleneck this removes) but runs one job at a time at `nice 19` with a
+    lower `CPUQuota`.
+  - **Rate limits.** The poller states its poll interval, uses conditional requests (ETag / `If-None-Match`, which
+    don't count against the limit when nothing changed), reads `X-RateLimit-Remaining`, and backs off before the
+    limit, logging each back-off and when it resumes.
   - **One-shot.** `ci-local run <repo> <sha>` runs the same jobs for one sha by hand, writes logs to
     `~/.cache/ci/<repo>/<sha>/<job>.log`, and posts statuses only with `--post`.
   - **No fallback, no spend.** Each repo's workflows keep only `workflow_dispatch` (so they can be run by hand)
@@ -1043,7 +1048,8 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
     runner's systemd user unit (auto mode refuses unit files to agents); and confirm the token it posts with
     is limited to commit statuses on those four repos.
   - **docs/ci-local.md** covers how it works, the caps, the one-shot, adding a repo, the admin steps and what
-    it doesn't do (forks, Windows, the release pipeline).
+    it doesn't do (forks, Windows), and how releases run once push triggers are gone (marshal's and muster's
+    `release.yml`: dispatched by hand, on hosted runners, which bill nothing on a public repo).
   - **Proof:** a real pull request on each of the four repos shows its `local/*` statuses go green with no
     Actions run started (the Actions runs list for that sha is empty), and merges under the updated ruleset; and
     a deliberately failing commit on a scratch branch shows `local/check` red with its log.
