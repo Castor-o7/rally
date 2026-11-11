@@ -1004,3 +1004,52 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   `rally rallies` and the viewer show who may open (`who_may_open`) at the top, not only inside answers;
   docs/service.md says so; with a service test that an unset list refuses to start, an opt-out starts with
   the warning, and a listed credential is the only non-watchman one an `open-rally` accepts.
+- [ ] **RAL-144: Local CI on Murph for every project; GitHub Actions minutes stop being a bottleneck.** From Josh
+  directly (2026-11-11, relayed by the watchman, then confirmed to the lamplighter): "we are out of github actions
+  minutes... do away with the bottleneck of Github actions entirely. We can do the CI/CD locally moving forward
+  please, for all projects." Josh chose a local runner that tests same-repo branches only and posts results to
+  GitHub, over a self-hosted Actions runner: rally, marshal and muster are public, and a self-hosted runner on a
+  public repo lets any fork's pull request run code on Murph, where the daemons and their tokens live.
+  What was measured before scoping (2026-11-11): Actions still runs today for the public repos (rally#225's
+  `check` and `dependency-audit` passed at 18:18Z, on standard runners that bill no minutes); marshal's 11-10 runs
+  were cut off mid-job at 01:23Z (`check` and `windows-native-wake` cancelled about 4.5 min in), when the account
+  ran out; the required checks are rulesets pinned to GitHub Actions (`integration_id` 15368): `check` on rally
+  and muster, `rust` on RootyRoopsDAW; marshal's main has no required check. DiscoSim keeps `dsm-gate`.
+  Done when:
+  - **Runner.** `ci-local` (in this repo, `scripts/ci-local/`) watches Castor-o7's rally, marshal, muster and
+    RootyRoopsDAW: each push to main and each open pull request's head whose head repository is the base
+    repository (never a fork; a fork's pull request gets a `local/skipped-fork` status saying a maintainer must
+    push the branch to test it). It runs each new sha once, and posts one commit status per job, named
+    `local/<job>`, pending then success or failure, with a link-free description and the log path.
+  - **Same jobs as the workflows.** Each repo carries `.ci/local.toml` listing its jobs and their commands, one
+    for each Linux job in its workflow (rally: check, dependency-audit; muster: tests, conformance, check;
+    marshal: check, windows-cross-check, plus a dependency audit; RootyRoopsDAW: rust, compat), with any tool
+    the workflow installs pinned to the same version. Jobs Murph can't run say so: muster's `macos` and
+    RootyRoopsDAW's macOS leg run on a1 over SSH (Murph→a1 is set up) or are marked `manual`; marshal's
+    `windows-native-wake` is `manual`, with `windows-cross-check` still run. A test checks every workflow job is
+    either mapped in `.ci/local.toml` or listed as manual, so the two can't drift.
+  - **Caps.** Every job runs in `systemd-run --user --scope -p MemoryMax=<cap> -p CPUQuota=<cap>`, with
+    `CARGO_TARGET_DIR` and `TMPDIR` under `~/.cache/ci/` (never `/tmp`, a RAM tmpfs on Murph), at most N jobs
+    at once machine-wide through a slot file beside `~/.config/dsm-heavy.slots`; it pauses new jobs while
+    `MemAvailable` is under 6 GB, and while Josh's DiscoSim play window is open it doesn't pause (he plays for
+    hours, and a paused queue is the bottleneck this removes) but runs one job at a time at `nice 19` with a
+    lower `CPUQuota`.
+  - **Rate limits.** The poller states its poll interval, uses conditional requests (ETag / `If-None-Match`, which
+    don't count against the limit when nothing changed), reads `X-RateLimit-Remaining`, and backs off before the
+    limit, logging each back-off and when it resumes.
+  - **One-shot.** `ci-local run <repo> <sha>` runs the same jobs for one sha by hand, writes logs to
+    `~/.cache/ci/<repo>/<sha>/<job>.log`, and posts statuses only with `--post`.
+  - **No fallback, no spend.** Each repo's workflows keep only `workflow_dispatch` (so they can be run by hand)
+    and lose their `push`/`pull_request` triggers; no `runs-on` names a self-hosted label on a public repo
+    (marshal's `public-ci-*` and `release` self-hosted jobs reviewed and either dispatch-only or removed, with
+    the reason).
+  - **Josh's admin steps, named in the doc** (an agent can't do them): change each ruleset's required check
+    from the Actions-pinned `check`/`rust` to the status context `local/check`/`local/rust`; install the
+    runner's systemd user unit (auto mode refuses unit files to agents); and confirm the token it posts with
+    is limited to commit statuses on those four repos.
+  - **docs/ci-local.md** covers how it works, the caps, the one-shot, adding a repo, the admin steps and what
+    it doesn't do (forks, Windows), and how releases run once push triggers are gone (marshal's and muster's
+    `release.yml`: dispatched by hand, on hosted runners, which bill nothing on a public repo).
+  - **Proof:** a real pull request on each of the four repos shows its `local/*` statuses go green with no
+    Actions run started (the Actions runs list for that sha is empty), and merges under the updated ruleset; and
+    a deliberately failing commit on a scratch branch shows `local/check` red with its log.
