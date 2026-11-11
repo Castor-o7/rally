@@ -1,0 +1,14 @@
+# The repositories ci-local watches (RAL-144). Each carries its jobs in .ci/local.toml.
+# DiscoSim isn't here: it keeps dsm-gate.
+
+[repos.rally]
+github = "Castor-o7/rally"
+
+[repos.marshal]
+github = "Castor-o7/marshal"
+
+[repos.muster]
+github = "Castor-o7/muster"
+
+[repos.RootyRoopsDAW]
+github = "Castor-o7/RootyRoopsDAW"
