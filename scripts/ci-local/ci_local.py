@@ -70,36 +70,51 @@ class Job:
     env: dict[str, str] = field(default_factory=dict)
     postgres: bool = False      # a scratch Postgres cluster, its URL in $CI_POSTGRES_URL
     manual: str = ""            # non-empty: not run here, and why (macOS, Windows, ...)
+    needs: list[str] = field(default_factory=list)  # an aggregate: passes when all of these pass
 
 
 @dataclass
 class RepoConfig:
     workflows: list[str]
     jobs: dict[str, Job]
+    exempt: dict[str, str] = field(default_factory=dict)   # workflow -> why it may keep a trigger
 
     def runnable(self) -> list[Job]:
-        return [j for j in self.jobs.values() if not j.manual]
+        """Jobs with commands to run here (not manual, not aggregates)."""
+        return [j for j in self.jobs.values() if j.run]
+
+    def aggregates(self) -> list[Job]:
+        return [j for j in self.jobs.values() if j.needs]
 
 
 def parse_config(text: str) -> RepoConfig:
     data = tomllib.loads(text)
-    unknown = set(data) - {"workflows", "jobs"}
+    unknown = set(data) - {"workflows", "jobs", "exempt"}
     if unknown:
         raise ValueError(f"unknown keys in {CONFIG_PATH}: {sorted(unknown)}")
     jobs: dict[str, Job] = {}
     for name, spec in data.get("jobs", {}).items():
-        extra = set(spec) - {"run", "mem", "cpu", "timeout_min", "env", "postgres", "manual"}
+        extra = set(spec) - {"run", "mem", "cpu", "timeout_min", "env", "postgres", "manual",
+                             "needs"}
         if extra:
             raise ValueError(f"job {name}: unknown keys {sorted(extra)}")
         job = Job(name=name, **spec)
-        if bool(job.run) == bool(job.manual):
-            raise ValueError(f"job {name}: give exactly one of `run` or `manual`")
+        if [bool(job.run), bool(job.manual), bool(job.needs)].count(True) != 1:
+            raise ValueError(f"job {name}: give exactly one of `run`, `manual` or `needs`")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
             raise ValueError(f"job {name}: names are letters, digits, '.', '_' and '-'")
         jobs[name] = job
     if not jobs:
         raise ValueError(f"{CONFIG_PATH} lists no jobs")
-    return RepoConfig(workflows=list(data.get("workflows", [])), jobs=jobs)
+    for job in jobs.values():
+        for n in job.needs:
+            if n not in jobs or not jobs[n].run:
+                raise ValueError(f"job {job.name}: needs `{n}`, which isn't a job run here")
+    exempt = dict(data.get("exempt", {}))
+    for wf, why in exempt.items():
+        if not isinstance(why, str) or not why.strip():
+            raise ValueError(f"exempt workflow {wf}: say why")
+    return RepoConfig(workflows=list(data.get("workflows", [])), jobs=jobs, exempt=exempt)
 
 
 def load_repos(path: Path = HERE / "repos.toml") -> dict[str, str]:
@@ -123,6 +138,32 @@ def workflow_triggers(doc: dict) -> set[str]:
     return set()
 
 
+def ungated_jobs(doc: dict) -> set[str]:
+    """Jobs that could run here. A job is gated when its `if` names `github.repository ==`, or when
+    every job it needs is gated and its `if` can't override a skipped need (no always(),
+    failure() or cancelled())."""
+    jobs = doc.get("jobs") or {}
+    gated: dict[str, bool] = {}
+
+    def is_gated(name: str, seen: frozenset = frozenset()) -> bool:
+        if name in gated:
+            return gated[name]
+        spec = jobs.get(name) or {}
+        cond = re.sub(r"\s+", " ", str(spec.get("if", "")))
+        needs = spec.get("needs") or []
+        needs = [needs] if isinstance(needs, str) else list(needs)
+        if re.search(r"github\.repository ?==", cond):
+            ok = True
+        elif needs and name not in seen and not re.search(r"always\(\)|failure\(\)|cancelled\(\)", cond):
+            ok = all(is_gated(n, seen | {name}) for n in needs)
+        else:
+            ok = False
+        gated[name] = ok
+        return ok
+
+    return {j for j in jobs if not is_gated(j)}
+
+
 def check_config(checkout: Path) -> list[str]:
     """Problems with a checkout's local CI config; empty when it's in step with its workflows."""
     import yaml  # only the drift check needs it; the runner itself doesn't
@@ -140,9 +181,18 @@ def check_config(checkout: Path) -> list[str]:
     for name in on_disk:
         doc = yaml.safe_load((wf_dir / name).read_text()) or {}
         spend = workflow_triggers(doc) - ALLOWED_TRIGGERS
-        if spend:
+        if spend and name in cfg.exempt:
+            # Allowed only when no job can run here: each is gated to another repository (marshal's
+            # upstream workflows, kept as upstream wrote them, run on upstream's runners only).
+            for job in sorted(ungated_jobs(doc)):
+                problems.append(f"{name}: exempt, but job `{job}` isn't gated to another "
+                                f"repository (`if: github.repository == ...`), so it would run")
+        elif spend:
             problems.append(f"{name}: triggers {sorted(spend)} would run on GitHub's runners; "
                             f"keep only {sorted(ALLOWED_TRIGGERS)}")
+    for name in cfg.exempt:
+        if name not in on_disk:
+            problems.append(f"{CONFIG_PATH} exempts workflow {name}, which isn't there")
     for name in cfg.workflows:
         path = wf_dir / name
         if not path.exists():
@@ -358,7 +408,9 @@ def job_command(job: Job, play: bool) -> list[str]:
     cpu = job.cpu
     if play:
         cpu = PLAY_CPU_QUOTA if _pct(job.cpu) > _pct(PLAY_CPU_QUOTA) else job.cpu
-    cmd = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
+    # --expand-environment=no: systemd-run would otherwise expand ${VAR} in the script itself,
+    # from its own environment, before bash sees it (muster's ${BUN_VERSION} came out empty).
+    cmd = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--expand-environment=no",
            "-p", f"MemoryMax={job.mem}", "-p", "MemorySwapMax=0", "-p", f"CPUQuota={cpu}"]
     if play:
         cmd.append("--nice=19")
@@ -489,7 +541,10 @@ def run_commit(name: str, full: str, sha: str, gh: GitHub | None,
         post("local/ci-config", "success", "jobs and workflows in step; no workflow spends minutes")
     cfg = read_config_at(src, sha)
     jobs = [j for j in cfg.runnable() if only is None or j.name in only]
-    for j in jobs:
+    aggregates = [a for a in cfg.aggregates() if only is None or a.name in only]
+    for a in aggregates:      # an aggregate asked for by name brings its jobs with it
+        jobs += [cfg.jobs[n] for n in a.needs if cfg.jobs[n] not in jobs]
+    for j in jobs + aggregates:
         post(f"local/{j.name}", "pending", "queued on Murph")
     results: dict[str, bool] = {}
 
@@ -512,7 +567,15 @@ def run_commit(name: str, full: str, sha: str, gh: GitHub | None,
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
         list(pool.map(one, jobs))
-    return all(results.get(j.name) for j in jobs) and not problems
+    for a in aggregates:
+        failed = [n for n in a.needs if not results.get(n)]
+        results[a.name] = not failed
+        if failed:
+            post(f"local/{a.name}", "failure", f"needs {', '.join(a.needs)}; failed: {', '.join(failed)}")
+        else:
+            post(f"local/{a.name}", "success", f"{', '.join(a.needs)} all passed")
+        log(f"{name}@{sha[:12]} {a.name}: {'passed' if not failed else 'failed: ' + ', '.join(failed)}")
+    return all(results.get(j.name) for j in jobs + aggregates) and not problems
 
 
 # --- The watcher -----------------------------------------------------------------------------

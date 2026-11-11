@@ -58,6 +58,17 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly one"):
             ci_local.parse_config('[jobs.a]\nmem = "1G"\n')
 
+    def test_an_aggregate_needs_jobs_run_here(self):
+        cfg = ci_local.parse_config(CONFIG + '[jobs.all]\nneeds = ["check"]\n')
+        self.assertEqual([a.name for a in cfg.aggregates()], ["all"])
+        self.assertEqual([j.name for j in cfg.runnable()], ["check"])
+        with self.assertRaisesRegex(ValueError, "isn't a job run here"):
+            ci_local.parse_config(CONFIG + '[jobs.all]\nneeds = ["macos"]\n')
+        with self.assertRaisesRegex(ValueError, "isn't a job run here"):
+            ci_local.parse_config(CONFIG + '[jobs.all]\nneeds = ["nope"]\n')
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            ci_local.parse_config(CONFIG + '[jobs.all]\nneeds = ["check"]\nrun = "x"\n')
+
     def test_unknown_keys_are_refused(self):
         with self.assertRaisesRegex(ValueError, "unknown keys"):
             ci_local.parse_config('[jobs.a]\nrun = "x"\nruns_on = "y"\n')
@@ -106,6 +117,46 @@ class DriftTests(unittest.TestCase):
         problems = ci_local.check_config(self.root)
         self.assertTrue(any("ci.yml" in p and "pull_request" in p and "push" in p for p in problems))
         self.assertTrue(any("other.yml" in p for p in problems))
+
+    def test_an_exempt_workflow_may_keep_triggers_only_if_every_job_is_gated_elsewhere(self):
+        write(self.root, ".ci/local.toml", CONFIG + '[exempt]\n"release.yml" = "upstream only"\n')
+        write(self.root, ".github/workflows/ci.yml", WORKFLOW)
+        write(self.root, ".github/workflows/release.yml", """
+            on:
+              push:
+                branches: [main]
+            jobs:
+              release:
+                if: github.repository == 'ignition-is-go/marshal'
+              publish:
+                if: github.repository == 'ignition-is-go/marshal' && needs.release.outputs.skip == 'false'
+              notify:
+                needs: [release, publish]
+                if: needs.release.result == 'success'
+        """)
+        self.assertEqual(ci_local.check_config(self.root), [])
+        write(self.root, ".github/workflows/release.yml", """
+            on: push
+            jobs:
+              release:
+                if: github.repository == 'ignition-is-go/marshal'
+              notify:
+                if: needs.release.result == 'success'
+              report:
+                needs: release
+                if: always()
+        """)
+        problems = ci_local.check_config(self.root)
+        self.assertEqual(len(problems), 2)
+        self.assertIn("`notify`", problems[0])      # no needs and no gate
+        self.assertIn("`report`", problems[1])      # always() runs it even when release is skipped
+
+    def test_an_exemption_needs_a_reason_and_a_workflow(self):
+        with self.assertRaisesRegex(ValueError, "say why"):
+            ci_local.parse_config(CONFIG + '[exempt]\n"release.yml" = ""\n')
+        write(self.root, ".ci/local.toml", CONFIG + '[exempt]\n"gone.yml" = "x"\n')
+        write(self.root, ".github/workflows/ci.yml", WORKFLOW)
+        self.assertIn("gone.yml", ci_local.check_config(self.root)[0])
 
     def test_on_as_a_list(self):
         write(self.root, ".ci/local.toml", CONFIG)
@@ -239,6 +290,7 @@ class CommandTests(unittest.TestCase):
         job = ci_local.Job(name="check", run="cargo test", mem="8G", cpu="600%", timeout_min=20)
         cmd = ci_local.job_command(job, play=False)
         self.assertEqual(cmd[:4], ["systemd-run", "--user", "--scope", "--quiet"])
+        self.assertIn("--expand-environment=no", cmd)
         self.assertIn("MemoryMax=8G", cmd)
         self.assertIn("MemorySwapMax=0", cmd)
         self.assertIn("CPUQuota=600%", cmd)
@@ -285,7 +337,7 @@ class EndToEndTests(unittest.TestCase):
             write(repo, ".ci/local.toml", """
                 workflows = ["ci.yml"]
                 [jobs.good]
-                run = "test -f README && echo fine"
+                run = "X=fine; test -f README && echo ${X}"
                 mem = "256M"
                 cpu = "50%"
                 [jobs.bad]
@@ -297,6 +349,10 @@ class EndToEndTests(unittest.TestCase):
                 timeout_min = 0.05
                 [jobs.mac]
                 manual = "needs macOS"
+                [jobs.all-good]
+                needs = ["good"]
+                [jobs.all]
+                needs = ["good", "bad"]
             """)
             write(repo, ".github/workflows/ci.yml", """
                 on: workflow_dispatch
@@ -305,6 +361,8 @@ class EndToEndTests(unittest.TestCase):
                   bad: {}
                   slow: {}
                   mac: {}
+                  all-good: {}
+                  all: {}
             """)
             write(repo, "README", "x")
             g = ["git", "-C", str(repo)]
@@ -333,6 +391,10 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(final["local/bad"], "failure")
             self.assertEqual(final["local/slow"], "failure")
             self.assertNotIn("local/mac", final)
+            self.assertEqual(final["local/all-good"], "success")
+            self.assertEqual(final["local/all"], "failure")
+            # every status was pending before its final answer
+            self.assertEqual(posted.index(("local/all", "pending")) < posted.index(("local/all", "failure")), True)
             logs = d / "ci" / "demo" / sha
             self.assertIn("fine", (logs / "good.log").read_text())
             self.assertIn("broken", (logs / "bad.log").read_text())
