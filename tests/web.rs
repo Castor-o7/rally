@@ -2323,12 +2323,19 @@ fn the_panel_outlines_run_on_their_own_and_only_by_moving() {
         probe["running"], probe["onEdges"],
         "nothing else animates while nothing changes: {probe}"
     );
-    assert_eq!(probe["props"], json!(["transform"]), "the lights only move: {probe}");
+    assert_eq!(
+        probe["props"],
+        json!(["transform"]),
+        "the lights only move: {probe}"
+    );
     assert!(
         probe["frames"].as_u64().unwrap() >= 24,
         "the page keeps drawing frames while they run: {probe}"
     );
-    assert_eq!(probe["same"], true, "a redraw keeps the edge, so its motion never restarts: {probe}");
+    assert_eq!(
+        probe["same"], true,
+        "a redraw keeps the edge, so its motion never restarts: {probe}"
+    );
 }
 
 /// RAL-140: the Activity strip lists the rally's busy sessions with what they say they're doing, as
