@@ -613,9 +613,29 @@ def drift_at(src: Path, sha: str, public: bool | None = None) -> list[str]:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _has_config(src: Path, rev: str) -> bool:
+    try:
+        git("cat-file", "-e", f"{rev}:{CONFIG_PATH}", cwd=src)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def predates_local_ci(src: Path, sha: str) -> bool:
+    """Whether a commit is on a branch from before local CI: neither it nor the commit where it
+    left main has the config, so there's nothing to check and a red `local/ci-config` would be
+    noise. A branch that removed the file from a base that had it doesn't count, and neither does
+    one with no history in common with main: those are still checked, and fail."""
+    if _has_config(src, sha):
+        return False
+    base = git("merge-base", sha, "refs/heads/main", cwd=src, check=False).strip()
+    return bool(base) and not _has_config(src, base)
+
+
 def run_commit(name: str, full: str, sha: str, gh: GitHub | None,
-               stop: threading.Event | None = None, only: list[str] | None = None) -> bool:
-    """Runs every job for one commit, posting statuses when `gh` is given. True when all passed."""
+               stop: threading.Event | None = None, only: list[str] | None = None) -> bool | None:
+    """Runs every job for one commit, posting statuses when `gh` is given. True when all passed;
+    None when the commit predates local CI, and nothing was run or posted."""
     stop = stop or threading.Event()
 
     def post(context: str, state: str, desc: str) -> None:
@@ -629,6 +649,10 @@ def run_commit(name: str, full: str, sha: str, gh: GitHub | None,
     with repo_lock(name):
         src = mirror(name, full)
         fetch(src, sha)
+    if predates_local_ci(src, sha):
+        log(f"{name}@{sha[:12]}: no {CONFIG_PATH} here or where it left main, so it predates "
+            f"local CI; nothing run or posted (it runs once the branch has main's config)")
+        return None
     # Only a commit that declares hosted_runs needs GitHub's word that the repository is public:
     # asked with the runner's token when posting, otherwise as anyone, which a public repo answers.
     try:
@@ -720,7 +744,7 @@ def serve(repos: dict[str, str], gh: GitHub, state: State, once: bool = False) -
     def work(name: str, full: str, sha: str, key: str) -> None:
         try:
             ok = run_commit(name, full, sha, gh, stop)
-            state.mark(key, "passed" if ok else "failed")
+            state.mark(key, "predates-local-ci" if ok is None else "passed" if ok else "failed")
         except InterruptedError:
             pass
         except Exception as e:
@@ -805,6 +829,10 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("give the full 40-character commit")
         gh = GitHub(token(posting=True)) if args.post else None
         ok = run_commit(args.repo, repos[args.repo], args.sha, gh, only=args.job)
+        if ok is None:
+            print(f"ci-local: {args.repo}@{args.sha}: predates local CI ({CONFIG_PATH} isn't here "
+                  f"or where it left main); nothing run")
+            return 0
         print(f"ci-local: {args.repo}@{args.sha}: {'passed' if ok else 'FAILED'}; "
               f"logs in {ROOT / args.repo / args.sha}")
         return 0 if ok else 1
