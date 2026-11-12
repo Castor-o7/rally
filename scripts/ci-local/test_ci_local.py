@@ -205,6 +205,87 @@ class DriftTests(unittest.TestCase):
         self.assertEqual(ci_local.check_config(self.root), [f"no {ci_local.CONFIG_PATH}"])
 
 
+class RunLockTests(unittest.TestCase):
+    """A rerun of a job waits for its first run, even one whose ci-local has gone."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_root = ci_local.ROOT
+        ci_local.ROOT = Path(self.tmp.name)
+
+    def tearDown(self):
+        ci_local.ROOT = self.old_root
+        self.tmp.cleanup()
+
+    def test_a_job_process_holds_the_lock_after_the_runner_lets_go(self):
+        with ci_local.RunLock("rally", "a" * 40, "check") as first:
+            job = subprocess.Popen(["sleep", "30"], pass_fds=(first.fd,))
+        # The runner's copy is closed (as when ci-local stops); the job still holds it.
+        try:
+            stop = threading.Event()
+            stop.set()      # don't wait: report at once that it's held
+            with self.assertRaises(InterruptedError):
+                with ci_local.RunLock("rally", "a" * 40, "check", stop):
+                    pass
+            # Another job, or another commit, isn't held up.
+            with ci_local.RunLock("rally", "a" * 40, "dependency-audit", stop):
+                pass
+            with ci_local.RunLock("rally", "b" * 40, "check", stop):
+                pass
+        finally:
+            job.kill()
+            job.wait()
+        # Once the job has ended, the rerun goes ahead.
+        with ci_local.RunLock("rally", "a" * 40, "check"):
+            pass
+
+
+class PredatesTests(unittest.TestCase):
+    """A branch from before local CI gets nothing; one that drops the config is still checked."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.email", "t@example.invalid")
+        self.git("config", "user.name", "t")
+        self.commit("README", "one")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True,
+                              text=True).stdout.strip()
+
+    def commit(self, path, text):
+        write(self.repo, path, text)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", path)
+        return self.git("rev-parse", "HEAD")
+
+    def test_old_branches_predate_and_new_or_dropping_ones_dont(self):
+        self.git("checkout", "-q", "-b", "old")
+        old = self.commit("a.txt", "old work")
+        self.git("checkout", "-q", "main")
+        self.assertTrue(ci_local.predates_local_ci(self.repo, old))
+        self.commit(".ci/local.toml", CONFIG)
+        # Still from before: main has the config now, but not where the branch left it.
+        self.assertTrue(ci_local.predates_local_ci(self.repo, old))
+        main = self.git("rev-parse", "HEAD")
+        self.assertFalse(ci_local.predates_local_ci(self.repo, main))
+        self.git("checkout", "-q", "-b", "drop")
+        self.git("rm", "-q", ".ci/local.toml")
+        self.git("commit", "-q", "-m", "drop it")
+        dropped = self.git("rev-parse", "HEAD")
+        self.assertFalse(ci_local.predates_local_ci(self.repo, dropped))
+        # No history in common with main: not known to predate, so it's checked.
+        self.git("checkout", "-q", "--orphan", "stray")
+        self.git("rm", "-rq", "--cached", ".")
+        stray = self.commit("b.txt", "stray")
+        self.assertFalse(ci_local.predates_local_ci(self.repo, stray))
+
+
 class FakeResponse(io.BytesIO):
     def __init__(self, body, headers):
         super().__init__(json.dumps(body).encode())
