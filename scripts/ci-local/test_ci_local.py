@@ -205,6 +205,41 @@ class DriftTests(unittest.TestCase):
         self.assertEqual(ci_local.check_config(self.root), [f"no {ci_local.CONFIG_PATH}"])
 
 
+class RunLockTests(unittest.TestCase):
+    """A rerun of a job waits for its first run, even one whose ci-local has gone."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_root = ci_local.ROOT
+        ci_local.ROOT = Path(self.tmp.name)
+
+    def tearDown(self):
+        ci_local.ROOT = self.old_root
+        self.tmp.cleanup()
+
+    def test_a_job_process_holds_the_lock_after_the_runner_lets_go(self):
+        with ci_local.RunLock("rally", "a" * 40, "check") as first:
+            job = subprocess.Popen(["sleep", "30"], pass_fds=(first.fd,))
+        # The runner's copy is closed (as when ci-local stops); the job still holds it.
+        try:
+            stop = threading.Event()
+            stop.set()      # don't wait: report at once that it's held
+            with self.assertRaises(InterruptedError):
+                with ci_local.RunLock("rally", "a" * 40, "check", stop):
+                    pass
+            # Another job, or another commit, isn't held up.
+            with ci_local.RunLock("rally", "a" * 40, "dependency-audit", stop):
+                pass
+            with ci_local.RunLock("rally", "b" * 40, "check", stop):
+                pass
+        finally:
+            job.kill()
+            job.wait()
+        # Once the job has ended, the rerun goes ahead.
+        with ci_local.RunLock("rally", "a" * 40, "check"):
+            pass
+
+
 class PredatesTests(unittest.TestCase):
     """A branch from before local CI gets nothing; one that drops the config is still checked."""
 

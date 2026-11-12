@@ -193,7 +193,10 @@ The unit runs the copy in `~/.local/share/ci-local`, not a checkout, so an unmer
 change what runs. After a change to `scripts/ci-local` merges, install it again from `main` (step
 3's first line) and run `systemctl --user restart ci-local`. A job already running keeps its own
 scope and finishes. The runner skips nothing on restart: a commit whose result wasn't recorded
-runs again.
+runs again. That rerun waits for the first run's scope to end, through a lock per repository,
+commit and job (`~/.cache/ci/locks/run-*.lock`) that the job's scope holds. The two share a
+checkout, a `TMPDIR` and the job's scratch Postgres, and on 2026-11-11, running them together
+made rally#229's `local/check` a false red.
 
 ## What it doesn't do
 

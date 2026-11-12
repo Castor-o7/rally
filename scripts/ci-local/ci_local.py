@@ -206,11 +206,13 @@ def check_config(checkout: Path, public: bool | None = None) -> list[str]:
     problems = []
     hosted = bool(cfg.hosted_runs) and public is True
     if cfg.hosted_runs and public is False:
-        problems.append(f"{CONFIG_PATH}: hosted_runs set on a private repository, where GitHub's "
-                        f"hosted runs bill minutes")
+        # Not worded `.ci/local.toml: ...`: that prefix means the config can't be read at all, and
+        # stops every job; this only holds the workflows to the dispatch-only rule.
+        problems.append("hosted_runs set on a private repository, where GitHub's hosted runs bill "
+                        "minutes")
     elif cfg.hosted_runs and public is None:
-        problems.append(f"{CONFIG_PATH}: hosted_runs is set, but couldn't confirm with GitHub that "
-                        f"the repository is public")
+        problems.append("hosted_runs is set, but couldn't confirm with GitHub that the repository "
+                        "is public")
     wf_dir = checkout / ".github" / "workflows"
     on_disk = sorted(p.name for p in wf_dir.glob("*.y*ml")) if wf_dir.is_dir() else []
     for name in on_disk:
@@ -546,6 +548,47 @@ def short_tmp(name: str, sha: str, job: str) -> Path:
     return ROOT / "t" / hashlib.sha256(f"{name}@{sha}:{job}".encode()).hexdigest()[:10]
 
 
+class RunLock:
+    """One run at a time of a repository's job at a commit, which share a checkout, a TMPDIR (with
+    the job's scratch Postgres in it) and a log. Taken before anything is cleaned, and handed to
+    the job's scope (`fd`, passed to it) so it's held until the job really ends, even when
+    ci-local itself stops: a restart reruns commits whose results it never recorded, while their
+    first runs go on in their scopes. Without it, the rerun deleted the first run's Postgres
+    directory, and the first run's exit stopped the rerun's Postgres (2026-11-11, rally#229's
+    false red: 47 store tests "can't reach test Postgres")."""
+
+    def __init__(self, name: str, sha: str, job: str, stop: threading.Event | None = None):
+        locks = ROOT / "locks"
+        locks.mkdir(parents=True, exist_ok=True)
+        self.path = locks / f"run-{name}-{sha[:12]}-{job}.lock"
+        self.stop = stop or threading.Event()
+        self.fd: int | None = None
+
+    def __enter__(self):
+        announced = False
+        while True:
+            fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                os.close(fd)
+            else:
+                self.fd = fd
+                return self
+            if self.stop.is_set():
+                raise InterruptedError("stopping")
+            if not announced:
+                log(f"waiting: an earlier run of {self.path.stem[4:]} is still going")
+                announced = True
+            self.stop.wait(5)
+
+    def __exit__(self, *exc):
+        # Closed, never unlocked: unlocking would free it for the job's processes too, which hold
+        # the same open file; closing leaves it held until the last of them ends.
+        if self.fd is not None:
+            os.close(self.fd)
+
+
 def run_job(name: str, sha: str, job: Job, src: Path, stop: threading.Event) -> tuple[bool, str]:
     """Runs one job in its own checkout. Returns (passed, one-line summary)."""
     logdir = ROOT / name / sha
@@ -553,7 +596,7 @@ def run_job(name: str, sha: str, job: Job, src: Path, stop: threading.Event) -> 
     logfile = logdir / f"{job.name}.log"
     work = ROOT / "work" / name / f"{sha[:12]}-{job.name}"
     tmp = short_tmp(name, sha, job.name)
-    with Slot(stop) as slot:
+    with RunLock(name, sha, job.name, stop) as run_lock, Slot(stop) as slot:
         play = playing()
         for d in (work, tmp):
             if d.exists():
@@ -573,7 +616,7 @@ def run_job(name: str, sha: str, job: Job, src: Path, stop: threading.Event) -> 
                       f"# {shlex.join(cmd[:cmd.index('--')])}\n\n")
             out.flush()
             rc = subprocess.run(cmd, cwd=work, env=job_env(name, job, tmp), stdout=out,
-                                stderr=subprocess.STDOUT).returncode
+                                stderr=subprocess.STDOUT, pass_fds=(run_lock.fd,)).returncode
             secs = int(time.time() - started)
             out.write(f"\n# exit {rc} after {secs}s\n")
         shutil.rmtree(tmp, ignore_errors=True)
