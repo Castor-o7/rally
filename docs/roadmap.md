@@ -1080,3 +1080,42 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   its tables' `ID`/`Story`/`Depends on`/`Done when` columns, done coming from the ledger; checklist roadmaps
   pick as before; docs/next.md says so; with unit tests for the path order and for a DiscoSim-shaped table
   roadmap, and `rally next` in the DiscoSim checkout offering a DSM story.
+- [ ] **RAL-146: An operator inbox: everything waiting on the operator in one place.** From Josh directly
+  (2026-11-13, to the lamplighter): "an 'Operator Inbox' where operator interaction duties and notices of
+  Operator type can be stored for Operator Remediation. Like this key, I definitely needed to deal with it, but
+  we are working so dynamically that this information got lost in the blitz", "so that I can be more responsive
+  to the needs of the team". What prompted it: Rally's own GitHub token stopped working on 2026-11-11 at about
+  20:35, every evidence check from record 3034 to record 3486 (110 of them) recorded "401 Bad credentials", and
+  the fix was one command only the operator could run; it was said in chat and to the watchman and waited until
+  2026-11-13 11:08. On that day the ledger also held 31 open questions to the operator, the oldest from
+  2026-11-05 (record 83), with nowhere he'd see them together. Done when:
+  - **One list.** `rally inbox` and an "Operator inbox" panel in the viewer show every open item waiting on the
+    operator, oldest first within urgent then normal: open questions to the operator (today's blockers on the
+    team `operator`, unchanged), and a new declared record kind for the rest, an **operator item**. Each row has
+    what's needed in one line, who raised it and when, its age, what it holds up (a story, a team, or the
+    service itself), and, where there is one, the exact command or decision asked for. The viewer shows the
+    count of open items wherever the board is shown, so an empty inbox and a full one look different at a glance.
+  - **Two kinds of item.** `rally inbox add` takes `--action` (something only the operator can do: a token, a
+    sudo step, a merge permission, a purchase) or `--notice` (something the operator should know and needn't
+    act on), with `--urgent` for what's breaking work now. Any team may add one. Nothing secret goes in an
+    item: the threat model's list of what's never recorded applies, and the command refuses text that looks
+    like a token or key.
+  - **Rally files its own.** When the service observes a fault only the operator can fix, it opens one urgent
+    item itself, as an observed record, and doesn't repeat it while it's open: at least an evidence check
+    refused for the token's credentials (401 or 403), and the token's expiry within 7 days where GitHub
+    reports one. It closes the item itself once the next check succeeds.
+  - **Closing.** `rally inbox done <record>` closes an item saying how, with `--direct` or `--relayed-by` as
+    `unblock` has for questions; a notice is closed by `rally inbox seen`. Closed items stay in the history,
+    and `rally inbox --all` shows them. The service takes a close of an action only from the operator's
+    credential or from whoever raised it; which of those is right is asked of the operator before it's built.
+  - **It reaches him.** `rally digest` and `rally brief` carry the inbox's open count and its urgent items, and
+    the session-start block tells a team when an item it raised was closed. Whether an urgent item should
+    also be pushed to the operator at once (through Marshal or Muster's operator address) is asked of the
+    operator before it's built.
+  - **Old records replay.** Questions to the operator keep their records, shelving window and
+    `operator_away` rules; the inbox reads them and changes none. docs/service.md's rollback table gains the
+    new kind.
+  - docs/inbox.md says what belongs in the inbox and what doesn't (a team's own blocker on another team
+    doesn't), with unit tests for the ordering, the self-filed token item opening once and closing itself, the
+    refusal of secret-looking text, and a headless-Chrome check that the panel shows an added item and loses
+    it when it's closed.
