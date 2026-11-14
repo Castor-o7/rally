@@ -187,8 +187,9 @@ before the later test files, so pass `--no-fail-fast` to see them all.
 ## Status
 
 Rally runs on Murph: the service, with the ledger in Postgres there, the viewer, and the watchman's digest. After
-each verified merge the lamplighter deploys the newest commit on `main` whose CI is green (see "Keeping it current"
-in [docs/service.md](docs/service.md)). Work follows the [roadmap](docs/roadmap.md).
+each verified merge the lamplighter stages the newest commit on `main` whose CI is green; on Murph the service goes
+live with it only once the operator restarts it, which needs his `sudo` (see "Keeping it current" in
+[docs/service.md](docs/service.md)). Work follows the [roadmap](docs/roadmap.md).
 
 ## Licence
 

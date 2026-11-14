@@ -1214,4 +1214,8 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   there's none); a CLI read meeting a route the service lacks says "the service is older than <story>", from a table
   of the story that added each route that a test holds to the routes the service serves; and `rally init`'s block
   tells agents about `rally inbox add`, when to raise an item and when not (not for what the watchman or the team
-  can do itself).
+  can do itself); and, since this repository's own block had drifted from what `rally init` writes (it had bullets
+  for `brief`, `view`, rallies, events and standing records that init didn't), init's block becomes the superset,
+  so re-running `rally init` here deletes nothing, with a test that the repository's block equals what init writes.
+  service.md's "Keeping it current" says plainly that on Murph the service goes live only once the operator
+  restarts it with `sudo`.
