@@ -842,6 +842,8 @@ struct ReadQuery {
     at_ms: Option<i64>,
     /// For corrections: the past record whose later corrections to list (RAL-28).
     since: Option<u64>,
+    /// For waiting: every project's closes due, not only the open rally's (RAL-148).
+    all: Option<bool>,
 }
 
 /// The longest `after` accepted, well past any story ID or team name.
@@ -1156,8 +1158,9 @@ async fn waiting(
         Work::Heavy
     };
     let key = service.operator_key.clone();
+    let all = query.all.unwrap_or(false);
     let result = service
-        .run(work, move |store| store.waiting_report(key.as_ref()))
+        .run(work, move |store| store.waiting_report(key.as_ref(), all))
         .await;
     match result {
         Ok(Ok(report)) => Json(report).into_response(),

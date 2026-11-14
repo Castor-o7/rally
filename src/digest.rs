@@ -49,6 +49,10 @@ pub struct Kept {
     /// The newest merge record taken into `ci`, so each merge is checked once.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub ci_checked_to: u64,
+    /// The handover rows awaiting the watchman's re-read in the last digest sent (RAL-148), as
+    /// [`handover_keys`] gives them, so a digest with nothing new there says one count line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handover_told: Option<Vec<String>>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -366,6 +370,7 @@ pub fn step(
             seen_to: newest.max(kept.head),
             ci: std::mem::take(&mut kept.ci),
             ci_checked_to: kept.ci_checked_to,
+            handover_told: kept.handover_told.take(),
             ..Kept::default()
         };
         return Decision::Nothing;
@@ -418,8 +423,42 @@ pub fn sent(kept: &mut Kept, to: u64) {
         seen_to: to,
         ci: std::mem::take(&mut kept.ci),
         ci_checked_to: kept.ci_checked_to,
+        handover_told: kept.handover_told.take(),
         ..Kept::default()
     };
+}
+
+/// The handover rows a digest lists (RAL-148): those awaiting the watchman's re-read, and with a
+/// rally open, only its projects' (a service older than RAL-148 doesn't say, so all are kept).
+pub fn handover_awaiting(handover: &Value) -> Vec<&Value> {
+    handover["stories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| {
+            s["status"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("awaiting"))
+                && s["in_rally"] != false
+        })
+        .collect()
+}
+
+/// What identifies each row of [`handover_awaiting`]: its story and the peer verification's
+/// record, sorted. Kept once a digest has gone, as [`Kept::handover_told`].
+pub fn handover_keys(handover: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = handover_awaiting(handover)
+        .iter()
+        .map(|s| {
+            format!(
+                "{}@{}",
+                s["story"].as_str().unwrap_or("?"),
+                s["verified_seq"].as_u64().unwrap_or(0)
+            )
+        })
+        .collect();
+    keys.sort();
+    keys
 }
 
 /// RAL-87: why each watchman's digest looks stopped, given what `rally digest` kept on this machine
@@ -516,6 +555,8 @@ struct Section {
     lines: Vec<String>,
     more: &'static str,
     always: bool,
+    /// A heading said in place of the title and count, with no lines under it (RAL-148).
+    heading: Option<String>,
 }
 
 /// The pull request that landed merged commit `commit` in `repo`, read from GitHub, as its head at
@@ -629,6 +670,8 @@ pub struct Reads<'a> {
     /// Verified stories whose open pull request is behind its base (RAL-105), from
     /// [`behind_base`].
     pub behind: &'a [String],
+    /// The handover rows the last digest sent listed (RAL-148), from [`Kept::handover_told`].
+    pub handover_told: Option<&'a [String]>,
 }
 
 /// RAL-31 for a merge at `merged`: compare what landed with the commits verified (RAL-67: the
@@ -733,19 +776,29 @@ pub fn render(
             .collect(),
         more: "rally waiting",
         always: true,
+        heading: None,
     });
 
+    // RAL-148: only the open rally's projects, and when nothing is new since the last digest
+    // sent, one count line instead of the list again.
+    let awaiting = handover_awaiting(handover);
+    let keys = handover_keys(handover);
+    let unchanged = !keys.is_empty()
+        && reads
+            .handover_told
+            .is_some_and(|told| keys.iter().all(|key| told.contains(key)));
+    let handover_title = "Peer-verified, awaiting your re-read (RAL-52)";
     sections.push(Section {
-        title: "Peer-verified, awaiting your re-read (RAL-52)".into(),
-        lines: handover["stories"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|s| {
-                s["status"]
-                    .as_str()
-                    .is_some_and(|t| t.starts_with("awaiting"))
-            })
+        title: handover_title.into(),
+        heading: unchanged.then(|| {
+            format!(
+                "{handover_title}: {}, none new since your last digest (rally handover)",
+                keys.len()
+            )
+        }),
+        lines: awaiting
+            .iter()
+            .filter(|_| !unchanged)
             .map(|s| {
                 let merged = match &s["merged"] {
                     Value::Object(m) => format!(
@@ -789,6 +842,7 @@ pub fn render(
             .collect(),
         more: "rally show",
         always: false,
+        heading: None,
     });
 
     sections.push(Section {
@@ -796,6 +850,7 @@ pub fn render(
         lines: reads.ci.to_vec(),
         more: "gh run list --branch main",
         always: false,
+        heading: None,
     });
 
     sections.push(Section {
@@ -803,6 +858,7 @@ pub fn render(
         lines: reads.behind.to_vec(),
         more: "gh pr list",
         always: false,
+        heading: None,
     });
 
     let on_operator = |r: &Rec| r.body["on_team"].as_str() == Some(crate::ledger::OPERATOR);
@@ -843,6 +899,7 @@ pub fn render(
             .collect(),
         more: "rally blockers",
         always: false,
+        heading: None,
     });
 
     sections.push(Section {
@@ -862,6 +919,7 @@ pub fn render(
             .collect(),
         more: "rally blockers",
         always: false,
+        heading: None,
     });
 
     sections.push(Section {
@@ -886,6 +944,7 @@ pub fn render(
             .collect(),
         more: "rally teams",
         always: false,
+        heading: None,
     });
 
     let shown = ["merge", "block", "unblock", "team_state"];
@@ -923,6 +982,12 @@ pub fn render(
                 <= MAX_BYTES
     };
     for section in sections {
+        if let Some(heading) = &section.heading {
+            if fits(&out, heading) {
+                out.push(heading.clone());
+            }
+            continue;
+        }
         if section.lines.is_empty() && !section.always {
             continue;
         }
@@ -1388,6 +1453,7 @@ mod tests {
             landed: &landed,
             ci: &[],
             behind: &lines,
+            handover_told: None,
         };
         let digest = render(0, 0, &[], &watch(), &reads, 0);
         assert!(
@@ -1396,6 +1462,7 @@ mod tests {
         );
         let quiet = Reads {
             behind: &[],
+            handover_told: None,
             ..reads
         };
         assert!(!render(0, 0, &[], &watch(), &quiet, 0).contains("behind their base"));
@@ -1416,6 +1483,7 @@ mod tests {
             landed: &landed,
             ci: &lines,
             behind: &[],
+            handover_told: None,
         };
         let digest = render(0, 0, &[], &watch(), &reads, 0);
         assert!(
@@ -1625,8 +1693,106 @@ mod tests {
             landed: &landed,
             ci: &[],
             behind: &[],
+            handover_told: None,
         };
         render(0, to, recs, &watch(), &reads, 1_000_000)
+    }
+
+    /// RAL-148: the handover section keeps to the open rally's projects, and when nothing in it
+    /// is new since the last digest sent, it's one count line, not the list again.
+    #[test]
+    fn the_handover_keeps_to_the_rally_and_isnt_repeated_when_nothing_is_new() {
+        let row = |story: &str, seq: u64, in_rally: bool| {
+            json!({"story": story, "verified_seq": seq, "verified_by": "peer", "commit": "c",
+                   "verified_at_ms": 0, "merged": null, "in_rally": in_rally,
+                   "status": "awaiting the watchman's re-read"})
+        };
+        let handover = json!({"stories": [
+            row("CAT-36", 3, false), row("RAL-5", 7, true), row("RAL-6", 9, true),
+        ]});
+        let keys = handover_keys(&handover);
+        assert_eq!(keys, ["RAL-5@7", "RAL-6@9"], "only the rally's, sorted");
+        let waiting = json!({"waiting": []});
+        let stories = json!({"stories": {}});
+        let landed = |_: &str, _: &str| -> Result<Option<(String, String)>, String> { Ok(None) };
+        let digest = |told: Option<&[String]>| {
+            let reads = Reads {
+                waiting: &waiting,
+                handover: &handover,
+                stories: &stories,
+                landed: &landed,
+                ci: &[],
+                behind: &[],
+                handover_told: told,
+            };
+            render(0, 20, &[claim(15, "a")], &watch(), &reads, 1_000_000)
+        };
+
+        let first = digest(None);
+        assert!(
+            first.contains("Peer-verified, awaiting your re-read (RAL-52) (2)"),
+            "{first}"
+        );
+        assert!(
+            first.contains("- RAL-5:") && first.contains("- RAL-6:"),
+            "{first}"
+        );
+        assert!(!first.contains("CAT-36"), "outside the open rally: {first}");
+
+        let again = digest(Some(&keys));
+        assert!(
+            again.contains(
+                "Peer-verified, awaiting your re-read (RAL-52): 2, none new since your last \
+                 digest (rally handover)"
+            ),
+            "{again}"
+        );
+        assert!(!again.contains("- RAL-5:"), "{again}");
+
+        // One re-read since leaves nothing new, so it's still one line.
+        let fewer = vec![
+            "RAL-5@7".to_owned(),
+            "RAL-6@9".to_owned(),
+            "RAL-4@2".to_owned(),
+        ];
+        assert!(!digest(Some(&fewer)).contains("- RAL-5:"));
+
+        // A new one brings the list back.
+        let older = vec!["RAL-5@7".to_owned()];
+        let new = digest(Some(&older));
+        assert!(
+            new.contains("(RAL-52) (2)") && new.contains("- RAL-6:"),
+            "{new}"
+        );
+    }
+
+    /// RAL-148: what the last digest listed for the handover is kept through a pass with nothing
+    /// new and through a send, for the caller to replace.
+    #[test]
+    fn what_the_handover_told_is_kept_across_passes() {
+        let mut kept = Kept {
+            head: 5,
+            handover_told: Some(vec!["RAL-5@7".into()]),
+            ..Kept::default()
+        };
+        let times = Times {
+            quiet_ms: 1,
+            max_ms: 1,
+        };
+        assert!(matches!(
+            step(&mut kept, &[], &watch(), times, 0),
+            Decision::Nothing
+        ));
+        assert_eq!(
+            kept.handover_told.as_deref(),
+            Some(&["RAL-5@7".to_owned()][..])
+        );
+        sent(&mut kept, 9);
+        assert_eq!(kept.head, 9);
+        assert_eq!(
+            kept.handover_told.as_deref(),
+            Some(&["RAL-5@7".to_owned()][..])
+        );
     }
 
     #[test]
@@ -1807,6 +1973,7 @@ mod tests {
             landed: &landed,
             ci: &[],
             behind: &[],
+            handover_told: None,
         };
         let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
         assert!(
@@ -1826,6 +1993,7 @@ mod tests {
             landed: &landed,
             ci: &[],
             behind: &[],
+            handover_told: None,
         };
         let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
         assert!(digest.contains("Waiting for you (0)"), "{digest}");

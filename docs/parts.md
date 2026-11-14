@@ -33,7 +33,8 @@ rally verify DSM-37 --commit <last> --note "all parts read"                 # re
   passes, include it.
 - **With every part verified, the close is the holding team's move** (RAL-141). The story stays Claimed until
   that team's plain submit; a verify, send-back or `read-merged` tried first is refused saying so, and `rally
-  show` and `rally waiting` (`closes_due`) name it as what's next.
+  show` and `rally waiting` (`closes_due`) name it as what's next. With a rally open, `closes_due` lists only
+  that rally's projects and counts the rest; `rally waiting --all` lists every project's (RAL-148).
 - **The close** is today's submit and verify. The final verify is refused while any part is in review or sent
   back, or any declared part was never submitted, and says which.
 - `--of n` declares how many parts there are, at most 64, and never below a part already submitted. Parts are

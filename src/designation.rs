@@ -384,6 +384,34 @@ impl Watch {
     }
 }
 
+/// `name` and every name tied to it by a confirmed restart in any rally (`rally-session
+/// --succeeds`), either way and through chains of restarts (RAL-148). Declared, as the names are.
+fn successors(ledger: &Ledger, name: &str) -> Vec<String> {
+    let links: Vec<(&str, &str)> = ledger
+        .rallies()
+        .iter()
+        .flat_map(|rally| &rally.sessions)
+        .filter(|entry| !entry.remove)
+        .filter_map(|entry| Some((entry.session.as_str(), entry.succeeds.as_deref()?)))
+        .collect();
+    let mut names = vec![name.to_owned()];
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for (a, b) in &links {
+            for (from, to) in [(a, b), (b, a)] {
+                if names.iter().any(|n| same_name(n, from))
+                    && !names.iter().any(|n| same_name(n, to))
+                {
+                    names.push((*to).to_owned());
+                    grew = true;
+                }
+            }
+        }
+    }
+    names
+}
+
 /// The watchmen in force when record `seq` was written.
 fn watchmen_at(eras: &[(u64, Vec<Watch>)], seq: u64) -> &[Watch] {
     eras.iter()
@@ -546,6 +574,34 @@ pub fn handover(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -
             .find(|(_, set)| set.iter().any(|w| w.scope.covers(team, submitted)))
             .map_or(0, |(seq, _)| *seq)
     };
+    // RAL-148: a watchman's own reads are never a peer's, whenever it wrote them: before its
+    // designation as well as after, and under a v1 designation by a confirmed successor's or
+    // predecessor's name too (`rally rally-session --succeeds`).
+    let names: std::collections::BTreeMap<&str, Vec<String>> = current
+        .iter()
+        .map(|watch| (watch.name.as_str(), successors(ledger, &watch.name)))
+        .collect();
+    let own = |watch: &Watch, entry: &crate::ledger::HistoryEntry| {
+        let declared = entry.source.declared_name.as_deref();
+        watch.wrote(&entry.source.credential, declared)
+            || watch.credential.is_none()
+                && declared.is_some_and(|declared| {
+                    names
+                        .get(watch.name.as_str())
+                        .into_iter()
+                        .flatten()
+                        .any(|name| same_name(name, declared))
+                })
+    };
+    // RAL-148: with a rally open, each row says whether its project is in it, so the digest can
+    // keep to the rally while `rally handover` keeps the whole list.
+    let rally_projects: Option<Vec<String>> = ledger.open_rally().map(|r| r.projects.clone());
+    let in_rally = |id: &str| {
+        rally_projects.as_ref().map(|projects| {
+            let prefix = id.split_once('-').map_or(id, |(prefix, _)| prefix);
+            projects.iter().any(|p| p.eq_ignore_ascii_case(prefix))
+        })
+    };
     let mut since_record: Option<u64> = None;
     let mut stories = Vec::new();
     for (id, story) in ledger.stories() {
@@ -561,6 +617,7 @@ pub fn handover(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -
             let peer = story.history.iter().rev().find(|entry| {
                 entry.seq > *opens
                     && entry.seq < *closes
+                    && !watch.is_some_and(|watch| own(watch, entry))
                     && !watchmen_at(&eras, entry.seq)
                         .iter()
                         .any(|w| w.scope.covers(team, submitted))
@@ -593,13 +650,11 @@ pub fn handover(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -
                     }
                     _ => None,
                 });
+            // The watchman's own read after the peer's, before its designation or since (RAL-148).
             let reread = watch.and_then(|watch| {
                 story.history.iter().find(|entry| {
-                    entry.seq > watch.seq
-                        && watch.wrote(
-                            &entry.source.credential,
-                            entry.source.declared_name.as_deref(),
-                        )
+                    entry.seq > peer.seq
+                        && own(watch, entry)
                         // A part's read isn't a re-read of the verified story (RAL-79).
                         && matches!(
                             entry.change,
@@ -621,6 +676,9 @@ pub fn handover(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -
                 "commit": commit, "verified_by": by, "merged": merged, "state": story.state,
                 "status": status, "watchman": watch.map(|w| &w.name),
             }));
+            if let Some(in_rally) = in_rally(id) {
+                stories.last_mut().expect("just pushed")["in_rally"] = json!(in_rally);
+            }
         }
     }
     let awaiting = stories
@@ -645,6 +703,7 @@ pub fn handover(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>) -
         "since_record": since_record.unwrap_or(0),
         "stories": stories,
         "awaiting": awaiting,
+        "rally_projects": rally_projects,
         "rule": "Nothing stands on a peer's verification alone: the watchman whose scope covers a \
                  story re-reads it, merged or not, and keeps it, sends it back or asks for fixes. \
                  The peer's record stays.",
@@ -1366,6 +1425,107 @@ mod tests {
                 .len(),
             0
         );
+    }
+
+    /// RAL-148: the watchman's own reads, written before its designation or by a confirmed
+    /// predecessor, are never peer reads awaiting its re-read; a read of its own after a peer's
+    /// is the re-read; and with a rally open each row says whether its project is in it.
+    #[test]
+    fn a_watchmans_own_reads_before_its_designation_are_not_handed_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (private, key) = keypair(dir.path(), "operator");
+        let mut chain = Chain::new();
+        chain.push_as(
+            "operator",
+            json!({"change": "open_rally", "name": "x", "projects": ["RAL"], "teams": ["t"]}),
+        );
+        // The watchman-to-be reads RAL-1 before anyone is designated.
+        submitted(&mut chain, "RAL-1");
+        verify(&mut chain, "Watch", "RAL-1");
+        // A peer's read stays a peer's.
+        submitted(&mut chain, "RAL-2");
+        verify(&mut chain, "peer", "RAL-2");
+        // A peer reads RAL-3, then the watchman-to-be reads it too: that's its re-read.
+        submitted(&mut chain, "RAL-3");
+        verify(&mut chain, "peer", "RAL-3");
+        chain.push_as(
+            "watch",
+            json!({"change": "correct", "story": "RAL-3", "corrects": chain.records.len() as u64,
+                   "note": "re-read: keeps"}),
+        );
+        // The watchman's earlier session reads RAL-4, and the watchman is confirmed its restart.
+        submitted(&mut chain, "RAL-4");
+        verify(&mut chain, "watch-old", "RAL-4");
+        chain.push_as(
+            "operator",
+            json!({"change": "rally_session", "session": "watch", "succeeds": "watch-old",
+                   "note": "restarted"}),
+        );
+        // A peer's read outside the open rally.
+        submitted(&mut chain, "DSM-1");
+        verify(&mut chain, "peer", "DSM-1");
+        chain.designate(&private, &key, Some("watch"));
+
+        let ledger = Ledger::replay(&chain.records).unwrap();
+        let out = handover(&ledger, &chain.hashes, Some(&key));
+        let rows: Vec<(&str, &str, &Value)> = out["stories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                (
+                    s["story"].as_str().unwrap(),
+                    s["status"].as_str().unwrap(),
+                    &s["in_rally"],
+                )
+            })
+            .collect();
+        assert_eq!(rows.len(), 3, "{out}");
+        assert_eq!(
+            rows[0],
+            ("DSM-1", "awaiting the watchman's re-read", &json!(false))
+        );
+        assert_eq!(
+            rows[1],
+            ("RAL-2", "awaiting the watchman's re-read", &json!(true))
+        );
+        assert_eq!(rows[2].0, "RAL-3");
+        assert!(rows[2].1.starts_with("re-read by the watchman"), "{out}");
+        assert_eq!(out["awaiting"], 2);
+        assert_eq!(out["rally_projects"], json!(["RAL"]));
+    }
+
+    /// RAL-148: under a bound designation only the bound credential counts, before the
+    /// designation as after, and a name declared from another credential is still a peer's.
+    #[test]
+    fn a_bound_watchmans_earlier_reads_count_by_its_credential_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let (private, key) = keypair(dir.path(), "operator");
+        let mut chain = Chain::new();
+        submitted(&mut chain, "RAL-1");
+        chain.push_from(
+            "watch-cred",
+            "anyone",
+            json!({"change": "verify", "story": "RAL-1", "note": "read", "commit": "c".repeat(40)}),
+        );
+        submitted(&mut chain, "RAL-2");
+        chain.push_from(
+            "other-cred",
+            "watch",
+            json!({"change": "verify", "story": "RAL-2", "note": "read", "commit": "c".repeat(40)}),
+        );
+        chain.designate_bound(&private, &key, "watch", "watch-cred");
+        let ledger = Ledger::replay(&chain.records).unwrap();
+        let out = handover(&ledger, &chain.hashes, Some(&key));
+        let stories: Vec<&str> = out["stories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["story"].as_str().unwrap())
+            .collect();
+        assert_eq!(stories, ["RAL-2"], "{out}");
+        assert!(out["rally_projects"].is_null(), "no rally open: {out}");
+        assert!(out["stories"][0].get("in_rally").is_none());
     }
 
     #[test]
