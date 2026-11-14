@@ -106,6 +106,45 @@ waiting on something legitimate, such as the network, looks the same. Rally stop
 been agreed with the operator, so `--hung-after` has no default, and without it nothing is sampled. CPU time and
 start times are the kernel's (`/proc/<pid>/stat`, observed). Linux only.
 
+## A fair slot pool's queue (RAL-188)
+
+From the DiscoSim rally's issues log, 1.84: one team's 25 `dsm-heavy` jobs took most of the heavy slots, and
+another team's suite waited 21 minutes. `dsm-heavy` now gives a free slot to the waiting owners holding fewer
+slots first. Its waiters no longer wait inside `flock` on a slot file: each holds a file of its own locked in a
+waiting directory beside the slots (`/tmp/discosim-heavy.waiting`) and polls. So `/proc/locks` shows no waiter on
+any slot, and each lock row's `waiters` reads 0 however long the queue is.
+
+For each `--lock` pattern (or each project's `stalls.locks`), `rally stalls` reads the waiting directory beside
+it, named for the file name before any `*` or `?` (or before `.lock`), with `.waiting`:
+`/tmp/discosim-heavy*.lock` keeps `/tmp/discosim-heavy.waiting`. `--queue <dir>` names another one for the
+`--lock` patterns given. A pattern with no such directory is a plain lock and has no row here. Each queue gets a
+row under `queues`:
+
+- `holding`: each held slot's owner, the first word of its lock file as `dsm-heavy` writes it, with how many it
+  holds. `?` holds a slot without writing an owner (a job from before fair shares).
+- `waiting`: each waiting owner, with how many jobs and the longest wait in minutes. A waiter is a file in the
+  waiting directory that something holds a lock on, matched by device and inode. Its wait is measured from the
+  file's modification time, which `dsm-heavy` sets when the job starts waiting.
+- `dead_waiter_files`: files nobody holds, left by waiters that died. They aren't counted, and `dsm-heavy` clears
+  them.
+- `slots`: every lock file the pattern names, which may be more than the pool's dial allows.
+
+| Row | When it holds | Prompt |
+|---|---|---|
+| `unfair_slot_wait` | A waiting owner's job has waited at least `--queue-wait-after` (10 minutes by default) while another owner holds more slots than it | Ask the teams holding most to run fewer at once, or raise the dial |
+
+`dsm-heavy` gives a free slot to a waiter within one poll (5 s). So a wait that long means every slot it may use
+stayed busy, held by owners with more. The prompt names each such owner, as "teamB has waited 20 min holding 0
+slots while teamA holds 2", with every owner's slots. It's a prompt, never a finding: a lowered dial, or long
+jobs started before the wait, look the same. Rally stops nothing and creates, removes or locks no file.
+
+A queue that can't be read is a blind spot, never an empty queue. That covers a waiting directory that exists
+while `/proc/locks` can't be read, or a `--queue` directory that isn't there. The row says "can't see the
+queue", and under `--prompts-only` the run fails with it on a `can't see:` line (RAL-174).
+
+The kernel's locks and the files' times are observed. The owners are declared: each job names its own, from
+`DSM_HEAVY_OWNER`, `RALLY_NAME`, the `~/.cache/<team>` folder it runs from, or its session's Muster nickname.
+
 ## One command line, from the projects list (RAL-164)
 
 `rally stalls` and `rally wake` read the projects list beside the pairing (`projects.json`) when not given

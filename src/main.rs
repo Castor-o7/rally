@@ -819,6 +819,16 @@ enum Command {
         /// How long to sample each lock holder's CPU use for --hung-after.
         #[arg(long, value_parser = parse_window, default_value = "5s")]
         cpu_sample: u64,
+        /// With --lock: the waiting directory of a fair slot pool such as dsm-heavy's, where each
+        /// waiter holds a file locked, instead of the one beside the pattern's slots
+        /// (`/tmp/discosim-heavy*.lock` keeps `/tmp/discosim-heavy.waiting`). Each held slot's owner
+        /// and each waiter, by owner, are read from it (RAL-188).
+        #[arg(long)]
+        queue: Option<PathBuf>,
+        /// With --lock, for a fair slot pool's queue: how long a waiter may wait while another owner
+        /// holds more slots, before it's an `unfair_slot_wait` prompt (RAL-188).
+        #[arg(long, value_parser = parse_window, default_value = "10m")]
+        queue_wait_after: u64,
         /// Print nothing when there's nothing to ask and everything needed was read, for a cron
         /// line (RAL-164). When something couldn't be read (the roster, a roadmap or other read, a
         /// lock file), it says what on a line each and fails, so a broken run can't read as a
@@ -2424,6 +2434,8 @@ struct StallOptions<'a> {
     locks: &'a [PathBuf],
     hung: Option<rally::lock_holder::Hung>,
     cpu_sample: u64,
+    queue: Option<&'a Path>,
+    queue_wait_after: u64,
     prompts_only: bool,
 }
 
@@ -2439,6 +2451,8 @@ fn stalls_pass(
         locks,
         hung,
         cpu_sample,
+        queue,
+        queue_wait_after,
         prompts_only,
     } = options;
     // Beside the pairing when not given, as the other commands read it (RAL-164).
@@ -2653,9 +2667,13 @@ fn stalls_pass(
     }
     // Which locks to read, and with what window: the flags, or else, with a rally open, each of
     // its projects' own `stalls` from the projects list (RAL-164).
-    let mut lock_plans: Vec<(Vec<PathBuf>, Option<rally::lock_holder::Hung>)> = Vec::new();
+    let mut lock_plans: Vec<(
+        Vec<PathBuf>,
+        Option<rally::lock_holder::Hung>,
+        Option<&Path>,
+    )> = Vec::new();
     if !locks.is_empty() {
-        lock_plans.push((locks.to_vec(), hung));
+        lock_plans.push((locks.to_vec(), hung, queue));
     } else if let Some(prefixes) = &rally_projects {
         for project in projects
             .iter()
@@ -2680,20 +2698,30 @@ fn stalls_pass(
                 after_ms,
                 sample_ms: cpu_sample,
             });
-            lock_plans.push((config.locks.iter().map(PathBuf::from).collect(), hung));
+            lock_plans.push((config.locks.iter().map(PathBuf::from).collect(), hung, None));
         }
     }
     if !lock_plans.is_empty() {
         // The kernel's account of each lock, which needs no roster: shown with or without it.
         let mut seen_all = Vec::new();
-        for (patterns, hung) in &lock_plans {
+        let mut queues = Vec::new();
+        for (patterns, hung, queue) in &lock_plans {
             let (held, seen) = rally::lock_holder::check_with(patterns, roster.as_ref(), *hung);
             if let Some(prompts) = report["prompts"].as_array_mut() {
                 prompts.extend(held);
             }
             seen_all.extend(seen);
+            // A fair pool's waiters wait in a directory of their own, not on the slots (RAL-188).
+            let (waits, rows) = rally::slot_queue::check_now(patterns, *queue, queue_wait_after);
+            if let Some(prompts) = report["prompts"].as_array_mut() {
+                prompts.extend(waits);
+            }
+            queues.extend(rows);
         }
         report["locks"] = json!(seen_all);
+        if !queues.is_empty() {
+            report["queues"] = json!(queues);
+        }
     }
     report["last_record_ms"] = json!(last_record_ms);
     if let Some(prefixes) = &rally_projects {
@@ -2817,6 +2845,15 @@ fn blind_spots(report: &Value) -> Vec<String> {
                     .as_str()
                     .or_else(|| lock["error"].as_str())
                     .unwrap_or("it couldn't be read")
+            ));
+        }
+    }
+    for queue in report["queues"].as_array().into_iter().flatten() {
+        if queue["checked"] == false {
+            out.push(format!(
+                "the queue {}: {}",
+                queue["queue"].as_str().unwrap_or("?"),
+                queue["reason"].as_str().unwrap_or("can't see the queue")
             ));
         }
     }
@@ -5056,6 +5093,8 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             lock,
             hung_after,
             cpu_sample,
+            queue,
+            queue_wait_after,
             prompts_only,
             digest,
         } => {
@@ -5073,6 +5112,8 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     locks: &lock,
                     hung,
                     cpu_sample,
+                    queue: queue.as_deref(),
+                    queue_wait_after,
                     prompts_only,
                 },
                 &digest,

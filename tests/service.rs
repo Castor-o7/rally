@@ -4069,6 +4069,146 @@ fn a_lock_holder_doing_almost_nothing_is_flagged_as_possibly_hung() {
     assert_eq!(row["kind"], "observed");
 }
 
+/// RAL-188: a fair slot pool's waiters hold files of their own in a waiting directory, not the
+/// slots, so stalls reads that directory beside the pattern: each held slot's owner, each waiter
+/// by owner and how long, and a prompt when one has waited past --queue-wait-after while another
+/// owner holds more. Real `flock` holders; nothing in /tmp.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_fair_pools_queue_is_read_and_a_long_unfair_wait_is_a_prompt() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let slots = service.dir.path().join("slots");
+    let waiting = slots.join("heavy.waiting");
+    std::fs::create_dir_all(&waiting).unwrap();
+    let mut held = Vec::new();
+    for (slot, text) in [
+        ("heavy.1.lock", "teamA 2026-11-14T10:00:00 suite"),
+        ("heavy.2.lock", "teamA x"),
+    ] {
+        let path = slots.join(slot);
+        std::fs::write(&path, text).unwrap();
+        held.push(path);
+    }
+    std::fs::write(slots.join("heavy.3.lock"), "teamC left from before").unwrap();
+    let waiter = waiting.join("teamB.42.7");
+    std::fs::write(&waiter, "teamB\n").unwrap();
+    std::fs::write(waiting.join("teamD.43.8"), "teamD\n").unwrap();
+    held.push(waiter.clone());
+    let mut holders: Vec<std::process::Child> = held
+        .iter()
+        .map(|path| {
+            Command::new("flock")
+                .arg(path)
+                .args(["sleep", "60"])
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    // teamB has waited 20 minutes, by its file's time.
+    let at = std::time::SystemTime::now() - Duration::from_secs(20 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(&waiter)
+        .unwrap()
+        .set_modified(at)
+        .unwrap();
+    let pattern = slots.join("heavy.*.lock").display().to_string();
+    let stalls = |extra: &[&str]| {
+        let out = rally()
+            .arg("--config")
+            .arg(&config)
+            .env("RALLY_ROSTER_FROM", "no-such-shim-for-tests")
+            .args(["stalls", "--lock", &pattern])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    // Waits, up to 10 s, for flock to hold all three.
+    let until = Instant::now() + Duration::from_secs(10);
+    let out = loop {
+        let out = stalls(&[]);
+        if out["queues"][0]["held"] == 2
+            && out["queues"][0]["waiting"]
+                .as_array()
+                .is_some_and(|w| !w.is_empty())
+        {
+            break out;
+        }
+        assert!(
+            Instant::now() < until,
+            "the holders weren't seen within 10 s: {out}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let queue = &out["queues"][0];
+    assert_eq!(queue["queue"], waiting.display().to_string(), "{out}");
+    assert_eq!(queue["slots"], 3);
+    assert_eq!(
+        queue["holding"],
+        json!({"teamA": 2}),
+        "teamC's slot isn't held: {out}"
+    );
+    assert_eq!(
+        queue["waiting"],
+        json!([{"owner": "teamB", "jobs": 1, "longest_wait_min": 20}])
+    );
+    assert_eq!(queue["dead_waiter_files"], 1, "teamD's file nobody holds");
+    let prompt = out["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["row"] == "unfair_slot_wait")
+        .unwrap_or_else(|| panic!("no unfair_slot_wait: {out}"));
+    assert_eq!(
+        prompt["waiting"][0]["summary"],
+        "teamB has waited 20 min holding 0 slots while teamA holds 2"
+    );
+    // Under a longer bound, the queue is still shown, with no prompt.
+    let out = stalls(&["--queue-wait-after", "30m"]);
+    assert_eq!(out["queues"][0]["holding"], json!({"teamA": 2}));
+    assert!(
+        !out["prompts"].to_string().contains("unfair_slot_wait"),
+        "{out}"
+    );
+    // A --queue that isn't there is a blind spot, never an empty queue.
+    let nowhere = slots.join("nowhere.waiting").display().to_string();
+    let blind = rally()
+        .arg("--config")
+        .arg(&config)
+        .env("RALLY_ROSTER_FROM", "no-such-shim-for-tests")
+        .args([
+            "stalls",
+            "--prompts-only",
+            "--lock",
+            &pattern,
+            "--queue",
+            &nowhere,
+        ])
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&blind.stderr).into_owned();
+    assert!(!blind.status.success(), "{said}");
+    assert!(
+        said.contains(&format!(
+            "can't see: the queue {nowhere}: can't see the queue: "
+        )),
+        "{said}"
+    );
+    for holder in &mut holders {
+        let _ = holder.kill();
+        let _ = holder.wait();
+    }
+}
+
 /// RAL-164: with no lock flags, `rally stalls` reads each of the open rally's projects' own
 /// `stalls` from the projects list beside the pairing; a field it doesn't know is warned about,
 /// not fatal; and `--prompts-only` prints nothing when there's nothing to ask, but says what it
