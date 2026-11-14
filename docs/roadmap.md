@@ -1389,6 +1389,12 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   part 2 re-merge couldn't have been read. Done when: `--part k` reads part k's verified commit and the repository
   its evidence names; without it, a story in parts says `can't tell` and names the verified parts; a missing part
   or an unverified one says so; with tests (docs/gate.md).
+- [ ] **RAL-178: `rally merge` waits briefly for the merged commit's CI run, else says it hasn't started.** From the
+  watchman's live check of RAL-171 (2026-11-14): read seconds after `gh pr merge`, the CI note said `none` at nearly
+  every merge, before the push's run had started. Done when: while no run exists, `rally merge` reads again every 2
+  seconds for at most `--ci-wait` seconds (8 by default, 0 reads once, at most 60), giving a run as soon as one
+  appears and never waiting on a failed read; with none, it says "not started yet; the digest's RAL-102 section
+  checks it" (state `not_started`), observed and recorded nowhere; with tests.
 - [ ] **RAL-176: `rally rebased` remerges with the attributes the merge was made with, and says so.** From the
   watchman's run (2026-11-14): its checkout, on an old branch without `.gitattributes`, remerged a union-merged
   roadmap with the default driver and named it a conflict resolved, where a checkout with the attributes named
