@@ -226,7 +226,15 @@ pub fn render_for(
     blockers: &[Value],
     harness: Harness,
 ) -> String {
-    render_in(team, stories, blockers, harness, None, None, &[])
+    render_in(
+        team,
+        stories,
+        blockers,
+        harness,
+        None,
+        None,
+        &Extra::default(),
+    )
 }
 
 /// [`render_for`], led by the open rally, its projects' roadmaps, the stories assigned to the
@@ -238,7 +246,7 @@ pub fn render_in(
     harness: Harness,
     rally: Option<&RallyContext>,
     inbox: Option<(&Value, i64)>,
-    resume: &[String],
+    extra: &Extra,
 ) -> String {
     let mine = |row: &Value| row["team"].as_str() == Some(team);
     let mut body: Vec<String> = Vec::new();
@@ -246,7 +254,7 @@ pub fn render_in(
         body.push(PRIME_AGENT_NOTICE.into());
     }
     // RAL-152: a restart is told first what it needs to resume, already cleaned.
-    body.extend(resume.iter().cloned());
+    body.extend(extra.resume.iter().cloned());
     if let Some(rally) = rally {
         body.push(format!(
             "Open rally (declared): {}; projects {}",
@@ -300,6 +308,9 @@ pub fn render_in(
         .collect();
     body.push("Your team's open stories:".into());
     push_or_none(&mut body, own);
+    // RAL-171: what bears on the team's stories: conditions in force naming them, and a verified
+    // pull request fallen behind its base.
+    body.extend(extra.about_stories.iter().cloned());
 
     let verifiable: Vec<String> = stories
         .iter()
@@ -425,6 +436,55 @@ pub fn fetch_record(pairing: &Pairing, team: &str, total: Duration) -> Vec<Value
 
 /// The most pages of a team's record read at session start (RAL-152).
 pub const RECORD_PAGES: usize = 10;
+
+/// What a session start adds beside the ledger's reads (RAL-152, RAL-171), each line already
+/// cleaned: what a restarted session needs to resume, first; and what bears on the team's own
+/// stories, after them.
+#[derive(Clone, Debug, Default)]
+pub struct Extra {
+    pub resume: Vec<String>,
+    pub about_stories: Vec<String>,
+}
+
+/// One line for each condition in force naming one of `team`'s open stories (RAL-171), from
+/// `/v1/standings`: information, not a block.
+pub fn condition_lines(team: &str, stories: &Map<String, Value>, standings: &Value) -> Vec<String> {
+    stories
+        .iter()
+        .filter(|(_, row)| row["team"].as_str() == Some(team))
+        .filter(|(_, row)| {
+            matches!(
+                row["state"].as_str(),
+                Some("claimed" | "in_review" | "sent_back" | "verified")
+            )
+        })
+        .filter(|(_, row)| row["merged"] != true)
+        .flat_map(|(id, _)| {
+            crate::merge_notes::conditions_naming(standings, id)
+                .into_iter()
+                .map(move |condition| {
+                    format!(
+                        "- {}: {}",
+                        clean(id),
+                        condition["said"].as_str().unwrap_or("")
+                    )
+                })
+        })
+        .collect()
+}
+
+/// The conditions and grants in force, through the service within `total`, or `None` from a
+/// service older than RAL-136 or one that didn't answer in time (RAL-171).
+pub fn fetch_standings(pairing: &Pairing, total: Duration) -> Option<Value> {
+    if total.is_zero() {
+        return None;
+    }
+    let reply = client::request_for(pairing, "GET", "/v1/standings", total).ok()?;
+    if !(200..300).contains(&reply.status) {
+        return None;
+    }
+    serde_json::from_str(&reply.body).ok()
+}
 
 /// How far back a closed inbox item is told at session start (RAL-146).
 pub const CLOSED_ITEMS_WITHIN_MS: i64 = 24 * 60 * 60 * 1000;
@@ -560,7 +620,7 @@ mod tests {
             Harness::Other,
             None,
             Some((&inbox, 10 * day + 60_000)),
-            &[],
+            &Extra::default(),
         );
         assert!(out.contains("Your team's items in the operator's inbox closed in the last day:"));
         assert!(
@@ -588,9 +648,46 @@ mod tests {
             Harness::Other,
             None,
             Some((&json!({"items": []}), 0)),
-            &[],
+            &Extra::default(),
         );
         assert!(!none.contains("operator's inbox"));
+    }
+
+    /// RAL-171: a condition in force naming one of the team's open stories is said under them,
+    /// as information; another team's story, or a merged one, says nothing.
+    #[test]
+    fn a_condition_naming_the_teams_story_is_said_under_its_stories() {
+        let stories = json!({
+            "RAL-160": {"state": "in_review", "team": "rustdaw"},
+            "RAL-161": {"state": "verified", "team": "rustdaw", "merged": true},
+            "RAL-162": {"state": "claimed", "team": "marshal"},
+        });
+        let stories = stories.as_object().unwrap();
+        let standings = json!({"standings": [
+            {"seq": 7, "standing": "condition", "story": "RAL-160", "note": "merges next",
+             "declared_by": "mellow-weevil"},
+            {"seq": 8, "standing": "condition", "story": "RAL-161", "note": "merged already",
+             "declared_by": "mellow-weevil"},
+            {"seq": 9, "standing": "condition", "story": "RAL-162", "note": "not yours",
+             "declared_by": "mellow-weevil"},
+        ]});
+        let lines = condition_lines("rustdaw", stories, &standings);
+        assert_eq!(
+            lines,
+            [
+                "- RAL-160: a condition in force names this story: merges next (declared, #7 by \
+              mellow-weevil)"
+            ]
+        );
+        let extra = Extra {
+            resume: Vec::new(),
+            about_stories: lines,
+        };
+        let out = render_in("rustdaw", stories, &[], Harness::Other, None, None, &extra);
+        let open = out.find("Your team's open stories:").unwrap();
+        let said = out.find("- RAL-160: a condition in force").unwrap();
+        let next = out.find("Stories you could verify").unwrap();
+        assert!(open < said && said < next, "{out}");
     }
 
     /// RAL-131: a session in an open rally is told the rally, each project's roadmap stage, the
@@ -617,7 +714,7 @@ mod tests {
             Harness::Other,
             Some(&rally),
             None,
-            &[],
+            &Extra::default(),
         );
         assert!(
             out.contains("Open rally (declared): rally 0x7; projects MAR, ROO"),
@@ -641,7 +738,15 @@ mod tests {
         assert!(!out.contains("ROO-4"), "{out}");
         assert!(out.lines().count() <= MAX_LINES);
         // Without a rally, as before.
-        let plain = render_in("rustdaw", &Map::new(), &[], Harness::Other, None, None, &[]);
+        let plain = render_in(
+            "rustdaw",
+            &Map::new(),
+            &[],
+            Harness::Other,
+            None,
+            None,
+            &Extra::default(),
+        );
         assert!(!plain.contains("Open rally"));
     }
 

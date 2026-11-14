@@ -1345,6 +1345,15 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   tip, and the stories merged but not live, from GitHub's compare of live and main, mapped by the story ID in each
   commit's message, with the count and the oldest's age; a hint when this CLI is ahead of the service (staged,
   waiting on a restart); no reading of rollout files; with tests.
+- [ ] **RAL-171: Conditions shown where they bite, a verified pull request behind its base at session start, and a
+  merge's CI noted.** From the watchman (2026-11-14), from jaunty-harrier's note of the night. Done when: (a) a
+  condition in force naming a story is printed by `rally merge <STORY>` and under the team's stories at session
+  start, "a condition in force names this story: <text>", declared, information and never a block; (b) the team's
+  session start says when one of its verified, unmerged pull requests has fallen behind its base, from the same `gh`
+  read as the digest's RAL-105 section, within what's left of its 3 seconds, and says so when `gh` doesn't answer in
+  time; (c) `rally merge` prints the merged commit's CI, read through `gh` at the merge, observed and recorded
+  nowhere, with "running; the digest's RAL-102 section checks again" rather than a verdict while it runs. The CLI
+  tests run with a stand-in `gh` first on `PATH`, so none reads GitHub.
 - [ ] **RAL-169: The roadmap merges with git's `union` driver.** From the watchman (2026-11-14): on 2026-11-13
   nearly every pull request conflicted on this file, because every team appends its entries at the end, and each
   conflict cost a merge commit and another read. Done when: `.gitattributes` sets `docs/roadmap.md merge=union`;
