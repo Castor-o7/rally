@@ -268,6 +268,9 @@ function renderLedger(ledger, backup, now, untrusted, rally, roster) {
   const stories = all.filter(([id]) => storyInRally(rally, id));
   root.append(activityStrip(stories, roster, rally, now));
   root.append(rallyLine(rally, all.length - stories.length));
+  const inboxLine = el("p", ledger.inbox && ledger.inbox.urgent ? "warning" : "muted", inboxCount(ledger.inbox));
+  inboxLine.classList.add("inbox-count");
+  root.append(inboxLine);
   root.append(standingBox(ledger.standings, now));
   if (stories.length === 0) {
     root.append(el("p", "muted", !all.length ? "No stories have been recorded yet."
@@ -299,6 +302,133 @@ function renderLedger(ledger, backup, now, untrusted, rally, roster) {
   root.append(evidenceGroup(stories, untrusted, now));
   root.append(pastForm(check ? check.head.seq : ledger.as_of));
 }
+
+// The operator's inbox (RAL-146), like a quest log: what's waiting on the operator, urgent first and
+// then oldest first, each with a box the operator ticks once it's done or seen. The box is drawn
+// only when this viewer can write; a tick is sent by one listener on the document (inboxTicked),
+// since a poll patches the rows in place.
+const ticked = new Map(); // record number -> what the tick came back with, until the item leaves
+
+function inboxCount(inbox) {
+  if (!inbox || inbox.available === false) return "Operator inbox: not read";
+  const open = inbox.open || 0;
+  if (!open) return "Operator inbox: empty";
+  return "Operator inbox: " + counted(open, "item", "items") + " open"
+    + (inbox.urgent ? ", " + inbox.urgent + " urgent" : "");
+}
+
+function holdsUp(held) {
+  if (!held) return "";
+  if (held === "service") return "the service";
+  if (held.story) return held.story;
+  if (held.team) return "team " + held.team;
+  return "";
+}
+
+function renderInbox(inbox, tickInfo, now) {
+  const root = drawing("inbox");
+  const heading = document.getElementById("inbox-title");
+  const title = inboxCount(inbox).replace(/^Operator inbox: /, "");
+  if (heading) {
+    const text = "Operator inbox · " + title;
+    if (heading.textContent !== text) heading.textContent = text;
+    heading.dataset.urgent = inbox && inbox.urgent ? "yes" : "no";
+  }
+  if (!inbox || inbox.available === false) {
+    root.append(el("p", "muted", "Not read: " + ((inbox && inbox.reason) || "the viewer didn't say.")));
+    return;
+  }
+  const items = inbox.items || [];
+  for (const seq of [...ticked.keys()]) {
+    if (!items.some((item) => item.seq === seq)) ticked.delete(seq);
+  }
+  if (!items.length) {
+    root.append(el("p", "good", "Nothing is waiting on the operator."));
+    return;
+  }
+  const canTick = Boolean(tickInfo && tickInfo.available);
+  const list = el("ul", "inbox");
+  for (const item of items) {
+    const row = el("li", "inbox-item" + (item.urgent ? " urgent" : ""));
+    row.dataset.seq = String(item.seq);
+    if (canTick) {
+      const box = el("input", "inbox-tick");
+      box.type = "checkbox";
+      box.dataset.seq = String(item.seq);
+      box.setAttribute("aria-label", "Tick off record " + item.seq + ": " + item.note);
+      const state = ticked.get(item.seq);
+      box.checked = Boolean(state && state.ok);
+      box.disabled = Boolean(state);
+      row.append(box);
+    }
+    const body = el("div", "inbox-body");
+    const tags = el("p", "inbox-tags");
+    if (item.urgent) tags.append(el("span", "pill urgent", "urgent"), " ");
+    tags.append(el("span", "pill", item.from === "question" ? "question" : item.item), " ");
+    tags.append(el("span", "label", item.kind), " ");
+    tags.append("#" + item.seq);
+    body.append(tags, el("p", "inbox-note", item.note));
+    if (item.ask) {
+      const ask = el("p", "inbox-ask");
+      ask.append("Asked: ", el("code", "", item.ask));
+      body.append(ask);
+    }
+    const by = item.raised_by || {};
+    const meta = [];
+    const held = holdsUp(item.holds_up);
+    if (held) meta.push("holds up " + held + " · ");
+    meta.push("raised by " + (by.name || "someone") + (by.team ? " (" + by.team + ")" : "") + ", ");
+    meta.push(ago(item.at_ms, now));
+    body.append(el("p", "muted", meta));
+    const state = ticked.get(item.seq);
+    if (state) body.append(el("p", state.ok ? "good" : "warning", state.text));
+    row.append(body);
+    list.append(row);
+  }
+  root.append(list);
+  if (!canTick) {
+    root.append(el("p", "muted", "This viewer can't tick items off: " + ((tickInfo && tickInfo.reason) || "it didn't say")
+      + ". Use rally inbox done <record> in a terminal."));
+  }
+}
+
+async function inboxTicked(event) {
+  const box = event.target;
+  if (!(box instanceof HTMLInputElement) || !box.classList.contains("inbox-tick") || !box.checked) return;
+  const seq = Number(box.dataset.seq);
+  const token = lastStatus && lastStatus.tick && lastStatus.tick.token;
+  if (!token || ticked.has(seq)) return;
+  ticked.set(seq, { ok: false, text: "Ticking…" });
+  box.disabled = true;
+  let state;
+  try {
+    const response = await fetch("/api/tick", {
+      method: "POST",
+      cache: "no-store",
+      headers: { "content-type": "application/json", "x-rally-tick": token },
+      body: JSON.stringify({ item: seq }),
+    });
+    const text = await response.text();
+    if (response.ok) {
+      let recorded = "";
+      try { recorded = JSON.parse(text).recorded; } catch (error) { recorded = ""; }
+      state = { ok: true, text: "Ticked off" + (recorded ? " (record " + recorded + ")" : "") + "." };
+    } else {
+      state = { ok: false, text: "Not ticked: " + text };
+    }
+  } catch (error) {
+    state = { ok: false, text: "Not ticked: the viewer didn't answer." };
+  }
+  ticked.set(seq, state);
+  if (!state.ok) {
+    // Let it be tried again after the next poll.
+    setTimeout(() => { ticked.delete(seq); if (lastStatus) refresh(); }, 5000);
+  }
+  if (lastStatus) drawPatched("inbox", () => renderInbox(lastStatus.ledger.inbox, lastStatus.tick, Date.now()));
+  setTimeout(refresh, 1500);
+}
+
+document.addEventListener("change", inboxTicked);
 
 // The holds, conditions and grants in force (RAL-136), each as its writer declared it, shown
 // beside the rally because they decide what may happen in it. A grant confers no authority.
@@ -1360,6 +1490,7 @@ function show(status, now) {
     try { prefix = decodeURIComponent(match[1]); } catch (error) { prefix = ""; }
     drawPatched("project-page", () => renderProject(status, prefix, now));
   } else {
+    drawPatched("inbox", () => renderInbox(status.ledger && status.ledger.inbox, status.tick, now));
     drawPatched("ledger", () => renderLedger(status.ledger, status.backup, now, status.untrusted_text, status.rally,
       status.roster));
     drawPatched("roadmaps", () => renderRoadmaps(status.projects, now, status.rally, status.projects_file));

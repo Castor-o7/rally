@@ -81,7 +81,9 @@ Teams
   When every row is one the last digest sent already listed, it's one line, "…: N, none new since your last
   digest (rally handover)", instead of the list again (RAL-148); merges, flagging one whose pull request's head at merge isn't the
   commit verified;
-  blockers opened and closed; questions to the operator; team-state changes. An empty section is left out, except
+  blockers opened and closed; questions to the operator; team-state changes; and the operator's inbox as it stands
+  (RAL-146, [inbox.md](inbox.md)): "Operator inbox: N open, M urgent", with each urgent item and what it asks,
+  left out when the inbox is empty or the service is older than RAL-146. An empty section is left out, except
   "Waiting for you", which always shows its count.
 - **Bounded:** at most 40 lines and 4 KB, like `rally session-start`. Past that, each section shows its count and
   says what to run: `rally waiting`, `rally handover`, `rally blockers` or `rally brief`.

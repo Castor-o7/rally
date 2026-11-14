@@ -468,3 +468,18 @@ tbody tr.cue-activity, .activity li.cue-activity { animation: cue-trace 2.4s eas
   .sigil { width: 38px; height: 38px; }
   .section-row { grid-template-columns: minmax(0, 1fr) 64px 56px; gap: 8px; }
 }
+
+/* The operator's inbox (RAL-146): a quest log, urgent items first and marked. */
+#inbox-title[data-urgent="yes"] { color: var(--bad); }
+.inbox { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.inbox-item { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--text-2) 30%, transparent); border-radius: 6px; }
+.inbox-item.urgent { border-color: var(--bad); }
+.inbox-tick { width: 20px; height: 20px; margin-top: 2px; flex: none; accent-color: var(--good); cursor: pointer; }
+.inbox-body { min-width: 0; }
+.inbox-body p { margin: 2px 0; }
+.inbox-note { overflow-wrap: anywhere; }
+.inbox-ask code { overflow-wrap: anywhere; }
+.pill.urgent { color: var(--bad); border-color: var(--bad); }
+.pill { display: inline-block; padding: 0 6px; border: 1px solid var(--text-2); border-radius: 999px;
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }

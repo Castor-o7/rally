@@ -80,6 +80,51 @@ struct DigestCheck {
     digest_watchman: Option<String>,
 }
 
+/// Adding to the operator's inbox, and ticking an item off (RAL-146).
+#[derive(Subcommand)]
+enum InboxAction {
+    /// Raise an item for the operator: an action only the operator can take, or a notice to know
+    /// of. Any team may. Nothing secret goes in it: text that looks like a token or key is refused.
+    Add {
+        /// The team raising it.
+        #[arg(long)]
+        team: String,
+        /// What's needed, in one line.
+        #[arg(long)]
+        note: String,
+        /// Something only the operator can do: a token, a sudo step, a merge permission, a purchase.
+        #[arg(long, conflicts_with = "notice", required_unless_present = "notice")]
+        action: bool,
+        /// Something the operator should know and needn't act on.
+        #[arg(long)]
+        notice: bool,
+        /// It's breaking work now, so it goes to the top.
+        #[arg(long)]
+        urgent: bool,
+        /// The exact command or decision asked for, in one line.
+        #[arg(long)]
+        ask: Option<String>,
+        /// The story it holds up.
+        #[arg(long, conflicts_with_all = ["holds_up_team", "holds_up_service"])]
+        story: Option<String>,
+        /// The team it holds up.
+        #[arg(long = "holds-up-team", conflicts_with = "holds_up_service")]
+        holds_up_team: Option<String>,
+        /// It holds up the service itself.
+        #[arg(long = "holds-up-service")]
+        holds_up_service: bool,
+    },
+    /// Tick an item off, as the operator: an action done, a notice seen, or a question to the
+    /// operator answered (as `rally unblock --direct`). Recorded as declared, made at a terminal.
+    Done {
+        /// The item's record number, as `rally inbox` shows it.
+        item: u64,
+        /// How it was done, or the answer.
+        #[arg(long, default_value = "done")]
+        note: String,
+    },
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Run the service on this machine. Needs --db and --head-file. Prints where it's listening.
@@ -646,6 +691,16 @@ enum Command {
         #[arg(long = "backing")]
         backing: Vec<String>,
     },
+    /// The operator's inbox (RAL-146): everything waiting on the operator, urgent first, then
+    /// oldest first: operator items, and open questions to the operator. Read-only without a
+    /// subcommand. See docs/inbox.md
+    Inbox {
+        /// Closed items too, after the open ones.
+        #[arg(long)]
+        all: bool,
+        #[command(subcommand)]
+        action: Option<InboxAction>,
+    },
     /// List the rallies, newest first, and the one that's open (RAL-76).
     Rallies {
         /// Show them as they stood after this record.
@@ -1148,9 +1203,20 @@ fn session_start(
             // The open rally and its roadmaps (RAL-131), in what's left of the deadline.
             let left = rally::session::DEADLINE.saturating_sub(started.elapsed());
             let context = rally::session::fetch_rally(&pairing, left);
+            // What the operator ticked off of this team's items (RAL-146), in what's left.
+            let left = rally::session::DEADLINE.saturating_sub(started.elapsed());
+            let inbox = rally::session::fetch_inbox(&pairing, left);
+            let now = now_ms().unwrap_or(0);
             println!(
                 "{}",
-                rally::session::render_in(team, &stories, &blockers, harness, context.as_ref())
+                rally::session::render_in(
+                    team,
+                    &stories,
+                    &blockers,
+                    harness,
+                    context.as_ref(),
+                    inbox.as_ref().map(|inbox| (inbox, now)),
+                )
             )
         }
         Err(error) => quiet(&escape_for_terminal(&error)),
@@ -2111,6 +2177,8 @@ fn digest_pass(
                     }
                     Ok(read.clone().unwrap_or_default())
                 };
+            // RAL-146: the operator's inbox; a service older than it has none to give.
+            let inbox = get("/v1/inbox").ok();
             match decision {
                 Decision::Nothing => row["decision"] = json!("nothing new"),
                 Decision::Batching { due_in_ms } => {
@@ -2131,6 +2199,7 @@ fn digest_pass(
                             ci: &ci.lines,
                             behind: &behind,
                             handover_told: told,
+                            inbox: inbox.as_ref(),
                         };
                         row["preview"] = json!(rally::digest::render(
                             kept.head, to, &recs, watch, &reads, now_ms
@@ -2150,6 +2219,7 @@ fn digest_pass(
                         ci: &ci.lines,
                         behind: &behind,
                         handover_told: told,
+                        inbox: inbox.as_ref(),
                     };
                     let digest = rally::digest::render(from, to, &recs, watch, &reads, now_ms);
                     if report_only {
@@ -2659,6 +2729,27 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
             |ledger, page| views::track_records(ledger, None, page),
         )?;
         let rallies = read_rallies(&backend);
+        // The operator's inbox (RAL-146). An older service without the read says so.
+        let inbox = match &backend {
+            Backend::File(_) => {
+                let now = now_ms()?;
+                backend.read_value("/v1/inbox", None, &Page::default(), move |ledger, _| {
+                    Ok(rally::inbox::inbox(ledger, false, now))
+                })?
+            }
+            Backend::Service(pairing) => {
+                match client::request(pairing, "GET", "/v1/inbox", None, &[]) {
+                    Ok(reply) if reply.status == 404 => {
+                        json!({"available": false, "older_service": true,
+                    "reason": "the service has no /v1/inbox (it's older than RAL-146)"})
+                    }
+                    Ok(reply) => reply_value(&reply).unwrap_or_else(
+                        |error| json!({"available": false, "reason": error.to_string()}),
+                    ),
+                    Err(error) => json!({"available": false, "reason": error.to_string()}),
+                }
+            }
+        };
         // What's standing in force (RAL-136). An older service without the read says so.
         let standings = match &backend {
             Backend::File(_) => backend
@@ -2680,6 +2771,7 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
         Ok(json!({
             "rallies": rallies,
             "standings": standings,
+            "inbox": inbox,
             "as_of": stories["as_of"],
             "as_of_at_ms": stories["as_of_at_ms"],
             "stories": stories["stories"],
@@ -2697,6 +2789,74 @@ fn ledger_reader(location: Option<Location>, config: PathBuf) -> LedgerReader {
         }))
     };
     Box::new(move || read().map_err(|error| error.to_string()))
+}
+
+/// The record that ticks inbox item `item` off (RAL-146): a close of an operator item, saying
+/// where it was ticked, or for a question to the operator an unblock answered directly, so it
+/// closes as a question always has.
+fn inbox_close(
+    backend: &Backend,
+    item: u64,
+    note: &str,
+    via: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let now = now_ms()?;
+    let inbox = backend.read_value("/v1/inbox", None, &Page::default(), move |ledger, _| {
+        Ok(rally::inbox::inbox(ledger, false, now))
+    })?;
+    let found = inbox["items"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["seq"] == item))
+        .ok_or_else(|| format!("record {item} isn't an open item in the operator's inbox"))?;
+    Ok(if found["from"] == "question" {
+        json!({"change": "unblock", "blocker": item, "note": note, "answer": {"from": "direct"}})
+    } else {
+        json!({"change": "close_item", "item": item, "note": note, "via": via})
+    })
+}
+
+/// The name a tick in the viewer is declared under (RAL-146).
+const TICK_NAME: &str = "operator";
+
+/// How the viewer ticks inbox items off (RAL-146): with the writing pairing beside its own,
+/// `client.json`, when there is one. The viewer reads with its read-only pairing; this is its one
+/// write, declared as the operator's, and the service records which machine's credential made it.
+fn inbox_ticker(config: &Path) -> Option<web::Ticker> {
+    let writer = config.with_file_name("client.json");
+    let pairing: Pairing = serde_json::from_str(&std::fs::read_to_string(&writer).ok()?).ok()?;
+    Some(Box::new(move |item| {
+        let backend = Backend::Service(pairing.clone());
+        let tick = || -> Result<Value, Box<dyn std::error::Error>> {
+            let body = inbox_close(&backend, item, "ticked in the viewer", "viewer")?;
+            let request = json!({"kind": Kind::Declared, "declared_name": TICK_NAME, "body": body})
+                .to_string();
+            let reply = client::request(&pairing, "POST", "/v1/records", Some(&request), &[])?;
+            reply_value(&reply)
+        };
+        tick().map_err(|error| error.to_string())
+    }))
+}
+
+/// How a viewer on the host ticks inbox items off (RAL-146), when it was given `--credential`:
+/// through the writer lock, as any write with `--db` is, declared as the operator's.
+fn host_ticker(location: Location, credential: String) -> web::Ticker {
+    Box::new(move |item| {
+        let tick = || -> Result<Value, Box<dyn std::error::Error>> {
+            let store = Store::open(&location)?;
+            let backend = Backend::File(Box::new(store));
+            let body = inbox_close(&backend, item, "ticked in the viewer", "viewer")?;
+            let Backend::File(store) = backend else {
+                unreachable!("opened on the host");
+            };
+            let source = Source {
+                credential: credential.clone(),
+                declared_name: Some(TICK_NAME.to_owned()),
+            };
+            let record = Record::new(Kind::Declared, source, now_ms()?, body)?;
+            Ok(json!({"recorded": store.append(&record)?}))
+        };
+        tick().map_err(|error| error.to_string())
+    })
 }
 
 /// `rally view` (RAL-82): makes sure the viewer runs this build with these settings, then opens it.
@@ -2843,15 +3003,27 @@ fn web_login(bind: &str, key_file: &Path) -> Result<String, Box<dyn std::error::
     .to_string())
 }
 
+/// Where the viewer reaches the ledger: through the pairing at `config`, or on the host with
+/// `location`; and on the host, the credential its ticks are written as, if it may tick (RAL-146).
+struct ViewerLedger {
+    location: Option<Location>,
+    config: PathBuf,
+    credential: Option<String>,
+}
+
 fn run_viewer(
     bind: &str,
     projects: Option<PathBuf>,
-    location: Option<Location>,
-    config: PathBuf,
+    ledger: ViewerLedger,
     backup: Option<BackupWatch>,
     reads: web::LocalReads,
     sign_in: web::SignIn,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    let ViewerLedger {
+        location,
+        config,
+        credential,
+    } = ledger;
     let key_file = sign_in.key_file.as_path();
     let projects_from = projects
         .as_ref()
@@ -2912,12 +3084,18 @@ fn run_viewer(
     );
     std::io::Write::flush(&mut std::io::stdout())?;
     let reader = ledger_reader(location.clone(), config.clone());
+    let tick = match (&location, credential) {
+        (None, _) => inbox_ticker(&config),
+        (Some(location), Some(credential)) => Some(host_ticker(location.clone(), credential)),
+        // On the host without --credential, the viewer reads only.
+        (Some(_), None) => None,
+    };
     let past = past_reader(location, config);
     tokio::runtime::Runtime::new()?.block_on(web::serve(
         listener,
         sign_in.clone(),
         projects,
-        reader,
+        web::LedgerAccess { read: reader, tick },
         past,
         backup,
         reads,
@@ -3257,8 +3435,11 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             return run_viewer(
                 &bind,
                 projects.clone(),
-                location,
-                config,
+                ViewerLedger {
+                    location,
+                    config,
+                    credential: cli.credential,
+                },
                 backup,
                 web::LocalReads {
                     local,
@@ -3637,6 +3818,58 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 body["backing"] = json!(backing);
             }
             (Kind::Declared, body)
+        }
+        Command::Inbox { all, action: None } => {
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
+            let path = if all { "/v1/inbox/all" } else { "/v1/inbox" };
+            let now = now_ms()?;
+            return backend.read(path, None, &Page::default(), move |ledger, _| {
+                Ok(rally::inbox::inbox(ledger, all, now))
+            });
+        }
+        Command::Inbox {
+            action:
+                Some(InboxAction::Add {
+                    team,
+                    note,
+                    action: _,
+                    notice,
+                    urgent,
+                    ask,
+                    story,
+                    holds_up_team,
+                    holds_up_service,
+                }),
+            ..
+        } => {
+            let item = if notice { "notice" } else { "action" };
+            let mut body =
+                json!({"change": "operator_item", "item": item, "team": team, "note": note});
+            if urgent {
+                body["urgent"] = json!(true);
+            }
+            if let Some(ask) = ask {
+                body["ask"] = json!(ask);
+            }
+            if let Some(story) = story {
+                body["holds_up"] = json!({"story": story});
+            } else if let Some(held) = holds_up_team {
+                body["holds_up"] = json!({"team": held});
+            } else if holds_up_service {
+                body["holds_up"] = json!("service");
+            }
+            (Kind::Declared, body)
+        }
+        Command::Inbox {
+            action: Some(InboxAction::Done { item, note }),
+            ..
+        } => {
+            let backend =
+                Backend::choose(location.as_ref(), &config_path(cli.config.clone())?, false)?;
+            (
+                Kind::Declared,
+                inbox_close(&backend, item, &note, "terminal")?,
+            )
         }
         Command::EndStanding { standing, note } => (
             Kind::Declared,

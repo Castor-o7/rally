@@ -34,6 +34,7 @@ Records that end the rollback window, because a binary older than the one named 
 | `claim` of a cleared roadmap story `<PREFIX>-0`, to revise it (first written at record 1981) | `fada36c` | RAL-129 |
 | `assign` (first written at record 1970) | `fada36c` | RAL-130 |
 | `rally-project` | not yet deployed | RAL-135 |
+| `inbox add` or `inbox done` (an `operator_item` or `close_item`), or Rally filing its own token item | not yet deployed | RAL-146 |
 
 Before rolling back to a binary older than the story that added one, check that none has been written.
 

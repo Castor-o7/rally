@@ -87,6 +87,18 @@ fn start_after_with(
     setup: impl FnOnce(&Database, &std::path::Path),
     web_args: impl FnOnce(&std::path::Path) -> Vec<String>,
 ) -> Viewer {
+    start_after_full(projects_json, fake_gh, code_seconds, setup, web_args, &[])
+}
+
+/// Like `start_after_with`, with these variables set for the viewer, such as RALLY_CREDENTIAL.
+fn start_after_full(
+    projects_json: &str,
+    fake_gh: Option<&str>,
+    code_seconds: u64,
+    setup: impl FnOnce(&Database, &std::path::Path),
+    web_args: impl FnOnce(&std::path::Path) -> Vec<String>,
+    env: &[(&str, &str)],
+) -> Viewer {
     let dir = tempfile::tempdir().unwrap();
     let db = scratch_pg::shared().database();
     setup(&db, dir.path());
@@ -114,6 +126,7 @@ fn start_after_with(
         .arg(&key_file)
         .args(["--code-seconds", &code_seconds.to_string()])
         .args(web_args(dir.path()))
+        .envs(env.iter().copied())
         .stdout(Stdio::piped());
     if fake_gh.is_some() {
         let path = std::env::var("PATH").unwrap_or_default();
@@ -2874,4 +2887,271 @@ fn the_roster_says_how_long_a_session_has_been_busy_only_when_declared() {
     assert!(text.contains("busy for 3m"), "{probe}");
     assert!(text.contains("idle, since unknown"), "{probe}");
     assert!(!text.contains("idle for"), "{probe}");
+}
+
+/// A viewer on the host that may tick inbox items off as `operator-box` (RAL-146), on a ledger
+/// holding an urgent item, a notice and a question to the operator.
+fn start_ticking() -> Viewer {
+    start_after_full(
+        "[]",
+        None,
+        60,
+        |db, dir| {
+            let write = |args: &[&str]| {
+                let out = on(db, dir)
+                    .args(["--credential", "a1", "--as", "earnest-raccoon"])
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "{args:?}: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            };
+            write(&[
+                "inbox", "add", "--team", "ral", "--notice", "--note", "a notice",
+            ]);
+            write(&[
+                "inbox",
+                "add",
+                "--team",
+                "ral",
+                "--action",
+                "--urgent",
+                "--note",
+                "restart the service",
+                "--ask",
+                "sudo systemctl restart rally",
+                "--holds-up-service",
+            ]);
+            write(&[
+                "block",
+                "--team",
+                "ral",
+                "--on-team",
+                "operator",
+                "--note",
+                "may we?",
+            ]);
+        },
+        |_| Vec::new(),
+        &[("RALLY_CREDENTIAL", "operator-box")],
+    )
+}
+
+/// The status, once the viewer has read the inbox and it shows `open` items.
+fn inbox_status(viewer: &Viewer, open: u64) -> Value {
+    let mut status = Value::Null;
+    for _ in 0..200 {
+        let (_, text) = get(viewer, "/api/status");
+        status = serde_json::from_str(body_of(&text)).unwrap_or(Value::Null);
+        if status["ledger"]["inbox"]["open"] == open {
+            return status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("the inbox never showed {open} open: {status}");
+}
+
+/// A tick as the page sends it, with these extra headers.
+fn post_tick(viewer: &Viewer, item: u64, extra: &str) -> (u16, String) {
+    let body = format!("{{\"item\": {item}}}");
+    let headers = format!(
+        "Cookie: rally_view={}\r\nOrigin: http://{}\r\nSec-Fetch-Site: same-origin\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\n{extra}",
+        viewer.session,
+        viewer.address,
+        body.len()
+    );
+    bare_with_body(
+        viewer,
+        "POST",
+        "/api/tick",
+        &viewer.address,
+        &headers,
+        &body,
+    )
+}
+
+/// RAL-146: the inbox reaches the viewer, urgent first then oldest first, and a viewer on the host
+/// without a credential to write as draws no tick and takes none.
+#[test]
+fn the_inbox_reaches_the_viewer_and_a_read_only_viewer_takes_no_tick() {
+    let viewer = start_after("[]", None, 60, |db, dir| {
+        let out = on(db, dir)
+            .args(["--credential", "a1", "--as", "earnest-raccoon"])
+            .args(["inbox", "add", "--team", "ral", "--notice", "--note", "fyi"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    });
+    let status = inbox_status(&viewer, 1);
+    assert_eq!(status["ledger"]["inbox"]["items"][0]["note"], "fyi");
+    assert_eq!(status["tick"]["available"], false, "{status}");
+    assert!(status["tick"].get("token").is_none());
+    let (code, text) = post_tick(&viewer, 2, "x-rally-tick: anything\r\n");
+    assert_eq!(code, 404, "{text}");
+}
+
+/// RAL-146: a tick is taken only from a signed-in session of the page, carrying its session's
+/// token, and is recorded as the operator's, declared, with the viewer's credential; the item then
+/// leaves the inbox. A question to the operator ticked off is answered directly.
+#[test]
+fn a_tick_from_the_page_closes_an_item_and_nothing_else_can() {
+    let viewer = start_ticking();
+    let status = inbox_status(&viewer, 3);
+    let items = status["ledger"]["inbox"]["items"].as_array().unwrap();
+    let order: Vec<&str> = items.iter().map(|i| i["note"].as_str().unwrap()).collect();
+    assert_eq!(order, ["restart the service", "a notice", "may we?"]);
+    let urgent = items[0]["seq"].as_u64().unwrap();
+    let question = items[2]["seq"].as_u64().unwrap();
+    assert_eq!(status["tick"]["available"], true, "{status}");
+    let token = status["tick"]["token"].as_str().unwrap().to_owned();
+    let with_token = format!("x-rally-tick: {token}\r\n");
+
+    // No token, a wrong one, another site, and no session: each refused, nothing written.
+    assert_eq!(post_tick(&viewer, urgent, "").0, 403);
+    assert_eq!(
+        post_tick(
+            &viewer,
+            urgent,
+            &format!("x-rally-tick: {}\r\n", "0".repeat(64))
+        )
+        .0,
+        403
+    );
+    let body = format!("{{\"item\": {urgent}}}");
+    let cross = format!(
+        "Cookie: rally_view={}\r\nOrigin: http://evil.example\r\nSec-Fetch-Site: cross-site\r\n\
+         Content-Length: {}\r\n{with_token}",
+        viewer.session,
+        body.len()
+    );
+    assert_eq!(
+        bare_with_body(&viewer, "POST", "/api/tick", &viewer.address, &cross, &body).0,
+        403
+    );
+    let unsigned = format!("Content-Length: {}\r\n{with_token}", body.len());
+    assert_eq!(
+        bare_with_body(
+            &viewer,
+            "POST",
+            "/api/tick",
+            &viewer.address,
+            &unsigned,
+            &body
+        )
+        .0,
+        401
+    );
+    assert_eq!(inbox_status(&viewer, 3)["ledger"]["inbox"]["open"], 3);
+
+    // The page's own tick.
+    let (code, text) = post_tick(&viewer, urgent, &with_token);
+    assert_eq!(code, 200, "{text}");
+    let status = inbox_status(&viewer, 2);
+    assert!(
+        status["ledger"]["inbox"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["seq"] != urgent),
+        "{status}"
+    );
+    let (code, text) = post_tick(&viewer, question, &with_token);
+    assert_eq!(code, 200, "{text}");
+    inbox_status(&viewer, 1);
+    // Ticked twice: refused, as the item is closed.
+    assert_eq!(post_tick(&viewer, urgent, &with_token).0, 502);
+    // Written as the operator, declared, from the viewer, with the viewer's credential.
+    let all = rally()
+        .arg("--db")
+        .arg(&viewer._db.url)
+        .arg("--head-file")
+        .arg(viewer._dir.path().join("ledger.head"))
+        .args(["inbox", "--all"])
+        .output()
+        .unwrap();
+    assert!(
+        all.status.success(),
+        "{}",
+        String::from_utf8_lossy(&all.stderr)
+    );
+    let all: Value = serde_json::from_slice(&all.stdout).unwrap();
+    let closed = all["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["seq"] == urgent)
+        .unwrap();
+    assert_eq!(closed["closed"]["by"], "operator", "{all}");
+    assert_eq!(closed["closed"]["kind"], "declared");
+    assert_eq!(closed["closed"]["via"], "viewer");
+    assert_eq!(closed["closed"]["credential"], "operator-box");
+    let answered = all["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["seq"] == question)
+        .unwrap();
+    assert_eq!(answered["closed"]["answer"]["from"], "direct", "{all}");
+}
+
+/// RAL-146, in the browser: the operator's inbox panel shows the urgent item first, marked, with
+/// a box to tick; ticking it takes it off the list.
+#[test]
+fn ticking_an_item_in_the_browser_takes_it_off_the_list() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start_ticking();
+    inbox_status(&viewer, 3);
+    let probe = r##"(async () => {
+      const wait = async (test) => {
+        for (let i = 0; i < 150 && !test(); i++) await new Promise((r) => setTimeout(r, 100));
+        return test();
+      };
+      const rows = () => [...document.querySelectorAll("#inbox .inbox-item")];
+      await wait(() => rows().length === 3);
+      const before = rows().map((row) => ({
+        text: row.textContent, urgent: row.classList.contains("urgent"),
+        box: Boolean(row.querySelector("input.inbox-tick")),
+      }));
+      const heading = document.getElementById("inbox-title").textContent;
+      const count = (document.querySelector(".inbox-count") || {}).textContent || "";
+      rows()[0].querySelector("input.inbox-tick").click();
+      const gone = await wait(() => rows().length === 2
+        && !rows().some((row) => row.textContent.includes("restart the service")));
+      return { before, heading, count, gone, after: rows().map((row) => row.textContent) };
+    })()"##;
+    let seen = in_browser(&viewer, &chrome, Some(probe));
+    let probe = &seen["probe"];
+    assert_eq!(probe["before"][0]["urgent"], true, "{seen}");
+    assert!(
+        probe["before"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("sudo systemctl restart rally"),
+        "{seen}"
+    );
+    assert_eq!(probe["before"][0]["box"], true, "{seen}");
+    assert!(
+        probe["heading"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("3 items open, 1 urgent"),
+        "{seen}"
+    );
+    assert!(
+        probe["count"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("3 items open"),
+        "{seen}"
+    );
+    assert_eq!(probe["gone"], true, "{seen}");
+    inbox_status(&viewer, 2);
 }

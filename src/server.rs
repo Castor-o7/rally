@@ -162,7 +162,13 @@ fn start_evidence_checks(service: &Arc<Service>, settings: crate::evidence::Sett
         let _ = service.roadmaps.set(github.clone() as _);
     }
     let _ = service.github_owners.set(settings.owners.clone());
-    let forge: Option<Arc<dyn crate::evidence::Forge + Send + Sync>> = github.map(|g| g as _);
+    let forge: Option<Arc<dyn crate::evidence::Forge + Send + Sync>> = github.map(|github| {
+        Arc::new(TokenWatch {
+            github,
+            service: Arc::downgrade(service),
+            filing: std::sync::Mutex::new(()),
+        }) as _
+    });
     let weak = Arc::downgrade(service);
     let record = Arc::new(
         move |job: &crate::evidence::Job, outcome: &crate::evidence::Outcome| {
@@ -199,6 +205,71 @@ fn start_evidence_checks(service: &Arc<Service>, settings: crate::evidence::Sett
         checker.submit(job);
     }
     let _ = service.evidence.set(checker);
+}
+
+/// The service's GitHub client, watched for what only the operator can fix (RAL-146): each check's
+/// first read shows whether GitHub took the token and when it expires, and Rally opens or closes
+/// its own items in the operator's inbox from that.
+struct TokenWatch {
+    github: Arc<crate::evidence::GitHub>,
+    service: std::sync::Weak<Service>,
+    /// Held while the ledger is read and Rally's items written, so two checks can't both file one.
+    filing: std::sync::Mutex<()>,
+}
+
+impl TokenWatch {
+    fn saw(&self, seen: &crate::inbox::TokenSeen) {
+        let Some(service) = self.service.upgrade() else {
+            return;
+        };
+        let _filing = self.filing.lock().unwrap_or_else(|e| e.into_inner());
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as i64);
+        let bodies = service
+            .store
+            .with_ledger(None, |ledger| {
+                crate::inbox::token_records(ledger, seen, now)
+            })
+            .unwrap_or_default();
+        for body in bodies {
+            let source = Source {
+                credential: crate::store::RALLY_ITSELF.to_owned(),
+                declared_name: None,
+            };
+            let appended = Record::new(Kind::Observed, source, now, body)
+                .map_err(|e| e.to_string())
+                .and_then(|record| service.store.append(&record).map_err(|e| e.to_string()));
+            if let Err(error) = appended {
+                eprintln!("rally: couldn't file the token's item in the operator's inbox: {error}");
+            }
+        }
+    }
+}
+
+impl crate::evidence::Forge for TokenWatch {
+    fn commit_message(&self, repo: &str, commit: &str) -> Result<Option<String>, String> {
+        let read = self.github.commit_message(repo, commit);
+        match &read {
+            Ok(_) => self.saw(&crate::inbox::TokenSeen::Accepted {
+                expires: self.github.token_expiry(),
+            }),
+            Err(error) if crate::inbox::is_credential_refusal(error) => {
+                self.saw(&crate::inbox::TokenSeen::Refused(error.clone()));
+            }
+            Err(_) => {}
+        }
+        read
+    }
+    fn repo_visible(&self, repo: &str) -> Result<bool, String> {
+        self.github.repo_visible(repo)
+    }
+    fn pull_titles(&self, repo: &str, commit: &str) -> Result<Vec<String>, String> {
+        self.github.pull_titles(repo, commit)
+    }
+    fn ci(&self, repo: &str, commit: &str) -> Result<crate::evidence::CiRead, String> {
+        self.github.ci(repo, commit)
+    }
 }
 
 /// What the operator sets on the service host for who may do what.
@@ -307,6 +378,8 @@ fn router(
         .route("/v1/track-records", get(list_track_records))
         .route("/v1/track-records/{name}", get(one_track_record))
         .route("/v1/blockers/all", get(all_blockers))
+        .route("/v1/inbox", get(open_inbox))
+        .route("/v1/inbox/all", get(all_inbox))
         .route("/v1/corrections", get(corrections))
         .route("/v1/teams/{name}", get(one_team))
         .route("/v1/teams/{name}/record", get(team_record))
@@ -1275,6 +1348,40 @@ async fn all_blockers(
         None => views::blockers(ledger, true, page),
     })
     .await
+}
+
+/// The operator's inbox (RAL-146): open items, urgent first then oldest first, as of the
+/// service's clock, or `at_ms` when a reader gives one.
+async fn open_inbox(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    let at_ms = query.at_ms.unwrap_or_else(wall_ms);
+    view(service, identity, query, move |ledger, _| {
+        Ok(crate::inbox::inbox(ledger, false, at_ms))
+    })
+    .await
+}
+
+/// The operator's inbox with closed items too (RAL-146).
+async fn all_inbox(
+    State(service): State<Arc<Service>>,
+    Extension(identity): Extension<Identity>,
+    Query(query): Query<ReadQuery>,
+) -> Response {
+    let at_ms = query.at_ms.unwrap_or_else(wall_ms);
+    view(service, identity, query, move |ledger, _| {
+        Ok(crate::inbox::inbox(ledger, true, at_ms))
+    })
+    .await
+}
+
+/// Now, by the service's clock.
+fn wall_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
 
 async fn list_teams(

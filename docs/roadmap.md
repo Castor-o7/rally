@@ -1103,22 +1103,29 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   - **Rally files its own.** When the service observes a fault only the operator can fix, it opens one urgent
     item itself, as an observed record, and doesn't repeat it while it's open: at least an evidence check
     refused for the token's credentials (401 or 403), and the token's expiry within 7 days where GitHub
-    reports one. It closes the item itself once the next check succeeds.
-  - **Closing.** `rally inbox done <record>` closes an item saying how, with `--direct` or `--relayed-by` as
-    `unblock` has for questions; a notice is closed by `rally inbox seen`. Closed items stay in the history,
-    and `rally inbox --all` shows them. The service takes a close of an action only from the operator's
-    credential or from whoever raised it; which of those is right is asked of the operator before it's built.
-  - **It reaches him.** `rally digest` and `rally brief` carry the inbox's open count and its urgent items, and
-    the session-start block tells a team when an item it raised was closed. Whether an urgent item should
-    also be pushed to the operator at once (through Marshal or Muster's operator address) is asked of the
-    operator before it's built.
+    reports one. It closes the item itself once the next check succeeds. A rate limit or a missing permission,
+    such as RAL-147's check-runs 403, isn't a refusal of the token and files nothing.
+  - **Closing, by the operator, by hand** (Josh, 2026-11-13: "I will hand tick the boxes as complete within the
+    rally viewer itself. Sort of like a quest log in a video game."). Each item in the viewer's panel has a box;
+    ticking it closes the item at once, an action done or a notice seen, and a question to the operator is
+    answered as `unblock --direct`. The tick works in any viewer he has open, Murph's included (his choice of
+    the three put to him: "I am the only one using this system and at some point we have to assume that is
+    trustworthy"), and is the viewer's one write: a POST from a signed-in session of the page only, same-origin,
+    with a token tied to the session. The close is recorded as declared, as the operator's, saying it was ticked
+    in the viewer, with the machine's credential; signing with the operator's key, to make it verified, stays
+    possible and isn't required. `rally inbox done <record>` is the same act at a terminal. Closed items stay in
+    the history, and `rally inbox --all` shows them.
+  - **Where he looks, nothing pushed** (Josh: "The urgent items should appear at the top of the list in a
+    priority queue. The inbox is merely a meaningful method for delivering and storing Operator Action Items").
+    Urgent first, then oldest first. `rally digest` and `rally brief` carry the inbox's open count and its
+    urgent items, and the session-start block tells a team when an item it raised was closed.
   - **Old records replay.** Questions to the operator keep their records, shelving window and
     `operator_away` rules; the inbox reads them and changes none. docs/service.md's rollback table gains the
     new kind.
   - docs/inbox.md says what belongs in the inbox and what doesn't (a team's own blocker on another team
     doesn't), with unit tests for the ordering, the self-filed token item opening once and closing itself, the
-    refusal of secret-looking text, and a headless-Chrome check that the panel shows an added item and loses
-    it when it's closed.
+    refusal of secret-looking text and of ticks from anywhere but the page, and a headless-Chrome check that
+    the panel shows an added item and loses it when it's ticked.
 - [ ] **RAL-147: Check runs the token can't read are recorded at once, read from commit statuses.** From Josh
   through the lamplighter (2026-11-13): Rally's fine-grained GitHub token can't read check runs on private
   repositories (GitHub 403 "Resource not accessible by personal access token"; fine-grained tokens have no Checks

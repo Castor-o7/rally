@@ -906,6 +906,26 @@ pub fn in_rally(rally: &Value, prefix: &str) -> bool {
 /// Where the viewer reads the ledger.
 pub type LedgerReader = Box<dyn Fn() -> Result<Value, String> + Send>;
 
+/// How the viewer ticks an item in the operator's inbox off (RAL-146): the item's record number in,
+/// the service's answer out. Present only when the viewer has a pairing that can write.
+pub type Ticker = Box<dyn Fn(u64) -> Result<Value, String> + Send + Sync>;
+
+/// Where a tick is posted (RAL-146), the viewer's one write.
+pub const TICK_PATH: &str = "/api/tick";
+
+/// The header a tick carries its token in (RAL-146).
+const TICK_HEADER: &str = "x-rally-tick";
+
+/// The most a tick's body may be: `{"item": <record number>}`.
+const TICK_BODY_LIMIT: usize = 256;
+
+/// How the viewer reaches the ledger now: its read, and its one write, ticking an item in the
+/// operator's inbox off, when it has a pairing that can (RAL-146).
+pub struct LedgerAccess {
+    pub read: LedgerReader,
+    pub tick: Option<Ticker>,
+}
+
 /// Where the viewer reads the ledger as it stood at a past record, with the corrections made to
 /// it since (RAL-28).
 pub type PastReader = Box<dyn Fn(u64) -> Result<Value, String> + Send>;
@@ -1620,6 +1640,10 @@ struct App {
     past: Mutex<PastReader>,
     /// The commands the roster is read with, first that gives one (RAL-116).
     roster_from: Vec<String>,
+    /// How an item in the operator's inbox is ticked off, when this viewer can write (RAL-146).
+    tick: Option<Ticker>,
+    /// Set after a tick, so the ledger is read again at once rather than at the next poll.
+    reread: (Mutex<bool>, std::sync::Condvar),
 }
 
 /// What the viewer reads on this machine rather than from the service or GitHub.
@@ -1768,11 +1792,12 @@ pub async fn serve(
     listener: TcpListener,
     sign_in: SignIn,
     projects: Vec<Project>,
-    ledger: LedgerReader,
+    ledger: LedgerAccess,
     past: PastReader,
     backup: Option<BackupWatch>,
     reads: LocalReads,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let LedgerAccess { read: ledger, tick } = ledger;
     let LocalReads {
         local,
         roster_from,
@@ -1801,6 +1826,8 @@ pub async fn serve(
         backup,
         past: Mutex::new(past),
         roster_from,
+        tick,
+        reread: (Mutex::new(false), std::sync::Condvar::new()),
     });
     let refresher = app.clone();
     std::thread::spawn(move || refresh_forever(&refresher, &ledger));
@@ -1969,7 +1996,13 @@ fn refresh_forever(app: &App, ledger: &LedgerReader) {
         // before the next is tried (RAL-116).
         let roster = read_roster(&app.roster_from, &mut roster_memory);
         app.snapshot.lock().expect("no panics").roster = Some(roster);
-        std::thread::sleep(LIVE_EVERY);
+        // Until the next poll, or a tick asks for the ledger again (RAL-146).
+        let (asked, ready) = &app.reread;
+        let asked = asked.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut asked, _) = ready
+            .wait_timeout_while(asked, LIVE_EVERY, |asked| !*asked)
+            .unwrap_or_else(|e| e.into_inner());
+        *asked = false;
     }
 }
 
@@ -2121,7 +2154,7 @@ async fn past_view(
     }
 }
 
-async fn status(State(app): State<Arc<App>>) -> Response {
+async fn status(State(app): State<Arc<App>>, headers: axum::http::HeaderMap) -> Response {
     // Projects before the snapshot, the order `check_projects_file` takes them in, so a reload
     // and a request can't wait on each other (the watchman's read of RAL-133).
     let app_projects = app.projects.lock().expect("no panics").clone();
@@ -2179,8 +2212,75 @@ async fn status(State(app): State<Arc<App>>) -> Response {
         "projects_file": projects_file_status(&app),
         "rally": rally,
         "muster_summary": muster_summary,
+        "tick": tick_status(&app, &headers),
     }))
     .into_response()
+}
+
+/// Whether this viewer can tick inbox items off, and the token a tick from this session carries
+/// (RAL-146). Only this page reads it: the status is served same-origin to a signed-in session.
+fn tick_status(app: &App, headers: &axum::http::HeaderMap) -> Value {
+    match (&app.tick, cookie_key(headers)) {
+        (Some(_), Some(session)) => json!({"available": true, "token": tick_token(session)}),
+        (Some(_), None) => json!({"available": false, "reason": "not signed in"}),
+        (None, _) => json!({"available": false,
+            "reason": "this viewer has no pairing that can write, so it can't tick items off"}),
+    }
+}
+
+/// A tick's token: tied to the session, so another site that can't read this page can't make
+/// one, even if a browser sent the cookie (RAL-146).
+fn tick_token(session: &str) -> String {
+    sha256_hex(&format!("rally-tick v1\n{session}"))
+}
+
+/// A tick from a signed-in session of this page (RAL-146): the token must be its session's, and
+/// the body names one record. The guard has already checked the host, origin and fetch site.
+async fn ticked(app: Arc<App>, request: Request) -> Response {
+    let refused = |status: StatusCode, message: &str| (status, message.to_owned()).into_response();
+    if app.tick.is_none() {
+        return refused(StatusCode::NOT_FOUND, "this viewer can't tick items off");
+    }
+    let token_good = match (
+        cookie_key(request.headers()),
+        request.headers().get(TICK_HEADER),
+    ) {
+        (Some(session), Some(offered)) => offered
+            .to_str()
+            .is_ok_and(|offered| same_key(offered, &tick_token(session))),
+        _ => false,
+    };
+    if !token_good {
+        return refused(StatusCode::FORBIDDEN, "that tick isn't from this page");
+    }
+    let Ok(body) = axum::body::to_bytes(request.into_body(), TICK_BODY_LIMIT).await else {
+        return refused(StatusCode::PAYLOAD_TOO_LARGE, "a tick names one record");
+    };
+    let Some(item) = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|body| body["item"].as_u64())
+    else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "a tick is {\"item\": <record number>}",
+        );
+    };
+    let worker = app.clone();
+    let answer =
+        tokio::task::spawn_blocking(move || worker.tick.as_ref().map(|tick| tick(item))).await;
+    match answer {
+        Ok(Some(Ok(answer))) => {
+            let (asked, ready) = &app.reread;
+            *asked.lock().unwrap_or_else(|e| e.into_inner()) = true;
+            ready.notify_all();
+            Json(answer).into_response()
+        }
+        Ok(Some(Err(reason))) => refused(StatusCode::BAD_GATEWAY, &reason),
+        _ => refused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "the tick couldn't be sent",
+        ),
+    }
 }
 
 /// Where the projects came from and when they were read (RAL-133), observed by the viewer.
@@ -2225,6 +2325,16 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
         mint_code(&app, request.headers())
     } else if *request.method() == Method::POST && request.uri().path() == "/" {
         sign_in_posted(&app, request).await
+    } else if *request.method() == Method::POST && request.uri().path() == TICK_PATH {
+        // The viewer's one write (RAL-146), only from a signed-in session of this page.
+        if signed_in(&app, request.headers()) {
+            ticked(app.clone(), request).await
+        } else {
+            refused(
+                StatusCode::UNAUTHORIZED,
+                "sign in: run `rally web --login` and open the address it prints",
+            )
+        }
     } else if !matches!(*request.method(), Method::GET | Method::HEAD) {
         refused(StatusCode::METHOD_NOT_ALLOWED, "this page is read-only")
     } else if request.uri().path() == "/"
