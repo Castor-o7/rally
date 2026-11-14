@@ -1219,6 +1219,64 @@ pub fn ci_state(repo: &str, commit: &str) -> Result<crate::digest::Ci, String> {
     Ok(crate::digest::ci_from_runs(&runs))
 }
 
+/// The checks on `commit` in `repo` (RAL-185): its check runs and its commit statuses, read-only
+/// through `gh api`. `repo` must already be checked as `owner/repo`; `commit` must be hex.
+pub fn commit_checks(repo: &str, commit: &str) -> Result<Vec<crate::wait_green::Check>, String> {
+    if commit.is_empty() || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("the commit isn't a hash".into());
+    }
+    let read = |path: String| -> Result<Value, String> {
+        let out = run_gh(&["api", &path])?;
+        serde_json::from_str(out.trim())
+            .map_err(|_| format!("gh returned something unreadable for {path}"))
+    };
+    let runs = read(format!(
+        "repos/{repo}/commits/{commit}/check-runs?per_page=100"
+    ))?;
+    let status = read(format!("repos/{repo}/commits/{commit}/status?per_page=100"))?;
+    Ok(crate::wait_green::checks(&runs, &status))
+}
+
+/// `commit`'s first parent in `repo` (RAL-185), read-only through `gh api`; `None` for a root.
+pub fn first_parent(repo: &str, commit: &str) -> Result<Option<String>, String> {
+    let out = run_gh(&[
+        "api",
+        &format!("repos/{repo}/commits/{commit}"),
+        "--jq",
+        ".parents[0].sha // empty",
+    ])?;
+    let sha = out.trim();
+    if sha.is_empty() {
+        return Ok(None);
+    }
+    if sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(Some(sha.to_owned()))
+    } else {
+        Err("gh returned a parent that isn't a commit".into())
+    }
+}
+
+/// A pull request's head commit and base branch (RAL-185), read-only through `gh pr view`.
+pub fn pr_head_and_base(repo: &str, pr: u64) -> Result<(String, String), String> {
+    let out = run_gh(&[
+        "pr",
+        "view",
+        &pr.to_string(),
+        "--repo",
+        repo,
+        "--json",
+        "headRefOid,baseRefName",
+    ])?;
+    let value: Value = serde_json::from_str(out.trim())
+        .map_err(|_| "gh returned a pull request that can't be read")?;
+    let head = value["headRefOid"].as_str().unwrap_or_default();
+    let base = value["baseRefName"].as_str().unwrap_or_default();
+    if head.len() != 40 || !head.bytes().all(|b| b.is_ascii_hexdigit()) || base.is_empty() {
+        return Err(format!("gh gave no head or base for pull request {pr}"));
+    }
+    Ok((head.to_owned(), base.to_owned()))
+}
+
 /// The open pull requests in `repo` (RAL-105), read-only through `gh pr list`. `repo` must already
 /// be checked as `owner/repo`.
 pub fn open_prs(repo: &str) -> Result<Vec<crate::digest::OpenPr>, String> {
