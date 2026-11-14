@@ -996,6 +996,13 @@ pub fn waiting(ledger: &Ledger) -> Value {
 /// is designated: a team other than the author's, the one whose last read, recorded or suggested
 /// here, is oldest (RAL-57).
 pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
+    waiting_scoped(ledger, readers, false)
+}
+
+/// [`waiting_with`], with `all` keeping closes due outside the open rally's projects too
+/// (RAL-148). Without it, and with a rally open, only that rally's projects' closes are listed,
+/// and how many others there are is said.
+pub fn waiting_scoped(ledger: &Ledger, readers: &Readers, all: bool) -> Value {
     // Each submission waiting: a story in review, and each part in review (RAL-79), which waits
     // while its story stays claimed.
     let mut waiting: Vec<(&String, &crate::ledger::Story, Option<u32>, u64)> = Vec::new();
@@ -1134,16 +1141,30 @@ pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
         },
     };
     // Parts stories whose close is next (RAL-141): waiting on their holding team, not a reader.
+    let rally = ledger.open_rally().filter(|_| !all);
+    let mut outside_rally = 0;
     let closes_due: Vec<Value> = ledger
         .stories()
         .iter()
         .filter_map(|(id, story)| {
             let mut close = close_due(story)?;
+            // RAL-148: with a rally open, only its projects' closes; the rest are counted.
+            if let Some(rally) = rally {
+                let prefix = id.split_once('-').map_or(id.as_str(), |(prefix, _)| prefix);
+                if !rally
+                    .projects
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(prefix))
+                {
+                    outside_rally += 1;
+                    return None;
+                }
+            }
             close["story"] = json!(id);
             Some(close)
         })
         .collect();
-    json!({
+    let mut out = json!({
         "untrusted_text": UNTRUSTED_TEXT, "as_of": ledger.last_seq(), "waiting": shown,
         "total": total,
         "closes_due": closes_due,
@@ -1152,7 +1173,15 @@ pub fn waiting_with(ledger: &Ledger, readers: &Readers) -> Value {
         "rule": "While a watchman is designated, merges still wait for the watchman's read: with \
                  more than one, the read of a watchman whose scope covers the story.",
         "readers": readers_note,
-    })
+    });
+    if outside_rally > 0 {
+        out["closes_due_outside_rally"] = json!(outside_rally);
+        out["closes_due_scope"] = json!(
+            "Only the open rally's projects' closes are listed; `rally waiting --all` lists every \
+             project's (RAL-148)."
+        );
+    }
+    out
 }
 
 /// Every rally, newest first, and the one that's open, if any (RAL-76). Rallies are few, so it
@@ -1491,6 +1520,53 @@ mod tests {
         let due = waiting(&ledger)["closes_due"].clone();
         assert_eq!(due[0]["story"], "RAL-1", "{due}");
         assert_eq!(due.as_array().unwrap().len(), 1);
+    }
+
+    /// RAL-148: with a rally open, `waiting` lists only its projects' closes due and counts the
+    /// rest; with `all`, or no rally open, every project's.
+    #[test]
+    fn closes_due_keep_to_the_open_rally_unless_all() {
+        let team = |body: Value| as_kind(Kind::Declared, "author", body);
+        let watch = |body: Value| as_kind(Kind::Verified, "watch", body);
+        let mut records = Vec::new();
+        for story in ["RAL-1", "MAR-1"] {
+            records.push(team(json!({"change": "ready", "story": story})));
+            records.push(team(
+                json!({"change": "claim", "story": story, "team": "rally"}),
+            ));
+            records.push(team(
+                json!({"change": "submit", "story": story, "team": "rally",
+                                     "evidence": format!("o/r@{COMMIT}"), "part": 1, "of": 1}),
+            ));
+            records.push(watch(json!({"change": "verify", "story": story, "part": 1,
+                                      "commit": COMMIT, "note": "read"})));
+        }
+        let stories = |out: &Value| -> Vec<String> {
+            out["closes_due"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["story"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let ledger = Ledger::replay(&records).unwrap();
+        let out = waiting(&ledger);
+        assert_eq!(stories(&out), ["MAR-1", "RAL-1"], "no rally open: {out}");
+        assert!(out.get("closes_due_outside_rally").is_none());
+
+        records.push(as_kind(
+            Kind::Declared,
+            "operator",
+            json!({"change": "open_rally", "name": "x", "projects": ["RAL"]}),
+        ));
+        let ledger = Ledger::replay(&records).unwrap();
+        let out = waiting(&ledger);
+        assert_eq!(stories(&out), ["RAL-1"], "{out}");
+        assert_eq!(out["closes_due_outside_rally"], 1);
+        assert!(out["closes_due_scope"].as_str().unwrap().contains("--all"));
+        let all = waiting_scoped(&ledger, &Readers::Unchecked, true);
+        assert_eq!(stories(&all), ["MAR-1", "RAL-1"], "{all}");
+        assert!(all.get("closes_due_outside_rally").is_none());
     }
 
     /// RAL-136: only what's in force is listed, each as declared, with who declared it.

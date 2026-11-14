@@ -76,7 +76,10 @@ Teams
 - **Each fact carries its kind** (observed, declared or verified) and its **age**, as the viewer shows them.
 - **Sections:** waiting for the watchman (submissions and open read requests); RAL-52's handover list
   (peer-verified since the last designation, awaiting the watchman's re-read, with the commit read, the
-  verifier, and whether and where it merged); merges, flagging one whose pull request's head at merge isn't the
+  verifier, and whether and where it merged). With a rally open it lists only that rally's projects, and the
+  watchman's own reads, made before its designation or by a session confirmed as its restart, are never on it.
+  When every row is one the last digest sent already listed, it's one line, "…: N, none new since your last
+  digest (rally handover)", instead of the list again (RAL-148); merges, flagging one whose pull request's head at merge isn't the
   commit verified;
   blockers opened and closed; questions to the operator; team-state changes. An empty section is left out, except
   "Waiting for you", which always shows its count.
