@@ -399,8 +399,12 @@ why.
   another site, and correctly refused.
 - **Recorded text can't run.** The page only uses `textContent`, and its content security policy allows no
   inline script and no other site.
-- **No write path.** It has no way to change anything. With `--db` its Postgres connection is read-only, and it should use a
-  read-only credential with the service. The page warns if it isn't.
+- **One write, and only from the page.** It reads with a read-only credential (the page warns if it isn't), and
+  with `--db` its Postgres connection is read-only. Its one write is the operator ticking off an item in his inbox
+  (RAL-146): a POST to `/api/tick` from a signed-in session of the page, held to the same `Host`, `Origin` and
+  `Sec-Fetch-Site` rules, carrying a token tied to that session that only the page itself can read. It's sent with
+  the writing pairing beside the viewer's own (`client.json`), or on the host with `--db` only when the viewer was
+  given `--credential`; without either, no tick box is drawn and the route answers 404. See [inbox.md](inbox.md).
 - **A failed check shows.** A broken chain appears as a red failed check, with the contents withheld. If the
   viewer stops answering, the page replaces the check with a warning.
 - **Stale data shows.** `gh` and roster reads give up after 20 seconds, each roster command in turn. Service reads have a 15-second limit on each connection step, not overall (RAL-42). A green check turns into a warning if the ledger
@@ -408,7 +412,9 @@ why.
 
 ## What it doesn't protect against
 
-- Any program running as your account can read the key file, and so sign in. Other accounts on the machine
+- Any program running as your account can read the key file, and so sign in, and so tick an inbox item off as the
+  operator; the record says it was ticked in the viewer and names the machine's credential, so it's declared, not
+  proof it was him (the operator's choice, 2026-11-13: see [inbox.md](inbox.md)). Other accounts on the machine
   can't. A one-time code does appear in the address you open, so in that browser's history and briefly in the
   arguments the browser starts with, but it's spent once used and dead after a minute.
 - Before it's reachable beyond this machine, it needs an adversarial review by someone other than its author,

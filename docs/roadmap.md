@@ -1192,6 +1192,15 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   each of the six DiscoSim nicknames restarted at 19:55, it names the earlier session the watchman found by hand
   (vibrant-gull c2319bd8, wise-crocodile fa76ef71, sleek-moth e2eb2632, silent-dhole 00baf303, steely-ridge
   e9f8a3ac, deft-pelican 4e31e02c).
+- [ ] **RAL-153: Service-level tests of what the service does when GitHub refuses its token.** From the watchman
+  (2026-11-13), the gap jaunty-harrier named in RAL-149: `GitHub::new` had no API base override, so no test of
+  the running service could show RAL-146's own inbox items. Done when: a stand-in GitHub base is taken for tests
+  only (`RALLY_TEST_GITHUB_BASE`, read only by a debug build, only `http://127.0.0.1:<port>`, never under
+  `--secure`, and said on standard error when taken; a release build ignores it and says so), and service-level
+  tests against a stand-in GitHub show: a 401 files exactly one urgent inbox item across several queued checks
+  each tried again, and Rally closes it itself, observed, when a read passes; ten checks made at the start meeting
+  a 401 file one item (RAL-149's case); the check-runs 403 files none and the check is recorded; a token expiring
+  within 7 days files one. docs/evidence.md says how the override is kept out of a production start.
 - [ ] **RAL-154: The watchman's digest loop is started, stopped and restarted by name.** From the watchman
   (2026-11-13, issue 1.75): the digest loop ran inside a bash `while true` wrapper started by hand, found again
   only by searching for its command line, and after RAL-148 the loop needed a restart to pick up the new CLI.
@@ -1204,3 +1213,10 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   asked it to. No process is found by pattern, and it works without /proc or systemd (a1 is a Mac). Unit tests
   cover the file and the command-line check, and a service test covers start, refusal, restart, a kill -9 the
   restart reports, and stop.
+- [ ] **RAL-155: The docs, read as a new operator and a new watchman would, after the night of 2026-11-13.** From the
+  watchman: Rally gained an inbox, a restart briefing, late checks and a scoped digest across five pull requests by
+  two teams. Done when: README, service.md, web.md, digest.md, inbox.md, session-hook.md and evidence.md say what
+  the code does now, with nothing stale (the README's status and "not verified yet" lines, the viewer's "no write
+  path"), nothing missing (what `--rally-openers` guards, the service's own inbox items, the session-start block's
+  sections), and nothing said twice; docs only; and every place where the code, not the docs, looks wrong is
+  listed for the watchman rather than written around.

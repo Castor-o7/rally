@@ -36,8 +36,20 @@ What Rally gives a team, each part built and verified by the watchman:
   entities in Postgres, behind Rally's service, which is the only way in (RAL-39). It refuses writes before the
   disk fills (RAL-36). See [docs/service.md](docs/service.md) for setting it up and for what a record proves
   about who wrote it.
-- **A read-only API and viewer.** The API can't change the ledger (RAL-25), and the viewer shows each roadmap's
-  progress, labelled with what a tick means there, never merged with what the ledger has verified (RAL-37).
+- **Reads that can't change anything, and a viewer.** The API's reads can't change the ledger (RAL-25), and the
+  viewer shows each roadmap's progress, labelled with what a tick means there, never merged with what the ledger
+  has verified (RAL-37). The viewer's one write is the operator ticking off an item in his inbox (RAL-146).
+- **Evidence checked against GitHub.** Rally reads each submission's commit, whether it names the story, and what
+  its CI says, with a read-only token, and records that as observed (RAL-5). See
+  [docs/evidence.md](docs/evidence.md).
+- **An inbox for the operator.** Everything waiting on the operator in one list, urgent first: items any team
+  raises, questions to the operator, and faults Rally files itself, such as GitHub refusing its token. He ticks
+  them off in the viewer (RAL-146). See [docs/inbox.md](docs/inbox.md).
+- **One message for the watchman when something changed.** `rally digest` sends a batched digest of what's new,
+  and nothing when nothing is (RAL-8). See [docs/digest.md](docs/digest.md).
+- **A restarted session told what it was doing.** At a session's start, `rally session-start --hook` tells a
+  session that took over a nickname which session held it before, where its transcript is, and what that nickname
+  holds and last recorded (RAL-152). See [docs/session-hook.md](docs/session-hook.md).
 - **Untrusted text kept out of terminals and pages.** Text agents write has length limits, is marked untrusted
   wherever an agent reads it, and is shown only as text, never as markup or terminal control (RAL-16).
 
@@ -83,17 +95,17 @@ work like this:
 - **Rally records what happened to it:** evidence, verification by someone other than the author, team state,
   and a history that can't be quietly rewritten.
 
-Rally will read Levi from a checkout with `levi --json`, write nothing to it, and label each fact by how it's
+`rally levi` reads Levi from a checkout with `levi --json`, writes nothing to it, and labels each fact by how it's
 known: a task closed at a commit that's in the branch's history is observed, while a task's text and claims are
-declared, and treated as untrusted. This is next, as RAL-40, and what happens to Rally's own claim commands
-and to projects not on Levi is still to settle. See "Levi" in [docs/design.md](docs/design.md).
+declared, and treated as untrusted (RAL-40, [docs/levi.md](docs/levi.md)). What happens to Rally's own claim
+commands and to projects not on Levi is still to settle. See "Levi" in [docs/design.md](docs/design.md).
 
 ## What this gives the operator
 
-- **Coordination without polling.** The aim is that the watchman reads which teams are working, blocked or
-  quiet, and what they've submitted, from the ledger, instead of messaging each team to ask, and that a possible
-  stall is flagged for the watchman to take up with the team. Stories and submissions are recorded today; team
-  states (RAL-2), the live view (RAL-27) and stall flags (RAL-7) aren't verified yet.
+- **Coordination without polling.** The watchman reads which teams are working, blocked or quiet, and what
+  they've submitted, from the ledger (team states, RAL-2; the live view, RAL-27; `rally brief`, RAL-22a) instead
+  of messaging each team to ask, and a possible stall is flagged for the watchman to take up with the team
+  (RAL-7).
 - **Progress you can recompute.** The analysis is as deterministic as the facts allow. Replaying the ledger
   always gives the same state, and `rally check` shows it hasn't been rewritten. Whether a state change was
   valid, or a commit exists, can be decided by a program. Whether work meets its "done when" line can't, so
@@ -134,7 +146,8 @@ pair code or credential, so it's safe to commit; pairing a machine is still `ral
 
 For each session to start with its team's Rally state, add the SessionStart hook in
 [docs/session-hook.md](docs/session-hook.md). It runs `rally session-start`, which is read-only and quick, and silent
-if anything fails.
+if anything fails. With `--hook` it also tells a restarted session what it needs to resume. Installing it on a
+machine is the operator's call; on Murph it isn't installed yet.
 
 Only the operator designates the watchman, by an SSH signature that needs Touch ID, checked by a service started
 with `--secure`. See [docs/designation.md](docs/designation.md), which includes the operator's own steps.
@@ -154,10 +167,11 @@ use a server instead, as CI does, set `RALLY_TEST_POSTGRES_URL` to an administra
 `postgres://postgres@127.0.0.1:54329/postgres`; each test makes and drops a database of its own there. Tests
 refuse port 5432, so they can't meet a Postgres someone is using.
 
-One viewer test signs in through a real headless Chrome (RAL-84), since a curl-driven test sends whatever headers
-it's written with and can't catch what a browser does on its own. It runs when `RALLY_TEST_CHROME` names a Chrome
-command, with Node 22 or later on `PATH`, and is skipped otherwise; CI runs it, and sets
-`RALLY_TEST_BROWSER_REQUIRED` so a missing browser fails rather than skips:
+The viewer's browser tests drive a real headless Chrome (RAL-84), since a curl-driven test sends whatever headers
+it's written with and can't catch what a browser does on its own. They run when `RALLY_TEST_CHROME` names a Chrome
+command, with Node 22 or later on `PATH`, and are skipped otherwise. Both CI paths (GitHub Actions and the local
+runner on Murph, `.ci/local.toml`) run them, and set `RALLY_TEST_BROWSER_REQUIRED` so a missing browser fails rather
+than skips. Each run's Chrome is found by its profile and reaped on every path, so none is left behind (RAL-150):
 
 ```bash
 RALLY_TEST_CHROME=google-chrome cargo test --test web a_real_browser
@@ -172,11 +186,9 @@ before the later test files, so pass `--no-fail-fast` to see them all.
 
 ## Status
 
-Rally runs on the operator's machines and isn't deployed yet. Work follows the [roadmap](docs/roadmap.md). Next:
-
-- load limits on the service (RAL-35), required before the first trial;
-- the viewer with live ledger data (RAL-27);
-- deployment on Murph, once Postgres is there.
+Rally runs on Murph: the service, with the ledger in Postgres there, the viewer, and the watchman's digest. After
+each verified merge the lamplighter deploys the newest commit on `main` whose CI is green (see "Keeping it current"
+in [docs/service.md](docs/service.md)). Work follows the [roadmap](docs/roadmap.md).
 
 ## Licence
 

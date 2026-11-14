@@ -155,9 +155,13 @@ const HEADER_SECONDS: f64 = 10.0;
 /// queues every submission that has no check yet, such as ones a restart cut short (RAL-5), in
 /// review or not (RAL-149).
 fn start_evidence_checks(service: &Arc<Service>, settings: crate::evidence::Settings) {
-    let github = settings
-        .token
-        .map(|token| Arc::new(crate::evidence::GitHub::new(token)));
+    let github = settings.token.map(|token| {
+        Arc::new(match &settings.test_base {
+            // A stand-in GitHub, for the service's own tests only (RAL-153).
+            Some(base) => crate::evidence::GitHub::at(token, base.clone()),
+            None => crate::evidence::GitHub::new(token),
+        })
+    });
     if let Some(github) = &github {
         let _ = service.roadmaps.set(github.clone() as _);
     }

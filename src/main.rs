@@ -3420,6 +3420,20 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     ceiling_ms: evidence_ci_wait,
                     poll_ms: evidence_poll,
                 },
+                test_base: match rally::evidence::test_base(secure) {
+                    Ok(Some(base)) => {
+                        eprintln!(
+                            "rally serve: evidence checks use a stand-in GitHub at {base}, for tests ({})",
+                            rally::evidence::TEST_BASE_VAR
+                        );
+                        Some(base)
+                    }
+                    Ok(None) => None,
+                    Err(why) => {
+                        eprintln!("rally serve: {why}");
+                        None
+                    }
+                },
             };
             let operator_key = if secure {
                 let key_path = operator_key.ok_or("--secure needs --operator-key")?;

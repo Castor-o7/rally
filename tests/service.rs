@@ -3070,6 +3070,379 @@ fn the_operators_inbox_works_end_to_end_through_the_service() {
     assert_eq!(answered["closed"]["answer"]["from"], "direct", "{all}");
 }
 
+/// How a stand-in GitHub treats the service's token (RAL-153).
+#[derive(Clone, Debug, PartialEq)]
+enum Token {
+    /// Every request: 401 "Bad credentials".
+    Refused,
+    /// Taken, with `GitHub-Authentication-Token-Expiration` set to this when given.
+    Taken(Option<String>),
+}
+
+/// A stand-in GitHub on this machine for the whole service (RAL-153), which the service is pointed
+/// at with RALLY_TEST_GITHUB_BASE, as only a debug build allows. Each request is answered from
+/// `token` and `checks_refused` as they stand when it comes.
+struct StandIn {
+    base: String,
+    token: std::sync::Arc<std::sync::Mutex<Token>>,
+    /// Check runs refused for want of the Checks permission, as a fine-grained token's are on a
+    /// private repository (RAL-147).
+    checks_refused: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl StandIn {
+    fn start(token: Token) -> Self {
+        use std::sync::atomic::Ordering;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let token = std::sync::Arc::new(std::sync::Mutex::new(token));
+        let checks_refused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mode, refused, stopping) = (token.clone(), checks_refused.clone(), stop.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if stopping.load(Ordering::SeqCst) {
+                    break;
+                }
+                let Ok(mut stream) = stream else { continue };
+                let (mode, refused) = (mode.clone(), refused.clone());
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() {
+                        return;
+                    }
+                    let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).unwrap_or(0) == 0
+                            || header.trim().is_empty()
+                        {
+                            break;
+                        }
+                    }
+                    let token = mode.lock().unwrap().clone();
+                    let (status, body, expiry) = match token {
+                        Token::Refused => {
+                            (401, r#"{"message":"Bad credentials"}"#.to_owned(), None)
+                        }
+                        Token::Taken(expiry) => {
+                            let (status, body) = if path.ends_with("/pulls") {
+                                (200, "[]".to_owned())
+                            } else if path.contains("/check-runs") {
+                                if refused.load(Ordering::SeqCst) {
+                                    (
+                                        403,
+                                        r#"{"message":"Resource not accessible by personal access token"}"#
+                                            .to_owned(),
+                                    )
+                                } else {
+                                    (
+                                        200,
+                                        r#"{"check_runs":[{"status":"completed","conclusion":"success"}]}"#
+                                            .to_owned(),
+                                    )
+                                }
+                            } else if path.ends_with("/status") {
+                                (200, r#"{"state":"pending","statuses":[]}"#.to_owned())
+                            } else {
+                                (200, r#"{"commit":{"message":"the work"}}"#.to_owned())
+                            };
+                            (status, body, expiry)
+                        }
+                    };
+                    let expiry = expiry
+                        .map(|at| format!("GitHub-Authentication-Token-Expiration: {at}\r\n"))
+                        .unwrap_or_default();
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{expiry}\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                });
+            }
+        });
+        StandIn {
+            base,
+            token,
+            checks_refused,
+            stop,
+        }
+    }
+
+    fn set(&self, token: Token) {
+        *self.token.lock().unwrap() = token;
+    }
+}
+
+impl Drop for StandIn {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(self.base.trim_start_matches("http://"));
+    }
+}
+
+/// GitHub's expiry text for `days` and an hour from now, in UTC, as `YYYY-MM-DD HH:MM:SS UTC`.
+fn expiring_in(days: u32) -> String {
+    let out = Command::new("date")
+        .args([
+            "-u",
+            "-d",
+            &format!("+{days} days 1 hour"),
+            "+%Y-%m-%d %H:%M:%S UTC",
+        ])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+/// The service against `github`, with a token, checking again every second; `before` writes to
+/// its ledger straight to the database before it starts, as a stop would leave it (RAL-153).
+fn start_against(github: &StandIn, before: impl FnOnce(&Database, &Path)) -> Service<'static> {
+    let dir = tempfile::tempdir().unwrap();
+    let db = scratch_pg::shared().database();
+    before(&db, dir.path());
+    let token_file = dir.path().join("github-token");
+    std::fs::write(&token_file, "test-token-not-real\n").unwrap();
+    let mut limits: Vec<String> = GENEROUS.iter().map(|s| (*s).to_owned()).collect();
+    limits.extend([
+        "--evidence-poll".into(),
+        "1s".into(),
+        "--evidence-ci-wait".into(),
+        "1m".into(),
+    ]);
+    limits.push("--github-token-file".into());
+    limits.push(token_file.display().to_string());
+    let mut child = rally()
+        .arg("--db")
+        .arg(&db.url)
+        .arg("--head-file")
+        .arg(dir.path().join("ledger.head"))
+        .args(["serve", "--bind", "127.0.0.1:0"])
+        .args(&limits)
+        .arg("--state-dir")
+        .arg(dir.path().join("state"))
+        .env("RALLY_TEST_GITHUB_BASE", &github.base)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let started: Value = serde_json::from_str(&line).unwrap();
+    let address = started["listening"].as_str().unwrap().to_owned();
+    for _ in 0..600 {
+        if std::net::TcpStream::connect(&address).is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Service {
+        child,
+        db,
+        dir,
+        address,
+        fingerprint: started["fingerprint"].as_str().unwrap().to_owned(),
+        limits,
+    }
+}
+
+const STAND_IN_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// Readies, claims and submits `story` with evidence the stand-in answers for.
+fn submitted(pairing: &Pairing, story: &str) {
+    let evidence = format!("Castor-o7/rally@{STAND_IN_COMMIT}");
+    for body in [
+        json!({"change": "ready", "story": story}),
+        json!({"change": "claim", "story": story, "team": "rally"}),
+        json!({"change": "submit", "story": story, "team": "rally", "evidence": evidence}),
+    ] {
+        let reply = write(pairing, "r", "declared", body);
+        assert_eq!(reply.status, 200, "{}", reply.body);
+    }
+}
+
+/// The operator's inbox, every item, open and closed.
+fn whole_inbox(pairing: &Pairing) -> Vec<Value> {
+    let reply = call(pairing, "GET", "/v1/inbox/all", None);
+    let inbox: Value = serde_json::from_str(&reply.body).unwrap();
+    inbox["items"].as_array().cloned().unwrap_or_default()
+}
+
+/// Waits up to 20 s for `test` to hold of the whole inbox, and gives it back.
+fn inbox_until(pairing: &Pairing, test: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+    let until = Instant::now() + Duration::from_secs(20);
+    loop {
+        let items = whole_inbox(pairing);
+        if test(&items) || Instant::now() >= until {
+            return items;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// The evidence checks recorded so far, by story.
+fn evidence_checks(pairing: &Pairing) -> Vec<Value> {
+    let reply = call(pairing, "GET", "/v1/waiting", None);
+    let waiting: Value = serde_json::from_str(&reply.body).unwrap();
+    waiting["waiting"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| row["evidence_check"].is_object())
+        .cloned()
+        .collect()
+}
+
+/// RAL-153: a token GitHub refuses (401) files exactly one urgent item in the operator's inbox,
+/// however many checks meet the refusal and however often each is tried again, and Rally closes
+/// it itself, observed, once a read passes.
+#[test]
+fn a_refused_token_files_one_inbox_item_and_closes_it_itself() {
+    let github = StandIn::start(Token::Refused);
+    let service = start_against(&github, |_, _| {});
+    let pairing = service.add("a1", false);
+    for story in ["RAL-90", "RAL-91", "RAL-92"] {
+        submitted(&pairing, story);
+    }
+    let filed = inbox_until(&pairing, |items| !items.is_empty());
+    assert_eq!(filed.len(), 1, "{filed:?}");
+    let item = &filed[0];
+    assert_eq!(item["kind"], "observed", "{item}");
+    assert_eq!(item["urgent"], true);
+    assert_eq!(item["holds_up"], "service");
+    assert!(
+        item["note"]
+            .as_str()
+            .unwrap()
+            .starts_with("Rally's GitHub token was refused")
+            && item["note"].as_str().unwrap().contains("Bad credentials"),
+        "{item}"
+    );
+    // Three checks, each tried again every second, still one item.
+    std::thread::sleep(Duration::from_secs(4));
+    assert_eq!(whole_inbox(&pairing).len(), 1);
+
+    // GitHub takes the token again: the next read closes it, Rally's own word.
+    github.set(Token::Taken(None));
+    let closed = inbox_until(&pairing, |items| {
+        items.iter().all(|i| !i["closed"].is_null())
+    });
+    assert_eq!(closed.len(), 1, "{closed:?}");
+    assert_eq!(closed[0]["closed"]["kind"], "observed", "{closed:?}");
+    assert!(closed[0]["closed"]["via"].is_null());
+    let open: Value = serde_json::from_str(&call(&pairing, "GET", "/v1/inbox", None).body).unwrap();
+    assert_eq!(open["open"], 0);
+}
+
+/// RAL-153 for RAL-149: submissions a stop left unchecked are all checked at the start; meeting a
+/// refused token together, they file one item, not one each.
+#[test]
+fn checks_made_at_the_start_meeting_a_refused_token_file_one_item() {
+    let github = StandIn::start(Token::Refused);
+    let service = start_against(&github, |db, dir| {
+        let direct = |args: &[&str]| {
+            let output = rally()
+                .arg("--db")
+                .arg(&db.url)
+                .arg("--head-file")
+                .arg(dir.join("ledger.head"))
+                .args(["--credential", "local", "--as", "r"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let evidence = format!("Castor-o7/rally@{STAND_IN_COMMIT}");
+        for n in 100..110 {
+            let story = format!("RAL-{n}");
+            direct(&["ready", &story]);
+            direct(&["claim", &story, "--team", "rally"]);
+            direct(&["submit", &story, "--team", "rally", "--evidence", &evidence]);
+        }
+    });
+    let pairing = service.add("a1", false);
+    let filed = inbox_until(&pairing, |items| !items.is_empty());
+    assert_eq!(filed.len(), 1, "{filed:?}");
+    std::thread::sleep(Duration::from_secs(3));
+    let items = whole_inbox(&pairing);
+    assert_eq!(
+        items.len(),
+        1,
+        "ten checks at the start, one item: {items:?}"
+    );
+    assert!(
+        items[0]["note"]
+            .as_str()
+            .unwrap()
+            .starts_with("Rally's GitHub token was refused")
+    );
+}
+
+/// RAL-153: the check-runs 403 a fine-grained token gets on a private repository (RAL-147) is a
+/// missing permission, not a refused token, so the check is recorded and nothing is filed.
+#[test]
+fn unreadable_check_runs_file_nothing_in_the_inbox() {
+    let github = StandIn::start(Token::Taken(None));
+    github
+        .checks_refused
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let service = start_against(&github, |_, _| {});
+    let pairing = service.add("a1", false);
+    submitted(&pairing, "RAL-93");
+    let until = Instant::now() + Duration::from_secs(20);
+    let mut checks = Vec::new();
+    while checks.is_empty() && Instant::now() < until {
+        checks = evidence_checks(&pairing);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(checks.len(), 1, "never checked");
+    let reason = checks[0]["evidence_check"]["outcome"]["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(reason.contains("check runs can't be read"), "{reason}");
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        whole_inbox(&pairing).is_empty(),
+        "{:?}",
+        whole_inbox(&pairing)
+    );
+}
+
+/// RAL-153: a token GitHub says expires within 7 days files one urgent item, however many checks
+/// see it.
+#[test]
+fn a_token_expiring_within_a_week_files_one_item() {
+    let github = StandIn::start(Token::Taken(Some(expiring_in(3))));
+    let service = start_against(&github, |_, _| {});
+    let pairing = service.add("a1", false);
+    for story in ["RAL-94", "RAL-95", "RAL-96"] {
+        submitted(&pairing, story);
+    }
+    let filed = inbox_until(&pairing, |items| !items.is_empty());
+    assert_eq!(filed.len(), 1, "{filed:?}");
+    let note = filed[0]["note"].as_str().unwrap();
+    assert!(
+        note.starts_with("Rally's GitHub token expires in 3 days"),
+        "{note}"
+    );
+    assert_eq!(filed[0]["kind"], "observed");
+    assert_eq!(filed[0]["urgent"], true);
+    // Every check saw it: still one.
+    let until = Instant::now() + Duration::from_secs(20);
+    while evidence_checks(&pairing).len() < 3 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(whole_inbox(&pairing).len(), 1);
+
 /// RAL-154: the digest loop is started, refused a second copy, restarted and stopped by its pid
 /// file, with no pattern search; a restart after it died unasked says so in digest.log.
 #[test]
