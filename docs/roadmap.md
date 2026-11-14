@@ -1389,3 +1389,8 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   part 2 re-merge couldn't have been read. Done when: `--part k` reads part k's verified commit and the repository
   its evidence names; without it, a story in parts says `can't tell` and names the verified parts; a missing part
   or an unverified one says so; with tests (docs/gate.md).
+- [ ] **RAL-176: `rally rebased` remerges with the attributes the merge was made with, and says so.** From the
+  watchman's run (2026-11-14): its checkout, on an old branch without `.gitattributes`, remerged a union-merged
+  roadmap with the default driver and named it a conflict resolved, where a checkout with the attributes named
+  none. Done when: each merge is remerged with its first parent's `.gitattributes` (`--attr-source`), the output
+  says which attributes it used, and a test checks a checkout without the attributes gets the head's answer.
