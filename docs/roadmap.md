@@ -1372,3 +1372,8 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   kept in the hunk, so a head that differs only by a final newline reads `changed`, and one after context is not;
   the GitHub fallback's answer says file modes can't be seen there; conflict resolutions are the head's own merges
   (first parent), not those main's history brought in, found replaying RAL-163; with tests (docs/gate.md).
+- [ ] **RAL-173: `rally rebased --part k` compares a part's verified commit.** From checking the usage sent to the
+  watchman (2026-11-14): before its close a story in parts has no verified commit, only each part's, so RAL-163's
+  part 2 re-merge couldn't have been read. Done when: `--part k` reads part k's verified commit and the repository
+  its evidence names; without it, a story in parts says `can't tell` and names the verified parts; a missing part
+  or an unverified one says so; with tests (docs/gate.md).

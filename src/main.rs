@@ -1118,6 +1118,9 @@ enum Command {
         /// The branch the head merges into.
         #[arg(long, default_value = "main")]
         base: String,
+        /// For a story in parts, before its close: compare this part's verified commit.
+        #[arg(long)]
+        part: Option<u32>,
     },
     /// Show the state of every story, or one story with its history.
     Show {
@@ -2169,9 +2172,15 @@ fn builds_section(location: Option<&Location>, config: &Path) -> Value {
 
 /// `rally rebased` (RAL-170): local git if the checkout has every commit, else GitHub's compares,
 /// saying why local git wasn't used; never "same change" when it can't tell.
-fn rebased_value(detail: &Value, head: &str, checkout: &Path, base: &str) -> Value {
+fn rebased_value(
+    detail: &Value,
+    part: Option<u32>,
+    head: &str,
+    checkout: &Path,
+    base: &str,
+) -> Value {
     use rally::rebased;
-    let (repo, verified) = match rebased::verified_of(detail) {
+    let (repo, verified) = match rebased::verified_of(detail, part) {
         Ok(found) => found,
         Err(why) => return rebased::cant_tell(&why),
     };
@@ -4253,6 +4262,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             head,
             checkout,
             base,
+            part,
         } => {
             if head.len() != 40 || !head.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err("--head takes a full commit".into());
@@ -4268,8 +4278,11 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 &page,
                 |ledger, page| views::stories(ledger, Some(&story), page),
             )?;
-            let mut out = rebased_value(&value["detail"], &head, &checkout, &base);
+            let mut out = rebased_value(&value["detail"], part, &head, &checkout, &base);
             out["story"] = json!(story);
+            if let Some(k) = part {
+                out["part"] = json!(k);
+            }
             return Ok(serde_json::to_string_pretty(&out)?);
         }
         Command::Gate { range, repo, allow } => {
