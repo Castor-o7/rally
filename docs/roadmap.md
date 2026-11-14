@@ -1220,6 +1220,17 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   path"), nothing missing (what `--rally-openers` guards, the service's own inbox items, the session-start block's
   sections), and nothing said twice; docs only; and every place where the code, not the docs, looks wrong is
   listed for the watchman rather than written around.
+- [ ] **RAL-156: Rally says what it is.** From the watchman (2026-11-13), after RAL-155's read of the docs found that
+  nothing said which commit was live, and that the CLI met an older service with a bare "refused (404): no such
+  route". Done when: `rally --version`, the service's start line and `/v1/whoami` carry the build's commit (or say
+  there's none); a CLI read meeting a route the service lacks says "the service is older than <story>", from a table
+  of the story that added each route that a test holds to the routes the service serves; and `rally init`'s block
+  tells agents about `rally inbox add`, when to raise an item and when not (not for what the watchman or the team
+  can do itself); and, since this repository's own block had drifted from what `rally init` writes (it had bullets
+  for `brief`, `view`, rallies, events and standing records that init didn't), init's block becomes the superset,
+  so re-running `rally init` here deletes nothing, with a test that the repository's block equals what init writes.
+  service.md's "Keeping it current" says plainly that on Murph the service goes live only once the operator
+  restarts it with `sudo`.
 - [ ] **RAL-158: An export during an append waits for it instead of reporting a difference.** From the
   watchman (2026-11-13): main went red on 6395487 when hosted CI failed `a_check_a_stop_cut_short_is_made_late_at_
   the_start_whatever_the_story_became` at tests/service.rs:2763 (`unwrap()` on None), just after the service
@@ -1284,3 +1295,14 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   unit tests and a service test. Part 2: `--lock` takes a glob of lock files (dsm-heavy's slots), and for each
   holder's process tree samples CPU time twice a few seconds apart: "possibly hung: <command>, <cwd>, N% CPU over
   5 s, running M min", a prompt and never a finding, with nothing killed.
+- [ ] **RAL-160: A browser test that loses Chrome at start shows what Chrome said, and tries once more, said.**
+  From the watchman and the lamplighter (2026-11-13/14): headless Chrome aborted at start twice on Murph at load
+  15-20 (22:43:22 and 23:58:52), SIGABRT in libsystemd's bus code called from flatpak's zypak spawn helper, before
+  the page loaded, and its words were lost because the browser tests discarded its standard error. Done when: on any
+  failure, the test's output carries the last 4 KB of Chrome's standard error; an abort at start (exit 134 or
+  SIGABRT before the code page loads) is tried once more, and the retry is said on the test process's own,
+  uncaptured standard error and in the script's output as `retried_after_abort`, never silently; a second abort, or
+  any other exit, fails with what Chrome said each time; each exit is given with what the lamplighter needs to find
+  it in the machine's own records: the time to the second, the pid held (saying when it's flatpak's launcher's),
+  `/proc/loadavg`, and whether the document portal's mount was there; with tests through a stand-in for Chrome's
+  command that aborts once, every time, or exits otherwise.

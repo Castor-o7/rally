@@ -21,8 +21,9 @@ stories first. Revise the roadmap as the work goes: claim `<PREFIX>-0` again and
 Where you use Rally:
 
 - **Pick your next story**: `rally next --team <team>` gives your sent-back work first, then the
-  stories assigned to your team, then roadmap order, and says what it skipped and why. A story that needs the operator isn't skipped: ask the operator, and
-  record the question with `rally block --story <STORY> --on-team operator`.
+  stories assigned to your team, then roadmap order, and says what it skipped and why. A story
+  that needs the operator isn't skipped: ask the operator, and record the question with
+  `rally block --story <STORY> --on-team operator`.
 - **Number a new story** with `rally new-story <PREFIX> --title "..."`, which takes the next free
   number, so two teams never write the same ID.
 - **Claim** a ready story: `rally claim <STORY> --team <team>`. Give it up with
@@ -43,6 +44,13 @@ Where you use Rally:
   sent back or unverified.
 - **Say what you're waiting on**: `rally block --team <team> [--story <STORY>] [--on-story <STORY> |
   --on-team <team>] --note "..."`, and close it with `rally unblock <N> --note "why"`.
+- **Raise something for the operator** with `rally inbox add --team <team> --action --note "..."`:
+  only for what the operator alone can do (a key to replace, a sudo step, a merge permission, a purchase), or
+  `--notice` for what the operator should know. `--urgent` puts it at the top when it's breaking
+  work now; `--ask "..."` gives the exact command or decision; `--story <STORY>` what it holds up.
+  Not for what the watchman or your team can do itself, and not for waiting on another team (that's
+  `rally block`). A question for the operator is still `rally block --on-team operator`, and shows
+  in the inbox too. Keep anything private out of it. `rally inbox` lists what's waiting.
 - **Read your team's record** with `rally record <team>`, and correct it or disagree with
   `rally annotate --corrects <N> --team <team> --note "..."`, shown beside the original.
 - **Find work to verify**: `rally waiting` lists submissions waiting for a reader, oldest first.

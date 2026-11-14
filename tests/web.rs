@@ -1098,6 +1098,23 @@ fn in_browser_full(
     schemes: Option<&str>,
     window: Option<&str>,
 ) -> Value {
+    let (ok, seen, stderr) = run_browser(viewer, chrome, probe, schemes, window);
+    assert!(ok, "{seen}\n{stderr}");
+    nothing_of_the_browser_survives(&seen);
+    seen
+}
+
+/// Runs tests/browser/sign-in.mjs once, and gives whether it succeeded, what it printed (with
+/// Chrome's own standard error on a failure, RAL-160) and its standard error. A retry after an
+/// abort at start is said on this process's own standard error, which a test run doesn't capture,
+/// so it shows in every CI log, never silently (RAL-160).
+fn run_browser(
+    viewer: &Viewer,
+    chrome: &str,
+    probe: Option<&str>,
+    schemes: Option<&str>,
+    window: Option<&str>,
+) -> (bool, Value, String) {
     let url = format!("http://{}{}", viewer.address, login(viewer));
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser/sign-in.mjs");
     let mut command = Command::new("node");
@@ -1120,11 +1137,152 @@ fn in_browser_full(
         .output()
         .expect("node is needed to drive the browser");
     let printed = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{printed}\n{stderr}");
-    let seen: Value = serde_json::from_str(printed.trim()).unwrap_or_else(|_| panic!("{printed}"));
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let seen: Value = serde_json::from_str(printed.trim())
+        .unwrap_or_else(|_| panic!("the script printed no result: {printed}\n{stderr}"));
+    if let Some(first) = seen.get("retried_after_abort") {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "browser test: Chrome aborted at start ({}) at {}, pid {} ({}), load {}, document \
+             portal mounted: {}; tried once more (RAL-160); it said: {}",
+            first["status"],
+            first["at"].as_str().unwrap_or("?"),
+            first["pid"],
+            first["pid_is"].as_str().unwrap_or("?"),
+            first["loadavg"].as_str().unwrap_or("?"),
+            first["doc_portal_mounted"],
+            first["chrome_stderr"].as_str().unwrap_or("nothing")
+        );
+    }
+    (output.status.success(), seen, stderr)
+}
+
+/// A stand-in for Chrome's command (RAL-160): a script that, until it has been run `aborts` times,
+/// says a fake assertion on standard error and exits with `status`; after that it runs the real
+/// command it's given. The command line for the test, with the real browser after it.
+fn chrome_that_fails(dir: &std::path::Path, aborts: u32, status: u32, chrome: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("fake-chrome");
+    let counter = dir.join("runs");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nn=$(cat {counter} 2>/dev/null || echo 0)\necho $((n + 1)) > {counter}\n\
+             if [ \"$n\" -lt {aborts} ]; then\n  \
+             echo \"fake zypak: Assertion 'bus' failed (run $((n + 1)))\" >&2\n  exit {status}\nfi\n\
+             exec \"$@\"\n",
+            counter = counter.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    format!("{} {chrome}", script.display())
+}
+
+/// RAL-160: Chrome aborting at start is tried once more, and said; the retry's run is the test's.
+#[test]
+fn an_abort_at_start_is_tried_once_more_and_said() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start();
+    let dir = tempfile::tempdir().unwrap();
+    let once = chrome_that_fails(dir.path(), 1, 134, &chrome);
+    let (ok, seen, stderr) = run_browser(&viewer, &once, None, None, None);
+    assert!(ok, "{seen}\n{stderr}");
+    assert_eq!(seen["retried_after_abort"]["status"], 134, "{seen}");
+    // What the lamplighter needs to find it in the machine's own records.
+    let first = &seen["retried_after_abort"];
+    assert!(
+        first["at"]
+            .as_str()
+            .is_some_and(|at| at.ends_with('Z') && at.len() == 20),
+        "{seen}"
+    );
+    assert!(first["pid"].as_u64().is_some(), "{seen}");
+    assert!(first["pid_is"].is_string(), "{seen}");
+    assert_eq!(
+        first["loadavg"]
+            .as_str()
+            .unwrap_or_default()
+            .split(' ')
+            .count(),
+        3,
+        "{seen}"
+    );
+    assert!(first["doc_portal_mounted"].is_boolean(), "{seen}");
+    assert!(
+        seen["retried_after_abort"]["chrome_stderr"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Assertion 'bus' failed (run 1)"),
+        "{seen}"
+    );
+    assert!(
+        stderr.contains("Chrome aborted at start (134) at ") && stderr.contains("trying once more"),
+        "{stderr}"
+    );
+    assert_eq!(seen["after"]["status"], 200, "the retry signed in: {seen}");
     nothing_of_the_browser_survives(&seen);
-    seen
+}
+
+/// RAL-160: a second abort fails, with what Chrome said both times; and an exit at start that
+/// isn't an abort isn't tried again, and says what Chrome said.
+#[test]
+fn a_second_abort_or_another_exit_fails_with_what_chrome_said() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start();
+    let dir = tempfile::tempdir().unwrap();
+    let always = chrome_that_fails(dir.path(), 99, 134, &chrome);
+    let (ok, seen, _) = run_browser(&viewer, &always, None, None, None);
+    assert!(!ok, "{seen}");
+    assert_eq!(
+        seen["error"], "Chrome aborted at start twice (134, then 134)",
+        "{seen}"
+    );
+    assert!(
+        seen["chrome_stderr"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("(run 2)"),
+        "{seen}"
+    );
+    assert!(
+        seen["retried_after_abort"]["chrome_stderr"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("(run 1)"),
+        "{seen}"
+    );
+    nothing_of_the_browser_survives(&seen);
+
+    let other = tempfile::tempdir().unwrap();
+    let exits = chrome_that_fails(other.path(), 99, 1, &chrome);
+    let (ok, seen, stderr) = run_browser(&viewer, &exits, None, None, None);
+    assert!(!ok, "{seen}");
+    assert_eq!(
+        seen["error"], "the browser exited with 1 before the page loaded",
+        "{seen}"
+    );
+    assert!(
+        seen["exit"]["at"].is_string() && seen["exit"]["loadavg"].is_string(),
+        "{seen}"
+    );
+    assert!(seen.get("retried_after_abort").is_none(), "{seen}");
+    assert!(
+        seen["chrome_stderr"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("(run 1)"),
+        "{seen}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(other.path().join("runs"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    assert!(!stderr.contains("trying once more"), "{stderr}");
+    nothing_of_the_browser_survives(&seen);
 }
 
 /// RAL-97: once the script has ended, no profile it used is left, under the host's /tmp or a
