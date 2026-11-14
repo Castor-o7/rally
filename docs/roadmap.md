@@ -1151,6 +1151,15 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   handover section and `rally waiting`'s `closes_due` list only that rally's projects (`rally handover` keeps
   every row, and `rally waiting --all` lists every project's closes); a digest whose handover rows are all ones
   the last digest sent says one count line instead of the list; with unit tests for each.
+- [ ] **RAL-149: An evidence check a restart cut short is made at the start, whatever the story became.** From
+  the watchman and the lamplighter (2026-11-13): after the 20:37 service restart, submissions 3697–3699
+  (DSM-214, DSM-209 parts 3 and 4) never got an evidence check. The old build was still retrying their checks
+  when the service stopped, and on start `evidence::unchecked` re-queued only submissions still in review, while
+  the watchman's verifications (3700–3702) had already moved them on. Done when: on start, every submission with
+  no evidence_check record is checked once, whatever its story's state now (verified, sent back, merged), from
+  the ledger's first check on, and the record's reason starts with "checked late, after a service restart"
+  (in the existing reason text, so the rollback window stays open); a test stops the service between a submit
+  and its check, verifies the story, restarts, and finds the record; nothing is checked twice.
 - [ ] **RAL-150: Inbox follow-ups: a ticked question says "answered elsewhere"; browser tests leave nothing
   behind.** From the watchman (2026-11-13, after RAL-146's verify), and the lamplighter's report of main
   `ac88000` going red at 21:14 on `tests/web.rs` "a browser still runs on rally-browser-kw0M3y" at load 17-20

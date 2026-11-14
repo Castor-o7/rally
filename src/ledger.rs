@@ -5928,6 +5928,119 @@ mod tests {
         );
     }
 
+    /// RAL-149: at the service's start, every submission with no evidence check since checks
+    /// began is checked, whatever its story's state now, and marked late with that state; one
+    /// from before the first check isn't, nor one an amendment replaced, nor one already checked.
+    #[test]
+    fn a_submission_a_restart_left_unchecked_is_checked_late_whatever_its_state() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let ev = format!("o/r@{commit}");
+        let author = |body: serde_json::Value| record(Kind::Declared, "alice", body);
+        let reader = |body: serde_json::Value| record(Kind::Verified, "bob", body);
+        let mut ledger = Ledger::default();
+        let submitted = |ledger: &mut Ledger, story: &str| {
+            push(ledger, &author(json!({"change": "ready", "story": story})));
+            push(
+                ledger,
+                &author(json!({"change": "claim", "story": story, "team": "rally"})),
+            );
+            push(
+                ledger,
+                &author(json!({"change": "submit", "story": story, "team": "rally",
+                                         "evidence": ev})),
+            );
+            ledger.last_seq()
+        };
+        let verified = |ledger: &mut Ledger, story: &str| {
+            push(
+                ledger,
+                &reader(json!({"change": "verify", "story": story, "note": "read",
+                                         "commit": commit})),
+            );
+        };
+        let observed = |body: serde_json::Value| {
+            let source = Source {
+                credential: crate::store::RALLY_ITSELF.into(),
+                declared_name: None,
+            };
+            Record::new(Kind::Observed, source, 1_000, body).unwrap()
+        };
+        let check = |ledger: &mut Ledger, story: &str, submit: u64| {
+            push(
+                ledger,
+                &observed(json!({"change": "evidence_check", "story": story,
+                                           "submit": submit, "outcome": {"checkable": true}})),
+            );
+        };
+        // From before checks existed: never checked, and not checked now.
+        submitted(&mut ledger, "RAL-1");
+        verified(&mut ledger, "RAL-1");
+        // The first check.
+        let two = submitted(&mut ledger, "RAL-2");
+        check(&mut ledger, "RAL-2", two);
+        // A restart cut RAL-3's check short, and it was verified and merged before the start.
+        let three = submitted(&mut ledger, "RAL-3");
+        verified(&mut ledger, "RAL-3");
+        push(
+            &mut ledger,
+            &author(json!({"change": "merge", "story": "RAL-3", "commit": commit})),
+        );
+        // RAL-4 was sent back unchecked.
+        let four = submitted(&mut ledger, "RAL-4");
+        push(
+            &mut ledger,
+            &reader(json!({"change": "send_back", "story": "RAL-4",
+                                          "note": "missing"})),
+        );
+        // RAL-5 was amended before its check: only the amendment is checked, and it's in review.
+        submitted(&mut ledger, "RAL-5");
+        let other = format!("o/r@{}", "f".repeat(40));
+        push(
+            &mut ledger,
+            &author(
+                json!({"change": "submit", "story": "RAL-5", "team": "rally",
+                                          "evidence": other, "amend": true}),
+            ),
+        );
+        let five = ledger.last_seq();
+
+        let jobs = crate::evidence::unchecked(&ledger);
+        let found: Vec<(&str, u64)> = jobs.iter().map(|j| (j.story.as_str(), j.submit)).collect();
+        assert_eq!(found, [("RAL-3", three), ("RAL-4", four), ("RAL-5", five)]);
+        let late = |i: usize| jobs[i].late.as_deref().unwrap();
+        assert_eq!(
+            late(0),
+            "checked late, after a service restart: by then the story was verified and the story \
+             merged"
+        );
+        assert!(
+            late(1).ends_with("by then the story was sent back"),
+            "{}",
+            late(1)
+        );
+        assert!(
+            late(2).ends_with("by then the story was in review"),
+            "{}",
+            late(2)
+        );
+        // The reason recorded starts with the phrase, before what the check found.
+        let outcome = crate::evidence::Outcome {
+            reason: Some("CI passed".into()),
+            ..serde_json::from_value(json!({"checkable": true})).unwrap()
+        }
+        .for_job(&jobs[0]);
+        assert!(outcome.reason.unwrap().starts_with(crate::evidence::LATE));
+
+        // Once checked, it isn't queued again.
+        check(&mut ledger, "RAL-3", three);
+        let jobs = crate::evidence::unchecked(&ledger);
+        assert!(jobs.iter().all(|j| j.submit != three));
+        // And a second check of it is refused.
+        let again = observed(json!({"change": "evidence_check", "story": "RAL-3",
+                                    "submit": three, "outcome": {"checkable": true}}));
+        assert!(ledger.check(ledger.last_seq() + 1, &again).is_err());
+    }
+
     #[test]
     fn the_submitter_amends_evidence_while_in_review_and_history_keeps_both() {
         let amend = |name: &str, team: &str| {

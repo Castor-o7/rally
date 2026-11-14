@@ -682,14 +682,47 @@ pub struct Job {
     pub evidence: String,
     /// When it was submitted, by the service's clock: the wait for CI counts from here.
     pub submitted_at_ms: i64,
+    /// Set when it's queued at the service's start, having had no check before a restart
+    /// (RAL-149): said at the start of the recorded outcome's reason, as [`LATE`] and the story's
+    /// state by then.
+    pub late: Option<String>,
 }
 
-/// Every submission still in review whose latest submit has no evidence check yet: a story's,
-/// and each part's in review (RAL-79).
+/// The fixed phrase that starts the reason of a check made at the service's start, for a
+/// submission a restart left unchecked (RAL-149), so a search finds every one.
+pub const LATE: &str = "checked late, after a service restart";
+
+impl Outcome {
+    /// The outcome as recorded for `job`: a late check says so first in its reason (RAL-149).
+    pub fn for_job(mut self, job: &Job) -> Self {
+        if let Some(late) = &job.late {
+            self.reason = Some(match self.reason.take() {
+                Some(why) => format!("{late}; {why}"),
+                None => late.clone(),
+            });
+        }
+        self
+    }
+}
+
+/// Every submission with no evidence check yet, to check at the service's start (RAL-5): each
+/// still in review, a story's and each part's (RAL-79), and since RAL-149 each one a restart left
+/// unchecked whatever its story's state now (verified, sent back, merged), if it was submitted
+/// after the ledger's first evidence check, so that submissions from before checks existed aren't
+/// checked now. A submission amended before its check isn't checked: its amendment is. Each job
+/// is marked late, with what its story's state was by then.
 pub fn unchecked(ledger: &crate::ledger::Ledger) -> Vec<Job> {
     use crate::ledger::{Change, State};
+    let first_check = ledger
+        .stories()
+        .values()
+        .flat_map(|story| &story.history)
+        .filter(|entry| matches!(entry.change, Change::EvidenceCheck { .. }))
+        .map(|entry| entry.seq)
+        .min();
     let mut jobs = Vec::new();
     for (id, story) in ledger.stories() {
+        // Still in review, as before RAL-149.
         let mut seqs: Vec<u64> = story
             .parts
             .values()
@@ -705,22 +738,58 @@ pub fn unchecked(ledger: &crate::ledger::Ledger) -> Vec<Job> {
         {
             seqs.push(submit.seq);
         }
+        // Every other submission since checks began, unless an amendment replaced it.
+        if let Some(first) = first_check {
+            for (index, entry) in story.history.iter().enumerate() {
+                let Change::Submit { part, .. } = &entry.change else {
+                    continue;
+                };
+                let amended =
+                    story.history[index + 1..]
+                        .iter()
+                        .find_map(|later| match &later.change {
+                            Change::Submit { part: p, amend, .. } if p == part => Some(*amend),
+                            _ => None,
+                        });
+                if entry.seq > first && amended != Some(true) && !seqs.contains(&entry.seq) {
+                    seqs.push(entry.seq);
+                }
+            }
+        }
         for seq in seqs {
             let Some(submit) = story.history.iter().find(|entry| entry.seq == seq) else {
                 continue;
             };
-            let Change::Submit { evidence, .. } = &submit.change else {
+            let Change::Submit { evidence, part, .. } = &submit.change else {
                 continue;
             };
             let checked = story.history.iter().any(|entry| {
                 matches!(&entry.change, Change::EvidenceCheck { submit: s, .. } if *s == seq)
             });
             if !checked {
+                let words = |state: State| {
+                    serde_json::to_value(state)
+                        .ok()
+                        .and_then(|v| v.as_str().map(|s| s.replace('_', " ")))
+                        .unwrap_or_else(|| "unknown".into())
+                };
+                let merged = story
+                    .history
+                    .iter()
+                    .any(|entry| matches!(entry.change, Change::Merge { .. }));
+                let mut now = match part.and_then(|k| Some((k, story.parts.get(&k)?))) {
+                    Some((k, held)) => format!("part {k} was {}", words(held.state)),
+                    None => format!("the story was {}", words(story.state)),
+                };
+                if merged {
+                    now.push_str(" and the story merged");
+                }
                 jobs.push(Job {
                     story: id.clone(),
                     submit: seq,
                     evidence: evidence.clone(),
                     submitted_at_ms: submit.at_ms,
+                    late: Some(format!("{LATE}: by then {now}")),
                 });
             }
         }
@@ -1089,6 +1158,7 @@ mod tests {
             submit: 4,
             evidence: evidence(),
             submitted_at_ms: 0,
+            late: None,
         };
         let outcome = check(Some(&Down), "RAL-5", &evidence());
         assert!(!outcome.is_final());
@@ -1178,6 +1248,7 @@ mod tests {
             submit: 4,
             evidence: evidence(),
             submitted_at_ms: now_ms(),
+            late: None,
         }));
         for _ in 0..100 {
             if !recorded.lock().unwrap().is_empty() {
@@ -1319,6 +1390,7 @@ mod tests {
             submit: 7,
             evidence: evidence(),
             submitted_at_ms: 1_000,
+            late: None,
         };
         // Moments after the submission, far from the end of a 30-minute wait.
         let step = step(outcome.clone(), &job, 1_001, 30 * 60_000);
@@ -1403,6 +1475,7 @@ mod tests {
             submit: 7,
             evidence: evidence(),
             submitted_at_ms: 1_000,
+            late: None,
         };
         for (status, body) in [
             (
@@ -1793,6 +1866,7 @@ mod tests {
             submit: 4,
             evidence: evidence(),
             submitted_at_ms: 1_000,
+            late: None,
         };
         let none = Outcome {
             checkable: true,
@@ -1835,6 +1909,7 @@ mod tests {
             submit: 4,
             evidence: evidence(),
             submitted_at_ms: 1_000,
+            late: None,
         };
         let pending = Outcome {
             checkable: true,
@@ -1917,6 +1992,7 @@ mod tests {
             submit: 4,
             evidence: evidence(),
             submitted_at_ms: now_ms(),
+            late: None,
         }));
         for _ in 0..100 {
             if !recorded.lock().unwrap().is_empty() {
