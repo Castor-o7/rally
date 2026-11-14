@@ -1389,6 +1389,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   part 2 re-merge couldn't have been read. Done when: `--part k` reads part k's verified commit and the repository
   its evidence names; without it, a story in parts says `can't tell` and names the verified parts; a missing part
   or an unverified one says so; with tests (docs/gate.md).
+- [ ] **RAL-177: `rally rebased --verified <sha>` replays after the fact, and a head never compares with itself.**
+  From replaying RAL-174 (2026-11-14): once the watchman's check at a re-based head is recorded, that head is the
+  verified commit, so `--head` with it compared the commit with itself and read clean. Done when: `--verified`
+  overrides the ledger's commit, the output says it was given (not recorded) and what the ledger has; a `--head`
+  equal to the commit compared with says `can't tell`, that it means nothing; with tests (docs/gate.md).
 - [ ] **RAL-178: `rally merge` waits briefly for the merged commit's CI run, else says it hasn't started.** From the
   watchman's live check of RAL-171 (2026-11-14): read seconds after `gh pr merge`, the CI note said `none` at nearly
   every merge, before the push's run had started. Done when: while no run exists, `rally merge` reads again every 2

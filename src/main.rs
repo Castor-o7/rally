@@ -1127,6 +1127,10 @@ enum Command {
         /// For a story in parts, before its close: compare this part's verified commit.
         #[arg(long)]
         part: Option<u32>,
+        /// Compare with this commit instead of the ledger's verified one, to replay a check after
+        /// the fact (RAL-177). Said in the output; nothing is recorded.
+        #[arg(long)]
+        verified: Option<String>,
     },
     /// Show the state of every story, or one story with its history.
     Show {
@@ -2184,15 +2188,21 @@ fn builds_section(location: Option<&Location>, config: &Path) -> Value {
 fn rebased_value(
     detail: &Value,
     part: Option<u32>,
+    given: Option<&str>,
     head: &str,
     checkout: &Path,
     base: &str,
 ) -> Value {
     use rally::rebased;
-    let (repo, verified) = match rebased::verified_of(detail, part) {
+    let (repo, verified, replay) = match rebased::pick_verified(detail, part, given) {
         Ok(found) => found,
         Err(why) => return rebased::cant_tell(&why),
     };
+    if let Some(mut out) = rebased::compared_with_itself(&verified, head) {
+        out["verified"] = json!(verified);
+        out["head"] = json!(head);
+        return out;
+    }
     let main = match web::branch_tip(&repo, base) {
         Ok(sha) => sha,
         Err(why) => {
@@ -2215,6 +2225,9 @@ fn rebased_value(
     out["kind"] = json!("observed");
     out["repo"] = json!(repo);
     out["verified"] = json!(verified);
+    if let Some(replay) = replay {
+        out["verified_given"] = replay;
+    }
     out["head"] = json!(head);
     out[base] = json!(main);
     out
@@ -4360,6 +4373,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             checkout,
             base,
             part,
+            verified,
         } => {
             if head.len() != 40 || !head.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err("--head takes a full commit".into());
@@ -4375,7 +4389,14 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 &page,
                 |ledger, page| views::stories(ledger, Some(&story), page),
             )?;
-            let mut out = rebased_value(&value["detail"], part, &head, &checkout, &base);
+            let mut out = rebased_value(
+                &value["detail"],
+                part,
+                verified.as_deref(),
+                &head,
+                &checkout,
+                &base,
+            );
             out["story"] = json!(story);
             if let Some(k) = part {
                 out["part"] = json!(k);
