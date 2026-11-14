@@ -4071,10 +4071,12 @@ fn a_lock_holder_doing_almost_nothing_is_flagged_as_possibly_hung() {
 
 /// RAL-164: with no lock flags, `rally stalls` reads each of the open rally's projects' own
 /// `stalls` from the projects list beside the pairing; a field it doesn't know is warned about,
-/// not fatal; and `--prompts-only` prints nothing when there's nothing to ask.
+/// not fatal; and `--prompts-only` prints nothing when there's nothing to ask, but says what it
+/// couldn't see and fails when it was blind (RAL-174).
 #[cfg(target_os = "linux")]
 #[test]
 fn stalls_take_a_projects_own_locks_and_window_and_can_say_nothing() {
+    use std::os::unix::fs::PermissionsExt;
     let service = start();
     let pairing = service.add("a1", false);
     let config = service.dir.path().join("client/config.json");
@@ -4092,18 +4094,34 @@ fn stalls_take_a_projects_own_locks_and_window_and_can_say_nothing() {
         projects.to_string(),
     )
     .unwrap();
-    let stalls = |extra: &[&str]| {
-        rally()
+    // A shim that reads an empty roster, so the run sees everything it needs (RAL-174).
+    let shim = service.dir.path().join("empty-roster-shim");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\ncase \"$1\" in\n  roster) printf '%s' '{\"read_at\": 1, \"sessions\": []}' ;;\n  *) exit 2 ;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let stalls_with = |roster_from: Option<&str>, path: Option<&str>, extra: &[&str]| {
+        let mut command = rally();
+        command
             .arg("--config")
             .arg(&config)
             .args(["--as", "watch"])
-            .env("RALLY_ROSTER_FROM", "no-such-shim-for-tests")
             .arg("stalls")
             .args(["--cpu-sample", "1s"])
-            .args(extra)
-            .output()
-            .unwrap()
+            .args(extra);
+        match roster_from {
+            Some(from) => command.env("RALLY_ROSTER_FROM", from),
+            None => command.env_remove("RALLY_ROSTER_FROM"),
+        };
+        if let Some(path) = path {
+            command.env("PATH", path);
+        }
+        command.output().unwrap()
     };
+    let shim_path = shim.display().to_string();
+    let stalls = |extra: &[&str]| stalls_with(Some(&shim_path), None, extra);
     let opened = rally()
         .arg("--config")
         .arg(&config)
@@ -4135,6 +4153,46 @@ fn stalls_take_a_projects_own_locks_and_window_and_can_say_nothing() {
         String::from_utf8_lossy(&quiet.stderr).contains("`a_field_from_the_future`"),
         "the unknown field is said: {}",
         String::from_utf8_lossy(&quiet.stderr)
+    );
+    // RAL-174: with no shim on PATH, as under cron's default PATH, the roster can't be read, so
+    // no team can be seen to be quiet: it says so on a line of its own and fails, never silent.
+    let blind = stalls_with(None, Some("/usr/bin:/bin"), &["--prompts-only"]);
+    let said = String::from_utf8_lossy(&blind.stderr).into_owned();
+    assert!(!blind.status.success(), "a blind run fails: {said}");
+    assert!(
+        blind.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&blind.stdout)
+    );
+    assert!(
+        said.contains("isn't an all clear")
+            && said.contains("\ncan't see: the roster: no shim's roster could be read (")
+            && said.contains("muster-shim: couldn't be run"),
+        "{said}"
+    );
+    // A lock pattern that matches nothing is a blind spot too.
+    let nothing = slots.join("no-such-*.lock").display().to_string();
+    let missing = stalls(&["--prompts-only", "--lock", &nothing]);
+    let said = String::from_utf8_lossy(&missing.stderr).into_owned();
+    assert!(!missing.status.success(), "{said}");
+    assert!(
+        said.contains(&format!("can't see: the lock {nothing}: ")),
+        "{said}"
+    );
+    assert!(
+        !said.contains("can't see: the roster"),
+        "the shim was read: {said}"
+    );
+    // Without --prompts-only the report says it too, and the run succeeds as before.
+    let whole = stalls_with(Some("no-such-shim-for-tests"), None, &[]);
+    assert!(whole.status.success());
+    let report: Value = serde_json::from_slice(&whole.stdout).unwrap();
+    assert!(
+        report["blind"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("the roster:"),
+        "{report}"
     );
     // A slot held by something doing nothing: flagged from the project's own config, no flags.
     let mut holder = Command::new("flock")

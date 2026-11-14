@@ -108,8 +108,13 @@ whether the gate is alive. See [brief.md](brief.md).
 session:
 
 ```cron
-*/10 * * * * /home/joshd/.local/bin/rally stalls --prompts-only --quiet-after 20m --lock '/tmp/discosim-heavy*.lock' --digest-quiet-after 10m >> /home/joshd/.local/state/rally/stalls.log 2>&1
+*/10 * * * * PATH=/home/joshd/.local/bin:/home/joshd/.cargo/bin:/usr/local/bin:/usr/bin:/bin /home/joshd/.local/bin/rally stalls --prompts-only --quiet-after 20m --lock '/tmp/discosim-heavy*.lock' --digest-quiet-after 10m >> /home/joshd/.local/state/rally/stalls.log 2>&1
 ```
+
+The `PATH=` is needed: cron's default PATH (`/usr/bin:/bin`) has neither `gh` (`~/.local/bin`) nor the shims
+(`~/.cargo/bin`), and without a shim the roster can't be read, so no team can be seen to be quiet. Since RAL-174 a
+run that couldn't see something says `can't see: …` in the log and exits non-zero, rather than printing nothing
+([stalls.md](stalls.md)).
 
 ## 7. What only the operator does
 
