@@ -90,7 +90,13 @@ rally rebased RAL-170 --head <full sha> --checkout ~/src/rally-wt/x --base main
 - **The comparison:** the verified commit's change against its merge base with main, and the head's
   change against its merge base with main's tip (read from GitHub), compared patch by patch: each
   file's added and removed lines, hunk by hunk, without line numbers or context, so a hunk that only
-  moved is the same and a file list that matches isn't enough.
+  moved is the same and a file list that matches isn't enough. Each file is read from its
+  `diff --git` line, and its header (up to its first `@@`) gives the facts compared too: a mode
+  changed, a rename, a file added or deleted, and a binary file's blob ids, so a binary file, a
+  mode change or a pure rename is never invisible. Inside a hunk, a line starting `--- ` or `+++ `
+  is a removed `-- ` or added `++ ` line, not a header.
+- **What it can't see, said in every answer (`caveat`):** hunks are compared in order without
+  line numbers, so a hunk moved, unchanged, to another place in its file reads as the same change.
 - **The verdict:** `same change` only when every file's changed lines are identical. Otherwise
   `changed`, with each file that differs and its first differing hunk as it is in each. `can't tell`
   when it can't be compared: a commit missing, GitHub's compare cut short (over 250 commits or 300

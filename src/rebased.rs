@@ -18,56 +18,102 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-/// One file's change, reduced to what a rebase can't move: its hunks' added and removed lines, in
-/// order, without line numbers or context.
-pub type Hunks = Vec<Vec<String>>;
+/// One file's change, reduced to what a rebase can't move: the facts its header states (a mode
+/// changed, a rename, a file added or deleted, a binary file's blobs) and its hunks' added and
+/// removed lines, in order, without line numbers or context.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileChange {
+    pub header: Vec<String>,
+    pub hunks: Vec<Vec<String>>,
+}
 
-/// A unified diff as each file's changed hunks. A file's key is its new path, or its old one when
-/// it's deleted.
-pub fn hunks_by_file(diff: &str) -> BTreeMap<String, Hunks> {
-    let mut out: BTreeMap<String, Hunks> = BTreeMap::new();
+impl FileChange {
+    fn is_empty(&self) -> bool {
+        self.header.is_empty() && self.hunks.iter().all(Vec::is_empty)
+    }
+}
+
+/// The file a `diff --git a/<old> b/<new>` line names, by its new path. With the same path on both
+/// sides (every change but a rename) the line splits evenly, even when the path holds " b/".
+fn git_path(rest: &str) -> String {
+    let rest = rest.strip_prefix("a/").unwrap_or(rest);
+    if rest.len() > 3 {
+        let half = (rest.len() - 3) / 2;
+        if rest.is_char_boundary(half)
+            && rest.is_char_boundary(half + 3)
+            && &rest[half..half + 3] == " b/"
+            && rest[..half] == rest[half + 3..]
+        {
+            return rest[..half].to_owned();
+        }
+    }
+    match rest.find(" b/") {
+        Some(at) => rest[at + 3..].to_owned(),
+        None => rest.to_owned(),
+    }
+}
+
+/// A unified diff (`git diff --full-index`) as each file's change. Every file is keyed from its
+/// `diff --git` line, so a file with no hunks, such as a binary file, a mode change or a pure
+/// rename, is still there. A file's header runs to its first `@@`: inside a hunk, a line that
+/// starts `--- ` or `+++ ` is a removed `-- ` or an added `++ ` line, never a header.
+pub fn changes_by_file(diff: &str) -> BTreeMap<String, FileChange> {
+    let mut out: BTreeMap<String, FileChange> = BTreeMap::new();
     let mut file: Option<String> = None;
-    let mut old_path: Option<String> = None;
+    let mut in_header = false;
+    let mut index_line: Option<String> = None;
     for line in diff.lines() {
-        if line.starts_with("diff --git ") {
-            file = None;
-            old_path = None;
-            continue;
-        }
-        if let Some(path) = line.strip_prefix("--- ") {
-            old_path = path.strip_prefix("a/").map(str::to_owned);
-            continue;
-        }
-        if let Some(path) = line.strip_prefix("+++ ") {
-            let name = path
-                .strip_prefix("b/")
-                .map(str::to_owned)
-                .or_else(|| old_path.clone())
-                .unwrap_or_else(|| path.to_owned());
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            let name = git_path(rest);
             out.entry(name.clone()).or_default();
             file = Some(name);
+            in_header = true;
+            index_line = None;
             continue;
         }
         let Some(name) = &file else { continue };
+        let change = out.get_mut(name).expect("made above");
         if line.starts_with("@@") {
-            out.get_mut(name).expect("made above").push(Vec::new());
+            in_header = false;
+            change.hunks.push(Vec::new());
+            continue;
+        }
+        if in_header {
+            if line.starts_with("index ") {
+                // Blob ids move with the base; only a binary file's are its content.
+                index_line = Some(line.to_owned());
+            } else if line.starts_with("Binary files ") || line == "GIT binary patch" {
+                change.header.push(
+                    index_line
+                        .clone()
+                        .unwrap_or_else(|| "binary, without its blob ids".to_owned()),
+                );
+            } else if !(line.starts_with("--- ")
+                || line.starts_with("+++ ")
+                || line.starts_with("similarity index ")
+                || line.starts_with("dissimilarity index "))
+            {
+                // new file mode, deleted file mode, old mode, new mode, rename from/to, copy
+                // from/to: facts of the change itself.
+                change.header.push(line.to_owned());
+            }
         } else if (line.starts_with('+') || line.starts_with('-'))
-            && let Some(hunk) = out.get_mut(name).and_then(|h| h.last_mut())
+            && let Some(hunk) = change.hunks.last_mut()
         {
             hunk.push(line.to_owned());
         }
     }
     // A hunk of context alone changes nothing.
-    for hunks in out.values_mut() {
-        hunks.retain(|h| !h.is_empty());
+    for change in out.values_mut() {
+        change.hunks.retain(|h| !h.is_empty());
     }
     out
 }
 
-/// The files whose changed lines differ between the verified change and the head's, each with the
-/// first hunk that differs, shown as it is in each.
+/// The files whose change differs between the verified change and the head's: by their header
+/// facts, or by the first hunk that differs, shown as it is in each.
 pub fn differences(verified: &str, head: &str) -> Vec<Value> {
-    let (a, b) = (hunks_by_file(verified), hunks_by_file(head));
+    let (a, b) = (changes_by_file(verified), changes_by_file(head));
     let mut names: Vec<&String> = a.keys().chain(b.keys()).collect();
     names.sort();
     names.dedup();
@@ -77,33 +123,48 @@ pub fn differences(verified: &str, head: &str) -> Vec<Value> {
         if x == y {
             continue;
         }
+        let only_in = match (x, y) {
+            (None, _) => Some("head"),
+            (_, None) => Some("verified"),
+            _ => None,
+        };
         let (x, y) = (
             x.cloned().unwrap_or_default(),
             y.cloned().unwrap_or_default(),
         );
-        let at = (0..x.len().max(y.len()))
-            .find(|i| x.get(*i) != y.get(*i))
+        if x.header != y.header {
+            out.push(json!({
+                "file": name, "only_in": only_in,
+                "verified_header": x.header, "head_header": y.header,
+            }));
+            continue;
+        }
+        let at = (0..x.hunks.len().max(y.hunks.len()))
+            .find(|i| x.hunks.get(*i) != y.hunks.get(*i))
             .unwrap_or(0);
         let shown = |h: Option<&Vec<String>>| {
             h.map(|lines| lines.iter().take(12).cloned().collect::<Vec<_>>())
         };
         out.push(json!({
             "file": name,
-            "only_in": if x.is_empty() { Some("head") } else if y.is_empty() { Some("verified") }
-                       else { None },
+            "only_in": only_in,
             "hunk": at + 1,
-            "verified_hunk": shown(x.get(at)),
-            "head_hunk": shown(y.get(at)),
+            "verified_hunk": shown(x.hunks.get(at)),
+            "head_hunk": shown(y.hunks.get(at)),
         }));
     }
     out
 }
 
+/// Said with every comparison made: what "same change" can't see.
+pub const CAVEAT: &str = "compared hunk by hunk, in order, without line numbers: a hunk that moved \
+                          to another place in its file, unchanged, reads as the same change";
+
 /// The verdict on two changes: "same change" only when both change something and every file's
 /// changed lines are identical. A verified change that's empty, as when the verified commit is
 /// already in main, leaves nothing to compare, so that can't be told.
 fn judge(verified: &str, head: &str) -> (&'static str, Vec<Value>, Option<&'static str>) {
-    if hunks_by_file(verified).values().all(Vec::is_empty) {
+    if changes_by_file(verified).values().all(FileChange::is_empty) {
         return (
             "can't tell",
             Vec::new(),
@@ -155,7 +216,21 @@ pub fn local(dir: &Path, verified: &str, head: &str, main: &str) -> Result<Value
     }
     let base = |sha: &str| git(dir, &["merge-base", sha, main]).map(|s| s.trim().to_owned());
     let (vbase, hbase) = (base(verified)?, base(head)?);
-    let diff = |from: &str, to: &str| git(dir, &["diff", "--no-color", "--no-ext-diff", from, to]);
+    let diff = |from: &str, to: &str| {
+        git(
+            dir,
+            &[
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--full-index",
+                "--find-renames",
+                from,
+                to,
+            ],
+        )
+    };
     let (vdiff, hdiff) = (diff(&vbase, verified)?, diff(&hbase, head)?);
     let (verdict, differing, why) = judge(&vdiff, &hdiff);
     // Each merge brought into the head since the verified commit, and what its remerge diff shows:
@@ -172,8 +247,8 @@ pub fn local(dir: &Path, verified: &str, head: &str, main: &str) -> Result<Value
         )?;
         let files: Vec<String> = remerge
             .lines()
-            .filter_map(|l| l.strip_prefix("diff --git a/"))
-            .filter_map(|l| l.split(" b/").next().map(str::to_owned))
+            .filter_map(|l| l.strip_prefix("diff --git "))
+            .map(git_path)
             .collect();
         if !files.is_empty() {
             resolved.push(json!({"merge": merge, "files": files}));
@@ -185,6 +260,7 @@ pub fn local(dir: &Path, verified: &str, head: &str, main: &str) -> Result<Value
         "verified_base": vbase, "head_base": hbase, "head_contains_main": contains_main,
         "verdict": verdict,
         "why": why,
+        "caveat": CAVEAT,
         "differences": differing,
         "conflict_resolutions": resolved,
     }))
@@ -203,9 +279,17 @@ pub fn from_github(verified: &Value, head: &Value) -> Value {
         for file in compare["files"].as_array()? {
             let name = file["filename"].as_str()?;
             let patch = file["patch"].as_str()?;
-            text.push_str(&format!(
-                "diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n"
-            ));
+            text.push_str(&format!("diff --git a/{name} b/{name}\n"));
+            // GitHub's own word for what happened to the file, as the header's facts.
+            match file["status"].as_str() {
+                Some("renamed") => text.push_str(&format!(
+                    "rename from {}\nrename to {name}\n",
+                    file["previous_filename"].as_str().unwrap_or_default()
+                )),
+                Some("added") => text.push_str("new file\n"),
+                Some("removed") => text.push_str("deleted file\n"),
+                _ => {}
+            }
             text.push_str(patch);
             text.push('\n');
         }
@@ -218,6 +302,7 @@ pub fn from_github(verified: &Value, head: &Value) -> Value {
                 "how": "GitHub",
                 "verdict": verdict,
                 "why": why,
+                "caveat": CAVEAT,
                 "differences": differing,
                 "conflict_resolutions": null,
                 "conflict_note": "GitHub has no remerge diff, so whether a merge of main into the \
@@ -420,5 +505,128 @@ mod tests {
         assert!(differences(a, b).is_empty());
         let c = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n a\n-b\n+C\n c\n";
         assert_eq!(differences(a, c)[0]["file"], "x");
+    }
+
+    /// A head with main merged in, and then `extra` done on the story branch, against the verified
+    /// commit, where the verified change is `change` on top of `setup()`'s start.
+    fn compare_after(change: impl Fn(&Repo), extra: impl Fn(&Repo)) -> Value {
+        let r = Repo::new();
+        r.git(&["config", "core.fileMode", "true"]);
+        r.git(&["checkout", "-q", "-b", "story"]);
+        change(&r);
+        let verified = r.commit("RAL-1: the change");
+        r.git(&["checkout", "-q", "main"]);
+        r.write("b.txt", "alpha\nbeta\ngamma\n");
+        r.commit("main moves");
+        r.git(&["checkout", "-q", "story"]);
+        r.git(&["merge", "-q", "--no-edit", "main"]);
+        extra(&r);
+        r.git(&["add", "-A"]);
+        let _ = git(r.path(), &["commit", "-q", "-m", "more"]);
+        let head = r.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        local(r.path(), &verified, &head, &main(&r)).unwrap()
+    }
+
+    fn write_bytes(r: &Repo, name: &str, bytes: &[u8]) {
+        std::fs::write(r.path().join(name), bytes).unwrap();
+    }
+
+    #[test]
+    fn a_binary_file_is_compared_by_its_blobs() {
+        let add = |r: &Repo| write_bytes(r, "img.bin", &[0, 1, 2, 3, 0, 255]);
+        let same = compare_after(add, |_| {});
+        assert_eq!(same["verdict"], "same change", "{same}");
+        let changed = compare_after(add, |r| write_bytes(r, "img.bin", &[0, 9, 9, 9, 0, 255]));
+        assert_eq!(changed["verdict"], "changed", "{changed}");
+        assert_eq!(changed["differences"][0]["file"], "img.bin");
+        assert!(
+            changed["differences"][0]["head_header"]
+                .to_string()
+                .contains("index ")
+        );
+    }
+
+    #[test]
+    fn a_mode_change_is_a_change() {
+        use std::os::unix::fs::PermissionsExt;
+        let chmod = |r: &Repo, mode| {
+            std::fs::set_permissions(
+                r.path().join("a.txt"),
+                std::fs::Permissions::from_mode(mode),
+            )
+            .unwrap()
+        };
+        let edit = |r: &Repo| r.write("a.txt", "one\ntwo\nTHREE\nfour\nfive\n");
+        let changed = compare_after(edit, |r| chmod(r, 0o755));
+        assert_eq!(changed["verdict"], "changed", "{changed}");
+        assert!(
+            changed["differences"][0]["head_header"]
+                .to_string()
+                .contains("new mode 100755")
+        );
+        // A mode change alone, with no hunk at all, is still seen.
+        let only_mode = compare_after(|r| chmod(r, 0o755), |_| {});
+        assert_eq!(only_mode["verdict"], "same change", "{only_mode}");
+        let undone = compare_after(|r| chmod(r, 0o755), |r| chmod(r, 0o644));
+        assert_eq!(
+            undone["verdict"], "changed",
+            "the head undoes the mode change: {undone}"
+        );
+        assert_eq!(undone["differences"][0]["only_in"], "verified");
+    }
+
+    #[test]
+    fn a_pure_rename_is_a_change() {
+        let rename = |r: &Repo| {
+            r.git(&["mv", "a.txt", "renamed.txt"]);
+        };
+        let same = compare_after(rename, |_| {});
+        assert_eq!(same["verdict"], "same change", "{same}");
+        let other = compare_after(rename, |r| {
+            r.git(&["mv", "renamed.txt", "other.txt"]);
+        });
+        assert_eq!(other["verdict"], "changed", "{other}");
+    }
+
+    #[test]
+    fn lines_like_headers_inside_a_hunk_are_lines() {
+        let diff = |removed: &str, added: &str| {
+            format!(
+                "diff --git a/x.sql b/x.sql\nindex 1..2 100644\n--- a/x.sql\n+++ b/x.sql\n\
+                 @@ -1,2 +1,2 @@\n a\n--- {removed}\n+++ {added}\n"
+            )
+        };
+        // A removed SQL comment `-- one` is the diff line `--- one`; an added `++ two` is `+++ two`.
+        let parsed = changes_by_file(&diff("one", "two"));
+        assert_eq!(
+            parsed.keys().collect::<Vec<_>>(),
+            ["x.sql"],
+            "no bogus file"
+        );
+        assert_eq!(parsed["x.sql"].hunks, [["--- one", "+++ two"]]);
+        let differing = differences(&diff("one", "two"), &diff("ONE", "two"));
+        assert_eq!(
+            differing.len(),
+            1,
+            "a differing removed `-- ` line is a difference"
+        );
+        assert_eq!(differing[0]["verified_hunk"][0], "--- one");
+        assert!(differences(&diff("one", "two"), &diff("one", "two")).is_empty());
+    }
+
+    #[test]
+    fn a_path_is_read_from_the_diff_git_line() {
+        assert_eq!(git_path("a/x b/x"), "x");
+        assert_eq!(git_path("a/has b/in it b/has b/in it"), "has b/in it");
+        assert_eq!(git_path("a/old b/new"), "new");
+    }
+
+    #[test]
+    fn the_output_says_what_same_cant_see() {
+        let out = compare_after(
+            |r| r.write("a.txt", "one\ntwo\nTHREE\nfour\nfive\n"),
+            |_| {},
+        );
+        assert!(out["caveat"].as_str().unwrap().contains("moved"), "{out}");
     }
 }

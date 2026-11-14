@@ -1174,7 +1174,7 @@ pub fn compare_files(repo: &str, base: &str, head: &str) -> Result<Value, String
         &format!("repos/{repo}/compare/{base}...{head}"),
         "--jq",
         "{truncated: ((.total_commits > (.commits | length)) or ((.files | length) >= 300)), \
-         files: [.files[] | {filename, patch}]}",
+         files: [.files[] | {filename, patch, status, previous_filename}]}",
     ])?;
     serde_json::from_str(out.trim()).map_err(|_| "gh returned a compare that can't be read".into())
 }
