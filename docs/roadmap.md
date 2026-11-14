@@ -1395,3 +1395,8 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   seconds for at most `--ci-wait` seconds (8 by default, 0 reads once, at most 60), giving a run as soon as one
   appears and never waiting on a failed read; with none, it says "not started yet; the digest's RAL-102 section
   checks it" (state `not_started`), observed and recorded nowhere; with tests.
+- [ ] **RAL-176: `rally rebased` remerges with the attributes the merge was made with, and says so.** From the
+  watchman's run (2026-11-14): its checkout, on an old branch without `.gitattributes`, remerged a union-merged
+  roadmap with the default driver and named it a conflict resolved, where a checkout with the attributes named
+  none. Done when: each merge is remerged with its first parent's `.gitattributes` (`--attr-source`), the output
+  says which attributes it used, and a test checks a checkout without the attributes gets the head's answer.

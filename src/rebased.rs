@@ -182,6 +182,11 @@ pub fn differences(verified: &str, head: &str) -> Vec<Value> {
     out
 }
 
+/// Which attributes a remerge used (RAL-176), said with every local answer.
+pub const REMERGE_ATTRIBUTES: &str = "each merge is remerged with the .gitattributes of its first \
+     parent, the side it was made on, not this checkout's; this machine's own attributes \
+     ($GIT_DIR/info/attributes, core.attributesFile) still apply";
+
 /// Said with every comparison made: what "same change" can't see.
 pub const CAVEAT: &str = "compared hunk by hunk, in order, without line numbers: a hunk that moved \
                           to another place in its file, unchanged, reads as the same change";
@@ -274,9 +279,20 @@ pub fn local(dir: &Path, verified: &str, head: &str, main: &str) -> Result<Value
     )?;
     let mut resolved = Vec::new();
     for merge in merges.lines().filter(|l| !l.is_empty()) {
+        // With the attributes the merge was made with, its first parent's (the head's side, where
+        // the team ran `git merge`), not whatever this checkout has: a union-merged file is no
+        // conflict, wherever it's checked (RAL-176).
+        let attributes = format!("--attr-source={merge}^1");
         let remerge = git(
             dir,
-            &["show", "--remerge-diff", "--format=", "--no-color", merge],
+            &[
+                &attributes,
+                "show",
+                "--remerge-diff",
+                "--format=",
+                "--no-color",
+                merge,
+            ],
         )?;
         let files: Vec<String> = remerge
             .lines()
@@ -296,6 +312,7 @@ pub fn local(dir: &Path, verified: &str, head: &str, main: &str) -> Result<Value
         "caveat": CAVEAT,
         "differences": differing,
         "conflict_resolutions": resolved,
+        "remerge_attributes": REMERGE_ATTRIBUTES,
     }))
 }
 
@@ -811,5 +828,41 @@ mod tests {
                 .unwrap_err()
                 .contains("no part 9")
         );
+    }
+
+    /// RAL-176, from the watchman's run on 2026-11-14: a checkout on an old branch without the
+    /// head's `.gitattributes` remerged a union-merged roadmap with the default driver, and named
+    /// it as a conflict resolved. The remerge now uses the merge's own side's attributes.
+    #[test]
+    fn a_remerge_uses_the_heads_attributes_not_the_checkouts() {
+        let r = Repo::new();
+        let old = main(&r);
+        r.write("roadmap.md", "# Roadmap\n- one\n");
+        r.write(".gitattributes", "roadmap.md merge=union\n");
+        r.commit("the union driver");
+        r.git(&["checkout", "-q", "-b", "story"]);
+        r.write("roadmap.md", "# Roadmap\n- one\n- story\n");
+        r.write("a.txt", "one\ntwo\nTHREE\nfour\nfive\n");
+        let verified = r.commit("RAL-1: the change");
+        r.git(&["checkout", "-q", "main"]);
+        r.write("roadmap.md", "# Roadmap\n- one\n- main\n");
+        r.commit("main appends too");
+        r.git(&["checkout", "-q", "story"]);
+        r.git(&["merge", "-q", "--no-edit", "main"]);
+        let head = r.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        // The checkout sits on a commit with no .gitattributes, as the watchman's did.
+        r.git(&["checkout", "-q", &old]);
+        assert!(!r.path().join(".gitattributes").exists());
+        let out = local(r.path(), &verified, &head, &main(&r)).unwrap();
+        assert_eq!(out["conflict_resolutions"], json!([]), "{out}");
+        assert!(
+            out["remerge_attributes"]
+                .as_str()
+                .unwrap()
+                .contains("first parent")
+        );
+        // The same remerge with the checkout's attributes (none) shows the conflict: what it was.
+        let plain = git(r.path(), &["show", "--remerge-diff", "--format=", &head]).unwrap();
+        assert!(plain.contains("remerge CONFLICT"), "{plain}");
     }
 }

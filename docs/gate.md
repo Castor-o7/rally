@@ -108,7 +108,9 @@ rally rebased RAL-163 --part 2 --head <full sha>              # a story in parts
   already merged). It never says `same change` then.
 - **Conflict resolutions, said separately:** every merge the head made since the verified commit (on its
   first-parent line, so not the merges main brought with it) is remerged (`git show --remerge-diff`), and any that differs from the merge git would have made, a
-  conflict resolved or a change made in the merge itself, is named with its files. Nobody read that
+  conflict resolved or a change made in the merge itself, is named with its files. Each merge is
+  remerged with the `.gitattributes` of its first parent, the side it was made on, not the checkout's,
+  so a union-merged roadmap isn't named wherever it's checked (RAL-176, `remerge_attributes`). Nobody read that
   change, whatever the verdict.
 - **Local git first:** if the checkout has the verified commit, the head and main's tip (`git fetch`
   first). Otherwise GitHub's compares, saying why local git wasn't used; GitHub has no remerge diff,
