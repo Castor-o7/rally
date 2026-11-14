@@ -94,18 +94,22 @@ rally rebased RAL-170 --head <full sha> --checkout ~/src/rally-wt/x --base main
   `diff --git` line, and its header (up to its first `@@`) gives the facts compared too: a mode
   changed, a rename, a file added or deleted, and a binary file's blob ids, so a binary file, a
   mode change or a pure rename is never invisible. Inside a hunk, a line starting `--- ` or `+++ `
-  is a removed `-- ` or added `++ ` line, not a header.
+  is a removed `-- ` or added `++ ` line, not a header. A `\ No newline at end of file` after a
+  changed line is part of the change, so a head that differs only by a final newline isn't the
+  same (RAL-172).
 - **What it can't see, said in every answer (`caveat`):** hunks are compared in order without
   line numbers, so a hunk moved, unchanged, to another place in its file reads as the same change.
 - **The verdict:** `same change` only when every file's changed lines are identical. Otherwise
-  `changed`, with each file that differs and its first differing hunk as it is in each. `can't tell`
+  `changed`, with each file that differs and its first differing hunk as it is in each, shown from
+  the first changed line where they part (`from_changed_line`), since a new file is one long hunk. `can't tell`
   when it can't be compared: a commit missing, GitHub's compare cut short (over 250 commits or 300
   files), a file whose patch GitHub won't show, or a verified commit with no change against main (one
   already merged). It never says `same change` then.
-- **Conflict resolutions, said separately:** every merge into the head since the verified commit is
-  remerged (`git show --remerge-diff`), and any that differs from the merge git would have made, a
+- **Conflict resolutions, said separately:** every merge the head made since the verified commit (on its
+  first-parent line, so not the merges main brought with it) is remerged (`git show --remerge-diff`), and any that differs from the merge git would have made, a
   conflict resolved or a change made in the merge itself, is named with its files. Nobody read that
   change, whatever the verdict.
 - **Local git first:** if the checkout has the verified commit, the head and main's tip (`git fetch`
   first). Otherwise GitHub's compares, saying why local git wasn't used; GitHub has no remerge diff,
-  so the conflict resolutions are then `null` and said to be unknown.
+  so the conflict resolutions are then `null` and said to be unknown, and GitHub's compare shows no
+  file modes, so `modes_note` says a mode change can't be seen there (RAL-172).

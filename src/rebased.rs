@@ -62,6 +62,7 @@ pub fn changes_by_file(diff: &str) -> BTreeMap<String, FileChange> {
     let mut file: Option<String> = None;
     let mut in_header = false;
     let mut index_line: Option<String> = None;
+    let mut last_changed = false;
     for line in diff.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
             let name = git_path(rest);
@@ -97,11 +98,19 @@ pub fn changes_by_file(diff: &str) -> BTreeMap<String, FileChange> {
                 // from/to: facts of the change itself.
                 change.header.push(line.to_owned());
             }
-        } else if (line.starts_with('+') || line.starts_with('-'))
-            && let Some(hunk) = change.hunks.last_mut()
-        {
-            hunk.push(line.to_owned());
+        } else if let Some(hunk) = change.hunks.last_mut() {
+            if line.starts_with('+') || line.starts_with('-') {
+                hunk.push(line.to_owned());
+                last_changed = true;
+                continue;
+            }
+            // `\ No newline at end of file` marks the line before it. After a changed line it's
+            // part of the change: a head that differs only by a final newline isn't the same.
+            if line.starts_with('\\') && last_changed {
+                hunk.push(line.to_owned());
+            }
         }
+        last_changed = false;
     }
     // A hunk of context alone changes nothing.
     for change in out.values_mut() {
@@ -142,15 +151,32 @@ pub fn differences(verified: &str, head: &str) -> Vec<Value> {
         let at = (0..x.hunks.len().max(y.hunks.len()))
             .find(|i| x.hunks.get(*i) != y.hunks.get(*i))
             .unwrap_or(0);
+        // Shown from the hunk's first changed line that differs, so a long hunk (a new file is
+        // one) shows where the two part, not its start.
+        let (xh, yh) = (x.hunks.get(at), y.hunks.get(at));
+        let from = match (xh, yh) {
+            (Some(a), Some(b)) => (0..a.len().max(b.len()))
+                .find(|i| a.get(*i) != b.get(*i))
+                .unwrap_or(0),
+            _ => 0,
+        };
         let shown = |h: Option<&Vec<String>>| {
-            h.map(|lines| lines.iter().take(12).cloned().collect::<Vec<_>>())
+            h.map(|lines| {
+                lines
+                    .iter()
+                    .skip(from)
+                    .take(12)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
         };
         out.push(json!({
             "file": name,
             "only_in": only_in,
             "hunk": at + 1,
-            "verified_hunk": shown(x.hunks.get(at)),
-            "head_hunk": shown(y.hunks.get(at)),
+            "from_changed_line": from + 1,
+            "verified_hunk": shown(xh),
+            "head_hunk": shown(yh),
         }));
     }
     out
@@ -234,10 +260,17 @@ pub fn local(dir: &Path, verified: &str, head: &str, main: &str) -> Result<Value
     let (vdiff, hdiff) = (diff(&vbase, verified)?, diff(&hbase, head)?);
     let (verdict, differing, why) = judge(&vdiff, &hdiff);
     // Each merge brought into the head since the verified commit, and what its remerge diff shows:
-    // a conflict resolved, or a change made in the merge itself.
+    // a conflict resolved, or a change made in the merge itself. Only the head's own merges, on its
+    // first-parent line: main's history brings other branches' merges with it, and a conflict
+    // another team resolved in one was read when that team's work was (RAL-172).
     let merges = git(
         dir,
-        &["rev-list", "--merges", &format!("{verified}..{head}")],
+        &[
+            "rev-list",
+            "--merges",
+            "--first-parent",
+            &format!("{verified}..{head}"),
+        ],
     )?;
     let mut resolved = Vec::new();
     for merge in merges.lines().filter(|l| !l.is_empty()) {
@@ -308,6 +341,9 @@ pub fn from_github(verified: &Value, head: &Value) -> Value {
                 "conflict_note": "GitHub has no remerge diff, so whether a merge of main into the \
                                   head resolved a conflict can't be told from here: run it in a \
                                   checkout that has both commits",
+                "modes_note": "GitHub's compare doesn't show file modes, so a mode change, made \
+                               or undone, can't be seen from here: run it in a checkout that has \
+                               both commits",
             })
         }
         _ => json!({
@@ -472,6 +508,7 @@ mod tests {
                 .unwrap()
                 .contains("can't be told")
         );
+        assert!(same["modes_note"].as_str().unwrap().contains("file modes"));
         // A verified commit already in main changes nothing against it: never "same".
         let r = Repo::new();
         let tip = main(&r);
@@ -611,6 +648,21 @@ mod tests {
             "a differing removed `-- ` line is a difference"
         );
         assert_eq!(differing[0]["verified_hunk"][0], "--- one");
+        assert_eq!(differing[0]["from_changed_line"], 1);
+        // A long hunk is shown from where the two part.
+        let long = |last: &str| {
+            let mut d = "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1,30 @@\n"
+                .to_owned();
+            for i in 0..29 {
+                d.push_str(&format!("+line {i}\n"));
+            }
+            d.push_str(&format!("+{last}\n"));
+            d
+        };
+        let parted = differences(&long("end"), &long("END"));
+        assert_eq!(parted[0]["from_changed_line"], 30);
+        assert_eq!(parted[0]["verified_hunk"], json!(["+end"]));
+        assert_eq!(parted[0]["head_hunk"], json!(["+END"]));
         assert!(differences(&diff("one", "two"), &diff("one", "two")).is_empty());
     }
 
@@ -628,5 +680,59 @@ mod tests {
             |_| {},
         );
         assert!(out["caveat"].as_str().unwrap().contains("moved"), "{out}");
+    }
+
+    #[test]
+    fn a_final_newline_is_part_of_the_change() {
+        let edit = |r: &Repo| r.write("a.txt", "one\ntwo\nthree\nfour\nFIVE\n");
+        let same = compare_after(edit, |_| {});
+        assert_eq!(same["verdict"], "same change", "{same}");
+        let no_newline = compare_after(edit, |r| r.write("a.txt", "one\ntwo\nthree\nfour\nFIVE"));
+        assert_eq!(no_newline["verdict"], "changed", "{no_newline}");
+        assert!(
+            no_newline["differences"][0]["head_hunk"]
+                .to_string()
+                .contains("No newline at end of file"),
+            "{no_newline}"
+        );
+        // The marker after an unchanged line of context isn't a change.
+        let diff = |end: &str| {
+            format!(
+                "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+A\n {end}\n\
+                 \\ No newline at end of file\n"
+            )
+        };
+        assert_eq!(changes_by_file(&diff("b"))["x"].hunks, [["-a", "+A"]]);
+    }
+
+    /// RAL-172, from replaying RAL-163's re-based head: a conflict another branch resolved inside
+    /// main's history isn't the head's. Only the head's own merges are named.
+    #[test]
+    fn a_conflict_resolved_inside_mains_history_isnt_the_heads() {
+        let (r, verified) = setup();
+        // Another team's branch conflicts with main and resolves it, then lands in main.
+        r.git(&["checkout", "-q", "-b", "other", "main"]);
+        r.write("b.txt", "alpha\nBETA\ngamma\n");
+        r.commit("other team");
+        r.git(&["checkout", "-q", "main"]);
+        r.write("b.txt", "alpha\nbeta!\ngamma\n");
+        r.commit("main moves again");
+        r.git(&["checkout", "-q", "other"]);
+        assert!(
+            git(r.path(), &["merge", "-q", "--no-edit", "main"]).is_err(),
+            "it conflicts"
+        );
+        r.write("b.txt", "alpha\nBETA!\ngamma\n");
+        r.git(&["add", "-A"]);
+        r.git(&["commit", "-q", "--no-edit"]);
+        r.git(&["checkout", "-q", "main"]);
+        r.git(&["merge", "-q", "--no-ff", "--no-edit", "other"]);
+        // The story merges main in cleanly.
+        r.git(&["checkout", "-q", "story"]);
+        r.git(&["merge", "-q", "--no-edit", "main"]);
+        let head = r.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        let out = local(r.path(), &verified, &head, &main(&r)).unwrap();
+        assert_eq!(out["verdict"], "same change", "{out}");
+        assert_eq!(out["conflict_resolutions"], json!([]), "{out}");
     }
 }
