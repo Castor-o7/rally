@@ -1524,7 +1524,7 @@ mod tests {
             "a" | "b" => Verdict::Green {
                 tip: tip.clone(),
                 on_main: true,
-                summary: "QUICK OK, 3 scenes, 0 failed".into(),
+                summary: "QUICK OK, 112 suites and scenes, 0 failed".into(),
             },
             "c" => Verdict::Running {
                 tip: "2".repeat(40),
@@ -1560,7 +1560,7 @@ mod tests {
             [
                 "- DSM-1, DSM-2: landed in 1111111: gated locally, green at 1111111 [observed: \
                  ~/.local/state/dsm-gates/1111111111111111111111111111111111111111.log names \
-                 1111111 (QUICK OK, 3 scenes, 0 failed), its .ok is there, and git shows 1111111 \
+                 1111111 (QUICK OK, 112 suites and scenes, 0 failed), its .ok is there, and git shows 1111111 \
                  on origin/main in ~/Documents/GitHub/Discoteque and holding each]",
                 "- DSM-3: gate running at 2222222 for 50 min [observed: \
                  ~/.local/state/dsm-gates/2222222222222222222222222222222222222222.log, no .ok \

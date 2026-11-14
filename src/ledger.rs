@@ -3867,7 +3867,7 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
                 }
                 if log.scenes.len() > crate::gate_log::MAX_SCENES {
                     return Err(LedgerError::InvalidChange(format!(
-                        "a gate log records at most {} scenes",
+                        "a gate log records at most {} suites and scenes",
                         crate::gate_log::MAX_SCENES
                     )));
                 }

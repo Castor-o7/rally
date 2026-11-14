@@ -1430,6 +1430,9 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   run alongside; observed only, never changing the result; the browser tests carry those lines to their own
   standard error, so ci-local's log has them; with tests for a segfault retried, a second failing, and a teardown
   crash with a stand-in coredumpctl.
+- [ ] **RAL-184: The digest's gate line counts "suites and scenes".** From the watchman's read of RAL-181: with every
+  suite recorded, RAL-180's green line said "112 scenes" of what are mostly the QUICK phase's suites. Done when: the
+  line, and the parser's and service's bound messages, say "suites and scenes"; with the tests updated.
 - [ ] **RAL-182: The state-bar redraw test waits on what it reads, not on fixed times.** From the watchman
   (2026-11-14): `a_redraw_moves_the_state_bar_with_the_counts` failed once under full-suite load for jaunty-harrier
   (at `in_browser`'s check that the script ended well; its output wasn't kept, and no Chrome core was dumped

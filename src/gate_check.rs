@@ -168,7 +168,7 @@ fn green(log: &GateLog, tip: &str) -> Result<String, String> {
     }
     match log.failures() {
         (0, 0) => Ok(format!(
-            "{}{} scenes, 0 failed",
+            "{}{} suites and scenes, 0 failed",
             log.quick
                 .as_deref()
                 .map(|q| format!("{q}, "))
@@ -398,7 +398,7 @@ mod tests {
             Verdict::Green {
                 tip: tip.clone(),
                 on_main: true,
-                summary: "QUICK OK, 1 scenes, 0 failed".into()
+                summary: "QUICK OK, 1 suites and scenes, 0 failed".into()
             }
         );
     }

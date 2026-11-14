@@ -130,7 +130,9 @@ pub fn parse(text: &str, path: &str, sha256: &str, bytes: u64) -> Result<GateLog
             scenes.retain(|s| s.passed.is_some());
         } else if let Some(scene) = suite_header(line) {
             if scenes.len() >= MAX_SCENES {
-                return Err(format!("the log has more than {MAX_SCENES} scenes"));
+                return Err(format!(
+                    "the log has more than {MAX_SCENES} suites and scenes"
+                ));
             }
             scenes.push(Scene {
                 scene: scene.chars().take(120).collect(),
