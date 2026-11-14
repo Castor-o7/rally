@@ -4764,7 +4764,8 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     let pairing = read_pairing(&config_path(cli.config.clone())?)?;
                     let reply =
                         client::request(&pairing, "GET", "/v1/brief?watchman=true", None, &[])?;
-                    reply_value(&reply)?
+                    // An older service ignores the query: say so (RAL-166).
+                    rally::watchman_brief::from_service(reply_value(&reply)?)?
                 };
                 return Ok(report.to_string());
             }

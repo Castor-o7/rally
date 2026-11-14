@@ -121,8 +121,10 @@ pub struct Reply {
 
 /// The story that added each of the service's routes, by its path with `{…}` for a part that
 /// varies, so a reply that the route doesn't exist can say the service is older than that story
-/// (RAL-156). `None` for the routes every service has had. `tests/routes.rs` checks every route
-/// the service serves is here.
+/// (RAL-156). `None` for the routes every service has had. A test checks every route the service
+/// serves is here. A feature added as a query on an existing route, such as the watchman's brief
+/// (`/v1/brief?watchman=true`, RAL-157), can't be told from a 404, since an older service ignores
+/// the query: its reader checks the answer's shape instead (RAL-166).
 pub const ROUTE_STORIES: &[(&str, Option<&str>)] = &[
     ("/v1/records", None),
     ("/v1/stories", None),
