@@ -356,10 +356,56 @@ pub fn from_github(verified: &Value, head: &Value) -> Value {
 
 /// The verified commit of a story, from `rally show <STORY>`'s detail, and the repository it's
 /// in, from the submission whose evidence names that commit (or the latest one, if none does).
-pub fn verified_of(detail: &Value) -> Result<(String, String), String> {
+/// With `part`, a story in parts (docs/parts.md): that part's verified commit and the repository
+/// its evidence names, since until its close a story in parts has no verified commit of its own
+/// (RAL-173).
+pub fn verified_of(detail: &Value, part: Option<u32>) -> Result<(String, String), String> {
+    if let Some(k) = part {
+        let entry = &detail["part_list"][k.to_string()];
+        if entry.is_null() {
+            return Err(format!("the story has no part {k}"));
+        }
+        let Some(verified) = entry["verified_commit"].as_str() else {
+            return Err(format!(
+                "part {k} has no verified commit (it's {}): there's nothing to compare a head with",
+                entry["state"].as_str().unwrap_or("unknown")
+            ));
+        };
+        let repo = entry["evidence"]
+            .as_str()
+            .and_then(|e| crate::evidence::parse(e).ok())
+            .map(|(repo, _)| repo)
+            .ok_or(format!("part {k}'s evidence doesn't name a repository"))?;
+        return Ok((repo, verified.to_owned()));
+    }
     let Some(verified) = detail["verified_commit"].as_str() else {
+        let verified_parts: Vec<&String> = detail["part_list"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(_, p)| p["verified_commit"].is_string())
+            .map(|(k, _)| k)
+            .collect();
+        let hint = if verified_parts.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; it's in parts, and part {} {} verified: name one with --part",
+                verified_parts
+                    .iter()
+                    .map(|k| k.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if verified_parts.len() == 1 {
+                    "is"
+                } else {
+                    "are"
+                }
+            )
+        };
         return Err(format!(
-            "the story has no verified commit (it's {}): there's nothing to compare a head with",
+            "the story has no verified commit (it's {}): there's nothing to compare a head \
+             with{hint}",
             detail["state"].as_str().unwrap_or("unknown")
         ));
     };
@@ -519,7 +565,7 @@ mod tests {
         // A story never verified has nothing to compare with.
         let unverified = json!({"state": "submitted", "history": []});
         assert!(
-            verified_of(&unverified)
+            verified_of(&unverified, None)
                 .unwrap_err()
                 .contains("no verified commit")
         );
@@ -532,7 +578,7 @@ mod tests {
             {"change": {"change": "submit", "evidence": format!("o/old@{v}")}},
             {"change": {"change": "submit", "evidence": format!("o/later@{}", "b".repeat(40))}},
         ]});
-        assert_eq!(verified_of(&detail).unwrap(), ("o/old".to_owned(), v));
+        assert_eq!(verified_of(&detail, None).unwrap(), ("o/old".to_owned(), v));
     }
 
     #[test]
@@ -734,5 +780,36 @@ mod tests {
         let out = local(r.path(), &verified, &head, &main(&r)).unwrap();
         assert_eq!(out["verdict"], "same change", "{out}");
         assert_eq!(out["conflict_resolutions"], json!([]), "{out}");
+    }
+
+    /// RAL-173: a story in parts, before its close, is compared by a part's verified commit, as
+    /// RAL-163's part 2 (f8c61e2) needed on 2026-11-14. Without --part it says which parts are.
+    #[test]
+    fn a_part_is_compared_by_its_own_verified_commit() {
+        let (p1, p2) = ("4".repeat(40), "f".repeat(40));
+        let detail = json!({"state": "claimed", "parts": "2/3 verified", "history": [], "part_list": {
+            "1": {"evidence": format!("Castor-o7/rally@{p1}"), "state": "verified", "verified_commit": p1},
+            "2": {"evidence": format!("Castor-o7/rally@{p2}"), "state": "verified", "verified_commit": p2},
+            "3": {"evidence": format!("Castor-o7/rally@{}", "a".repeat(40)), "state": "submitted"},
+        }});
+        assert_eq!(
+            verified_of(&detail, Some(2)).unwrap(),
+            ("Castor-o7/rally".to_owned(), p2)
+        );
+        let whole = verified_of(&detail, None).unwrap_err();
+        assert!(
+            whole.contains("part 1, 2 are verified: name one with --part"),
+            "{whole}"
+        );
+        assert!(
+            verified_of(&detail, Some(3))
+                .unwrap_err()
+                .contains("part 3 has no verified commit")
+        );
+        assert!(
+            verified_of(&detail, Some(9))
+                .unwrap_err()
+                .contains("no part 9")
+        );
     }
 }
