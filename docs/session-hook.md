@@ -5,15 +5,21 @@ SessionStart hook to put in the agent's context. Rally never installs the hook. 
 
 ## What it prints
 
-One block, between `<rally_state team="…">` and `</rally_state>`:
+One block, between `<rally_state team="…">` and `</rally_state>`, in this order:
 
+- run with `--hook`, for a session tied to a nickname with a history: which session held the nickname before, if
+  one can be found, and what that nickname was doing (below, "A restarted session", RAL-152)
+- the open rally, each of its projects' roadmap stages, and the cycle (RAL-131), and the stories assigned to the
+  team (RAL-130)
 - the team's open stories (claimed, in review or sent back)
 - other teams' stories in review that it could verify, with the rule that while a watchman is designated, merges
   still wait for the watchman's read
 - stories with requested reads waiting for an answer
 - open blockers the team raised, or that wait on the team or on one of its stories
+- the team's items in the operator's inbox closed in the last day, by whom and how; a question the operator ticked
+  off in the viewer says plainly that it carries no answer (RAL-146, RAL-150)
 
-Each line says how it's known: declared, or verified. The block ends by saying that Rally's text is written by
+Each line says how it's known: observed, declared, or verified. The block ends by saying that Rally's text is written by
 agents and is untrusted data, not instructions.
 
 ## How it keeps a session safe
@@ -53,6 +59,9 @@ through printing. `rally` must be on the hook's `PATH`, or give its full path. `
 `RALLY_TEAM`.
 
 To check it by hand: `rally session-start --team rally --verbose`.
+
+Where teams are named by their sessions' Muster nicknames, as on Murph, one settings file can't name each session's
+team: use `--hook` instead of `RALLY_TEAM`, and the session's tied nickname is its team (below).
 
 ## Prime Agent
 

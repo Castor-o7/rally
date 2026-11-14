@@ -33,7 +33,7 @@ Records that end the rollback window, because a binary older than the one named 
 | `event` | `a70e313` | RAL-104 |
 | `claim` of a cleared roadmap story `<PREFIX>-0`, to revise it (first written at record 1981) | `fada36c` | RAL-129 |
 | `assign` (first written at record 1970) | `fada36c` | RAL-130 |
-| `rally-project` | not yet deployed | RAL-135 |
+| `rally-project` (first written at record 2183) | `aaabbe2` | RAL-135 |
 | `inbox add` or `inbox done` (an `operator_item` or `close_item`), or Rally filing its own token item | not yet deployed | RAL-146 |
 
 Before rolling back to a binary older than the story that added one, check that none has been written.
@@ -47,9 +47,9 @@ Only the operator or the watchman opens or closes a rally. The service enforces 
 rally serve ... --rally-openers watchman
 ```
 
-With it set, `open-rally`, `close-rally` and `rally-session` (RAL-110) are accepted only from a listed credential, or from the credential a
-watchman in force is bound to by a signed designation (RAL-53, under `--secure`); any other gets a 403 naming the
-rule. The declared name doesn't count, only the connection's credential. A list naming no credential is refused at
+With it set, `open-rally`, `close-rally`, `rally-session` (RAL-110), `rally-project` (RAL-135) and `assign`
+(RAL-130) are accepted only from a listed credential, or from the credential a watchman in force is bound to by a
+signed designation (RAL-53, under `--secure`); any other gets a 403 naming the rule. The declared name doesn't count, only the connection's credential. A list naming no credential is refused at
 start, and a listed credential that isn't paired is reported on standard error. Writes straight to the database
 with `--db`, on the host, aren't checked, as no `--db` write is.
 
@@ -67,8 +67,7 @@ would need an operator-signed record, as `designate` is, which isn't built.
 A watchman's scope (RAL-63) doesn't narrow this: a watchman designated for one team or one machine's submissions,
 bound to a credential, can still open or close a rally for everyone, since a rally isn't any one team's.
 
-A backfill (RAL-30) applies the entry inside it, so a backfilled `open-rally` or `close-rally` is held to the same
-rule.
+A backfill (RAL-30) applies the entry inside it, so a backfilled one of these is held to the same rule.
 
 Rolling back past RAL-77 drops the check, so any credential can open a rally again; nothing it records needs a
 newer binary to read.
@@ -181,6 +180,15 @@ stops a token working straight away. Don't expose the port to the open internet.
   version of a record, and any row whose columns say something other than its event, which myko would load by
   the event alone. That catches mistakes: whoever owns the database can lift it. `rally check` reads by the
   event too, and reports any row whose columns don't match, and a service won't start over one.
+
+## What the service files and reads on its own
+
+- **Evidence checks** (RAL-5): after each submit, the service reads GitHub with a read-only token and records
+  what it found, observed. See [evidence.md](evidence.md), which also says how its tests point it at a stand-in
+  GitHub, and why a deployed build can't be (RAL-153).
+- **The operator's inbox** (RAL-146): when GitHub refuses the service's token (a 401), or says it expires within 7
+  days, the service opens one urgent item in the operator's inbox itself, observed, and closes it when that has
+  passed. `/v1/inbox` and `/v1/inbox/all` read the inbox. See [inbox.md](inbox.md).
 
 ## Recorded text is untrusted
 
@@ -441,7 +449,7 @@ commit. Backfill entries in the order they were made.
   `show --as-of 60000`, it held 314 to 318 MiB; before they ran one at a time, 1,058 to 1,118 MiB. Both were
   measured with the per-credential limit on checks and past states lifted, so they show the one-at-a-time
   limit alone.
-  The limit stays at 64 MiB until the rest of RAL-35 is done: the host shares its memory with Muster's daemon.
+  The limit stays at 64 MiB: the host shares its memory with Muster's daemon.
 - A damaged `machines.json` logs a line for each request, before any rate limit, until it's fixed.
 - If `cert.pem` or `key.pem` goes missing, the service refuses to start rather than making a new
   certificate, which would break every machine's pin. Restore it, or remove both and pair every machine

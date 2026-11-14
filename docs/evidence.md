@@ -75,10 +75,22 @@ other by the designation in force when it was written.
 The check runs in the background after a submit, on a fixed pool of two workers, so a slow GitHub never adds
 threads. CI is usually still running at submission, so a pending check is tried again every `--evidence-poll`
 (1 minute) until it's final, for at most `--evidence-ci-wait` (30 minutes) from the submission. Then it's
-recorded as still pending, saying the wait ran out. There's one record per submission. A read of GitHub that fails, from a network error, a 5xx or a rate limit, is
-treated like CI still running: tried again until the wait runs out, then recorded with what failed. When a
-commit's message doesn't name the story and its pull requests can't be read, `names_story` is recorded as unknown,
-not false. After a restart, every submission without a check is queued again (RAL-149): each still in review, and each submitted since the ledger's first check whatever its story's state now (verified, sent back, merged), since a stop can come between a submit and its check while the story moves on before the start. A submission an amendment replaced isn't checked; its amendment is. Each such check's reason starts with the fixed phrase "checked late, after a service restart", then the story's or part's state by then, so a search finds every one. The ledger takes one check per submission, so nothing is checked twice.
+recorded as still pending, saying the wait ran out. There's one record per submission.
+
+A read of GitHub that fails, from a network error, a 5xx or a rate limit, is treated like CI still running: tried
+again until the wait runs out, then recorded with what failed. When GitHub refuses the token itself (a 401), the
+service also opens one urgent item in the operator's inbox, and closes it once a read passes; a token GitHub says
+expires within 7 days opens one too (RAL-146, [inbox.md](inbox.md)). The check-runs 403 a fine-grained token gets
+on a private repository isn't a failed read: it's recorded at once from the commit's statuses (RAL-147, above).
+When a commit's message doesn't name the story and its pull requests can't be read, `names_story` is recorded as
+unknown, not false.
+
+After a restart, every submission without a check is queued again (RAL-149): each still in review, and each
+submitted since the ledger's first check whatever its story's state now (verified, sent back, merged), since a stop
+can come between a submit and its check while the story moves on before the start. A submission an amendment
+replaced isn't checked; its amendment is. Each such check's reason starts with the fixed phrase "checked late,
+after a service restart", then the story's or part's state by then, so a search finds every one. The ledger takes
+one check per submission, so nothing is checked twice.
 
 **What a submission costs.** Any submitter can make the service ask GitHub about any public `owner/repo`: up to
 about four calls a minute, for up to 30 minutes, per submission. A token's 5,000 calls an hour covers that, given
@@ -87,7 +99,7 @@ each credential's write limit on submissions, but it's a cost a submitter contro
 ## Least privilege (RAL-18)
 
 - The service only sends GETs to `api.github.com`, for a commit, the pull requests containing it, its check runs
-  and its status. The host is fixed in the code. No redirect is followed, so the token can't be carried
+  and its status, the repository itself after a 404 (RAL-128), and open pull requests' roadmaps (RAL-68, below). The host is fixed in the code. No redirect is followed, so the token can't be carried
   elsewhere, and a test shows it.
 - It never checks out, builds or runs submitted code. Two tests show it: a whole check against a stand-in
   GitHub sends exactly four requests, each a GET with no body, of the commit, its pull requests, its check runs
