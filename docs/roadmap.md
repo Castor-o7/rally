@@ -1208,3 +1208,10 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   path"), nothing missing (what `--rally-openers` guards, the service's own inbox items, the session-start block's
   sections), and nothing said twice; docs only; and every place where the code, not the docs, looks wrong is
   listed for the watchman rather than written around.
+- [ ] **RAL-156: Rally says what it is.** From the watchman (2026-11-13), after RAL-155's read of the docs found that
+  nothing said which commit was live, and that the CLI met an older service with a bare "refused (404): no such
+  route". Done when: `rally --version`, the service's start line and `/v1/whoami` carry the build's commit (or say
+  there's none); a CLI read meeting a route the service lacks says "the service is older than <story>", from a table
+  of the story that added each route that a test holds to the routes the service serves; and `rally init`'s block
+  tells agents about `rally inbox add`, when to raise an item and when not (not for what the watchman or the team
+  can do itself).

@@ -26,7 +26,7 @@ use rally::web::{
 
 /// A ledger of progress for a muster of agents.
 #[derive(Parser)]
-#[command(version)]
+#[command(version = rally::version())]
 struct Cli {
     /// Work directly on the ledger in this Postgres database, such as
     /// postgres://rally@127.0.0.1/rally, rather than through the service. Needs --head-file.
@@ -2988,7 +2988,7 @@ fn view_command(
     }
     let bind = settings.bind().to_owned();
     let exe = std::env::current_exe()?;
-    let build = view::build_id(env!("RALLY_COMMIT"), &exe)?;
+    let build = view::build_id(rally::COMMIT, &exe)?;
     let running: Option<view::Running> =
         view::read_json(&run_path)?.filter(|r: &view::Running| view::alive(r.pid));
     let ours = running.as_ref().map(|r| r.pid);
@@ -3232,6 +3232,8 @@ fn run_service(
     let (_, _, fingerprint) = state.certificate()?;
     let listener = TcpListener::bind(bind)?;
     let listening = json!({"listening": listener.local_addr()?.to_string(), "fingerprint": fingerprint,
+    // The code that's running (RAL-156): what's live is a read, not a guess.
+    "commit": rally::commit(),
     "operator_key": rules.operator_key.as_ref().map(rally::designation::OperatorKey::fingerprint),
     "operator_window_ms": rules.operator_times.map(|times| times.window_ms),
     "operator_away_after": rules.operator_times.map(|times| times.away_after),

@@ -16,6 +16,11 @@ and `rally check`. The watchman updates a1's CLI. Red CI or a failed preflight h
 older binary can't read back, such as the first `designate --credential`, ends the rollback window, and the report
 says so. The full rule is Muster's `docs/board.md`, "Keeping the services current".
 
+What's running is a read, not a guess (RAL-156): `rally --version` names the commit a CLI was built from, and the
+service names its own in its start line and in `/v1/whoami` (`commit`). A build from a checkout with uncommitted
+changes has none, and says so. A CLI read that meets a route the service doesn't have says the service is older than
+the story that added it, rather than a bare 404.
+
 Records that end the rollback window, because a binary older than the one named can't replay them (`Change` is
 `deny_unknown_fields`):
 
