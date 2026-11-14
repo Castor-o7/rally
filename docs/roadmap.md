@@ -1160,3 +1160,21 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   the ledger's first check on, and the record's reason starts with "checked late, after a service restart"
   (in the existing reason text, so the rollback window stays open); a test stops the service between a submit
   and its check, verifies the story, restarts, and finds the record; nothing is checked twice.
+- [ ] **RAL-150: Inbox follow-ups: a ticked question says "answered elsewhere"; browser tests leave nothing
+  behind.** From the watchman (2026-11-13, after RAL-146's verify), and the lamplighter's report of main
+  `ac88000` going red at 21:14 on `tests/web.rs` "a browser still runs on rally-browser-kw0M3y" at load 17-20
+  during a DiscoSim sweep. Done when:
+  - **A ticked question.** A question to the operator ticked off in the viewer closes as answered directly with
+    the note "ticked in the viewer" and no answer, and the inbox marks it `via: viewer`. The asking team's
+    session-start line says so plainly: "the operator ticked your question off in the viewer; if you don't have
+    the answer, ask the watchman". The viewer's row for a question says that ticking it means it was answered
+    elsewhere, and its box is labelled so.
+  - **No browser left behind.** `tests/browser/sign-in.mjs` cleans up on every path: a thrown step or a
+    rejected promise, a signal, the timeout, and a normal end. Each Chrome process on the run's profile is
+    found by the profile's name, asked to stop, then killed, and checked gone, rather than trusting the flatpak
+    launcher's exit. Component updates and default apps are off, so a run leaves no `.crx` or fetcher folder in
+    the sandbox's `/tmp`, which isn't the profile (1,971 entries, 188 MB had built up by 2026-11-13; flatpak's
+    wrapper resets `TMPDIR`, so they can't be sent to the profile). The tests' own check waits for a closed
+    browser to go, up to 20 seconds, kills one still there, and fails only if it survives that.
+  - **Proof:** the browser tests run 20 times under load (a release build looping beside them), every run green,
+    no Chrome left on a test profile, and the sandbox's `/tmp` no larger after than before.

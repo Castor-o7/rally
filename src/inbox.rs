@@ -8,6 +8,12 @@ use serde_json::{Value, json};
 
 use crate::ledger::{Blocker, ItemKind, Ledger, OperatorItem};
 
+/// The note a tick in the viewer closes an item or a question with (RAL-146).
+pub const VIEWER_TICK_NOTE: &str = "ticked in the viewer";
+
+/// The name a tick in the viewer is declared under (RAL-146).
+pub const TICK_NAME: &str = "operator";
+
 /// The most rows one read gives, open or closed. The counts are always whole.
 pub const LIST_LIMIT: usize = 200;
 
@@ -63,10 +69,15 @@ fn question_row(blocker: &Blocker, now_ms: i64) -> Row {
         None => json!({"team": blocker.team}),
     };
     let closed = blocker.closed.as_ref().map(|close| {
+        // A question ticked off in the viewer carries no answer: it was answered elsewhere, or
+        // not at all (RAL-150). Told apart by the viewer's own note and name.
+        let ticked = close.note == VIEWER_TICK_NOTE
+            && close.source.declared_name.as_deref() == Some(TICK_NAME);
         json!({
             "seq": close.seq, "kind": close.kind, "at_ms": close.at_ms,
             "by": close.source.declared_name, "credential": close.source.credential,
             "note": close.note, "answer": close.answer,
+            "via": if ticked { json!("viewer") } else { Value::Null },
         })
     });
     Row {
@@ -317,6 +328,48 @@ mod tests {
         assert_eq!(out["items"][0]["holds_up"], "service");
         assert_eq!(out["items"][1]["ask"], "sudo systemctl restart rally");
         assert_eq!(out["items"][0]["age_ms"], 700);
+    }
+
+    /// RAL-150: a question ticked off in the viewer is marked as such; one answered at a terminal,
+    /// or by a team's unblock with the same words, isn't.
+    #[test]
+    fn a_question_ticked_in_the_viewer_is_marked_so() {
+        let as_name = |name: &str, body: Value| {
+            let source = Source {
+                credential: "murph".into(),
+                declared_name: Some(name.into()),
+            };
+            Record::new(Kind::Declared, source, 100, body).unwrap()
+        };
+        let ask = |note: &str| {
+            json!({"change": "block", "team": "ral", "on_team": "operator",
+                                      "note": note})
+        };
+        let answer = |blocker: u64, note: &str| {
+            json!({"change": "unblock", "blocker": blocker,
+            "note": note, "answer": {"from": "direct"}})
+        };
+        let records = [
+            as_name("ral", ask("one")),
+            as_name("ral", ask("two")),
+            as_name("ral", ask("three")),
+            as_name(TICK_NAME, answer(1, VIEWER_TICK_NOTE)),
+            as_name("josh", answer(2, "done")),
+            as_name("someone", answer(3, VIEWER_TICK_NOTE)),
+        ];
+        let all = inbox(&ledger(&records), true, 1_000);
+        let via = |seq: u64| {
+            all["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["seq"] == seq)
+                .unwrap()["closed"]["via"]
+                .clone()
+        };
+        assert_eq!(via(1), "viewer");
+        assert!(via(2).is_null());
+        assert!(via(3).is_null(), "only the viewer's own name");
     }
 
     #[test]

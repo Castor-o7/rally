@@ -2816,7 +2816,7 @@ fn inbox_close(
 }
 
 /// The name a tick in the viewer is declared under (RAL-146).
-const TICK_NAME: &str = "operator";
+const TICK_NAME: &str = rally::inbox::TICK_NAME;
 
 /// How the viewer ticks inbox items off (RAL-146): with the writing pairing beside its own,
 /// `client.json`, when there is one. The viewer reads with its read-only pairing; this is its one
@@ -2827,7 +2827,7 @@ fn inbox_ticker(config: &Path) -> Option<web::Ticker> {
     Some(Box::new(move |item| {
         let backend = Backend::Service(pairing.clone());
         let tick = || -> Result<Value, Box<dyn std::error::Error>> {
-            let body = inbox_close(&backend, item, "ticked in the viewer", "viewer")?;
+            let body = inbox_close(&backend, item, rally::inbox::VIEWER_TICK_NOTE, "viewer")?;
             let request = json!({"kind": Kind::Declared, "declared_name": TICK_NAME, "body": body})
                 .to_string();
             let reply = client::request(&pairing, "POST", "/v1/records", Some(&request), &[])?;
@@ -2844,7 +2844,7 @@ fn host_ticker(location: Location, credential: String) -> web::Ticker {
         let tick = || -> Result<Value, Box<dyn std::error::Error>> {
             let store = Store::open(&location)?;
             let backend = Backend::File(Box::new(store));
-            let body = inbox_close(&backend, item, "ticked in the viewer", "viewer")?;
+            let body = inbox_close(&backend, item, rally::inbox::VIEWER_TICK_NOTE, "viewer")?;
             let Backend::File(store) = backend else {
                 unreachable!("opened on the host");
             };
