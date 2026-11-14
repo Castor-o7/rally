@@ -1252,3 +1252,12 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   sleeping; the connection-cap test waits up to 10 s for a freed place; both hung-Postgres tests wait until a
   probe write is told the service is busy (the service's own word that a write holds the slot) and fail if none is
   within 30 s. The reads test, which passed with nothing stuck, is shown red first in that case.
+- [ ] **RAL-161: The digest's small faults from the 0x9 rally.** From the watchman (2026-11-13): an empty range
+  printed backwards ("records 3818-3817"); the base-CI section said "no repository in the evidence" for RAL-144,
+  a story in parts whose part submits named Castor-o7/rally; every DiscoSim merge printed "no CI run on <sha>,
+  10m after the merge was seen", one line each, though DiscoSim has no CI on GitHub and its gate is the
+  watchman's. Done when: a digest with no new records says so; a parts story with no closing submit has its
+  newest part's repository (`/v1/stories` gives `part_evidence` apart from the story's own evidence); a project
+  whose projects-list entry names a `gate` isn't looked for on GitHub, and gets one line per digest naming its
+  merges, held until a digest carries it; a merge whose story rode a landed batch says "landed in batch N"
+  (`/v1/stories` gives `landed_in_batch`); docs/digest.md says so; with tests for each.

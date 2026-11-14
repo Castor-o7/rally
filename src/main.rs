@@ -2293,6 +2293,25 @@ fn digest_pass(
         )?;
         Ok(json!({"stories": stories["stories"]}))
     };
+    // The projects whose merges pass a gate that isn't CI on GitHub (RAL-161), from the projects
+    // list beside the pairing, or the built-in one.
+    let local_gates: Vec<rally::digest::LocalGate> = {
+        let file = default_projects_file(config)
+            .ok()
+            .flatten()
+            .map(|path| std::fs::read_to_string(&path).map_err(|error| error.to_string()));
+        rally::brief::brief_projects(file)
+            .0
+            .into_iter()
+            .filter_map(|p| {
+                Some(rally::digest::LocalGate {
+                    gate: p.gate?,
+                    name: p.name,
+                    repo: p.repo,
+                })
+            })
+            .collect()
+    };
     let handover = get("/v1/handover")?;
     let mut watchmen: Vec<Watchman> = handover["watchmen"]
         .as_array()
@@ -2370,8 +2389,29 @@ fn digest_pass(
                 rally::digest::take_in_merges(&mut kept, &recs, &stories, now_ms);
                 stories_read = Some(stories);
             }
+            // A local gate's merges held from an earlier pass are named with their batch, so the
+            // stories are read for them too (RAL-161).
+            if stories_read.is_none()
+                && kept.ci.iter().any(|pending| {
+                    pending.repo.as_deref().is_some_and(|repo| {
+                        local_gates
+                            .iter()
+                            .any(|g| g.repo.eq_ignore_ascii_case(repo))
+                    })
+                })
+            {
+                stories_read = Some(all_stories()?);
+            }
             let before_ci = kept.ci.clone();
-            let ci = rally::digest::check_ci(&mut kept, &web::pr_head, &web::ci_state, now_ms);
+            // Projects whose gate isn't CI on GitHub are told once, not looked for (RAL-161).
+            let ci = rally::digest::check_ci_with(
+                &mut kept,
+                &web::pr_head,
+                &web::ci_state,
+                now_ms,
+                &local_gates,
+                stories_read.as_ref().unwrap_or(&Value::Null),
+            );
             if !ci.lines.is_empty() {
                 row["ci"] = json!(ci.lines);
             }
@@ -2464,8 +2504,9 @@ fn digest_pass(
                     }
                 }
             }
-            // An urgent CI line that wasn't sent is told again next pass (RAL-102).
-            if ci.urgent && row["decision"] != "sent" {
+            // An urgent CI line that wasn't sent is told again next pass (RAL-102), and so is a
+            // local gate's line, which can wait but mustn't be lost (RAL-161).
+            if (ci.urgent || ci.held) && row["decision"] != "sent" {
                 kept.ci = before_ci;
             }
             // Only a pass that got this far counts as one (RAL-87); a failed one returns above.
