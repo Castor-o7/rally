@@ -507,8 +507,8 @@ fn the_submitter_cannot_verify_but_someone_else_can() {
     assert_eq!(all["stories"]["RAL-3"]["state"], "verified");
 }
 
-/// RAL-171: `rally merge` says, beside its record, the conditions in force that name the story,
-/// and what the merged commit's CI says, observed and recorded nowhere; it blocks nothing.
+/// RAL-171: `rally merge` says, beside its record, the conditions in force that name the story
+/// (and, RAL-175, those naming none), and what the merged commit's CI says, observed and recorded nowhere; it blocks nothing.
 #[test]
 fn a_merge_says_the_conditions_naming_its_story_and_its_ci() {
     let db = Ledger::new();
@@ -573,6 +573,30 @@ fn a_merge_says_the_conditions_naming_its_story_and_its_ci() {
     let bare = ok(&db, "author", &["merge", "RAL-4", "--commit", OTHER_COMMIT]);
     assert_eq!(bare["ci"]["state"], "unread", "{bare}");
     assert!(bare["conditions"].as_array().unwrap().is_empty());
+    // RAL-175: a condition naming no story is said at every merge, after those naming it.
+    ok(
+        &db,
+        "mellow-weevil",
+        &[
+            "condition",
+            "--team",
+            "watchman",
+            "--note",
+            "one merge at a time",
+        ],
+    );
+    ok(&db, "author", &["ready", "RAL-5"]);
+    let held = ok(&db, "author", &["merge", "RAL-5", "--commit", OTHER_COMMIT]);
+    let conditions = held["conditions"].as_array().unwrap();
+    assert_eq!(conditions.len(), 1, "{held}");
+    assert!(conditions[0]["story"].is_null(), "{held}");
+    assert!(
+        conditions[0]["said"]
+            .as_str()
+            .unwrap()
+            .starts_with("a condition in force names no story, so it bears on every merge: one"),
+        "{held}"
+    );
 }
 
 #[test]
