@@ -355,7 +355,8 @@ function renderInbox(inbox, tickInfo, now) {
       const box = el("input", "inbox-tick");
       box.type = "checkbox";
       box.dataset.seq = String(item.seq);
-      box.setAttribute("aria-label", "Tick off record " + item.seq + ": " + item.note);
+      box.setAttribute("aria-label", (item.from === "question" ? "Answered elsewhere, record " : "Tick off record ")
+        + item.seq + ": " + item.note);
       const state = ticked.get(item.seq);
       box.checked = Boolean(state && state.ok);
       box.disabled = Boolean(state);
@@ -368,6 +369,11 @@ function renderInbox(inbox, tickInfo, now) {
     tags.append(el("span", "label", item.kind), " ");
     tags.append("#" + item.seq);
     body.append(tags, el("p", "inbox-note", item.note));
+    if (item.from === "question") {
+      // RAL-150: a tick records no answer, so the box means the question was answered elsewhere.
+      body.append(el("p", "muted inbox-question", "A team's question. Ticking it says you've answered it elsewhere; "
+        + "the ledger records no answer, and the team is told to ask the watchman if it doesn't have one."));
+    }
     if (item.ask) {
       const ask = el("p", "inbox-ask");
       ask.append("Asked: ", el("code", "", item.ask));

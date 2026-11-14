@@ -8,7 +8,7 @@
 // Needs Node 22 or later, for the global WebSocket. Speaks the Chrome DevTools Protocol directly,
 // so nothing is installed.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -25,12 +25,22 @@ if (!/^[0-9]{2,5},[0-9]{2,5}$/.test(windowSize)) {
   process.exit(2);
 }
 const profile = mkdtempSync(join(tmpdir(), "rally-browser-"));
+const flatpakApp = chrome[0] === "flatpak" ? chrome.find((arg) => /^[\w-]+(\.[\w-]+){2,}$/.test(arg)) : null;
+const sandboxed = flatpakApp && process.env.XDG_RUNTIME_DIR
+  ? join(process.env.XDG_RUNTIME_DIR, ".flatpak", flatpakApp, "tmp", basename(profile))
+  : null;
 const browser = spawn(chrome[0], [
   ...chrome.slice(1),
   "--headless=new",
   "--no-first-run",
   "--no-default-browser-check",
   "--disable-gpu",
+  // No component downloads: each run's updater left a .crx and a fetcher folder in /tmp, which
+  // under flatpak is the sandbox's, in the runtime directory, and isn't the profile, so nothing
+  // removed them (1,971 entries, 188 MB, by 2026-11-13; RAL-150). Flatpak's wrapper sets TMPDIR
+  // to /tmp, so they can't be sent to the profile instead.
+  "--disable-component-update",
+  "--disable-default-apps",
   // A desktop window, as the operator views it (RAL-92), rather than headless's 800x600; a test
   // can ask for another with RALLY_BROWSER_WINDOW, as "width,height" (RAL-111).
   "--window-size=" + windowSize,
@@ -44,11 +54,25 @@ const browser = spawn(chrome[0], [
 // Each run used to leave a whole headless Chrome and a 170 MB profile behind there, until that
 // small tmpfs filled and Chrome couldn't start (2026-11-06). So ask Chrome to close itself, over
 // its DevTools endpoint, and remove the profile from wherever the sandbox put it.
-const flatpakApp = chrome[0] === "flatpak" ? chrome.find((arg) => /^[\w-]+(\.[\w-]+){2,}$/.test(arg)) : null;
-const sandboxed = flatpakApp && process.env.XDG_RUNTIME_DIR
-  ? join(process.env.XDG_RUNTIME_DIR, ".flatpak", flatpakApp, "tmp", basename(profile))
-  : null;
 let browserEndpoint = null;
+
+// Every process of this run's Chrome, found by its profile's name, which no other run shares.
+const profileName = basename(profile);
+const running = () => spawnSync("pgrep", ["-f", "--", profileName]).stdout.toString().trim() !== "";
+const signal = (name) => spawnSync("pkill", ["-" + name, "-f", "--", profileName]);
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+// RAL-150: whatever happened, no Chrome of this run is left. The launcher's exit doesn't say the
+// sandboxed Chrome has gone, and Browser.close can take longer than any wait under load, so each
+// process is found by its profile and asked to stop, then killed, and checked gone.
+function reap() {
+  browser.kill("SIGTERM");
+  for (const [name, wait] of [["TERM", 3000], ["KILL", 3000]]) {
+    if (!running()) return;
+    signal(name);
+    for (let waited = 0; waited < wait && running(); waited += 100) pause(100);
+  }
+}
 
 let finished = false;
 function finish(code, value) {
@@ -60,7 +84,7 @@ function finish(code, value) {
   const done = () => {
     if (cleaned) return;
     cleaned = true;
-    browser.kill("SIGTERM");
+    reap();
     for (const dir of [profile, sandboxed]) {
       if (dir) try { rmSync(dir, { recursive: true, force: true }); } catch { /* still held */ }
     }
@@ -77,6 +101,13 @@ function finish(code, value) {
   } catch { /* the timeout still cleans up */ }
 }
 const timer = setTimeout(() => finish(1, { error: "timed out" }), 45000);
+// A step that throws, such as a fetch refused or a reply without a result, still ends in finish,
+// so its cleanup runs (RAL-150); before, node exited at once and left Chrome running.
+process.on("uncaughtException", (error) => finish(1, { error: "the script failed: " + error }));
+process.on("unhandledRejection", (error) => finish(1, { error: "the script failed: " + error }));
+for (const name of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(name, () => finish(1, { error: "stopped by " + name }));
+}
 browser.on("exit", (status) => finish(1, { error: "the browser exited with " + status }));
 
 // Chrome says where its DevTools endpoint is on standard error.

@@ -1130,6 +1130,11 @@ fn in_browser_full(
 /// RAL-97: once the script has ended, no profile it used is left, under the host's /tmp or a
 /// flatpak sandbox's, and no browser still runs on one. Each run under flatpak once left a whole
 /// headless Chrome and a 170 MB profile in $XDG_RUNTIME_DIR, until that tmpfs filled (2026-11-06).
+///
+/// RAL-150: patient, but not forgiving. Under load (a DiscoSim sweep took Murph to 17-20) a closed
+/// Chrome can take seconds to be gone, and a check that looked once failed merges for it. So each
+/// is waited for, up to [`BROWSER_GONE_WITHIN`]; one still there then is killed, and only one that
+/// survives that fails the test, so a browser is never left running either way.
 fn nothing_of_the_browser_survives(seen: &Value) {
     let profiles = seen["profiles"]
         .as_array()
@@ -1137,27 +1142,59 @@ fn nothing_of_the_browser_survives(seen: &Value) {
     assert!(!profiles.is_empty(), "{seen}");
     for profile in profiles {
         let profile = profile.as_str().unwrap();
-        assert!(
-            !std::path::Path::new(profile).exists(),
-            "{profile} was left behind"
-        );
         // A browser on it has the profile's own name in its command line, wherever it was put.
         let name = std::path::Path::new(profile)
             .file_name()
             .unwrap()
             .to_string_lossy()
             .into_owned();
-        let still = Command::new("pgrep")
-            .args(["-f", "--", &name])
-            .output()
-            .unwrap();
+        let running = || {
+            let still = Command::new("pgrep")
+                .args(["-f", "--", &name])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&still.stdout).trim().to_owned()
+        };
+        let gone = |within: std::time::Duration| {
+            let until = std::time::Instant::now() + within;
+            while !running().is_empty() && std::time::Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            running().is_empty()
+        };
+        if !gone(BROWSER_GONE_WITHIN) {
+            let lingering = running();
+            let _ = Command::new("pkill")
+                .args(["-KILL", "-f", "--", &name])
+                .status();
+            assert!(
+                gone(std::time::Duration::from_secs(5)),
+                "a browser still runs on {name} even after being killed: {lingering}"
+            );
+            eprintln!(
+                "a browser on {name} took longer than {BROWSER_GONE_WITHIN:?} to go and was killed"
+            );
+        }
+        // The script removes the profile once its browser has gone.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::path::Path::new(profile).exists() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // One its browser wrote back to while being killed is removed here, and only one that
+        // can't be fails.
+        if std::path::Path::new(profile).exists() {
+            eprintln!("{profile} outlived its browser and is removed here");
+            let _ = std::fs::remove_dir_all(profile);
+        }
         assert!(
-            still.stdout.is_empty(),
-            "a browser still runs on {name}: {}",
-            String::from_utf8_lossy(&still.stdout)
+            !std::path::Path::new(profile).exists(),
+            "{profile} was left behind and can't be removed"
         );
     }
 }
+
+/// How long a browser that's been closed is given to be gone before it's killed (RAL-150).
+const BROWSER_GONE_WITHIN: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// RAL-112: in a real browser, the page knows the code it runs, doesn't reload while the viewer
 /// serves the same code, reloads once when it serves other code, and never twice for one code.
@@ -3100,6 +3137,8 @@ fn a_tick_from_the_page_closes_an_item_and_nothing_else_can() {
         .find(|i| i["seq"] == question)
         .unwrap();
     assert_eq!(answered["closed"]["answer"]["from"], "direct", "{all}");
+    // RAL-150: and marked as ticked in the viewer, so the team is told it carries no answer.
+    assert_eq!(answered["closed"]["via"], "viewer", "{all}");
 }
 
 /// RAL-146, in the browser: the operator's inbox panel shows the urgent item first, marked, with
@@ -3121,11 +3160,15 @@ fn ticking_an_item_in_the_browser_takes_it_off_the_list() {
         box: Boolean(row.querySelector("input.inbox-tick")),
       }));
       const heading = document.getElementById("inbox-title").textContent;
+      const question = rows().find((row) => row.textContent.includes("may we?"));
+      const questionText = question ? question.textContent : "";
+      const questionLabel = question ? question.querySelector("input.inbox-tick").getAttribute("aria-label") : "";
       const count = (document.querySelector(".inbox-count") || {}).textContent || "";
       rows()[0].querySelector("input.inbox-tick").click();
       const gone = await wait(() => rows().length === 2
         && !rows().some((row) => row.textContent.includes("restart the service")));
-      return { before, heading, count, gone, after: rows().map((row) => row.textContent) };
+      return { before, heading, count, gone, questionText, questionLabel,
+        after: rows().map((row) => row.textContent) };
     })()"##;
     let seen = in_browser(&viewer, &chrome, Some(probe));
     let probe = &seen["probe"];
@@ -3153,5 +3196,20 @@ fn ticking_an_item_in_the_browser_takes_it_off_the_list() {
         "{seen}"
     );
     assert_eq!(probe["gone"], true, "{seen}");
+    // RAL-150: a question's row says what its tick means.
+    assert!(
+        probe["questionText"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Ticking it says you've answered it elsewhere"),
+        "{seen}"
+    );
+    assert!(
+        probe["questionLabel"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("Answered elsewhere"),
+        "{seen}"
+    );
     inbox_status(&viewer, 2);
 }
