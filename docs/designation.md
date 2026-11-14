@@ -337,6 +337,11 @@ credential working. That watchman's reads stop counting as its own until it's pa
   watchman's re-read" until the watchman records its own verification, send-back or correction of that story. A
   correction that annotates the peer's verification is enough, and the peer's record is never changed. With no
   watchman designated, it shows what the next one would get. Nothing stands on a peer's verification alone.
+  The watchman's own reads are never a peer's, even those written before its designation: they're matched by
+  its bound credential, or under a v1 designation by its declared name or a name tied to it by `rally-session
+  --succeeds`. One of its own reads after a peer's counts as the re-read, whenever it was written (RAL-148). With
+  a rally open, each row says `in_rally`, so the digest can keep to the rally while `rally handover` keeps
+  every row.
 - `rally waiting` lists submissions waiting for a reader, oldest first, with the evidence and the commit of any
   requested read. While no watchman is designated, it suggests a reader for each (RAL-57): a team other than the
   author's, the one whose last read is oldest, so reads spread across teams. A suggestion counts as that team's

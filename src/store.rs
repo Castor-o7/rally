@@ -970,6 +970,7 @@ impl Store {
     pub fn waiting_report(
         &self,
         key: Option<&crate::designation::OperatorKey>,
+        all: bool,
     ) -> Result<serde_json::Value, StoreError> {
         self.with_chain(|ledger, hashes| {
             let readers = match key {
@@ -983,7 +984,7 @@ impl Store {
                     }
                 }
             };
-            crate::views::waiting_with(ledger, &readers)
+            crate::views::waiting_scoped(ledger, &readers, all)
         })
     }
 

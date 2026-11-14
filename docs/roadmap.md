@@ -1129,3 +1129,18 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   recorded at once, not after the wait; (2) a commit with no statuses and unreadable check runs reads as `none`,
   "no CI reported", never `passed`; (3) a repository whose check runs can be read is checked as before; (4) other
   refusals (a rate-limit 403, another 403, a 401) are still failed reads tried again. docs/evidence.md says so.
+- [ ] **RAL-148: The watchman's digest keeps to the open rally and stops repeating its handover list.** From
+  the watchman (2026-11-13): every `rally digest`, even for one claim, carried "Peer-verified, awaiting your
+  re-read (RAL-52) (353)" with 33 lines. Most of them had been verified by the watchman itself (DSM-100..143,
+  records 2774–3120), and some came from projects outside the open rally (CAT-36..83). `rally waiting`'s
+  `closes_due` listed MAR-10 and ROO-6/7/10/11 while the open rally's projects were DSM and RAL. The cause:
+  the ledger holds one designation (record 3155), so the handover window opened at record 0. A verification
+  counted as a peer's if no watchman was in force when it was written, so the watchman's own reads from
+  before its designation counted, and only its reads after record 3155 could clear them. Neither list was
+  scoped to the open rally, and the digest re-sent the whole list each time. Done when: a verification by the
+  watchman (its bound credential, or under a v1 designation its declared name or a name tied to it by
+  `rally-session --succeeds`) is never a peer read, and one of its own after a peer's counts as the re-read,
+  whenever it was written; with a rally open, `rally handover` marks each row `in_rally`, and the digest's
+  handover section and `rally waiting`'s `closes_due` list only that rally's projects (`rally handover` keeps
+  every row, and `rally waiting --all` lists every project's closes); a digest whose handover rows are all ones
+  the last digest sent says one count line instead of the list; with unit tests for each.

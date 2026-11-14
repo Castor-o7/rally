@@ -399,7 +399,11 @@ enum Command {
     },
     /// Submissions waiting for a reader, oldest first, with the evidence and any requested reads'
     /// commits to read (RAL-51).
-    Waiting,
+    Waiting {
+        /// List closes due in every project, not only the open rally's (RAL-148).
+        #[arg(long)]
+        all: bool,
+    },
     /// The ledger as it stood at a past record: its stories, teams and open blockers, replayed to
     /// that record, and the corrections made since to what it held then, labelled later (RAL-28).
     /// It's what the viewer shows for that moment.
@@ -1980,7 +1984,7 @@ fn digest_pass(
             Backend::File(store) => Ok(match path {
                 "/v1/handover" => store.handover_report(None)?,
                 // So a due digest can be built straight from the database too (RAL-102).
-                "/v1/waiting" => store.waiting_report(None)?,
+                "/v1/waiting" => store.waiting_report(None, false)?,
                 _ => return Err(format!("{path} isn't read from the database here").into()),
             }),
         }
@@ -2097,6 +2101,9 @@ fn digest_pass(
                     to: newest,
                 };
             }
+            // RAL-148: what the last digest sent listed for the handover.
+            let told_keys = kept.handover_told.clone();
+            let told = told_keys.as_deref();
             let stories_for =
                 |read: &mut Option<Value>| -> Result<Value, Box<dyn std::error::Error>> {
                     if read.is_none() {
@@ -2123,6 +2130,7 @@ fn digest_pass(
                             landed: &web::pr_head,
                             ci: &ci.lines,
                             behind: &behind,
+                            handover_told: told,
                         };
                         row["preview"] = json!(rally::digest::render(
                             kept.head, to, &recs, watch, &reads, now_ms
@@ -2141,6 +2149,7 @@ fn digest_pass(
                         landed: &web::pr_head,
                         ci: &ci.lines,
                         behind: &behind,
+                        handover_told: told,
                     };
                     let digest = rally::digest::render(from, to, &recs, watch, &reads, now_ms);
                     if report_only {
@@ -2155,6 +2164,7 @@ fn digest_pass(
                         match rally::shims::tell(&shims, &watch.name, &digest) {
                             Ok(through) => {
                                 rally::digest::sent(&mut kept, to);
+                                kept.handover_told = Some(rally::digest::handover_keys(&handover));
                                 row["decision"] = json!("sent");
                                 row["sent_by"] = json!(through);
                                 row["covered"] = json!(format!("{}–{to}", from + 1));
@@ -3993,14 +4003,23 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             let report = rally::roadmaps::report(read_roadmaps(&backend, &prefixes));
             return Ok(serde_json::to_string_pretty(&report)?);
         }
-        Command::Waiting => {
+        Command::Waiting { all } => {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             let page = Page {
                 after: None,
                 before: None,
             };
-            return backend.read("/v1/waiting", None, &page, |ledger, _| {
-                Ok(views::waiting(ledger))
+            let path = if all {
+                "/v1/waiting?all=true"
+            } else {
+                "/v1/waiting"
+            };
+            return backend.read(path, None, &page, |ledger, _| {
+                Ok(views::waiting_scoped(
+                    ledger,
+                    &views::Readers::Unchecked,
+                    all,
+                ))
             });
         }
         Command::Designate {
