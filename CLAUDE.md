@@ -28,6 +28,9 @@ Where you use Rally:
   number, so two teams never write the same ID.
 - **Claim** a ready story: `rally claim <STORY> --team <team>`. Give it up with
   `rally release <STORY> --team <team>`.
+- **Wait for the checks** on a pushed pull request with `rally wait-green <PR> --repo <owner/repo>`: it exits 0
+  once every check is green at the head, 1 on a red, 3 if the head moved; run it in the background and
+  submit when it says green.
 - **Submit** it when it's pushed: `rally submit <STORY> --team <team> --evidence "<repo>@<full commit>"`.
   To fix a typo in the evidence while it's in review, `rally amend <STORY> --team <team> --evidence "..."`.
 - **Verify someone else's work**, never your own: read it at a commit, then

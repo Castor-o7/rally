@@ -1140,6 +1140,34 @@ enum Command {
         #[arg(long)]
         verified: Option<String>,
     },
+    /// Wait until every check on a pull request's head, or on a commit, has finished, and say
+    /// whether each passed (RAL-185). Observed, recording nothing. It waits for every check that ran
+    /// on the base branch's tip (GitHub's check runs and commit statuses, such as ci-local's), unless
+    /// --check names them. A pull request's head is pinned when the wait starts. Exits 0 when every
+    /// check passed, 1 on a check that didn't, 3 when the pull request's head moved, 4 at the
+    /// timeout. See docs/wait-green.md.
+    WaitGreen {
+        /// A pull request's number, or a full commit.
+        target: String,
+        /// The repository, as owner/repo.
+        #[arg(long)]
+        repo: String,
+        /// For a pull request: the head it must be at, a full commit; it ends with 3 at once if not.
+        #[arg(long)]
+        head: Option<String>,
+        /// For a commit: the branch whose tip says which checks to wait for.
+        #[arg(long, default_value = "main")]
+        base: String,
+        /// A check to wait for, by name (repeat for each), instead of those on the base's tip.
+        #[arg(long = "check")]
+        checks: Vec<String>,
+        /// How long to wait in all.
+        #[arg(long, default_value = "1h", value_parser = parse_window)]
+        timeout: u64,
+        /// How often to read the checks again.
+        #[arg(long, default_value = "30s", value_parser = parse_window)]
+        every: u64,
+    },
     /// Show the state of every story, or one story with its history.
     Show {
         story: Option<String>,
@@ -1280,6 +1308,36 @@ fn main() -> ExitCode {
             }
         };
     }
+    if let Command::WaitGreen {
+        target,
+        repo,
+        head,
+        base,
+        checks,
+        timeout,
+        every,
+    } = &cli.command
+    {
+        return match wait_green(
+            target,
+            repo,
+            head.as_deref(),
+            base,
+            checks,
+            *timeout,
+            *every,
+        ) {
+            Ok((code, out)) => {
+                let text = serde_json::to_string_pretty(&out).unwrap_or_default();
+                println!("{}", escape_for_terminal(&text));
+                ExitCode::from(code)
+            }
+            Err(error) => {
+                eprintln!("rally: {}", escape_for_terminal(&error));
+                ExitCode::from(2)
+            }
+        };
+    }
     if let Command::Levi { repo, levi } = &cli.command {
         return match rally::levi::read(levi, repo) {
             Ok(out) => {
@@ -1305,6 +1363,93 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `rally wait-green` (RAL-185): pins the head, reads which checks to expect from the base's tip
+/// unless they're named, and waits. Gives the exit code and what to print; `Err` is a usage error.
+fn wait_green(
+    target: &str,
+    repo: &str,
+    head: Option<&str>,
+    base: &str,
+    named: &[String],
+    timeout_ms: u64,
+    every_ms: u64,
+) -> Result<(u8, Value), String> {
+    if !rally::evidence::valid_repo(repo) {
+        return Err(format!("{repo:?} isn't owner/repo"));
+    }
+    let full = |sha: &str| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit());
+    if head.is_some_and(|sha| !full(sha)) {
+        return Err("--head takes a full commit".into());
+    }
+    let pr: Option<u64> = target.parse().ok().filter(|_| !full(target));
+    let (pinned, base) = match pr {
+        Some(number) => {
+            let (now, base) = web::pr_head_and_base(repo, number)?;
+            if let Some(wanted) = head.filter(|wanted| *wanted != now) {
+                let out = json!({
+                    "kind": "observed", "recorded": false, "verdict": "moved", "pr": number,
+                    "head": wanted, "moved_to": now,
+                    "said": format!("pull request {number} is at {now}, not {wanted}"),
+                });
+                return Ok((3, out));
+            }
+            (now, base)
+        }
+        None if full(target) => (target.to_owned(), base.to_owned()),
+        None => {
+            return Err(format!(
+                "{target:?} is neither a pull request's number nor a full commit"
+            ));
+        }
+    };
+    let (expected, expected_from) = if named.is_empty() {
+        // The tip and its first parent: just after a merge, the tip's own local statuses may not
+        // have been posted yet, and the parent's long have.
+        let tip = web::branch_tip(repo, &base)?;
+        let parent = web::first_parent(repo, &tip)?;
+        let mut names: Vec<String> = Vec::new();
+        for commit in std::iter::once(&tip).chain(parent.as_ref()) {
+            for check in web::commit_checks(repo, commit)? {
+                if !names.contains(&check.name) {
+                    names.push(check.name);
+                }
+            }
+        }
+        names.sort();
+        (
+            names,
+            format!("the checks on {base}'s tip, {tip}, and its first parent"),
+        )
+    } else {
+        (named.to_vec(), "--check".to_owned())
+    };
+    let head_now = |number: u64| move || web::pr_head_and_base(repo, number).map(|(head, _)| head);
+    let pr_head = pr.map(head_now);
+    let checks = || web::commit_checks(repo, &pinned);
+    let sleep = std::thread::sleep;
+    let reads = rally::wait_green::Reads {
+        head_now: pr_head
+            .as_ref()
+            .map(|f| f as &dyn Fn() -> Result<String, String>),
+        checks: &checks,
+        sleep: &sleep,
+    };
+    let (ended, mut out) = rally::wait_green::wait(
+        &pinned,
+        &expected,
+        &reads,
+        Duration::from_millis(timeout_ms),
+        Duration::from_millis(every_ms),
+    );
+    out["repo"] = json!(repo);
+    if let Some(number) = pr {
+        out["pr"] = json!(number);
+    }
+    out["expected"] = json!(expected);
+    out["expected_from"] = json!(expected_from);
+    Ok((ended.code(), out))
 }
 
 /// The one GitHub token in the file at `path`.
@@ -4177,7 +4322,10 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             return Ok(json!({"revoked": name}).to_string());
         }
         Command::Init { .. } => unreachable!("handled before the ledger is opened"),
-        Command::SessionStart { .. } | Command::Levi { .. } | Command::CheckGithubToken { .. } => {
+        Command::SessionStart { .. }
+        | Command::Levi { .. }
+        | Command::CheckGithubToken { .. }
+        | Command::WaitGreen { .. } => {
             unreachable!("handled in main")
         }
         Command::Pair => {

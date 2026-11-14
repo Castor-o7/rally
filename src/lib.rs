@@ -58,6 +58,7 @@ pub mod stall;
 pub mod store;
 pub mod view;
 pub mod views;
+pub mod wait_green;
 pub mod wake;
 pub mod watchman_brief;
 pub mod web;

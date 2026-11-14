@@ -1879,3 +1879,138 @@ fn the_digest_names_a_verified_story_whose_pull_request_is_behind_its_base() {
         "{report}"
     );
 }
+
+/// RAL-185: a stand-in `gh` for `rally wait-green`, serving from `dir`: `pr.json` for `gh pr view`,
+/// the base's tip as `TIP`, and for each commit `runs-<sha>.json` and `status-<sha>.json`, or, on
+/// its n-th read of that kind, `runs-<sha>-<n>.json` where there is one, so checks can progress.
+fn wait_green_gh(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let script = format!(
+        r#"#!/bin/sh
+d={dir}
+case "$1 $2" in
+  "pr view") cat "$d/pr.json" ;;
+  api\ *)
+    p=$2
+    case "$p" in
+      */check-runs*) kind=runs ;;
+      */status*) kind=status ;;
+      */commits/{tip}) echo "{parent}"; exit 0 ;;
+      *) echo "{tip}"; exit 0 ;;
+    esac
+    sha=${{p#*/commits/}}; sha=${{sha%%/*}}
+    n=$(cat "$d/n-$kind-$sha" 2>/dev/null || echo 0); echo $((n + 1)) > "$d/n-$kind-$sha"
+    if [ -f "$d/$kind-$sha-$n.json" ]; then cat "$d/$kind-$sha-$n.json"; else cat "$d/$kind-$sha.json"; fi ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#,
+        dir = dir.display(),
+        tip = "e".repeat(40),
+        parent = "f".repeat(40)
+    );
+    std::fs::write(bin.join("gh"), script).unwrap();
+    std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+fn wait_green(dir: &std::path::Path, args: &[&str]) -> (i32, Value) {
+    let bin = wait_green_gh(dir);
+    let path = std::env::var("PATH").unwrap_or_default();
+    let out = Command::new(env!("CARGO_BIN_EXE_rally"))
+        .env("PATH", format!("{}:{path}", bin.display()))
+        .args(["wait-green", "--repo", "o/r", "--every", "1s"])
+        .args(args)
+        .output()
+        .unwrap();
+    let printed: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+    (out.status.code().unwrap_or(-1), printed)
+}
+
+/// RAL-185: `rally wait-green` waits for every check the base's tip had, the local statuses too,
+/// and ends 0 green, 1 red, 3 when the pull request moved, 4 at its timeout; 2 is a usage error.
+#[test]
+fn wait_green_waits_for_every_check_the_base_had_and_says_how_it_ended() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let (head, tip) = ("a".repeat(40), "e".repeat(40));
+    let write = |name: &str, body: &str| std::fs::write(d.join(name), body).unwrap();
+    let runs = |state: &str| {
+        let (status, conclusion) = match state {
+            "pending" => ("in_progress", "null".to_owned()),
+            done => ("completed", format!("\"{done}\"")),
+        };
+        format!(
+            r#"{{"check_runs":[{{"name":"check","id":1,"status":"{status}","conclusion":{conclusion}}}]}}"#
+        )
+    };
+    let status = |state: Option<&str>| match state {
+        Some(state) => format!(r#"{{"statuses":[{{"context":"local/check","state":"{state}"}}]}}"#),
+        None => r#"{"statuses":[]}"#.to_owned(),
+    };
+    write(
+        "pr.json",
+        &format!(r#"{{"headRefOid":"{head}","baseRefName":"main"}}"#),
+    );
+    write(&format!("runs-{tip}.json"), &runs("success"));
+    // Just merged: the tip's local status isn't posted yet; its first parent's is.
+    write(&format!("status-{tip}.json"), &status(None));
+    write(&format!("runs-{}.json", "f".repeat(40)), &runs("success"));
+    write(
+        &format!("status-{}.json", "f".repeat(40)),
+        &status(Some("success")),
+    );
+    // GitHub's check finishes first; ci-local's status hasn't been posted on the first read.
+    write(&format!("runs-{head}-0.json"), &runs("pending"));
+    write(&format!("runs-{head}.json"), &runs("success"));
+    write(&format!("status-{head}-0.json"), &status(None));
+    write(&format!("status-{head}-1.json"), &status(None));
+    write(&format!("status-{head}.json"), &status(Some("success")));
+    let (code, out) = wait_green(d, &["7"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["verdict"], "green");
+    assert_eq!(out["head"], head);
+    assert_eq!(out["pr"], 7);
+    assert_eq!(out["expected"], serde_json::json!(["check", "local/check"]));
+    assert_eq!(out["recorded"], false);
+    assert!(
+        out["waited_s"].as_u64().unwrap() >= 2,
+        "it waited for local/check: {out}"
+    );
+
+    // Pinned to a head the pull request is no longer at.
+    let (code, out) = wait_green(d, &["7", "--head", &"b".repeat(40)]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(out["moved_to"], head);
+
+    // A commit whose local check failed: red, named.
+    let red = "c".repeat(40);
+    write(&format!("runs-{red}.json"), &runs("success"));
+    write(&format!("status-{red}.json"), &status(Some("failure")));
+    let (code, out) = wait_green(d, &[&red]);
+    assert_eq!(code, 1, "{out}");
+    assert_eq!(
+        out["said"],
+        format!("not green at {red}: local/check failure")
+    );
+
+    // Never finishes: it stops at its timeout and says what was outstanding.
+    let slow = "d".repeat(40);
+    write(&format!("runs-{slow}.json"), &runs("pending"));
+    write(&format!("status-{slow}.json"), &status(None));
+    let (code, out) = wait_green(d, &[&slow, "--timeout", "2s"]);
+    assert_eq!(code, 4, "{out}");
+    assert_eq!(out["pending"], serde_json::json!(["check"]));
+    assert_eq!(out["missing"], serde_json::json!(["local/check"]));
+
+    // Named checks instead of the base's; and a usage error is 2, apart from every verdict.
+    let (code, out) = wait_green(d, &[&red, "--check", "check"]);
+    assert_eq!(
+        (code, &out["verdict"]),
+        (1, &serde_json::json!("red")),
+        "a red is red even if not named: {out}"
+    );
+    let (code, _) = wait_green(d, &["not-a-pr"]);
+    assert_eq!(code, 2);
+}

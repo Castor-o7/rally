@@ -1449,3 +1449,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   going on after 10 s without it; reads the widths once the bar's transitions have finished (`getAnimations`),
   not after a fixed 1 s, which could read a width mid-transition when frames are starved; and draws its status
   again if the page's own 30 s poll redrew the bar in between; and it still fails with the style update removed.
+- [ ] **RAL-185: `rally wait-green <PR or sha>`, one command that waits for every check at a pinned head.** From
+  the watchman (2026-11-14), after earnest-raccoon's home-made jq waiters never exited all night and the merge
+  queue waited on green pull requests. Done when: observed, recording nothing, it waits for every check that ran
+  on the base's tip and its first parent (check runs and commit statuses, so ci-local's too), or those named with
+  `--check`; pins a pull request's head and ends when it moves; exits 0 green, 1 red (named), 3 moved, 4 timed
+  out (saying what was pending or missing), 2 on a usage error; retries a failed read until the timeout; the
+  Rally block in CLAUDE.md tells teams to use it; with unit tests and a CLI test against a stand-in `gh`
+  (docs/wait-green.md).
