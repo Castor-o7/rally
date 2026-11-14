@@ -75,6 +75,23 @@ fn gate_log_row(log: &crate::gate_log::GateLog) -> Value {
 }
 
 /// The watchman's brief, as of `now_ms`.
+/// The service's answer to `/v1/brief?watchman=true`, if it's the watchman's brief (RAL-166). A
+/// service older than RAL-157 has no such brief: it ignores the query and answers with the
+/// ordinary one, which has none of this brief's sections, so that's said rather than shown as if
+/// it were the watchman's.
+pub fn from_service(reply: Value) -> Result<Value, String> {
+    if reply.get("since_your_last_record").is_some() && reply.get("in_the_gate").is_some() {
+        Ok(reply)
+    } else {
+        Err(
+            "the service is older than RAL-157, which added the watchman's brief \
+             (/v1/brief?watchman=true): it answered with the ordinary brief, so it needs updating \
+             to the current Rally"
+                .to_owned(),
+        )
+    }
+}
+
 pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_ms: i64) -> Value {
     let watchmen: Vec<Watch> = designation::in_force(ledger, hashes, key);
     let rally = ledger.open_rally();
@@ -569,6 +586,20 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RAL-166: the ordinary brief, from a service older than RAL-157, is said to be that, and
+    /// the watchman's own brief passes.
+    #[test]
+    fn an_older_services_ordinary_brief_is_said_to_be_one() {
+        let ordinary = json!({"teams": [], "claims": [], "operator": {}});
+        let said = from_service(ordinary).unwrap_err();
+        assert!(
+            said.starts_with("the service is older than RAL-157"),
+            "{said}"
+        );
+        let own = json!({"since_your_last_record": {}, "in_the_gate": {}, "watchman": []});
+        assert_eq!(from_service(own.clone()), Ok(own));
+    }
     use crate::designation::testing::{Chain, keypair};
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
