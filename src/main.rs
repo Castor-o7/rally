@@ -1570,9 +1570,23 @@ fn session_start(
             );
             let left = rally::session::DEADLINE.saturating_sub(started.elapsed());
             about_stories.extend(behind_lines(team, &stories, left));
+            // RAL-187: projects whose merges pass a gate, not a pull request's checks, from the
+            // projects list beside the pairing; unreadable, every project is taken as by PR.
+            let gated = projects_text(None, &path)
+                .ok()
+                .and_then(|text| web::parse_projects(&text).ok())
+                .map(|(projects, _)| {
+                    projects
+                        .into_iter()
+                        .filter(|p| p.gate.is_some())
+                        .map(|p| p.prefix)
+                        .collect()
+                })
+                .unwrap_or_default();
             let extra = rally::session::Extra {
                 resume,
                 about_stories,
+                gated,
             };
             println!(
                 "{}",

@@ -306,10 +306,20 @@ pub fn render_in(
             format!("- {}: {} ({kind})", clean(id), clean(state))
         })
         .collect();
-    // RAL-186: a story still to be submitted is one whose pull request's checks will be waited on.
-    let to_submit = stories
-        .values()
-        .any(|row| mine(row) && matches!(row["state"].as_str(), Some("claimed" | "sent_back")));
+    // RAL-186: a story still to be submitted is one whose pull request's checks will be waited on,
+    // unless its project's merges go by a gate rather than a pull request (RAL-187).
+    let by_pull_request = |id: &str| {
+        let prefix = id.split_once('-').map_or(id, |(prefix, _)| prefix);
+        !extra
+            .gated
+            .iter()
+            .any(|gated| gated.eq_ignore_ascii_case(prefix))
+    };
+    let to_submit = stories.iter().any(|(id, row)| {
+        mine(row)
+            && matches!(row["state"].as_str(), Some("claimed" | "sent_back"))
+            && by_pull_request(id)
+    });
     body.push("Your team's open stories:".into());
     push_or_none(&mut body, own);
     if to_submit {
@@ -455,6 +465,10 @@ pub const RECORD_PAGES: usize = 10;
 pub struct Extra {
     pub resume: Vec<String>,
     pub about_stories: Vec<String>,
+    /// The prefixes of projects whose merges pass a gate other than CI on GitHub (the projects
+    /// list's `gate`, RAL-161), such as DiscoSim's gated trains: their stories have no pull
+    /// request to wait on, so no wait-green line is given for them (RAL-187).
+    pub gated: Vec<String>,
 }
 
 /// One line for each condition in force naming one of `team`'s open stories (RAL-171), from
@@ -717,6 +731,41 @@ mod tests {
         }
     }
 
+    /// RAL-187: a team whose project lands by gated trains, with no pull requests, such as
+    /// DiscoSim's, isn't told to wait with wait-green; a story of a pull-request project still is.
+    #[test]
+    fn a_gated_projects_team_isnt_told_to_wait_with_wait_green() {
+        let extra = Extra {
+            gated: vec!["dsm".into()],
+            ..Extra::default()
+        };
+        let stories = json!({"DSM-56": {"state": "claimed", "team": "spry-minnow"},
+                             "DSM-57": {"state": "sent_back", "team": "spry-minnow"}});
+        let out = render_in(
+            "spry-minnow",
+            stories.as_object().unwrap(),
+            &[],
+            Harness::Other,
+            None,
+            None,
+            &extra,
+        );
+        assert!(out.contains("- DSM-56: claimed"), "{out}");
+        assert!(!out.contains("rally wait-green"), "{out}");
+        let stories = json!({"DSM-56": {"state": "claimed", "team": "spry-minnow"},
+                             "RAL-9": {"state": "claimed", "team": "spry-minnow"}});
+        let out = render_in(
+            "spry-minnow",
+            stories.as_object().unwrap(),
+            &[],
+            Harness::Other,
+            None,
+            None,
+            &extra,
+        );
+        assert!(out.contains("rally wait-green <PR>"), "{out}");
+    }
+
     /// RAL-171: a condition in force naming one of the team's open stories is said under them,
     /// as information; another team's story, or a merged one, says nothing.
     #[test]
@@ -744,8 +793,8 @@ mod tests {
             ]
         );
         let extra = Extra {
-            resume: Vec::new(),
             about_stories: lines,
+            ..Extra::default()
         };
         let out = render_in("rustdaw", stories, &[], Harness::Other, None, None, &extra);
         let open = out.find("Your team's open stories:").unwrap();
