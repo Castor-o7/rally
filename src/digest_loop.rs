@@ -23,6 +23,9 @@ pub struct Settings {
     pub watchman: Option<String>,
     pub state_file: PathBuf,
     pub config: PathBuf,
+    /// Each `--gate` as given (RAL-180), so a restart passes it again with its paths unexpanded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gates: Vec<String>,
 }
 
 impl Settings {
@@ -46,6 +49,9 @@ impl Settings {
         ];
         if let Some(watchman) = &self.watchman {
             args.extend(["--watchman".to_owned(), watchman.clone()]);
+        }
+        for gate in &self.gates {
+            args.extend(["--gate".to_owned(), gate.clone()]);
         }
         args
     }
@@ -333,6 +339,7 @@ mod tests {
             watchman: Some("mellow-weevil".into()),
             state_file: dir.join("digest.json"),
             config: dir.join("config.json"),
+            gates: vec!["DSM=~/.local/state/dsm-gates,~/Documents/GitHub/Discoteque".into()],
         }
     }
 
@@ -355,8 +362,15 @@ mod tests {
         assert_eq!(
             args.join(" "),
             "--config /d/config.json digest --quiet 120s --max 600s --every 30s --state-file \
-             /d/digest.json --pid-file /d/digest.pid --watchman mellow-weevil"
+             /d/digest.json --pid-file /d/digest.pid --watchman mellow-weevil --gate \
+             DSM=~/.local/state/dsm-gates,~/Documents/GitHub/Discoteque"
         );
+        // A pid file from before RAL-180 has no gates, and still reads.
+        let old: Settings = serde_json::from_str(
+            r#"{"quiet_ms":1,"max_ms":2,"every_ms":3,"state_file":"/s","config":"/c"}"#,
+        )
+        .unwrap();
+        assert!(old.gates.is_empty());
     }
 
     /// A file naming a process that isn't a digest, or a dead one, holds nothing; one naming this
