@@ -600,6 +600,10 @@ struct Writer {
     /// For tests: the next commit lands, and is then reported as if its reply were lost.
     #[cfg(test)]
     reply_lost: Mutex<bool>,
+    /// For tests: runs once an append's record is in myko's copy and before the kept state has
+    /// it, the moment a read that doesn't wait for appends would see the two differ.
+    #[cfg(test)]
+    after_myko: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// The size limit and disk floor, checked under the writer's lock before each append.
     space: Mutex<Option<SpaceLimits>>,
     /// The operator's key, set only by `serve --secure` (RAL-51). Without it, designations are
@@ -771,6 +775,8 @@ impl Store {
             before_commit: Mutex::new(None),
             #[cfg(test)]
             reply_lost: Mutex::new(false),
+            #[cfg(test)]
+            after_myko: Mutex::new(None),
             #[cfg(test)]
             pause: Mutex::new(Duration::ZERO),
             #[cfg(test)]
@@ -1292,6 +1298,13 @@ impl Store {
         match &self.writer {
             Some(writer) => {
                 writer.ensure_kept()?;
+                // Under the writer's lock, as `check` reads them: an append puts its record in
+                // myko's copy a moment before the kept state has it, and a read between the two
+                // would take that moment for a change past the append path.
+                let _sql = writer
+                    .sql
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let items = writer.memory_items()?;
                 let kept = writer.kept();
                 let kept = kept.as_ref().ok_or_else(|| {
@@ -1547,6 +1560,15 @@ impl Writer {
             seq,
             reason: e.to_string(),
         })?;
+        #[cfg(test)]
+        if let Some(hook) = self
+            .after_myko
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            hook();
+        }
         {
             let mut kept = self.kept_mut();
             let applied = kept
@@ -3057,6 +3079,46 @@ mod tests {
             let scrubbed = scrub(&leaked, &config);
             assert!(!scrubbed.contains("ss:w"), "{leaked} became {scrubbed}");
         }
+    }
+
+    /// An export while an append has put its record in myko's copy, and not yet in the kept
+    /// state, waits for the append rather than reporting the two differ. Before this, it answered
+    /// "writes refused: … changed past the append path", which is how RAL-149's service test
+    /// went red on a loaded runner: it polls the export while Rally appends its own checks.
+    #[test]
+    fn an_export_during_an_append_waits_for_it_rather_than_seeing_a_difference() {
+        let mut scratch = two_records();
+        let store = Arc::new(scratch.store.take().unwrap());
+        let (in_window, entered) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        *store.writer.as_ref().unwrap().after_myko.lock().unwrap() = Some(Box::new(move || {
+            in_window.send(()).unwrap();
+            let _ = released.recv_timeout(Duration::from_secs(10));
+        }));
+        let appender = {
+            let store = store.clone();
+            std::thread::spawn(move || store.append(&note()))
+        };
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        let (answer, answered) = std::sync::mpsc::channel();
+        let reader = {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                let read = store.export(0).map(|(rows, head)| (rows.len(), head.seq));
+                answer.send(read.map_err(|e| e.to_string())).unwrap();
+            })
+        };
+        // The append is held between myko and the kept state. A read that doesn't wait for it
+        // answers now, with the difference; one that waits answers after the release.
+        let early = answered.recv_timeout(Duration::from_millis(500)).ok();
+        release.send(()).unwrap();
+        appender.join().unwrap().unwrap();
+        let read = match early {
+            Some(read) => read,
+            None => answered.recv_timeout(Duration::from_secs(10)).unwrap(),
+        };
+        reader.join().unwrap();
+        assert_eq!(read, Ok((3, 3)), "the export saw the append half done");
     }
 
     #[test]

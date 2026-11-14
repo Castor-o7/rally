@@ -1220,3 +1220,15 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   path"), nothing missing (what `--rally-openers` guards, the service's own inbox items, the session-start block's
   sections), and nothing said twice; docs only; and every place where the code, not the docs, looks wrong is
   listed for the watchman rather than written around.
+- [ ] **RAL-158: An export during an append waits for it instead of reporting a difference.** From the
+  watchman (2026-11-13): main went red on 6395487 when hosted CI failed `a_check_a_stop_cut_short_is_made_late_at_
+  the_start_whatever_the_story_became` at tests/service.rs:2763 (`unwrap()` on None), just after the service
+  printed "writes refused: the service's copy of the ledger in myko was changed past the append path". The cause
+  is in the service. `Store::export` compared myko's copy with the kept state without the writer's lock. An append
+  puts its record in myko's copy a moment before the kept state has it, so an export in that moment reported a
+  difference that wasn't one, and refused. RAL-149's test polls the export while Rally appends its own evidence
+  checks, and a loaded runner widens the moment. Done when: the export reads both under the writer's lock, as
+  `check` does; a unit test holds an append between myko and the kept state, runs an export, and finds that it
+  waits rather than refuses (red without the fix, with the CI log's message); the service test fails on a non-200
+  export saying what it was, waits for checks with a 30 s bound and fails loudly on the timeout, and proves
+  "nothing checked twice" by waiting for a later submission's check rather than sleeping.

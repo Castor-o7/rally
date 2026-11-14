@@ -2757,6 +2757,8 @@ fn a_check_a_stop_cut_short_is_made_late_at_the_start_whatever_the_story_became(
     }
     let checks = |pairing: &Pairing| -> Vec<(String, u64, String)> {
         let reply = call(pairing, "GET", "/v1/export?after=0", None);
+        // Any other answer fails here, saying what it was, not as a missing field further on.
+        assert_eq!(reply.status, 200, "the export answered: {}", reply.body);
         let page: Value = serde_json::from_str(&reply.body).unwrap();
         page["records"]
             .as_array()
@@ -2775,16 +2777,21 @@ fn a_check_a_stop_cut_short_is_made_late_at_the_start_whatever_the_story_became(
             })
             .collect()
     };
+    // Waits, up to 30 s, for at least `n` checks, and fails saying so if they don't come.
     let wait_for = |pairing: &Pairing, n: usize| {
-        let mut found = Vec::new();
-        for _ in 0..100 {
-            found = checks(pairing);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let found = checks(pairing);
             if found.len() >= n {
-                break;
+                return found;
             }
+            assert!(
+                std::time::Instant::now() < until,
+                "only {} of {n} evidence checks within 30 s: {found:?}",
+                found.len()
+            );
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        found
     };
     assert_eq!(wait_for(&pairing, 1).len(), 1);
 
@@ -2839,12 +2846,22 @@ fn a_check_a_stop_cut_short_is_made_late_at_the_start_whatever_the_story_became(
         "{reason}"
     );
 
-    // Nothing is checked twice: another restart queues nothing more.
+    // Nothing is checked twice: another restart queues nothing more. Its start queues anything
+    // unchecked before it takes a new submission, so once RAL-82, submitted after it, is checked,
+    // a second check of RAL-81 would have been recorded too, and none is.
     service.restart("-TERM");
     let mut moved = pairing.clone();
     moved.address = service.address.clone();
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    assert_eq!(checks(&moved).len(), 2);
+    for body in [
+        json!({"change": "ready", "story": "RAL-82"}),
+        json!({"change": "claim", "story": "RAL-82", "team": "rally"}),
+        json!({"change": "submit", "story": "RAL-82", "team": "rally", "evidence": evidence}),
+    ] {
+        assert_eq!(write(&moved, "r", "declared", body).status, 200);
+    }
+    let found = wait_for(&moved, 3);
+    let stories: Vec<&str> = found.iter().map(|(story, _, _)| story.as_str()).collect();
+    assert_eq!(stories, ["RAL-80", "RAL-81", "RAL-82"], "{found:?}");
 }
 
 /// RAL-28: a past moment, as `rally past` and the viewer show it, is a replay of the ledger's own
