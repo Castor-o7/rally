@@ -2062,6 +2062,35 @@ fn projects_text(
     }
 }
 
+/// The `builds` section of the watchman's brief (RAL-167): the service's commit by its own word,
+/// this CLI's, main's tip, and what's merged but not live, all observed; never fatal to the brief.
+fn builds_section(location: Option<&Location>, config: &Path) -> Value {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64);
+    // Through the service only: on the host with --db there's no service to ask.
+    let live: Option<String> = match location {
+        Some(_) => None,
+        None => read_pairing(config)
+            .ok()
+            .and_then(|pairing| client::request(&pairing, "GET", "/v1/whoami", None, &[]).ok())
+            .and_then(|reply| reply_value(&reply).ok())
+            .and_then(|who| who["commit"].as_str().map(str::to_owned)),
+    };
+    let cli = rally::commit();
+    let Some(repo) = rally::builds::own_repo() else {
+        return json!({"unread": "this build doesn't name its repository"});
+    };
+    let main = web::branch_tip(repo, "main");
+    let behind = live.as_deref().map(|live| web::compare(repo, live, "main"));
+    let staged = live
+        .as_deref()
+        .zip(cli)
+        .filter(|(live, cli)| live != cli)
+        .map(|(live, cli)| web::compare(repo, live, cli));
+    rally::builds::section(live.as_deref(), cli, main, behind, staged, now)
+}
+
 /// The designation report: the host's own, unchecked, or the service's.
 fn designation_value(
     location: Option<&Location>,
@@ -4767,6 +4796,8 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     // An older service ignores the query: say so (RAL-166).
                     rally::watchman_brief::from_service(reply_value(&reply)?)?
                 };
+                let mut report = report;
+                report["builds"] = builds_section(location.as_ref(), &config_path(cli.config)?);
                 return Ok(report.to_string());
             }
             let mut report = if let Some(location) = &location {

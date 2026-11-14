@@ -1327,3 +1327,10 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   ignores, answering with the ordinary brief as if it were the watchman's. Done when: the CLI tells the watchman's
   brief by its own sections and, given the ordinary one, says the service is older than RAL-157 and needs updating;
   with a unit test of both answers.
+- [ ] **RAL-167: `rally brief --watchman` says what's live, staged and merged but not live.** From the watchman
+  (2026-11-14): tonight the service was thirteen stories behind main, and nothing in Rally said so; the lamplighter's
+  staging left files, not records. Done when: `brief --watchman` has a `builds` section, all observed: live (the
+  service's commit from /v1/whoami, or that it's older than RAL-156 and doesn't say), this CLI's commit, main's
+  tip, and the stories merged but not live, from GitHub's compare of live and main, mapped by the story ID in each
+  commit's message, with the count and the oldest's age; a hint when this CLI is ahead of the service (staged,
+  waiting on a restart); no reading of rollout files; with tests.

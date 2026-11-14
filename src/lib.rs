@@ -26,6 +26,7 @@ pub fn version() -> &'static str {
 pub mod access;
 pub mod backup;
 pub mod brief;
+pub mod builds;
 pub mod client;
 pub mod designation;
 pub mod digest;
