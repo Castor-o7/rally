@@ -62,6 +62,7 @@ pub fn changes_by_file(diff: &str) -> BTreeMap<String, FileChange> {
     let mut file: Option<String> = None;
     let mut in_header = false;
     let mut index_line: Option<String> = None;
+    let mut last_changed = false;
     for line in diff.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
             let name = git_path(rest);
@@ -97,11 +98,19 @@ pub fn changes_by_file(diff: &str) -> BTreeMap<String, FileChange> {
                 // from/to: facts of the change itself.
                 change.header.push(line.to_owned());
             }
-        } else if (line.starts_with('+') || line.starts_with('-'))
-            && let Some(hunk) = change.hunks.last_mut()
-        {
-            hunk.push(line.to_owned());
+        } else if let Some(hunk) = change.hunks.last_mut() {
+            if line.starts_with('+') || line.starts_with('-') {
+                hunk.push(line.to_owned());
+                last_changed = true;
+                continue;
+            }
+            // `\ No newline at end of file` marks the line before it. After a changed line it's
+            // part of the change: a head that differs only by a final newline isn't the same.
+            if line.starts_with('\\') && last_changed {
+                hunk.push(line.to_owned());
+            }
         }
+        last_changed = false;
     }
     // A hunk of context alone changes nothing.
     for change in out.values_mut() {
@@ -308,6 +317,9 @@ pub fn from_github(verified: &Value, head: &Value) -> Value {
                 "conflict_note": "GitHub has no remerge diff, so whether a merge of main into the \
                                   head resolved a conflict can't be told from here: run it in a \
                                   checkout that has both commits",
+                "modes_note": "GitHub's compare doesn't show file modes, so a mode change, made \
+                               or undone, can't be seen from here: run it in a checkout that has \
+                               both commits",
             })
         }
         _ => json!({
@@ -472,6 +484,7 @@ mod tests {
                 .unwrap()
                 .contains("can't be told")
         );
+        assert!(same["modes_note"].as_str().unwrap().contains("file modes"));
         // A verified commit already in main changes nothing against it: never "same".
         let r = Repo::new();
         let tip = main(&r);
@@ -628,5 +641,28 @@ mod tests {
             |_| {},
         );
         assert!(out["caveat"].as_str().unwrap().contains("moved"), "{out}");
+    }
+
+    #[test]
+    fn a_final_newline_is_part_of_the_change() {
+        let edit = |r: &Repo| r.write("a.txt", "one\ntwo\nthree\nfour\nFIVE\n");
+        let same = compare_after(edit, |_| {});
+        assert_eq!(same["verdict"], "same change", "{same}");
+        let no_newline = compare_after(edit, |r| r.write("a.txt", "one\ntwo\nthree\nfour\nFIVE"));
+        assert_eq!(no_newline["verdict"], "changed", "{no_newline}");
+        assert!(
+            no_newline["differences"][0]["head_hunk"]
+                .to_string()
+                .contains("No newline at end of file"),
+            "{no_newline}"
+        );
+        // The marker after an unchanged line of context isn't a change.
+        let diff = |end: &str| {
+            format!(
+                "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+A\n {end}\n\
+                 \\ No newline at end of file\n"
+            )
+        };
+        assert_eq!(changes_by_file(&diff("b"))["x"].hunks, [["-a", "+A"]]);
     }
 }
