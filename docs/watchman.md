@@ -62,6 +62,7 @@ It holds `digest.pid` beside the pairing and logs to `digest.log`; it's found by
 ```sh
 rally waiting                                                    # oldest first
 rally verify <STORY> --commit <full sha> --note "what you read"  # or: rally send-back <STORY> --note "..."
+rally wait-green <N> --repo <owner/repo>                        # a team waits for every check, then submits (RAL-185)
 gh pr merge <N> --merge --match-head-commit <the sha you read>   # a team merges after your verify
 rally merge <STORY> --commit <merge sha>
 rally gate <base>..<new>                                         # before moving a branch (RAL-70)
@@ -90,6 +91,10 @@ rally gate <base>..<new>                                         # before moving
   nobody read. It says `can't tell`, never `same change`, when a commit is missing or GitHub's compare was cut
   short (or a patch too large to show). On GitHub, the fallback when the checkout lacks a commit, file modes and
   conflict resolutions can't be seen: run it in a checkout that has both commits.
+- **Waiting on a submit?** A team waits for its checks with `rally wait-green <N> --repo <owner/repo>`, which exits
+  0 once every check (ci-local's `local/*` too) is green at the pinned head, 1 on a red, 3 if the head moved. On
+  11-14 a team's home-made `jq` waiter never exited, and green pull requests sat unsubmitted all night
+  ([wait-green.md](wait-green.md)). If a green pull request isn't submitted, ask what the team waits with.
 - **Read the checks yourself before a verify.** A green check can be a check that ran on another commit's build:
   until RAL-144, local CI's target directory was shared between commits.
 
