@@ -18,10 +18,15 @@ pub struct Refused {
     pub status: u16,
     pub reason: String,
     pub retry_after_ms: Option<u64>,
+    /// The service is older than the route asked for: said as it is, not as a refusal (RAL-156).
+    pub older_service: bool,
 }
 
 impl fmt::Display for Refused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.older_service {
+            return f.write_str(&self.reason);
+        }
         write!(f, "refused ({}): {}", self.status, self.reason)
     }
 }
@@ -31,6 +36,14 @@ impl Error for Refused {}
 impl Refused {
     /// The refusal a reply that isn't a success stands for, with the service's reason.
     pub fn of(reply: &crate::client::Reply) -> Self {
+        if let Some(older) = &reply.older_than {
+            return Self {
+                status: reply.status,
+                reason: older.clone(),
+                retry_after_ms: reply.retry_after_ms,
+                older_service: true,
+            };
+        }
         let reason = serde_json::from_str::<Value>(&reply.body)
             .ok()
             .and_then(|value| value["error"].as_str().map(str::to_owned))
@@ -39,6 +52,7 @@ impl Refused {
             status: reply.status,
             reason,
             retry_after_ms: reply.retry_after_ms,
+            older_service: false,
         }
     }
 }
@@ -178,6 +192,7 @@ mod tests {
             status,
             reason: "too many checks and past-state reads".into(),
             retry_after_ms,
+            older_service: false,
         })
     }
 

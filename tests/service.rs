@@ -84,6 +84,8 @@ fn spawn(db: &Database, dir: &Path, limits: &[String]) -> (Child, String, String
         .read_line(&mut line)
         .unwrap();
     let started: Value = serde_json::from_str(&line).unwrap();
+    // RAL-156: the start line names the code that's running.
+    assert!(started.get("commit").is_some(), "{line}");
     // It prints its address before replaying, so wait until it answers.
     let address = started["listening"].as_str().unwrap().to_owned();
     for _ in 0..600 {
@@ -3568,6 +3570,32 @@ fn a_token_expiring_within_a_week_files_one_item() {
         std::thread::sleep(Duration::from_millis(200));
     }
     assert_eq!(whole_inbox(&pairing).len(), 1);
+}
+
+/// RAL-156: the service says which code it runs, at its start and in /v1/whoami, and a route it
+/// doesn't have comes back as a service without it, not a bare refusal.
+#[test]
+fn the_service_says_what_it_is() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let who: Value = serde_json::from_str(&call(&pairing, "GET", "/v1/whoami", None).body).unwrap();
+    assert!(who.get("commit").is_some(), "{who}");
+    assert_eq!(who["commit"].as_str(), rally::commit(), "{who}");
+    let reply = call(&pairing, "GET", "/v1/nope", None);
+    assert_eq!(reply.status, 404);
+    let older = reply.older_than.unwrap();
+    assert!(older.starts_with("the service has no /v1/nope"), "{older}");
+    // A 404 that isn't a missing route stays what it was.
+    let story = call(&pairing, "GET", "/v1/stories/RAL-999", None);
+    assert_eq!(story.status, 404);
+    assert!(story.older_than.is_none());
+    // `rally --version` names the commit, or says plainly there's none.
+    let version = rally().arg("--version").output().unwrap();
+    let version = String::from_utf8_lossy(&version.stdout).into_owned();
+    match rally::commit() {
+        Some(commit) => assert!(version.contains(commit), "{version}"),
+        None => assert!(version.contains("no commit"), "{version}"),
+    }
 }
 
 /// RAL-154: the digest loop is started, refused a second copy, restarted and stopped by its pid

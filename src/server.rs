@@ -1269,6 +1269,8 @@ async fn whoami(
 ) -> Response {
     Json(json!({
         "credential": identity.credential, "read_only": identity.read_only,
+        // The code that's running (RAL-156).
+        "commit": crate::commit(),
         "operator_window_ms": service.operator_times.map(|t| t.window_ms),
         "operator_away_after": service.operator_times.map(|t| t.away_after),
         "operator_away_ms": service.operator_times.map(|t| t.away_ms),

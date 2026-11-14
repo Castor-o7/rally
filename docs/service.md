@@ -11,10 +11,18 @@ inside its own process without myko's listener, so its TLS port is the only way 
 The service and the `rally` CLI run the most recent stable Rally: the newest commit on `main` whose CI is green
 (the operator, 2026-11-05). After each merge, the lamplighter takes that commit through a preflight (a clean release
 build and `rally check` with the unit's environment), then a `rally backup` from a1. It keeps the old binary as
-`~/.local/bin/rally.<sha>`, installs the new one as a new inode, restarts, and checks the certificate fingerprint
-and `rally check`. The watchman updates a1's CLI. Red CI or a failed preflight holds the deploy. A change that an
+`~/.local/bin/rally.<sha>`, installs the new one as a new inode, and, once the service has been restarted, checks
+the certificate fingerprint and `rally check`. **On Murph the service runs as a system unit, and restarting it needs
+the operator's `sudo`:** the lamplighter installs and stages a commit, but it isn't live until the operator restarts
+the service, so several merged stories can be waiting on him at once. Until then the CLI can be newer than the
+service; `/v1/whoami`'s `commit` says which is live (below). The watchman updates a1's CLI. Red CI or a failed preflight holds the deploy. A change that an
 older binary can't read back, such as the first `designate --credential`, ends the rollback window, and the report
 says so. The full rule is Muster's `docs/board.md`, "Keeping the services current".
+
+What's running is a read, not a guess (RAL-156): `rally --version` names the commit a CLI was built from, and the
+service names its own in its start line and in `/v1/whoami` (`commit`). A build from a checkout with uncommitted
+changes has none, and says so. A CLI read that meets a route the service doesn't have says the service is older than
+the story that added it, rather than a bare 404.
 
 Records that end the rollback window, because a binary older than the one named can't replay them (`Change` is
 `deny_unknown_fields`):
