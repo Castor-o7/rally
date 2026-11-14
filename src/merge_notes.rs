@@ -34,6 +34,39 @@ pub fn conditions_naming(standings: &Value, story: &str) -> Vec<Value> {
         .collect()
 }
 
+/// The conditions a merge of `story` prints (RAL-175): those naming it, then those in force that
+/// name no story at all, such as a hold on the order of every merge, which bear on each merge.
+/// The second are said as naming no story; neither blocks the merge.
+pub fn conditions_at_merge(standings: &Value, story: &str) -> Vec<Value> {
+    let mut out = conditions_naming(standings, story);
+    out.extend(
+        standings["standings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|row| row["standing"] == "condition")
+            .filter(|row| {
+                row["story"]
+                    .as_str()
+                    .is_none_or(|named| named.trim().is_empty())
+            })
+            .map(|row| {
+                json!({
+                    "seq": row["seq"], "note": row["note"], "by": row["declared_by"],
+                    "kind": "declared", "story": null,
+                    "said": format!(
+                        "a condition in force names no story, so it bears on every merge: {} \
+                         (declared, #{} by {})",
+                        crate::session::clean(row["note"].as_str().unwrap_or("")),
+                        row["seq"].as_u64().unwrap_or(0),
+                        crate::session::clean(row["declared_by"].as_str().unwrap_or("someone"))
+                    ),
+                })
+            }),
+    );
+    out
+}
+
 /// What the merged commit's CI says, read through `gh` at the merge, observed (RAL-171). Still
 /// running isn't a verdict: the digest's RAL-102 section checks it again.
 pub fn ci_note(read: Result<Ci, String>) -> Value {
@@ -83,6 +116,32 @@ mod tests {
             "a condition in force names this story: merges next (declared, #7 by mellow-weevil)"
         );
         assert!(conditions_naming(&json!({}), "RAL-160").is_empty());
+    }
+
+    #[test]
+    fn a_condition_naming_no_story_is_given_at_every_merge() {
+        let standings = json!({"standings": [
+            {"seq": 7, "standing": "condition", "story": "RAL-160", "note": "merges next",
+             "declared_by": "mellow-weevil"},
+            {"seq": 9, "standing": "condition", "story": "RAL-161", "note": "another story",
+             "declared_by": "mellow-weevil"},
+            {"seq": 10, "standing": "condition", "note": "one merge at a time",
+             "declared_by": "mellow-weevil"},
+            {"seq": 11, "standing": "hold", "note": "a hold, not a condition", "declared_by": "w"},
+        ]});
+        let at = conditions_at_merge(&standings, "RAL-160");
+        assert_eq!(at.len(), 2, "{at:?}");
+        assert_eq!(at[0]["seq"], 7);
+        assert_eq!(
+            at[1]["said"],
+            "a condition in force names no story, so it bears on every merge: one merge at a \
+             time (declared, #10 by mellow-weevil)"
+        );
+        let other = conditions_at_merge(&standings, "RAL-999");
+        assert_eq!(other.len(), 1, "{other:?}");
+        assert_eq!(other[0]["seq"], 10);
+        // A team's session start still lists only what names its stories.
+        assert!(conditions_naming(&standings, "RAL-999").is_empty());
     }
 
     #[test]

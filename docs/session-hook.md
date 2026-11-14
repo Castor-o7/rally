@@ -15,7 +15,8 @@ One block, between `<rally_state team="…">` and `</rally_state>`, in this orde
 - under them, what bears on them (RAL-171): each condition in force naming one of the team's stories ("a condition
   in force names this story: …", declared, information and never a block), and each verified pull request of the
   team's that has fallen behind its base, read through `gh` as the digest's RAL-105 section reads it, in what's left
-  of the 3 seconds; when `gh` doesn't answer in time, one line says it couldn't be checked
+  of the 3 seconds; when `gh` doesn't answer in time, one line says it couldn't be checked, and likewise when the
+  conditions in force can't be read (RAL-175)
 - other teams' stories in review that it could verify, with the rule that while a watchman is designated, merges
   still wait for the watchman's read
 - stories with requested reads waiting for an answer

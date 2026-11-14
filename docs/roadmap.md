@@ -1372,3 +1372,9 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   kept in the hunk, so a head that differs only by a final newline reads `changed`, and one after context is not;
   the GitHub fallback's answer says file modes can't be seen there; conflict resolutions are the head's own merges
   (first parent), not those main's history brought in, found replaying RAL-163; with tests (docs/gate.md).
+- [ ] **RAL-175: A standings read that fails at session start says so; a condition naming no story is said at every
+  merge.** From the watchman's verify of RAL-171 (2026-11-14). Done when: at a team's session start, a read of the
+  conditions in force that fails or runs out of time gives one line saying it couldn't be checked and why, like the
+  behind-main line, and only for a team with an open story; `rally merge` gives, after the conditions naming the
+  story, each condition in force naming no story, said as naming none and bearing on every merge; a team's session
+  start still lists only those naming its stories; information, never a block; with tests (docs/session-hook.md).

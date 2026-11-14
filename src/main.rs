@@ -1396,9 +1396,12 @@ fn session_start(
             // RAL-171: conditions in force naming the team's stories, and its verified pull
             // requests fallen behind their base, each in what's left of the deadline.
             let left = rally::session::DEADLINE.saturating_sub(started.elapsed());
-            let mut about_stories = rally::session::fetch_standings(&pairing, left)
-                .map(|standings| rally::session::condition_lines(team, &stories, &standings))
-                .unwrap_or_default();
+            let standings = rally::session::fetch_standings(&pairing, left);
+            let mut about_stories = rally::session::condition_lines(
+                team,
+                &stories,
+                standings.as_ref().map_err(String::as_str),
+            );
             let left = rally::session::DEADLINE.saturating_sub(started.elapsed());
             about_stories.extend(behind_lines(team, &stories, left));
             let extra = rally::session::Extra {
@@ -5333,7 +5336,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
 }
 
 /// What `rally merge` says beside its record (RAL-171): the conditions in force naming the story,
-/// and the merged commit's CI through `gh`, observed. Each says so when it can't be read; neither
+/// and those naming no story (RAL-175), and the merged commit's CI through `gh`, observed. Each says so when it can't be read; neither
 /// changes the merge.
 fn merge_notes(
     out: &mut Value,
@@ -5350,7 +5353,7 @@ fn merge_notes(
         })
     };
     out["conditions"] = match read("/v1/standings", views::standings) {
-        Ok(standings) => json!(rally::merge_notes::conditions_naming(&standings, story)),
+        Ok(standings) => json!(rally::merge_notes::conditions_at_merge(&standings, story)),
         Err(error) => json!({"unread": error}),
     };
     let detail = backend.as_ref().map_err(|e| e.to_string()).and_then(|b| {
