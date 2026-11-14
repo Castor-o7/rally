@@ -78,7 +78,7 @@ threads. CI is usually still running at submission, so a pending check is tried 
 recorded as still pending, saying the wait ran out. There's one record per submission. A read of GitHub that fails, from a network error, a 5xx or a rate limit, is
 treated like CI still running: tried again until the wait runs out, then recorded with what failed. When a
 commit's message doesn't name the story and its pull requests can't be read, `names_story` is recorded as unknown,
-not false. After a restart, every submission still in review without a check is queued again.
+not false. After a restart, every submission without a check is queued again (RAL-149): each still in review, and each submitted since the ledger's first check whatever its story's state now (verified, sent back, merged), since a stop can come between a submit and its check while the story moves on before the start. A submission an amendment replaced isn't checked; its amendment is. Each such check's reason starts with the fixed phrase "checked late, after a service restart", then the story's or part's state by then, so a search finds every one. The ledger takes one check per submission, so nothing is checked twice.
 
 **What a submission costs.** Any submitter can make the service ask GitHub about any public `owner/repo`: up to
 about four calls a minute, for up to 30 minutes, per submission. A token's 5,000 calls an hour covers that, given
