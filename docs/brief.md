@@ -14,8 +14,12 @@ rally's projects, with every list bounded and every note cut short (well under 2
    listed.
 2. **Landed:** each team's newest `rally merge` since the rally opened, with the commit and when. A story that
    landed without a `rally merge` isn't here, so record each landing.
-3. **In the gate:** stories verified and not merged, with the commit read. Which of them the watchman is gating
-   together isn't in the ledger yet (RAL-157 part 2 records it).
+3. **In the gate:** the batches the watchman recorded with `rally batch` (below): those still gating first, each
+   with its cars, tip and age, and a prompt when it's past its expected time ("is the gate alive?") or the batch
+   it's built on failed; then the newest ended, an abandoned one saying which later batch re-ran its tip, a
+   failed one saying which batches built on it are still gating; then, for the newest landed batch, each car
+   whose story has no submit since it landed, with its team: the list to chase. Then stories verified and not
+   merged, with the commit read.
 4. **Waiting on you:** the rally's submissions waiting for a read, and how many parts stories wait on their close.
 5. **Waiting on the operator:** the operator's inbox (RAL-146), urgent first.
 6. **Rulings:** holds, conditions and grants in force, and the rally's events, newest first. A ruling given
@@ -23,8 +27,28 @@ rally's projects, with every list bounded and every note cut short (well under 2
 7. **Teams:** each team's assignments and the stories it holds in the rally.
 8. **More:** counts of what's outside the rally or past the bounds, with the command that lists each.
 
-What the ledger doesn't hold is said, not guessed at: what's deployed, and which commits the watchman is gating
-together.
+What the ledger doesn't hold is said, not guessed at: what's deployed, a batch not recorded, and whether a gate
+process is still running (an open batch past its time is a prompt to look, not a finding).
+
+## Recording a batch (RAL-157 part 2)
+
+Where the watchman lands work by gating several commits together, a "train", as DiscoSim does without pull
+requests, it records each batch so a restarted watchman, or anyone, can see what's in flight:
+
+```bash
+rally batch start --project DSM --car DSM-214@<sent sha>@<picked sha> --car DSM-209@<sent sha> \
+  --base <sha it was built on> --tip <sha the gate runs on> [--on-batch <N>] [--expect 50m] \
+  [--log ~/.cache/watchman/train54.out] --note "train 54"        # prints its record number, N
+rally batch end --batch <N> --landed <sha main moved to> --note "..."
+rally batch end --batch <N> --failed --note "why"
+rally batch end --batch <N> --abandoned --note "the gate died with the session"
+```
+
+A car is a story, the commit its team sent, and optionally the sha it became on the batch; up to 30. Its story
+need only exist: in this way of working a story is submitted after it lands. `--on-batch` names a batch still
+gating that this one is built on, as a superset gated in parallel. Only those who may open a rally may record a
+batch (the service's `--rally-openers`). It's declared and changes no story's state: record each landing with
+`rally merge` as well. A batch is a record kind older binaries can't replay; see docs/service.md.
 
 ## `rally brief`: the whole picture
 

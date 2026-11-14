@@ -169,6 +169,115 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
     let landed: Vec<Value> = landed.into_values().map(|(_, row)| row).collect();
     let (verified_waiting, verified_waiting_total) = newest(verified_waiting);
 
+    // 3b. Batches (RAL-157 part 2): open ones first, with what to ask about each; the newest ended;
+    // and, for the newest landed, the cars whose story has no submit since it landed.
+    let batches: Vec<&crate::ledger::Batch> = ledger
+        .batches()
+        .values()
+        .filter(|b| in_rally(&format!("{}-0", b.project)))
+        .collect();
+    let car_rows = |b: &crate::ledger::Batch| -> Vec<Value> {
+        b.cars
+            .iter()
+            .map(|c| json!({"story": c.story, "commit": c.commit, "picked": c.picked}))
+            .collect()
+    };
+    let outcome_word = |o: crate::ledger::BatchOutcome| match o {
+        crate::ledger::BatchOutcome::Landed => "landed",
+        crate::ledger::BatchOutcome::Failed => "failed",
+        crate::ledger::BatchOutcome::Abandoned => "abandoned",
+    };
+    let mut gating: Vec<(u64, Value)> = Vec::new();
+    for b in batches.iter().filter(|b| b.ended.is_none()) {
+        let mut prompts = Vec::new();
+        let open_min = age(now_ms, b.at_ms) / 60_000;
+        if let Some(expect) = b.expect_minutes
+            && open_min > i64::from(expect)
+        {
+            prompts.push(format!(
+                "open {open_min} min, past the expected {expect}: is the gate alive?"
+            ));
+        }
+        if let Some(on) = b.on_batch.and_then(|on| ledger.batches().get(&on))
+            && let Some(end) = &on.ended
+            && end.outcome != crate::ledger::BatchOutcome::Landed
+        {
+            prompts.push(format!(
+                "built on batch {}, which {}",
+                on.seq,
+                outcome_word(end.outcome)
+            ));
+        }
+        gating.push((
+            b.seq,
+            json!({"batch": b.seq, "project": b.project, "cars": car_rows(b), "base": b.base,
+                   "tip": b.tip, "on_batch": b.on_batch, "expect_minutes": b.expect_minutes,
+                   "log": b.log.as_deref().map(cut), "note": cut(&b.note),
+                   "by": b.source.declared_name, "age_ms": age(now_ms, b.at_ms),
+                   "prompts": prompts}),
+        ));
+    }
+    let (gating, gating_total) = newest(gating);
+    let mut ended: Vec<(u64, Value)> = Vec::new();
+    for b in &batches {
+        let Some(end) = &b.ended else { continue };
+        let mut prompts = Vec::new();
+        if end.outcome == crate::ledger::BatchOutcome::Abandoned
+            && let Some(rerun) = batches
+                .iter()
+                .find(|later| later.seq > b.seq && later.tip == b.tip)
+        {
+            prompts.push(format!("abandoned, re-run as {}", rerun.seq));
+        }
+        if end.outcome != crate::ledger::BatchOutcome::Landed {
+            let built: Vec<u64> = batches
+                .iter()
+                .filter(|later| later.on_batch == Some(b.seq) && later.ended.is_none())
+                .map(|later| later.seq)
+                .collect();
+            if !built.is_empty() {
+                prompts.push(format!("batches built on it, still gating: {built:?}"));
+            }
+        }
+        ended.push((
+            end.seq,
+            json!({"batch": b.seq, "project": b.project, "outcome": outcome_word(end.outcome),
+                   "landed": end.landed, "tip": b.tip, "cars": b.cars.len(),
+                   "note": cut(&end.note), "age_ms": age(now_ms, end.at_ms),
+                   "prompts": prompts}),
+        ));
+    }
+    ended.sort_by_key(|(seq, _)| std::cmp::Reverse(*seq));
+    let ended_total = ended.len();
+    let ended: Vec<Value> = ended.into_iter().take(5).map(|(_, row)| row).collect();
+    // The newest landed: whose stories still owe a submit since the landing.
+    let newest_landed = batches
+        .iter()
+        .filter_map(|b| {
+            let end = b.ended.as_ref()?;
+            (end.outcome == crate::ledger::BatchOutcome::Landed).then_some((b, end))
+        })
+        .max_by_key(|(_, end)| end.seq)
+        .map(|(b, end)| {
+            let owed: Vec<Value> =
+                b.cars
+                    .iter()
+                    .filter(|car| {
+                        ledger.story(&car.story).is_none_or(|story| {
+                            !story.history.iter().any(|e| {
+                                e.seq > end.seq && matches!(e.change, Change::Submit { .. })
+                            })
+                        })
+                    })
+                    .map(|car| {
+                        json!({"story": car.story,
+                           "team": ledger.story(&car.story).and_then(|s| s.team.clone())})
+                    })
+                    .collect();
+            json!({"batch": b.seq, "landed": end.landed, "age_ms": age(now_ms, end.at_ms),
+                   "no_submit_since_landing": owed})
+        });
+
     // 4. Waiting on the watchman: submissions in the rally waiting for a reader.
     let readers = if watchmen.is_empty() {
         crate::views::Readers::Suggest
@@ -321,9 +430,14 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
                      without one recorded isn't here.",
         },
         "in_the_gate": {
-            "verified_not_merged": verified_waiting, "total": verified_waiting_total,
-            "note": "Which of these the watchman is gating together isn't in the ledger yet \
-                     (RAL-157 part 2 records it).",
+            "gating": gating, "gating_total": gating_total,
+            "ended": ended, "ended_total": ended_total,
+            "newest_landed": newest_landed,
+            "verified_not_merged": verified_waiting, "verified_not_merged_total":
+                verified_waiting_total,
+            "note": "Batches are as the watchman declared them (`rally batch`). Whether a gate \
+                     process is still running isn't in the ledger: an open batch past its expected \
+                     time is a prompt to look, not a finding.",
         },
         "waiting_on_you": {"submissions": waiting, "total": waiting_total,
                            "closes_due": closes_due},
@@ -342,9 +456,8 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
                 "handover": "rally handover", "a story": "rally show <STORY>",
             },
         },
-        "outside_the_ledger": "What's deployed, and which commits the watchman is gating \
-                               together, aren't recorded here; nor is what was said only in \
-                               chat.",
+        "outside_the_ledger": "What's deployed isn't recorded here, nor is a batch the watchman \
+                               didn't record with `rally batch`, nor what was said only in chat.",
     })
 }
 
@@ -439,6 +552,106 @@ mod tests {
         assert_eq!(stories(&out["waiting_on_you"]["submissions"]), ["RAL-2"]);
         assert_eq!(out["more"]["claims_outside_rally"], 1);
         assert!(out.to_string().len() < 20_000);
+    }
+
+    /// RAL-157 part 2: open batches come first, with a prompt past their expected time and when
+    /// the batch they're built on failed; an abandoned batch says what re-ran it; and the newest
+    /// landed batch lists the cars whose stories have no submit since it landed.
+    #[test]
+    fn batches_show_what_is_gating_and_who_owes_a_submit() {
+        let sha = |c: char| c.to_string().repeat(40);
+        let mut chain = Chain::new();
+        chain.push(json!({"change": "open_rally", "name": "x", "projects": ["DSM"]}));
+        for (story, team) in [("DSM-1", "deft"), ("DSM-2", "sleek"), ("DSM-3", "vibrant")] {
+            chain.push_as("w", json!({"change": "ready", "story": story}));
+            chain.push_as(
+                "w",
+                json!({"change": "claim", "story": story, "team": team}),
+            );
+        }
+        let start = |chain: &mut Chain, cars: &[&str], tip: char, extra: Value| -> u64 {
+            let cars: Vec<Value> = cars
+                .iter()
+                .map(|story| json!({"story": story, "commit": sha('1')}))
+                .collect();
+            let mut body = json!({"change": "batch_start", "project": "DSM", "cars": cars,
+                                  "base": sha('b'), "tip": sha(tip), "note": "train"});
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            chain.push_as("watch", body);
+            chain.records.len() as u64
+        };
+        let end = |chain: &mut Chain, batch: u64, outcome: &str, landed: Option<char>| {
+            let mut body = json!({"change": "batch_end", "batch": batch, "outcome": outcome,
+                                  "note": "ended"});
+            if let Some(c) = landed {
+                body["landed"] = json!(sha(c));
+            }
+            chain.push_as("watch", body);
+        };
+        // Train 52 landed DSM-1 and DSM-2; DSM-1's team has submitted since, DSM-2's hasn't.
+        let t52 = start(&mut chain, &["DSM-1", "DSM-2"], 'a', json!({}));
+        end(&mut chain, t52, "landed", Some('a'));
+        chain.push_as(
+            "deft",
+            json!({"change": "submit", "story": "DSM-1", "team": "deft",
+                   "evidence": format!("o/r@{}", sha('a'))}),
+        );
+        // Train 53 was abandoned and re-run as 54 under the same tip; 55 is built on 54.
+        let t53 = start(&mut chain, &["DSM-3"], 'c', json!({}));
+        end(&mut chain, t53, "abandoned", None);
+        let t54 = start(&mut chain, &["DSM-3"], 'c', json!({"expect_minutes": 1}));
+        let t55 = start(&mut chain, &["DSM-3"], 'd', json!({"on_batch": t54}));
+
+        let ledger = crate::ledger::Ledger::replay(&chain.records).unwrap();
+        // Records are written at 1_000 ms; read two minutes on, past 54's expected minute.
+        let out = brief(&ledger, &chain.hashes, None, 1_000 + 2 * 60_000);
+        let gate = &out["in_the_gate"];
+        let gating: Vec<u64> = gate["gating"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["batch"].as_u64().unwrap())
+            .collect();
+        assert_eq!(gating, [t55, t54], "{gate}");
+        let prompts = |row: &Value| row["prompts"].to_string();
+        assert!(
+            prompts(&gate["gating"][1]).contains("is the gate alive?"),
+            "{gate}"
+        );
+        assert_eq!(gate["gating"][0]["on_batch"], t54);
+        let abandoned = gate["ended"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["batch"] == t53)
+            .unwrap();
+        assert!(
+            prompts(abandoned).contains(&format!("re-run as {t54}")),
+            "{abandoned}"
+        );
+        let landed = &gate["newest_landed"];
+        assert_eq!(landed["batch"], t52);
+        assert_eq!(landed["landed"], sha('a'));
+        assert_eq!(stories(&landed["no_submit_since_landing"]), ["DSM-2"]);
+        assert_eq!(landed["no_submit_since_landing"][0]["team"], "sleek");
+
+        // 54 fails: 55, built on it, says so.
+        end(&mut chain, t54, "failed", None);
+        let ledger = crate::ledger::Ledger::replay(&chain.records).unwrap();
+        let out = brief(&ledger, &chain.hashes, None, 1_000 + 2 * 60_000);
+        let gate = &out["in_the_gate"];
+        assert!(
+            prompts(&gate["gating"][0]).contains(&format!("built on batch {t54}, which failed"))
+        );
+        let failed = gate["ended"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["batch"] == t54)
+            .unwrap();
+        assert!(prompts(failed).contains(&format!("[{t55}]")), "{failed}");
     }
 
     /// RAL-157: every list is bounded and every note cut short, newest first, with the total.
