@@ -1353,3 +1353,8 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   separately when the head's merges of main resolved a conflict; says `can't tell` (never `same change`) for a
   missing commit or a compare cut short at 250; local git first, GitHub as the fallback; with tests for same,
   changed, conflict-resolved and can't-tell (docs/gate.md).
+- [ ] **RAL-172: `rally rebased` counts a final newline, and its GitHub path says modes are unseen.** From the
+  watchman's verify of RAL-170 (2026-11-14). Done when: a `\ No newline at end of file` after a changed line is
+  kept in the hunk, so a head that differs only by a final newline reads `changed`, and one after context is not;
+  the GitHub fallback's answer says file modes can't be seen there; conflict resolutions are the head's own merges
+  (first parent), not those main's history brought in, found replaying RAL-163; with tests (docs/gate.md).
