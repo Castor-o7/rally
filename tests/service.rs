@@ -3442,6 +3442,7 @@ fn a_token_expiring_within_a_week_files_one_item() {
         std::thread::sleep(Duration::from_millis(200));
     }
     assert_eq!(whole_inbox(&pairing).len(), 1);
+}
 
 /// RAL-154: the digest loop is started, refused a second copy, restarted and stopped by its pid
 /// file, with no pattern search; a restart after it died unasked says so in digest.log.
