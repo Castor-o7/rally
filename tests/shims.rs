@@ -56,7 +56,6 @@ impl Rig {
 
     /// Writes an executable fake named `name` that answers as `fake`, and returns its path.
     fn fake(&self, case: &str, name: &str, fake: Fake) -> String {
-        use std::os::unix::fs::PermissionsExt;
         // Each fake's session is its own, so two populated rosters have two sessions.
         let roster = json!({"read_at": 1, "sessions": [{
             "session_id": format!("{case}-{name}"),
@@ -87,15 +86,10 @@ impl Rig {
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join(name);
         let log = self.log();
-        std::fs::write(
-            &path,
-            format!(
+        rally::script::write(&path, format!(
                 "#!/bin/sh\necho \"{name} $1\" >> '{}'\ncase \"$1\" in\n  roster) {on_roster} ;;\n  tell) {on_tell} ;;\n  *) exit 2 ;;\nesac\n",
                 log.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            )).unwrap();
         path.display().to_string()
     }
 
@@ -139,14 +133,11 @@ impl Rig {
 
     /// PATH with a fake `gh` first, serving a roadmap with RAL-1 on it, for `rally wake`.
     fn path_with_gh(&self) -> String {
-        use std::os::unix::fs::PermissionsExt;
         let bin = self.dir.path().join("bin");
         if !bin.exists() {
             std::fs::create_dir(&bin).unwrap();
             let gh = "#!/bin/sh\ncase \"$*\" in\n  *commits/HEAD*) echo 0123456789abcdef0123456789abcdef01234567 ;;\n  *contents*) printf '%s\\n' '# Roadmap' '' '- [ ] **RAL-1: Something to do.** Done when: done.' ;;\n  *) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n";
-            std::fs::write(bin.join("gh"), gh).unwrap();
-            std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755))
-                .unwrap();
+            rally::script::write(bin.join("gh"), gh).unwrap();
         }
         format!(
             "{}:{}",

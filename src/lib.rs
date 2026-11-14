@@ -36,6 +36,7 @@ pub mod evidence;
 pub mod gate;
 pub mod gate_check;
 pub mod gate_log;
+pub mod in_flight;
 pub mod inbox;
 pub mod init;
 pub mod ledger;
@@ -50,6 +51,7 @@ pub mod retry;
 pub mod roadmaps;
 #[doc(hidden)]
 pub mod scratch_pg;
+pub mod script;
 pub mod secrets;
 pub mod server;
 pub mod session;

@@ -106,6 +106,27 @@ waiting on something legitimate, such as the network, looks the same. Rally stop
 been agreed with the operator, so `--hung-after` has no default, and without it nothing is sampled. CPU time and
 start times are the kernel's (`/proc/<pid>/stat`, observed). Linux only.
 
+## A holder that took the lock and exited (RAL-192)
+
+From the watchman's first live run of RAL-191 on 2026-11-14 (issues log 1.86): every `dsm-heavy` slot's holder,
+by `/proc/locks`, was a process that no longer existed. `/proc/locks` names the process that took a lock. For
+`dsm-heavy` that's its own bash, which takes the slot and execs `systemd-run --scope`, and under systemd 261 the
+job doesn't keep that pid. The lock stays held, by the open file description the job's processes inherited. So
+the stopped-holder and possibly-hung rows above walked a process that didn't exist and never prompted, for any
+`dsm-heavy` job.
+
+When a holder `/proc/locks` names has exited, or doesn't have the file open, the holders are found by their open
+descriptors instead. Every process's `/proc/<pid>/fd` is read for a link naming the lock file, whose target has
+the lock file's device and inode. Of those processes, the topmost are taken: the ones whose parent doesn't hold
+the file too, so a job and its children are one holder. The lock's row says `found_by` and keeps the kernel's
+pid in `kernel_holders`. The stopped and possibly-hung checks then walk the real job's tree.
+
+If no process can be found with the file open, the lock can't be read, and that's a blind spot, never "no
+holder". The reason names the kernel's pid, and how many processes' open files couldn't be read (another
+user's, or a sandboxed one's). Under `--prompts-only` that fails the run (RAL-174). When holders are found while
+some processes' files couldn't be read, `unreadable_processes` says how many. Kernel threads open no files and
+aren't counted. Only processes this user can see are read.
+
 ## A fair slot pool's queue (RAL-188)
 
 From the DiscoSim rally's issues log, 1.84: one team's 25 `dsm-heavy` jobs took most of the heavy slots, and

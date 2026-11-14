@@ -1486,3 +1486,30 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   waits, before any probe, up to 20 s for the board's first draw (`drawnAt`) or the page's own warning, and says
   which as `firstDraw`; the ages test asserts "drawn"; and with the page's first /api/status held for 600 ms and
   3 s (a local CDP hold, not committed) the test, which failed as on CI before, passes.
+- [ ] **RAL-189: Test scripts written without "Text file busy".** From hosted CI on PR #275 (2026-11-14):
+  `levi::tests::output_held_open_after_levi_exits_doesnt_outlast_the_deadline` failed with ETXTBSY (os error
+  26) running its fake levi. A test wrote the script with `std::fs::write` and ran it, and another thread's
+  fork, between its fork and exec, held a copy of the write descriptor. On Murph, writing and running a script
+  300 times beside four forking threads failed 6 and 7 times in two runs. (The board-ages browser flake seen
+  on the same PR is earnest-raccoon's own story.) Done when: every test that writes a script and runs it writes
+  it with `rally::script::write`, which writes through a child process (`sh`, `cat`, `chmod 755`) so the test
+  process never holds the file open for writing; no write-then-chmod-755 of a script is left in `src/` or
+  `tests/`; with a test that writes and runs a script 200 times beside four forking threads and is never busy.
+- [ ] **RAL-191: The watchman's brief lists the jobs in flight.** From the DiscoSim issues log, 1.73 ("the
+  watchman's handoff names every job in flight, so a restart can tell what died"), and the watchman
+  (2026-11-14). Done when: `rally brief --watchman` has an `in_flight` section, read on this machine and
+  read-only: for each project's `stalls.locks` in the projects list, each held lock with its holder's pid,
+  state, command and working directory (observed) and the owner its file names (declared), free slots counted,
+  and each fair pool's queue by owner (RAL-188), with a one-line summary; an unreadable projects list, no
+  project naming a lock, an unreadable lock or an unseen queue is named in `blind`, never shown as nothing
+  running; with unit tests and a CLI test with real `flock` holders (docs/brief.md).
+- [ ] **RAL-192: Lock holders found by open descriptor when the locking pid is gone.** From RAL-191's first live
+  run (2026-11-14, issues log 1.86): every dsm-heavy slot's holder by `/proc/locks` was a pid that had exited
+  (dsm-heavy's bash, gone once it execs `systemd-run --scope`), while its job held the lock by the inherited
+  descriptor, so stalls' stopped and possibly-hung checks had never prompted for a dsm-heavy job. Done when: a
+  holder `/proc/locks` names that has exited or doesn't have the file open is replaced by the topmost processes
+  (whose parent doesn't hold it too) with an open descriptor on the file, matched by device and inode through
+  `/proc/<pid>/fd`, the row saying `found_by` and keeping `kernel_holders`; no such process found is a blind
+  spot naming how many processes' open files couldn't be read, never "no holder"; the brief's `in_flight` shows
+  the same; with a test that the stopped and possibly-hung checks prompt for a holder found this way
+  (docs/stalls.md).
