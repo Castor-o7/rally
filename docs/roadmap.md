@@ -1201,3 +1201,10 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   each tried again, and Rally closes it itself, observed, when a read passes; ten checks made at the start meeting
   a 401 file one item (RAL-149's case); the check-runs 403 files none and the check is recorded; a token expiring
   within 7 days files one. docs/evidence.md says how the override is kept out of a production start.
+- [ ] **RAL-155: The docs, read as a new operator and a new watchman would, after the night of 2026-11-13.** From the
+  watchman: Rally gained an inbox, a restart briefing, late checks and a scoped digest across five pull requests by
+  two teams. Done when: README, service.md, web.md, digest.md, inbox.md, session-hook.md and evidence.md say what
+  the code does now, with nothing stale (the README's status and "not verified yet" lines, the viewer's "no write
+  path"), nothing missing (what `--rally-openers` guards, the service's own inbox items, the session-start block's
+  sections), and nothing said twice; docs only; and every place where the code, not the docs, looks wrong is
+  listed for the watchman rather than written around.

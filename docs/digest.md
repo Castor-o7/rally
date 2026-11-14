@@ -33,12 +33,11 @@ so a digest goes at most that long after it's due. Each watchman's head and cloc
 
 - One direct message to each designated watchman, through `marshal-shim` or `muster-shim`, whichever knows it, as
   `rally wake` sends (RAL-120), named in the row's `sent_by`.
-- Until RAL-63, that's the one watchman in force. With RAL-63, each watchman in force gets the changes in its
-  scope (a host or a team), sent to the session holding that watchman's credential (RAL-53).
 - With no watchman designated, nothing is sent: teams verify one another then (`rally waiting`). While the
   service has no operator key, no designation can be checked, so `--watchman <name>` names the one to send to.
   That's declared: the watchman's own records are then told apart by declared name, not credential.
-- Scopes aren't applied yet: each watchman in force gets the whole digest.
+- A watchman's scope (RAL-63: a host or a team) isn't applied to the digest: each watchman in force gets the whole
+  of it.
 
 ## What's in it
 
@@ -70,21 +69,26 @@ Questions to the operator (0)
 
 Teams
 - muster: resting [declared], 8m ago.
+
+Operator inbox: 2 open, 1 urgent; the urgent ones (1)
+- #3301 rally: "Rally's GitHub token was refused (GitHub answered 401: Bad credentials): …" [observed], 5m ago;
+  asks: Make a new read-only fine-grained token …
 </rally_digest>
 ```
 
 - **Each fact carries its kind** (observed, declared or verified) and its **age**, as the viewer shows them.
-- **Sections:** waiting for the watchman (submissions and open read requests); RAL-52's handover list
-  (peer-verified since the last designation, awaiting the watchman's re-read, with the commit read, the
-  verifier, and whether and where it merged). With a rally open it lists only that rally's projects, and the
-  watchman's own reads, made before its designation or by a session confirmed as its restart, are never on it.
-  When every row is one the last digest sent already listed, it's one line, "…: N, none new since your last
-  digest (rally handover)", instead of the list again (RAL-148); merges, flagging one whose pull request's head at merge isn't the
-  commit verified;
-  blockers opened and closed; questions to the operator; team-state changes; and the operator's inbox as it stands
-  (RAL-146, [inbox.md](inbox.md)): "Operator inbox: N open, M urgent", with each urgent item and what it asks,
-  left out when the inbox is empty or the service is older than RAL-146. An empty section is left out, except
-  "Waiting for you", which always shows its count.
+- **Sections,** in this order. An empty one is left out, except "Waiting for you", which always shows its count.
+  - **Waiting for you:** submissions and open read requests.
+  - **Peer-verified, awaiting your re-read** (RAL-52): verified by a peer since the last designation, with the
+    commit read, the verifier, and whether and where it merged. With a rally open it lists only that rally's
+    projects, and the watchman's own reads, made before its designation or by a session confirmed as its
+    restart, are never on it. When every row is one the last digest already listed, it's one line, "…: N, none
+    new since your last digest (rally handover)", instead of the list again (RAL-148).
+  - **Merged:** each merge, flagging one whose pull request's head at merge isn't the commit verified.
+  - **Base CI after merges** (RAL-102) and **Verified, but behind their base** (RAL-105): see below.
+  - **Blockers** opened and closed, **Questions to the operator**, and **Teams**' state changes.
+  - **Operator inbox** (RAL-146, [inbox.md](inbox.md)): "Operator inbox: N open, M urgent", with each urgent item
+    and what it asks, as the inbox stands now; left out when it's empty or the service is older than RAL-146.
 - **Bounded:** at most 40 lines and 4 KB, like `rally session-start`. Past that, each section shows its count and
   says what to run: `rally waiting`, `rally handover`, `rally blockers` or `rally brief`.
 - **Untrusted text** is cleaned as in `rally session-start`: control and invisible characters become spaces,
