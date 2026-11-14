@@ -86,6 +86,7 @@ recording nothing:
 rally rebased RAL-170 --head <full sha>                   # in a checkout that has both commits
 rally rebased RAL-170 --head <full sha> --checkout ~/src/rally-wt/x --base main
 rally rebased RAL-163 --part 2 --head <full sha>              # a story in parts, before its close
+rally rebased RAL-174 --verified 8d7adeb… --head 0f17cbb…    # a replay, after the check was recorded
 ```
 
 - **The comparison:** the verified commit's change against its merge base with main, and the head's
@@ -119,3 +120,7 @@ rally rebased RAL-163 --part 2 --head <full sha>              # a story in parts
 - **A story in parts:** until its close, a story in parts has no verified commit of its own, only
   each part's. `--part k` compares part k's verified commit, from the repository its evidence names;
   without it, the answer is `can't tell` and names the parts that are verified (RAL-173).
+- **Replays, and a head compared with itself** (RAL-177): once a check at a re-based head is recorded, that head is
+  the verified commit, and `--head` with it compares the commit with itself: that says `can't tell`, and why.
+  To replay after the fact, `--verified <sha>` gives the commit to compare with instead; the output's
+  `verified_given` says it was given, not the ledger's, and what the ledger has. Nothing is recorded.
