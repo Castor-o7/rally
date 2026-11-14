@@ -1478,3 +1478,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   slots; a waiting directory that exists while `/proc/locks` can't be read, or a `--queue` that isn't there, is a
   blind spot ("can't see the queue"), never 0 waiting; with unit tests and a CLI test with real `flock` holders
   (docs/stalls.md).
+- [ ] **RAL-190: The board-ages browser test raced the board's first draw.** From the watchman (2026-11-14): hosted
+  `check` on PR #275 failed once at the_board_keeps_its_ages_current_and_shows_commits_short with `before: []`.
+  The cause: the board draws from the page's own fetch of /api/status, which the load event the harness waits on
+  doesn't wait for; on Murph the draw beat the probe by about 20 ms, and on a loaded runner it lost. The page
+  was right (no ages before it has read any), so the fix is in the harness. Done when: tests/browser/sign-in.mjs
+  waits, before any probe, up to 20 s for the board's first draw (`drawnAt`) or the page's own warning, and says
+  which as `firstDraw`; the ages test asserts "drawn"; and with the page's first /api/status held for 600 ms and
+  3 s (a local CDP hold, not committed) the test, which failed as on CI before, passes.
