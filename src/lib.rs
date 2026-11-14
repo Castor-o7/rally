@@ -16,6 +16,7 @@ pub mod levi;
 pub mod lock_holder;
 pub mod next;
 pub mod record;
+pub mod resume;
 pub mod retry;
 pub mod roadmaps;
 #[doc(hidden)]
