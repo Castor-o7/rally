@@ -69,8 +69,14 @@ rally gate <base>..<new>                                         # before moving
 
 - **One merge at a time.** A merge moves `main`, and every other pull request then merges `main` in again and is
   read again at its new head.
-- **Give the queue to one team at a time, and say so.** On 11-13 one team's pull request, verified and green, fell 8
-  commits behind while another team merged seven stories past it.
+- **Give the queue to one team at a time, and record it.** On 11-13 one team's pull request, verified and green,
+  fell 8 commits behind while another team merged seven stories past it. Record a merge order as a condition, not
+  only in direct messages, so every team and a restarted watchman can read it, and end it when it's done:
+
+  ```sh
+  rally condition --team watchman --story RAL-160 --note "merges next; RAL-163 part 2 waits behind it"
+  rally end-standing <N> --note "RAL-160 merged"
+  ```
 - **Read the checks yourself before a verify.** A green check can be a check that ran on another commit's build:
   until RAL-144, local CI's target directory was shared between commits.
 
