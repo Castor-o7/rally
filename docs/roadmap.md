@@ -1503,6 +1503,14 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   and each fair pool's queue by owner (RAL-188), with a one-line summary; an unreadable projects list, no
   project naming a lock, an unreadable lock or an unseen queue is named in `blind`, never shown as nothing
   running; with unit tests and a CLI test with real `flock` holders (docs/brief.md).
+- [ ] **RAL-193: The operator inbox folds away.** From Josh (2026-11-14, the lamplighter's record 4311): "Lets give it
+  an arrow that allows us to make it hidden". Done when: an arrow beside the "Operator inbox" heading, a button with
+  `aria-expanded` and `aria-controls`, folds the panel and its line away and back, by mouse or keyboard; folded, the
+  heading still gives the open count and the urgent count, in the urgent colour, so nothing urgent hides; it's
+  remembered per browser across reloads and viewer restarts (localStorage, every access in try/catch, open when
+  storage fails); it looks like the "Past rallies" disclosure marker; web assets only; with a browser test that
+  folds, reloads (tests/browser/sign-in.mjs's new `RALLY_BROWSER_RELOAD_PROBE`), finds it still folded with its
+  counts, and unfolds it.
 - [ ] **RAL-192: Lock holders found by open descriptor when the locking pid is gone.** From RAL-191's first live
   run (2026-11-14, issues log 1.86): every dsm-heavy slot's holder by `/proc/locks` was a pid that had exited
   (dsm-heavy's bash, gone once it execs `systemd-run --scope`), while its job held the lock by the inherited

@@ -3519,3 +3519,94 @@ fn ticking_an_item_in_the_browser_takes_it_off_the_list() {
     );
     inbox_status(&viewer, 2);
 }
+
+/// RAL-193, in the browser: the arrow beside the operator inbox's heading folds its panel away, by
+/// a button that says whether it's open; folded, the heading still gives the counts, the urgent one
+/// too, in the urgent colour; it stays folded across a reload, and unfolds again.
+#[test]
+fn the_operator_inbox_folds_away_and_stays_folded_across_a_reload() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start_ticking();
+    inbox_status(&viewer, 3);
+    // Each read waits on what it reads: the board's first draw, then the inbox's rows.
+    let state = r##"
+      const wait = async (test) => {
+        for (let i = 0; i < 200 && !test(); i++) await new Promise((r) => setTimeout(r, 100));
+        return test();
+      };
+      const button = () => document.getElementById("inbox-fold");
+      const body = () => document.getElementById("inbox-body");
+      const state = () => ({
+        expanded: button().getAttribute("aria-expanded"),
+        controls: button().getAttribute("aria-controls"),
+        tag: button().tagName,
+        bodyHidden: body().hidden,
+        panelShown: document.getElementById("inbox").getBoundingClientRect().height > 0,
+        heading: document.getElementById("inbox-title").textContent,
+        urgent: document.getElementById("inbox-title").dataset.urgent,
+        stored: (() => { try { return localStorage.getItem("rally-inbox-folded"); } catch (e) { return "unreadable"; } })(),
+      });
+      await wait(() => document.querySelectorAll("#inbox .inbox-item").length === 3);
+    "##;
+    let probe = format!(
+        r##"(async () => {{ {state}
+      const open = state();
+      button().focus();
+      button().click();
+      const folded = state();
+      return {{ open, folded, focused: document.activeElement === button() }};
+    }})()"##
+    );
+    let reload = format!(
+        r##"(async () => {{ {state}
+      const afterReload = state();
+      button().click();
+      const unfolded = state();
+      return {{ afterReload, unfolded }};
+    }})()"##
+    );
+    let reload_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(reload_file.path(), &reload).unwrap();
+    let (ok, seen, stderr) = run_browser_env(
+        &viewer,
+        &chrome,
+        Some(&probe),
+        None,
+        None,
+        &[(
+            "RALLY_BROWSER_RELOAD_PROBE",
+            reload_file.path().to_str().unwrap(),
+        )],
+    );
+    assert!(ok, "{seen}\n{stderr}");
+    nothing_of_the_browser_survives(&seen);
+    let (first, again) = (&seen["probe"], &seen["reloaded"]);
+    // Open by default, through a button that says so and names what it controls.
+    let open = &first["open"];
+    assert_eq!(open["tag"], "BUTTON", "{seen}");
+    assert_eq!(open["expanded"], "true", "{seen}");
+    assert_eq!(open["controls"], "inbox-body", "{seen}");
+    assert_eq!(open["panelShown"], true, "{seen}");
+    assert!(open["stored"].is_null(), "{seen}");
+    // Folded: the panel is gone, the heading keeps every count and the urgent colour.
+    for folded in [&first["folded"], &again["afterReload"]] {
+        assert_eq!(folded["expanded"], "false", "{seen}");
+        assert_eq!(folded["bodyHidden"], true, "{seen}");
+        assert_eq!(folded["panelShown"], false, "{seen}");
+        assert!(
+            folded["heading"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("3 items open, 1 urgent"),
+            "{seen}"
+        );
+        assert_eq!(folded["urgent"], "yes", "{seen}");
+        assert_eq!(folded["stored"], "yes", "{seen}");
+    }
+    assert_eq!(first["focused"], true, "{seen}");
+    // And unfolded again, forgotten.
+    let unfolded = &again["unfolded"];
+    assert_eq!(unfolded["expanded"], "true", "{seen}");
+    assert_eq!(unfolded["panelShown"], true, "{seen}");
+    assert!(unfolded["stored"].is_null(), "{seen}");
+}

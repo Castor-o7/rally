@@ -330,8 +330,10 @@ function renderInbox(inbox, tickInfo, now) {
   const heading = document.getElementById("inbox-title");
   const title = inboxCount(inbox).replace(/^Operator inbox: /, "");
   if (heading) {
+    // RAL-193: the text sits beside the fold arrow, inside its button, so writing it keeps the button.
+    const label = document.getElementById("inbox-title-text") || heading;
     const text = "Operator inbox · " + title;
-    if (heading.textContent !== text) heading.textContent = text;
+    if (label.textContent !== text) label.textContent = text;
     heading.dataset.urgent = inbox && inbox.urgent ? "yes" : "no";
   }
   if (!inbox || inbox.available === false) {
@@ -1888,6 +1890,31 @@ async function refresh() {
   }
   showFreshness(Date.now());
 }
+
+// RAL-193: the operator inbox folds away with the arrow beside its heading, remembered by this browser
+// across reloads and restarts of the viewer. Storage that can't be read leaves it open. Folded, the
+// heading still gives the counts, urgent included, so an urgent item is never silently hidden.
+const INBOX_FOLDED = "rally-inbox-folded";
+function foldInbox(folded, remember) {
+  const button = document.getElementById("inbox-fold");
+  const body = document.getElementById("inbox-body");
+  if (!button || !body) return;
+  body.hidden = folded;
+  button.setAttribute("aria-expanded", String(!folded));
+  button.title = folded ? "Show the operator inbox" : "Hide the operator inbox";
+  if (!remember) return;
+  try {
+    if (folded) localStorage.setItem(INBOX_FOLDED, "yes");
+    else localStorage.removeItem(INBOX_FOLDED);
+  } catch (error) { /* not remembered; it still folds for now */ }
+}
+(() => {
+  let folded = false;
+  try { folded = localStorage.getItem(INBOX_FOLDED) === "yes"; } catch (error) { folded = false; }
+  foldInbox(folded, false);
+  const button = document.getElementById("inbox-fold");
+  if (button) button.addEventListener("click", () => foldInbox(button.getAttribute("aria-expanded") === "true", true));
+})();
 
 refresh();
 setInterval(refresh, 30000);
