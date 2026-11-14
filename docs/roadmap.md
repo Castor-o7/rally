@@ -1321,3 +1321,9 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   to the rally; and each landed story with no submit since its newest landing, with its team; docs/brief.md says to
   record an owed thing as a blocker when asked and close it when it comes, and that a question answered in the same
   exchange needs none; with a test.
+- [ ] **RAL-166: `rally brief --watchman` says when the service is older than RAL-157.** From the watchman
+  (2026-11-14), after RAL-156's route table: every route the service serves names the story that added it, but the
+  watchman's brief is a query on an existing route (`/v1/brief?watchman=true`), which a service older than RAL-157
+  ignores, answering with the ordinary brief as if it were the watchman's. Done when: the CLI tells the watchman's
+  brief by its own sections and, given the ordinary one, says the service is older than RAL-157 and needs updating;
+  with a unit test of both answers.

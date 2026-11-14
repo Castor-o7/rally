@@ -2535,6 +2535,11 @@ fn the_service_gives_a_new_watchman_one_brief() {
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert!(reply.body.len() < 20_000, "{} bytes", reply.body.len());
     let short: Value = serde_json::from_str(&reply.body).unwrap();
+    // RAL-166: what the CLI checks a watchman's brief by holds of the real one.
+    assert!(
+        rally::watchman_brief::from_service(short.clone()).is_ok(),
+        "{short}"
+    );
     assert_eq!(
         short["waiting_on_you"]["submissions"][0]["story"], "RAL-60",
         "{short}"
