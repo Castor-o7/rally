@@ -17,6 +17,13 @@ Evidence written as `owner/repo@<full commit>` (40 or 64 hex digits) is checked 
 - **`ci`:** what the commit's check runs and combined status say together: `passed`, `failed`, `pending`, or
   `none` when it has neither. A submission often comes before its CI starts, so `none` is looked for again as
   `pending` is, until the wait runs out, and only then recorded, with the reason (RAL-132).
+  When GitHub refuses the check runs with 403 "Resource not accessible by personal access token" (or "by
+  integration"), the token can't read them at all: a fine-grained token has no Checks permission, so on a
+  private repository this never passes. The check doesn't try again until the wait runs out; it reads the
+  commit's statuses alone, records at once, and says so in the reason: check runs can't be read with the
+  service's token, so CI was read from commit statuses alone. A commit with no statuses then reads as `none`,
+  with "no CI reported", never as `passed` (RAL-147). Any other refusal of the check runs, such as a rate limit
+  (also a 403) or a bad token (401), is a failed read as before, tried again until the wait runs out.
 
 Evidence in any other form is recorded as `checkable: false`, with the reason. What a team didn't test goes in
 its own field, `rally submit --untested "..."`, not in the evidence.
@@ -131,7 +138,9 @@ head.
 ### The operator's step
 
 Create a fine-grained token, read-only, for the Castor-o7 repositories only, with **Contents**, **Commit
-statuses**, **Checks**, **Pull requests** and **Metadata**, all read. Then, on Murph:
+statuses**, **Checks**, **Pull requests** and **Metadata**, all read. (Fine-grained tokens offer no **Checks**
+permission today, so private repositories' check runs stay unreadable and their CI is read from commit statuses
+alone, RAL-147.) Then, on Murph:
 
 ```sh
 sudo install -o root -g root -m 0644 /dev/stdin /etc/rally/github-token <<< '<the token>'

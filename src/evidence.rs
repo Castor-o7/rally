@@ -26,6 +26,29 @@ pub enum Ci {
     None,
 }
 
+/// What one read of a commit's CI found: its state, and whether its check runs were left out
+/// because the token can't read them (RAL-147).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CiRead {
+    pub ci: Ci,
+    /// GitHub refused the check runs for want of access, which is permanent for the token (a
+    /// fine-grained token has no Checks permission), so the state is the commit statuses' alone.
+    pub statuses_only: bool,
+}
+
+impl From<Ci> for CiRead {
+    fn from(ci: Ci) -> Self {
+        Self {
+            ci,
+            statuses_only: false,
+        }
+    }
+}
+
+/// What the record says when the check runs couldn't be read with the token (RAL-147).
+pub const CHECKS_UNREADABLE: &str = "check runs can't be read with the service's GitHub token \
+     (GitHub answered 403: Resource not accessible), so CI was read from commit statuses alone";
+
 /// The outcome of one check of a submission's evidence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,6 +73,10 @@ pub struct Outcome {
     /// recorded; it only means the check is tried again until the ceiling.
     #[serde(skip)]
     pub unread: bool,
+    /// CI was read from commit statuses alone, the check runs being unreadable with the token
+    /// (RAL-147). Not recorded apart from the reason; it means no CI isn't waited for.
+    #[serde(skip)]
+    pub statuses_only: bool,
 }
 
 impl Outcome {
@@ -63,6 +90,7 @@ impl Outcome {
             ci: None,
             reason: Some(reason.into()),
             unread: false,
+            statuses_only: false,
         }
     }
 
@@ -122,8 +150,9 @@ pub trait Forge {
     }
     /// The titles of pull requests that contain the commit.
     fn pull_titles(&self, repo: &str, commit: &str) -> Result<Vec<String>, String>;
-    /// What the commit's check runs and statuses say.
-    fn ci(&self, repo: &str, commit: &str) -> Result<Ci, String>;
+    /// What the commit's check runs and statuses say, or its statuses alone when the token
+    /// can't read its check runs (RAL-147).
+    fn ci(&self, repo: &str, commit: &str) -> Result<CiRead, String>;
 }
 
 /// Checks `evidence` for `story` once. CI may still be pending; the caller decides whether to
@@ -142,6 +171,7 @@ pub fn check(forge: Option<&dyn Forge>, story: &str, evidence: &str) -> Outcome 
         ci: None,
         reason: None,
         unread: false,
+        statuses_only: false,
     };
     let Some(forge) = forge else {
         outcome.reason = Some("not checked: the service has no GitHub token".into());
@@ -188,7 +218,21 @@ pub fn check(forge: Option<&dyn Forge>, story: &str, evidence: &str) -> Outcome 
         }
     };
     match forge.ci(&repo, &commit) {
-        Ok(ci) => outcome.ci = Some(ci),
+        Ok(read) => {
+            outcome.ci = Some(read.ci);
+            if read.statuses_only {
+                outcome.statuses_only = true;
+                let why = if read.ci == Ci::None {
+                    format!("{CHECKS_UNREADABLE}; no CI reported: the commit has no statuses")
+                } else {
+                    CHECKS_UNREADABLE.to_owned()
+                };
+                outcome.reason = Some(match outcome.reason.take() {
+                    Some(earlier) => format!("{earlier}; {why}"),
+                    None => why,
+                });
+            }
+        }
         Err(error) => {
             let why = format!("its CI couldn't be read: {error}");
             outcome.reason = Some(match outcome.reason.take() {
@@ -199,6 +243,15 @@ pub fn check(forge: Option<&dyn Forge>, story: &str, evidence: &str) -> Outcome 
         }
     }
     outcome
+}
+
+/// Whether a 403's body is GitHub refusing the token access to a resource, which it says as
+/// "Resource not accessible by personal access token" (or "by integration" for an app), rather
+/// than a rate limit or anything else that may pass.
+fn checks_inaccessible(body: &Value) -> bool {
+    body["message"]
+        .as_str()
+        .is_some_and(|message| message.starts_with("Resource not accessible by"))
 }
 
 /// One state from GitHub's check runs and combined status: failed if any failed, pending if any
@@ -389,12 +442,27 @@ impl Forge for GitHub {
             .collect())
     }
 
-    fn ci(&self, repo: &str, commit: &str) -> Result<Ci, String> {
-        let runs = self.ok(&format!(
+    fn ci(&self, repo: &str, commit: &str) -> Result<CiRead, String> {
+        let (runs, statuses_only) = match self.get(&format!(
             "/repos/{repo}/commits/{commit}/check-runs?per_page=100"
-        ))?;
+        ))? {
+            (200, runs) => (runs, false),
+            // Permanent for this token, so trying again until the wait runs out changes
+            // nothing: read the statuses alone and say so (RAL-147). Any other refusal, such as
+            // a rate limit, is still a failed read that may pass.
+            (403, value) if checks_inaccessible(&value) => (Value::Null, true),
+            (status, value) => {
+                return Err(format!(
+                    "GitHub answered {status}: {}",
+                    value["message"].as_str().unwrap_or("no reason given")
+                ));
+            }
+        };
         let status = self.ok(&format!("/repos/{repo}/commits/{commit}/status"))?;
-        Ok(combine(&runs, &status))
+        Ok(CiRead {
+            ci: combine(&runs, &status),
+            statuses_only,
+        })
     }
 }
 
@@ -650,7 +718,9 @@ pub enum Step {
 /// looked for again the same way (RAL-132): a submission often comes before its CI has started,
 /// so `none` at once would be recorded for good while the runs came minutes later.
 pub fn step(mut outcome: Outcome, job: &Job, now_ms: i64, ceiling_ms: u64) -> Step {
-    let no_ci_yet = outcome.ci == Some(Ci::None) && !outcome.unread;
+    // Unless the check runs can't be read with the token: then only statuses could come, and a
+    // commit with none, such as one in a repository without CI, is recorded at once (RAL-147).
+    let no_ci_yet = outcome.ci == Some(Ci::None) && !outcome.unread && !outcome.statuses_only;
     if outcome.is_final() && !no_ci_yet {
         return Step::Record(outcome);
     }
@@ -821,8 +891,8 @@ mod tests {
         fn pull_titles(&self, _: &str, _: &str) -> Result<Vec<String>, String> {
             Ok(self.titles.clone())
         }
-        fn ci(&self, _: &str, _: &str) -> Result<Ci, String> {
-            self.ci.ok_or_else(|| "down".to_owned())
+        fn ci(&self, _: &str, _: &str) -> Result<CiRead, String> {
+            self.ci.map(CiRead::from).ok_or_else(|| "down".to_owned())
         }
     }
 
@@ -882,7 +952,7 @@ mod tests {
             fn pull_titles(&self, _: &str, _: &str) -> Result<Vec<String>, String> {
                 unreachable!()
             }
-            fn ci(&self, _: &str, _: &str) -> Result<Ci, String> {
+            fn ci(&self, _: &str, _: &str) -> Result<CiRead, String> {
                 unreachable!()
             }
         }
@@ -984,7 +1054,7 @@ mod tests {
         fn pull_titles(&self, _: &str, _: &str) -> Result<Vec<String>, String> {
             Err("GitHub answered 403: API rate limit exceeded".into())
         }
-        fn ci(&self, _: &str, _: &str) -> Result<Ci, String> {
+        fn ci(&self, _: &str, _: &str) -> Result<CiRead, String> {
             Err("GitHub answered 503".into())
         }
     }
@@ -1020,8 +1090,8 @@ mod tests {
             fn pull_titles(&self, _: &str, _: &str) -> Result<Vec<String>, String> {
                 Err("GitHub answered 502".into())
             }
-            fn ci(&self, _: &str, _: &str) -> Result<Ci, String> {
-                Ok(Ci::Passed)
+            fn ci(&self, _: &str, _: &str) -> Result<CiRead, String> {
+                Ok(Ci::Passed.into())
             }
         }
         let outcome = check(Some(&NoPulls), "RAL-5", &evidence());
@@ -1063,8 +1133,8 @@ mod tests {
             fn pull_titles(&self, _: &str, _: &str) -> Result<Vec<String>, String> {
                 Ok(Vec::new())
             }
-            fn ci(&self, _: &str, _: &str) -> Result<Ci, String> {
-                Ok(Ci::Passed)
+            fn ci(&self, _: &str, _: &str) -> Result<CiRead, String> {
+                Ok(Ci::Passed.into())
             }
         }
         let recorded = Arc::new(Mutex::new(Vec::new()));
@@ -1125,7 +1195,7 @@ mod tests {
     /// and records every request line and body, until `count` requests have come.
     fn recording_github(
         count: usize,
-        reply: fn(&str, &str) -> (u16, &'static str),
+        reply: impl Fn(&str, &str) -> (u16, &'static str) + Send + 'static,
     ) -> (String, std::thread::JoinHandle<Vec<Seen>>) {
         use std::io::{BufRead, BufReader, Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1204,6 +1274,143 @@ mod tests {
             assert_eq!(method, "GET", "{path}");
             assert!(allowed.contains(path), "an unexpected request: {path}");
             assert!(body.is_empty(), "a GET with a body: {path}");
+        }
+    }
+
+    /// A stand-in GitHub for a commit naming RAL-147 whose check runs answer `runs` and whose
+    /// combined status answers `status`, checked once and then stepped right after submission.
+    fn check_with(runs: (u16, &'static str), status: &'static str) -> (Outcome, Step, Vec<Seen>) {
+        let (base, server) = recording_github(3, move |_, path| {
+            if path.contains("/check-runs") {
+                runs
+            } else if path.ends_with("/status") {
+                (200, status)
+            } else {
+                (200, r#"{"commit":{"message":"fix: RAL-147"}}"#)
+            }
+        });
+        let github = GitHub::at("fine-grained-token".into(), base);
+        let outcome = check(Some(&github), "RAL-147", &evidence());
+        let job = Job {
+            story: "RAL-147".into(),
+            submit: 7,
+            evidence: evidence(),
+            submitted_at_ms: 1_000,
+        };
+        // Moments after the submission, far from the end of a 30-minute wait.
+        let step = step(outcome.clone(), &job, 1_001, 30 * 60_000);
+        (outcome, step, server.join().unwrap())
+    }
+
+    const UNREADABLE: (u16, &str) = (
+        403,
+        r#"{"message":"Resource not accessible by personal access token","documentation_url":"https://docs.github.com/rest/checks/runs#list-check-runs-for-a-git-reference","status":"403"}"#,
+    );
+    const NO_STATUSES: &str = r#"{"state":"pending","statuses":[]}"#;
+
+    /// RAL-147: check runs the token can't read are a refusal that won't pass, so the check
+    /// reads the statuses, records at once and says so; it isn't tried again until the wait
+    /// runs out.
+    #[test]
+    fn unreadable_check_runs_are_recorded_at_once_from_the_statuses() {
+        let (outcome, step, seen) = check_with(
+            UNREADABLE,
+            r#"{"state":"success","statuses":[{"state":"success","context":"ci/jenkins"}]}"#,
+        );
+        assert_eq!(outcome.ci, Some(Ci::Passed));
+        assert!(!outcome.unread);
+        let reason = outcome.reason.clone().unwrap();
+        assert!(reason.contains("check runs can't be read with the service's GitHub token"));
+        assert!(reason.contains("commit statuses alone"));
+        assert_eq!(step, Step::Record(outcome));
+        let paths: Vec<&str> = seen.iter().map(|(_, path, _)| path.as_str()).collect();
+        assert_eq!(seen.len(), 3, "{paths:?}");
+        assert!(paths.iter().any(|path| path.ends_with("/status")));
+
+        let (failed, step, _) = check_with(
+            UNREADABLE,
+            r#"{"state":"failure","statuses":[{"state":"failure"}]}"#,
+        );
+        assert_eq!(failed.ci, Some(Ci::Failed));
+        assert_eq!(step, Step::Record(failed));
+    }
+
+    /// RAL-147: no statuses and check runs unreadable is no CI reported, never green, and is
+    /// recorded at once: a repository without workflows (DiscoSim's case) gets no runs to wait for.
+    #[test]
+    fn unreadable_check_runs_and_no_statuses_are_no_ci_reported() {
+        let (outcome, step, _) = check_with(UNREADABLE, NO_STATUSES);
+        assert_eq!(outcome.ci, Some(Ci::None));
+        assert_ne!(outcome.ci, Some(Ci::Passed));
+        let reason = outcome.reason.clone().unwrap();
+        assert!(reason.contains("no CI reported"), "{reason}");
+        assert!(reason.contains("can't be read"), "{reason}");
+        assert!(!reason.contains("couldn't be read"), "{reason}");
+        assert_eq!(step, Step::Record(outcome));
+    }
+
+    /// RAL-147: a repository whose check runs can be read is checked as before: no statuses
+    /// only, no reason, and no CI yet is still waited for.
+    #[test]
+    fn readable_check_runs_are_checked_as_before() {
+        let (outcome, step, _) = check_with(
+            (
+                200,
+                r#"{"check_runs":[{"status":"completed","conclusion":"success"}]}"#,
+            ),
+            NO_STATUSES,
+        );
+        assert_eq!(outcome.ci, Some(Ci::Passed));
+        assert!(!outcome.statuses_only);
+        assert_eq!(outcome.reason, None);
+        assert_eq!(step, Step::Record(outcome));
+
+        let (none, step, _) = check_with((200, r#"{"check_runs":[]}"#), NO_STATUSES);
+        assert_eq!(none.ci, Some(Ci::None));
+        assert_eq!(none.reason, None);
+        assert_eq!(step, Step::Again);
+    }
+
+    /// RAL-147: any other refusal of the check runs, such as a rate limit or a bad token, is still
+    /// a failed read that may pass: tried again, not read from the statuses.
+    #[test]
+    fn other_refusals_of_the_check_runs_are_tried_again() {
+        let job = Job {
+            story: "RAL-147".into(),
+            submit: 7,
+            evidence: evidence(),
+            submitted_at_ms: 1_000,
+        };
+        for (status, body) in [
+            (
+                403,
+                r#"{"message":"API rate limit exceeded for user ID 1.","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}"#,
+            ),
+            (403, r#"{"message":"Forbidden"}"#),
+            (401, r#"{"message":"Bad credentials"}"#),
+        ] {
+            // The commit, then its check runs; the statuses are never asked for.
+            let (base, server) = recording_github(2, move |_, path| {
+                if path.contains("/check-runs") {
+                    (status, body)
+                } else {
+                    (200, r#"{"commit":{"message":"fix: RAL-147"}}"#)
+                }
+            });
+            let github = GitHub::at("token".into(), base);
+            let outcome = check(Some(&github), "RAL-147", &evidence());
+            let seen = server.join().unwrap();
+            assert!(seen.iter().all(|(_, path, _)| !path.ends_with("/status")));
+            assert!(outcome.unread, "{status} {body}");
+            assert!(!outcome.statuses_only);
+            assert_eq!(outcome.ci, None);
+            let reason = outcome.reason.clone().unwrap();
+            assert!(reason.contains("its CI couldn't be read"), "{reason}");
+            assert!(
+                reason.contains(&format!("GitHub answered {status}")),
+                "{reason}"
+            );
+            assert_eq!(step(outcome, &job, 1_001, 30 * 60_000), Step::Again);
         }
     }
 
@@ -1573,6 +1780,7 @@ mod tests {
             ci: Some(Ci::None),
             reason: None,
             unread: false,
+            statuses_only: false,
         };
         let ceiling = 30 * 60_000;
         assert_eq!(step(none.clone(), &job, 2_000, ceiling), Step::Again);
@@ -1614,6 +1822,7 @@ mod tests {
             ci: Some(Ci::Pending),
             reason: None,
             unread: false,
+            statuses_only: false,
         };
         let ceiling = 30 * 60_000;
         assert_eq!(
@@ -1652,13 +1861,14 @@ mod tests {
             fn pull_titles(&self, _: &str, _: &str) -> Result<Vec<String>, String> {
                 Ok(Vec::new())
             }
-            fn ci(&self, _: &str, _: &str) -> Result<Ci, String> {
+            fn ci(&self, _: &str, _: &str) -> Result<CiRead, String> {
                 let mut turns = self.0.lock().unwrap();
                 Ok(if turns.len() > 1 {
                     turns.remove(0)
                 } else {
                     turns[0]
-                })
+                }
+                .into())
             }
         }
         let forge: Arc<dyn Forge + Send + Sync> = Arc::new(Turns(Mutex::new(vec![
