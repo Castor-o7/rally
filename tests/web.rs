@@ -106,10 +106,8 @@ fn start_after_full(
     std::fs::write(&projects, projects_json).unwrap();
     let bin = dir.path().join("bin");
     if let Some(script) = fake_gh {
-        use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir(&bin).unwrap();
-        std::fs::write(bin.join("gh"), script).unwrap();
-        std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        rally::script::write(bin.join("gh"), script).unwrap();
     }
     let status = on(&db, dir.path())
         .args(["--credential", "a1", "--as", "someone"])
@@ -1197,10 +1195,9 @@ fn run_browser_env(
 /// says a fake assertion on standard error and exits with `status`; after that it runs the real
 /// command it's given. The command line for the test, with the real browser after it.
 fn chrome_that_fails(dir: &std::path::Path, aborts: u32, status: u32, chrome: &str) -> String {
-    use std::os::unix::fs::PermissionsExt;
     let script = dir.join("fake-chrome");
     let counter = dir.join("runs");
-    std::fs::write(
+    rally::script::write(
         &script,
         format!(
             "#!/bin/sh\nn=$(cat {counter} 2>/dev/null || echo 0)\necho $((n + 1)) > {counter}\n\
@@ -1213,7 +1210,6 @@ fn chrome_that_fails(dir: &std::path::Path, aborts: u32, status: u32, chrome: &s
         ),
     )
     .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     format!("{} {chrome}", script.display())
 }
 
@@ -1273,18 +1269,10 @@ fn a_segfault_at_start_is_tried_once_more_and_a_second_fails() {
     // RAL-183: a stand-in coredumpctl lists a core at the moment the stand-in Chrome crashed, as
     // systemd would, with a pid the run never held: it's said as this run's crash, by its time.
     let cores = dir.path().join("coredumpctl");
-    std::fs::write(
-        &cores,
-        format!(
+    rally::script::write(&cores, format!(
             "#!/bin/sh\nt=$(cat {})\necho \"[{{\\\"time\\\":$t,\\\"pid\\\":999999,\\\"sig\\\":11,\\\"exe\\\":\\\"/app/extra/chrome\\\"}}]\"\n",
             dir.path().join("crashed_at").display()
-        ),
-    )
-    .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&cores, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+        )).unwrap();
     let (ok, seen, stderr) = run_browser_env(
         &viewer,
         &once,
@@ -1331,23 +1319,16 @@ fn a_segfault_at_start_is_tried_once_more_and_a_second_fails() {
 /// error, with each Chrome core coredumpctl lists since the run began; the result stands.
 #[test]
 fn a_crash_at_teardown_is_said_and_the_result_stands() {
-    use std::os::unix::fs::PermissionsExt;
     let Some(chrome) = browser() else { return };
     let viewer = start();
     let dir = tempfile::tempdir().unwrap();
     // Runs the real browser, then exits as a launcher does whose Chrome segfaulted on closing.
     let wrapper = dir.path().join("crashes-on-close");
-    std::fs::write(&wrapper, "#!/bin/sh\n\"$@\"\nexit 139\n").unwrap();
-    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    rally::script::write(&wrapper, "#!/bin/sh\n\"$@\"\nexit 139\n").unwrap();
     // A stand-in coredumpctl: one Chrome core of another process, and a core that isn't Chrome's.
     let cores = dir.path().join("coredumpctl");
-    std::fs::write(
-        &cores,
-        "#!/bin/sh\necho '[{\"time\":1000000,\"pid\":999999,\"sig\":11,\"exe\":\"/app/extra/chrome\"},\
-         {\"time\":1000000,\"pid\":999998,\"sig\":11,\"exe\":\"/usr/bin/node\"}]'\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&cores, std::fs::Permissions::from_mode(0o755)).unwrap();
+    rally::script::write(&cores, "#!/bin/sh\necho '[{\"time\":1000000,\"pid\":999999,\"sig\":11,\"exe\":\"/app/extra/chrome\"},\
+         {\"time\":1000000,\"pid\":999998,\"sig\":11,\"exe\":\"/usr/bin/node\"}]'\n").unwrap();
     let command = format!("{} {chrome}", wrapper.display());
     let (ok, seen, stderr) = run_browser_env(
         &viewer,
@@ -2810,15 +2791,13 @@ fn the_activity_strip_shows_who_is_working_and_what_just_changed() {
 /// Writes an executable `name` in `dir` that prints `stdout` and exits with `code`, standing in
 /// for a shim's `roster`.
 fn fake_roster_command(dir: &std::path::Path, name: &str, stdout: &str, code: i32) -> String {
-    use std::os::unix::fs::PermissionsExt;
     let path = dir.join(name);
     let body = stdout.replace('\'', "'\\''");
-    std::fs::write(
+    rally::script::write(
         &path,
         format!("#!/bin/sh\nprintf '%s' '{body}'\nexit {code}\n"),
     )
     .unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path.display().to_string()
 }
 

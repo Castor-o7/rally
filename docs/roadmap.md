@@ -1478,3 +1478,12 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   slots; a waiting directory that exists while `/proc/locks` can't be read, or a `--queue` that isn't there, is a
   blind spot ("can't see the queue"), never 0 waiting; with unit tests and a CLI test with real `flock` holders
   (docs/stalls.md).
+- [ ] **RAL-189: Test scripts written without "Text file busy".** From hosted CI on PR #275 (2026-11-14):
+  `levi::tests::output_held_open_after_levi_exits_doesnt_outlast_the_deadline` failed with ETXTBSY (os error
+  26) running its fake levi. A test wrote the script with `std::fs::write` and ran it, and another thread's
+  fork, between its fork and exec, held a copy of the write descriptor. On Murph, writing and running a script
+  300 times beside four forking threads failed 6 and 7 times in two runs. (The board-ages browser flake seen
+  on the same PR is earnest-raccoon's own story.) Done when: every test that writes a script and runs it writes
+  it with `rally::script::write`, which writes through a child process (`sh`, `cat`, `chmod 755`) so the test
+  process never holds the file open for writing; no write-then-chmod-755 of a script is left in `src/` or
+  `tests/`; with a test that writes and runs a script 200 times beside four forking threads and is never busy.

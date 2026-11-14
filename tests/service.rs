@@ -4216,7 +4216,6 @@ fn a_fair_pools_queue_is_read_and_a_long_unfair_wait_is_a_prompt() {
 #[cfg(target_os = "linux")]
 #[test]
 fn stalls_take_a_projects_own_locks_and_window_and_can_say_nothing() {
-    use std::os::unix::fs::PermissionsExt;
     let service = start();
     let pairing = service.add("a1", false);
     let config = service.dir.path().join("client/config.json");
@@ -4236,12 +4235,7 @@ fn stalls_take_a_projects_own_locks_and_window_and_can_say_nothing() {
     .unwrap();
     // A shim that reads an empty roster, so the run sees everything it needs (RAL-174).
     let shim = service.dir.path().join("empty-roster-shim");
-    std::fs::write(
-        &shim,
-        "#!/bin/sh\ncase \"$1\" in\n  roster) printf '%s' '{\"read_at\": 1, \"sessions\": []}' ;;\n  *) exit 2 ;;\nesac\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    rally::script::write(&shim, "#!/bin/sh\ncase \"$1\" in\n  roster) printf '%s' '{\"read_at\": 1, \"sessions\": []}' ;;\n  *) exit 2 ;;\nesac\n").unwrap();
     let stalls_with = |roster_from: Option<&str>, path: Option<&str>, extra: &[&str]| {
         let mut command = rally();
         command
