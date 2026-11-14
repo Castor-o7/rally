@@ -1295,3 +1295,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   unit tests and a service test. Part 2: `--lock` takes a glob of lock files (dsm-heavy's slots), and for each
   holder's process tree samples CPU time twice a few seconds apart: "possibly hung: <command>, <cwd>, N% CPU over
   5 s, running M min", a prompt and never a finding, with nothing killed.
+- [ ] **RAL-164: `rally stalls` as one command line, from the projects list.** From the watchman (2026-11-14): a
+  cron line had to spell `--quiet-after`, `--lock` and `--hung-after`, with DiscoSim's lock paths, and stalls and
+  wake read the built-in projects list, not the one beside the pairing where DiscoSim is. Done when: stalls and wake
+  read projects.json beside the pairing unless given `--projects`; a project entry may carry `stalls` (`locks`, a
+  glob, and `hung_after`), used with a rally open and no `--lock`, flags overriding; `--prompts-only` prints
+  nothing when there's nothing to ask and succeeds either way; the projects list leaves out a field it doesn't
+  know, with a warning, instead of refusing the whole file; docs/stalls.md gives the cron line and the hazard
+  for readers older than the field; with tests.

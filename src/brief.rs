@@ -311,8 +311,10 @@ pub fn brief_projects(
             builtin(),
             Some(format!("{why}; using the built-in project list")),
         ),
-        Some(Ok(text)) => match serde_json::from_str(&text) {
-            Ok(projects) => (projects, None),
+        Some(Ok(text)) => match crate::web::parse_projects(&text) {
+            // Fields this build doesn't know are left out, and said (RAL-164).
+            Ok((projects, warnings)) if warnings.is_empty() => (projects, None),
+            Ok((projects, warnings)) => (projects, Some(warnings.join("; "))),
             Err(error) => (
                 builtin(),
                 Some(format!(
