@@ -1468,6 +1468,39 @@ fn signal_cluster(cluster: &Cluster, signal: &str) {
     );
 }
 
+/// Waits, up to 30 s, until a write holds the service's writer slot, stuck on the stopped
+/// Postgres: a probe write is then told the service is busy, which is the service's own word that
+/// the slot is taken (RAL-159). A probe that finds the slot free takes it and is the one stuck, so
+/// probes go in threads; each is returned for the caller to join after Postgres resumes. Fails,
+/// saying so, if no probe is told busy in time.
+fn until_a_write_is_stuck(pairing: &Pairing) -> Vec<std::thread::JoinHandle<Reply>> {
+    let until = Instant::now() + Duration::from_secs(30);
+    let mut probes = Vec::new();
+    let (told, busy) = std::sync::mpsc::channel();
+    for i in 0.. {
+        let pairing = pairing.clone();
+        let told = told.clone();
+        probes.push(std::thread::spawn(move || {
+            let body = json!({"change": "ready", "story": format!("RAL-9{i:02}")});
+            let reply = write(&pairing, "x", "declared", body);
+            if reply.status == 503 && reply.body.contains("busy") {
+                let _ = told.send(());
+            }
+            reply
+        }));
+        // The service waits its queue time before saying busy, so give each probe a while.
+        match busy.recv_timeout(Duration::from_secs(1)) {
+            Ok(()) => return probes,
+            Err(_) => assert!(
+                Instant::now() < until,
+                "no write was told the service is busy within 30 s, so none is stuck on the \
+                 stopped Postgres and the test would test nothing"
+            ),
+        }
+    }
+    unreachable!()
+}
+
 #[test]
 fn reads_carry_on_while_a_write_waits_on_a_hung_postgres() {
     let cluster = Cluster::start();
@@ -1478,14 +1511,8 @@ fn reads_carry_on_while_a_write_waits_on_a_hung_postgres() {
     signal_cluster(&cluster, "-STOP");
     // However this test ends, the cluster isn't left stopped.
     let _resume = Resume(&cluster);
-    let writer = {
-        let a1 = a1.clone();
-        std::thread::spawn(move || {
-            let body = json!({"change": "ready", "story": "RAL-2"});
-            write(&a1, "x", "declared", body)
-        })
-    };
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Not a bet that a write is stuck by now: wait until the service says one is (RAL-159).
+    let writes = until_a_write_is_stuck(&a1);
     let started = std::time::Instant::now();
     let reply = call(&a1, "GET", "/v1/stories", None);
     let waited = started.elapsed();
@@ -1495,11 +1522,24 @@ fn reads_carry_on_while_a_write_waits_on_a_hung_postgres() {
         waited < std::time::Duration::from_secs(3),
         "the read waited {waited:?}"
     );
-    // The write finishes once Postgres does, and is never a false success.
-    let written = writer.join().unwrap();
-    let all: Value = serde_json::from_str(&call(&a1, "GET", "/v1/stories", None).body).unwrap();
-    let recorded = all["stories"].as_object().unwrap().contains_key("RAL-2");
-    assert_eq!(written.status == 200, recorded, "{}", written.body);
+    // Each write finishes once Postgres does, and none is a false success.
+    let all: Value = {
+        let replies: Vec<(u64, Reply)> = writes
+            .into_iter()
+            .enumerate()
+            .map(|(i, w)| (i as u64, w.join().unwrap()))
+            .collect();
+        let all: Value = serde_json::from_str(&call(&a1, "GET", "/v1/stories", None).body).unwrap();
+        for (i, written) in replies {
+            let recorded = all["stories"]
+                .as_object()
+                .unwrap()
+                .contains_key(&format!("RAL-9{i:02}"));
+            assert_eq!(written.status == 200, recorded, "{}", written.body);
+        }
+        all
+    };
+    assert!(all["stories"].is_object());
 }
 
 /// Whether the service closes `connection` within `within`, given that the client sends nothing.
@@ -1553,8 +1593,21 @@ fn connections_are_capped_and_a_closed_one_frees_its_place() {
         "a fourth connection from one address got in: {refused:?}"
     );
     held.pop();
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(call(&pairing, "GET", "/v1/whoami", None).status, 200);
+    // Not a bet that the service has seen the close within 200 ms: wait, up to 10 s, for a new
+    // connection to get in (RAL-159).
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        let reply = request(&pairing, "GET", "/v1/whoami", None, &[]);
+        if reply.as_ref().is_ok_and(|reply| reply.status == 200) {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "a closed connection didn't free its place within 10 s: {:?}",
+            reply.map(|r| r.status).map_err(|e| e.to_string())
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     drop(held);
 }
 
@@ -1706,16 +1759,8 @@ fn writes_behind_one_stuck_on_a_hung_postgres_are_told_the_service_is_busy() {
     assert_eq!(ready(&a1).status, 200);
     signal_cluster(&cluster, "-STOP");
     let _resume = Resume(&cluster);
-    let first = {
-        let a1 = a1.clone();
-        std::thread::spawn(move || {
-            let body = json!({"change": "ready", "story": "RAL-2"});
-            let text = json!({"kind": "declared", "declared_name": "x", "body": body}).to_string();
-            // It may get no reply at all, once its connection's time runs out.
-            request(&a1, "POST", "/v1/records", Some(&text), &[]).map_err(|e| e.to_string())
-        })
-    };
-    std::thread::sleep(Duration::from_millis(500));
+    // Not a bet that the first write is stuck by now: wait until the service says one is.
+    let stuck = until_a_write_is_stuck(&a1);
     // Later writes don't each wait on Postgres, holding a thread; they're told to try again.
     let later: Vec<_> = (0..4)
         .map(|i| {
@@ -1736,7 +1781,9 @@ fn writes_behind_one_stuck_on_a_hung_postgres_are_told_the_service_is_busy() {
     }
     assert_eq!(call(&a1, "GET", "/v1/stories", None).status, 200);
     signal_cluster(&cluster, "-CONT");
-    let _ = first.join();
+    for probe in stuck {
+        let _ = probe.join();
+    }
 }
 
 #[test]
@@ -2280,7 +2327,7 @@ fn the_service_keeps_the_times_agreed_with_the_operator() {
 #[test]
 fn three_unanswered_shelves_put_the_operator_away_for_the_agreed_time() {
     let mut limits = GENEROUS.to_vec();
-    limits.extend(["--operator-window", "1s", "--operator-away", "4s"]);
+    limits.extend(["--operator-window", "1s", "--operator-away", "10s"]);
     let service = start_with(&limits);
     let pairing = service.add("a1", false);
     let config = service.dir.path().join("client/config.json");
@@ -2323,15 +2370,23 @@ fn three_unanswered_shelves_put_the_operator_away_for_the_agreed_time() {
         );
         assert_eq!(asked.status, 200, "{}", asked.body);
     }
-    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    // A shelve is refused until the window has passed: try until the service takes it, up to
+    // 10 s, rather than sleeping past the window and hoping (RAL-159).
     let shelve = |blocker: u64| {
-        let reply = write(
-            &pairing,
-            "r",
-            "declared",
-            json!({"change": "shelve", "blocker": blocker, "team": "rally"}),
-        );
-        assert_eq!(reply.status, 200, "{}", reply.body);
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let reply = write(
+                &pairing,
+                "r",
+                "declared",
+                json!({"change": "shelve", "blocker": blocker, "team": "rally"}),
+            );
+            if reply.status == 200 {
+                break;
+            }
+            assert!(Instant::now() < until, "never shelved: {}", reply.body);
+            std::thread::sleep(Duration::from_millis(100));
+        }
     };
     shelve(1);
     shelve(2);
@@ -2353,16 +2408,37 @@ fn three_unanswered_shelves_put_the_operator_away_for_the_agreed_time() {
         "{records}"
     );
 
-    // During the hour: RAL-5 is free, and nothing waiting on the operator is offered.
+    // During the hour: RAL-5 is free, and nothing waiting on the operator is offered. The
+    // window is 10 s; if the box stalled past it before this read, that's said, not misread.
+    let until_ms = away["ends_at_ms"].as_i64().unwrap();
     let during = next();
+    let read_by_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    assert!(
+        read_by_ms < until_ms,
+        "the away window closed before it could be read ({} ms late)",
+        read_by_ms - until_ms
+    );
     assert_eq!(during["next"]["story"], "RAL-5", "{during}");
     assert!(during["operator_away"]["until_ms"].is_i64());
     assert_eq!(during["shelved"].as_array().unwrap().len(), 3);
 
-    // After it, the three are asked again, first in roadmap order.
-    std::thread::sleep(std::time::Duration::from_millis(4_100));
-    let after = next();
-    assert!(after["operator_away"].is_null(), "{after}");
+    // After it, the three are asked again, first in roadmap order: wait for the end, up to 30 s,
+    // rather than sleeping past it (RAL-159).
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let after = loop {
+        let after = next();
+        if after["operator_away"].is_null() {
+            break after;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the away window never ended: {after}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
     assert_eq!(after["next"]["story"], "RAL-2");
     assert_eq!(after["waiting_on_operator"][0]["ask_again"], true);
     assert_eq!(blockers()["unanswered_shelves"], json!([]));
@@ -2701,15 +2777,22 @@ fn submitted_evidence_is_checked_and_recorded_as_observed() {
             assert_eq!(reply.status, 200, "{}", reply.body);
         }
     }
-    let mut waiting = Value::Null;
-    for _ in 0..50 {
-        waiting = serde_json::from_str(&call(&pairing, "GET", "/v1/waiting", None).body).unwrap();
+    // Waits, up to 30 s, for both checks, and fails saying so rather than carrying on (RAL-159).
+    let until = Instant::now() + Duration::from_secs(30);
+    let waiting = loop {
+        let reply = call(&pairing, "GET", "/v1/waiting", None);
+        assert_eq!(reply.status, 200, "waiting answered: {}", reply.body);
+        let waiting: Value = serde_json::from_str(&reply.body).unwrap();
         let rows = waiting["waiting"].as_array().unwrap();
         if rows.iter().all(|row| !row["evidence_check"].is_null()) {
-            break;
+            break waiting;
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+        assert!(
+            Instant::now() < until,
+            "both submissions weren't checked within 30 s: {waiting}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
     let rows = waiting["waiting"].as_array().unwrap();
     let checked = &rows[0]["evidence_check"];
     assert_eq!(checked["kind"], "observed", "{waiting}");

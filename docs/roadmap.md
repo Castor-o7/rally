@@ -1243,3 +1243,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   waits rather than refuses (red without the fix, with the CI log's message); the service test fails on a non-200
   export saying what it was, waits for checks with a 30 s bound and fails loudly on the timeout, and proves
   "nothing checked twice" by waiting for a later submission's check rather than sleeping.
+- [ ] **RAL-159: Service tests wait on the thing itself, with a bound, never a fixed-sleep bet.** From the
+  watchman and earnest-raccoon (2026-11-13), after RAL-158: tests in tests/service.rs bet that something had
+  happened after a fixed sleep, or read once after a wait that carried on silently. Done when: the evidence-check
+  test waits up to 30 s and fails saying so; the operator-away test retries each shelve until taken, reads
+  "during" inside a 10 s window and says so if the box stalled past it, and waits for the window's end rather than
+  sleeping; the connection-cap test waits up to 10 s for a freed place; both hung-Postgres tests wait until a
+  probe write is told the service is busy (the service's own word that a write holds the slot) and fail if none is
+  within 30 s. The reads test, which passed with nothing stuck, is shown red first in that case.
