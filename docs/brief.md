@@ -48,7 +48,7 @@ requests, it records each batch so a restarted watchman, or anyone, can see what
 ```bash
 rally batch start --project DSM --car DSM-214@<sent sha>@<picked sha> --car DSM-209@<sent sha> \
   --base <sha it was built on> --tip <sha the gate runs on> [--on-batch <N>] [--expect 50m] \
-  [--log ~/.cache/watchman/train54.out] --note "train 54"        # prints its record number, N
+  [--log ~/.local/state/dsm-gates/<sha>.log] --note "train 54"        # prints its record number, N
 rally batch end --batch <N> --landed <sha main moved to> --note "..."
 rally batch end --batch <N> --failed --note "why"
 rally batch end --batch <N> --abandoned --note "the gate died with the session"

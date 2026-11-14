@@ -1,0 +1,3 @@
+# RAL-169: the roadmap is appended to by every team, so a merge keeps both sides of an append
+# instead of conflicting. Only local merges use this: GitHub's web merge ignores merge drivers.
+docs/roadmap.md merge=union
