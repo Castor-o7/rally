@@ -152,8 +152,8 @@ const QUEUE_SECONDS: u64 = 10;
 const HEADER_SECONDS: f64 = 10.0;
 
 /// Starts the evidence checker, which appends each outcome as Rally's own observed record, and
-/// queues every submission still in review that has no check yet, such as ones a restart cut
-/// short (RAL-5).
+/// queues every submission that has no check yet, such as ones a restart cut short (RAL-5), in
+/// review or not (RAL-149).
 fn start_evidence_checks(service: &Arc<Service>, settings: crate::evidence::Settings) {
     let github = settings
         .token
@@ -177,7 +177,7 @@ fn start_evidence_checks(service: &Arc<Service>, settings: crate::evidence::Sett
                 declared_name: None,
             };
             let body = json!({"change": "evidence_check", "story": job.story,
-                              "submit": job.submit, "outcome": outcome});
+                              "submit": job.submit, "outcome": outcome.clone().for_job(job)});
             let appended = Record::new(Kind::Observed, source, at_ms, body)
                 .map_err(|e| e.to_string())
                 .and_then(|record| service.store.append(&record).map_err(|e| e.to_string()));
@@ -778,6 +778,7 @@ async fn write_record(
                     submit: seq,
                     evidence,
                     submitted_at_ms: at_ms,
+                    late: None,
                 })
             {
                 eprintln!(

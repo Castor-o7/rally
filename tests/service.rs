@@ -2739,6 +2739,114 @@ fn submitted_evidence_is_checked_and_recorded_as_observed() {
     assert_eq!(forged.status, 403);
 }
 
+/// RAL-149: a submission whose check a stop cut short, and whose story moved on before the
+/// service started again, is checked at the start, marked late; and only once, across restarts.
+#[test]
+fn a_check_a_stop_cut_short_is_made_late_at_the_start_whatever_the_story_became() {
+    let mut service = start();
+    let pairing = service.add("a1", false);
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let evidence = format!("Castor-o7/rally@{commit}");
+    // Checks have begun: RAL-80 is checked while the service runs.
+    for body in [
+        json!({"change": "ready", "story": "RAL-80"}),
+        json!({"change": "claim", "story": "RAL-80", "team": "rally"}),
+        json!({"change": "submit", "story": "RAL-80", "team": "rally", "evidence": evidence}),
+    ] {
+        assert_eq!(write(&pairing, "r", "declared", body).status, 200);
+    }
+    let checks = |pairing: &Pairing| -> Vec<(String, u64, String)> {
+        let reply = call(pairing, "GET", "/v1/export?after=0", None);
+        let page: Value = serde_json::from_str(&reply.body).unwrap();
+        page["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| {
+                let record: Value = serde_json::from_str(row["record"].as_str()?).ok()?;
+                let body = &record["body"];
+                (body["change"] == "evidence_check").then(|| {
+                    (
+                        body["story"].as_str().unwrap().to_owned(),
+                        body["submit"].as_u64().unwrap(),
+                        body["outcome"]["reason"].as_str().unwrap_or("").to_owned(),
+                    )
+                })
+            })
+            .collect()
+    };
+    let wait_for = |pairing: &Pairing, n: usize| {
+        let mut found = Vec::new();
+        for _ in 0..100 {
+            found = checks(pairing);
+            if found.len() >= n {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        found
+    };
+    assert_eq!(wait_for(&pairing, 1).len(), 1);
+
+    // The service stops between RAL-81's submit and its check, and the story is verified while
+    // it's down: written straight to the database, as nothing checks it then.
+    stopped(&mut service);
+    let direct = |name: &str, args: &[&str]| {
+        let output = rally()
+            .arg("--db")
+            .arg(&service.db.url)
+            .arg("--head-file")
+            .arg(service.head_file())
+            .args(["--credential", "local", "--as", name])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    direct("r", &["ready", "RAL-81"]);
+    direct("r", &["claim", "RAL-81", "--team", "rally"]);
+    direct(
+        "r",
+        &[
+            "submit",
+            "RAL-81",
+            "--team",
+            "rally",
+            "--evidence",
+            &evidence,
+            "--not-checkable",
+        ],
+    );
+    direct(
+        "w",
+        &["verify", "RAL-81", "--commit", commit, "--note", "read it"],
+    );
+
+    service.restart_after_stop();
+    let mut moved = pairing.clone();
+    moved.address = service.address.clone();
+    let found = wait_for(&moved, 2);
+    assert_eq!(found.len(), 2, "{found:?}");
+    let (story, submit, reason) = &found[1];
+    assert_eq!(story, "RAL-81");
+    assert_eq!(*submit, 7, "RAL-81's submit");
+    assert!(
+        reason.starts_with("checked late, after a service restart: by then the story was verified"),
+        "{reason}"
+    );
+
+    // Nothing is checked twice: another restart queues nothing more.
+    service.restart("-TERM");
+    let mut moved = pairing.clone();
+    moved.address = service.address.clone();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(checks(&moved).len(), 2);
+}
+
 /// RAL-28: a past moment, as `rally past` and the viewer show it, is a replay of the ledger's own
 /// records to that moment, and what was corrected since is shown apart, labelled later.
 #[test]

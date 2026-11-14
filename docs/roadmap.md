@@ -1129,3 +1129,12 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   recorded at once, not after the wait; (2) a commit with no statuses and unreadable check runs reads as `none`,
   "no CI reported", never `passed`; (3) a repository whose check runs can be read is checked as before; (4) other
   refusals (a rate-limit 403, another 403, a 401) are still failed reads tried again. docs/evidence.md says so.
+- [ ] **RAL-149: An evidence check a restart cut short is made at the start, whatever the story became.** From
+  the watchman and the lamplighter (2026-11-13): after the 20:37 service restart, submissions 3697–3699
+  (DSM-214, DSM-209 parts 3 and 4) never got an evidence check. The old build was still retrying their checks
+  when the service stopped, and on start `evidence::unchecked` re-queued only submissions still in review, while
+  the watchman's verifications (3700–3702) had already moved them on. Done when: on start, every submission with
+  no evidence_check record is checked once, whatever its story's state now (verified, sent back, merged), from
+  the ledger's first check on, and the record's reason starts with "checked late, after a service restart"
+  (in the existing reason text, so the rollback window stays open); a test stops the service between a submit
+  and its check, verifies the story, restarts, and finds the record; nothing is checked twice.
