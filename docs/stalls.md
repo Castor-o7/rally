@@ -30,6 +30,29 @@ A team is working when one of its sessions declares an activity other than `idle
 record inside `--quiet-after`. A team that's declared itself `resting`, with no claim, isn't flagged: resting after
 a story is normal under the board process.
 
+## The open rally's teams, and the watchman's batches (RAL-163)
+
+On 2026-11-13 `rally stalls` was blind to the open rally. It took its teams from the projects list (`rally`,
+`muster`, `marshal`, ...), while the rally's teams were its sessions' nicknames (`deft-pelican`, `sleek-moth`,
+...). It flagged nothing about them, only past rallies' blockers. With a rally open, it now checks the rally's
+teams: those named when the rally opened, and those with live work in its projects (a claim, a story sent back
+or in review, one riding a batch, or a landing that owes a submit). Each team's sessions on the roster are
+found by its name, which is its session's nickname, and by any session confirmed as a restart of it
+(`rally rally-session --succeeds`). Claims and blockers are the rally's. Teams in the projects list outside the
+rally are named under `rally.outside`, not checked. With no rally open, the projects list is used as before.
+
+The watchman's batches (`rally batch`, RAL-157) are read as well:
+
+| Row | When it holds | Prompt |
+|---|---|---|
+| `riding_batch` | The team's claim is a car in a batch still gating, and that batch is past its expected time, or is built on a batch that didn't land | For the watchman: look at the batch's gate. The team is waiting on it, not stuck |
+| `owes_submit` | A story of the team's landed in a batch, and no submit has come since, past `--quiet-after` | Ask the team to submit, with the landed commit as evidence |
+
+A claim riding a batch is a reason, not a stall: it's never a missed check-in, and in `every_team_waiting` the
+team is named as waiting on the watchman's batch N and for how long. These two rows come from Rally's records
+alone, so they're shown even when no roster can be read. A team busy on its own long job, such as a slow suite,
+is working, and isn't flagged.
+
 ## A stopped lock holder (RAL-75)
 
 From the DiscoSim rally's issues log, §4.4: on 2026-11-06 a runner shell sat stopped (state `T`) for about 57

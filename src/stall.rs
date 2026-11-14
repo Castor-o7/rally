@@ -38,6 +38,44 @@ pub struct Facts {
     pub ready: Option<String>,
     /// Open blockers the team raised.
     pub blockers: Vec<Waiting>,
+    /// Its claims whose story rides a batch the watchman is still gating (RAL-163).
+    pub riding: Vec<Riding>,
+    /// Stories of its that landed in a batch and have had no submit since (RAL-163): story,
+    /// batch, and when it landed.
+    pub owed: Vec<(String, u64, i64)>,
+}
+
+/// A claim whose story is a car in a batch still gating (RAL-163), as the watchman declared it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Riding {
+    pub story: String,
+    pub batch: u64,
+    pub started_ms: i64,
+    pub expect_minutes: Option<u32>,
+    /// The batch it's built on, if that one ended without landing.
+    pub built_on_unlanded: Option<u64>,
+}
+
+impl Riding {
+    /// Why the watchman should look at its batch, if it should: past its expected time, or built
+    /// on a batch that didn't land.
+    fn worry(&self, now_ms: i64) -> Option<String> {
+        let open_min = now_ms.saturating_sub(self.started_ms) / 60_000;
+        if let Some(expect) = self.expect_minutes
+            && open_min > i64::from(expect)
+        {
+            return Some(format!(
+                "batch {} open {open_min} min, past the expected {expect}: is the gate alive?",
+                self.batch
+            ));
+        }
+        self.built_on_unlanded.map(|under| {
+            format!(
+                "batch {} is built on batch {under}, which didn't land",
+                self.batch
+            )
+        })
+    }
 }
 
 /// Whether a session is idle: by its declared activity, as `rally wake` judges it (RAL-66).
@@ -58,11 +96,20 @@ impl Facts {
         self.sessions.iter().any(Session::wakeable)
     }
 
-    /// Whether every claim has gone without a record for `quiet_after_ms`.
+    fn rides(&self, story: &str) -> bool {
+        self.riding.iter().any(|r| r.story == story)
+    }
+
+    /// Whether every claim has gone without a record for `quiet_after_ms`. A claim riding a batch
+    /// isn't quiet: it waits on the watchman (RAL-163).
     fn claims_quiet(&self, quiet_after_ms: u64, now_ms: i64) -> bool {
-        !self.claims.is_empty()
-            && self
-                .claims
+        let own: Vec<&(String, i64)> = self
+            .claims
+            .iter()
+            .filter(|(story, _)| !self.rides(story))
+            .collect();
+        !own.is_empty()
+            && own
                 .iter()
                 .all(|(_, last)| now_ms.saturating_sub(*last) >= quiet_after_ms as i64)
     }
@@ -125,6 +172,7 @@ pub fn flags(team: &Facts, quiet_after_ms: Option<u64>, now_ms: i64) -> Vec<Valu
         let quiet: Vec<Value> = team
             .claims
             .iter()
+            .filter(|(story, _)| !team.rides(story))
             .map(|(story, last)| json!({"story": story, "quiet_ms": now_ms.saturating_sub(*last)}))
             .collect();
         out.push(prompt(
@@ -134,6 +182,46 @@ pub fn flags(team: &Facts, quiet_after_ms: Option<u64>, now_ms: i64) -> Vec<Valu
             "Ask the team",
             json!({"claims": quiet, "kind": "declared"}),
         ));
+    }
+    // Riding a batch the watchman gates (RAL-163): a reason, not the team's stall. It asks the
+    // watchman only when the batch is past its time or built on one that didn't land.
+    let worries: Vec<Value> = team
+        .riding
+        .iter()
+        .filter_map(|r| {
+            r.worry(now_ms)
+                .map(|why| json!({"story": r.story, "batch": r.batch, "why": why}))
+        })
+        .collect();
+    if !worries.is_empty() {
+        out.push(prompt(
+            team,
+            "riding_batch",
+            "Waiting on the watchman's batch",
+            "Watchman: look at the batch's gate; the team is waiting on it, not stuck",
+            json!({"batches": worries, "kind": "declared"}),
+        ));
+    }
+    // A story that landed in a batch with no submit since, past the check-in (RAL-163).
+    if let Some(after) = quiet_after_ms {
+        let owed: Vec<Value> = team
+            .owed
+            .iter()
+            .filter(|(_, _, landed)| now_ms.saturating_sub(*landed) >= after as i64)
+            .map(|(story, batch, landed)| {
+                json!({"story": story, "batch": batch,
+                       "since_landing_ms": now_ms.saturating_sub(*landed)})
+            })
+            .collect();
+        if !owed.is_empty() {
+            out.push(prompt(
+                team,
+                "owes_submit",
+                "Landed, not yet submitted",
+                "Ask the team to submit, with the landed commit as evidence",
+                json!({"landed": owed, "kind": "declared"}),
+            ));
+        }
     }
     // Any, declared blocked.
     if team.status.as_deref() == Some("blocked") || !team.blockers.is_empty() {
@@ -180,6 +268,12 @@ fn waits_on(team: &Facts, quiet_after_ms: u64, now_ms: i64) -> Option<Value> {
         return None;
     }
     let mut reasons = Vec::new();
+    // Waiting on the watchman's batch, named as such (RAL-163).
+    for r in &team.riding {
+        reasons.push(json!({"on": "watchman", "story": r.story, "batch": r.batch,
+            "why": format!("riding batch {}, open {} min", r.batch,
+                           now_ms.saturating_sub(r.started_ms) / 60_000)}));
+    }
     for blocker in &team.blockers {
         reasons.push(
             json!({"on": blocker.on, "story": blocker.story, "blocker": blocker.seq,
@@ -294,6 +388,86 @@ mod tests {
             sessions: idle(),
             ..Facts::default()
         }
+    }
+
+    fn riding(story: &str, batch: u64, started: i64, expect: Option<u32>) -> Riding {
+        Riding {
+            story: story.into(),
+            batch,
+            started_ms: started,
+            expect_minutes: expect,
+            built_on_unlanded: None,
+        }
+    }
+
+    /// RAL-163: a claim riding the watchman's batch isn't a missed check-in; it's a reason, named
+    /// in every-team-waiting, and asks the watchman only when the batch is past its time or built
+    /// on one that didn't land.
+    #[test]
+    fn a_claim_riding_a_batch_waits_on_the_watchman_not_the_team() {
+        let mut waiting = team("sleek-moth");
+        waiting.claims = vec![("DSM-1".into(), NOW - 60 * MIN)];
+        // Without a batch, a quiet claim from an idle team is a missed check-in.
+        assert_eq!(rows(&waiting), ["missed_check_in"]);
+        // Riding batch 54, within its expected time: no prompt at all.
+        waiting.riding = vec![riding("DSM-1", 54, NOW - 30 * MIN, Some(50))];
+        assert!(rows(&waiting).is_empty(), "{:?}", rows(&waiting));
+        // Past its expected time: a prompt for the watchman, not the team.
+        waiting.riding = vec![riding("DSM-1", 54, NOW - 60 * MIN, Some(50))];
+        assert_eq!(rows(&waiting), ["riding_batch"]);
+        let row = &flags(&waiting, Some(QUIET), NOW)[0];
+        assert!(row["action"].as_str().unwrap().starts_with("Watchman"));
+        assert!(
+            row["rally_says"]["batches"][0]["why"]
+                .as_str()
+                .unwrap()
+                .contains("open 60 min, past the expected 50: is the gate alive?")
+        );
+        // Built on a batch that didn't land.
+        let mut under = riding("DSM-1", 55, NOW - 5 * MIN, None);
+        under.built_on_unlanded = Some(54);
+        waiting.riding = vec![under];
+        let row = &flags(&waiting, Some(QUIET), NOW)[0];
+        assert!(
+            row["rally_says"]
+                .to_string()
+                .contains("built on batch 54, which didn't land")
+        );
+        // A second claim of its own, quiet and not riding, is still its own missed check-in.
+        waiting.riding = vec![riding("DSM-1", 54, NOW - 30 * MIN, Some(50))];
+        waiting.claims.push(("DSM-2".into(), NOW - 60 * MIN));
+        let row = &flags(&waiting, Some(QUIET), NOW)[0];
+        assert_eq!(row["row"], "missed_check_in");
+        assert_eq!(row["rally_says"]["claims"].as_array().unwrap().len(), 1);
+        assert_eq!(row["rally_says"]["claims"][0]["story"], "DSM-2");
+    }
+
+    /// RAL-163: every-team-waiting names the watchman's batch as what a riding team waits on.
+    #[test]
+    fn every_team_waiting_names_the_batch_a_team_rides() {
+        let mut a = team("deft-pelican");
+        a.claims = vec![("DSM-1".into(), NOW - 60 * MIN)];
+        a.riding = vec![riding("DSM-1", 54, NOW - 40 * MIN, Some(50))];
+        let mut b = team("vibrant-gull");
+        b.status = Some("resting".into());
+        let all = all_waiting(&[a, b], NOW - 30 * MIN, QUIET, NOW).unwrap();
+        let reason = &all["teams"][0]["waiting_on"][0];
+        assert_eq!(reason["on"], "watchman");
+        assert_eq!(reason["why"], "riding batch 54, open 40 min");
+    }
+
+    /// RAL-163: a story landed in a batch with no submit since, past the check-in, asks the team.
+    #[test]
+    fn a_landed_story_with_no_submit_is_owed_after_the_check_in() {
+        let mut owing = team("steely-ridge");
+        owing.owed = vec![("DSM-3".into(), 52, NOW - 5 * MIN)];
+        assert!(rows(&owing).is_empty(), "within the check-in");
+        owing.owed = vec![("DSM-3".into(), 52, NOW - 30 * MIN)];
+        assert_eq!(rows(&owing), ["owes_submit"]);
+        let row = &flags(&owing, Some(QUIET), NOW)[0];
+        assert_eq!(row["rally_says"]["landed"][0]["batch"], 52);
+        // Without a check-in length, nothing is owed yet.
+        assert!(flags(&owing, None, NOW).is_empty());
     }
 
     #[test]
