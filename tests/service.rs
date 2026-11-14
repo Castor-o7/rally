@@ -3761,17 +3761,65 @@ fn a_batch_is_started_and_ended_from_the_command_line() {
     );
     assert!(!bad.status.success());
     assert!(String::from_utf8_lossy(&bad.stderr).contains("isn't a car"));
-    run(&[
-        "batch",
-        "end",
-        "--batch",
-        &batch.to_string(),
-        "--landed",
-        &sha('c'),
-        "--note",
-        "in",
-    ]);
-    let landed = brief()["in_the_gate"]["newest_landed"].clone();
+    // RAL-162: the gate's log, hashed and read by Rally. One without its commit line is refused
+    // before anything is sent, and one for another commit by the service.
+    let logs = service.dir.path().join("gates");
+    std::fs::create_dir_all(&logs).unwrap();
+    let gate_log = |name: &str, text: String| {
+        let path = logs.join(name);
+        std::fs::write(&path, text).unwrap();
+        path.display().to_string()
+    };
+    let header = |commit: String| {
+        format!(
+            "# dsm-gate: commit {commit} tree {} scenes: ui_flow started t script sha256 0\n\
+             QUICK OK\n== res://tests/ui_flow.tscn ==\n=== 4 passed, 1 failed ===\n",
+            sha('e')
+        )
+    };
+    let end = |log: &str| {
+        cli(
+            &config,
+            "watch",
+            &[
+                "batch",
+                "end",
+                "--batch",
+                &batch.to_string(),
+                "--landed",
+                &sha('c'),
+                "--gate-log",
+                log,
+                "--note",
+                "in",
+            ],
+        )
+    };
+    let old = end(&gate_log("old.log", "QUICK OK\n".into()));
+    assert!(!old.status.success());
+    assert!(String::from_utf8_lossy(&old.stderr).contains("doesn't say which commit"));
+    let other = end(&gate_log("other.log", header(sha('9'))));
+    assert!(!other.status.success());
+    let said = String::from_utf8_lossy(&other.stderr).into_owned();
+    assert!(said.contains("not batch"), "{said}");
+    let right = end(&gate_log("right.log", header(sha('c'))));
+    assert!(
+        right.status.success(),
+        "{}",
+        String::from_utf8_lossy(&right.stderr)
+    );
+    let gate = brief()["in_the_gate"].clone();
+    let landed = &gate["newest_landed"];
     assert_eq!(landed["batch"], batch, "{landed}");
     assert_eq!(landed["no_submit_since_landing"][0]["story"], "DSM-1");
+    assert_eq!(landed["gate_log"]["kind"], "declared");
+    assert_eq!(landed["gate_log"]["failed"], 1);
+    assert_eq!(landed["gate_log"]["sha256"].as_str().unwrap().len(), 64);
+    let ended = &gate["ended"][0];
+    assert!(
+        ended["prompts"]
+            .to_string()
+            .contains("landed though its gate log shows 1 failed"),
+        "{ended}"
+    );
 }

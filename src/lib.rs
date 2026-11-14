@@ -10,6 +10,7 @@ pub mod digest_loop;
 pub mod entity;
 pub mod evidence;
 pub mod gate;
+pub mod gate_log;
 pub mod inbox;
 pub mod init;
 pub mod ledger;

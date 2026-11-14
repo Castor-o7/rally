@@ -392,6 +392,10 @@ pub enum Change {
         outcome: BatchOutcome,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         landed: Option<String>,
+        /// The gate's log, as the CLI hashed and read it (RAL-162): declared, and refused unless
+        /// it names the batch's tip as the commit it ran on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gate_log: Option<crate::gate_log::GateLog>,
         note: String,
     },
     /// Anyone records a major event of the open rally (RAL-104): a one-line headline, how serious
@@ -515,6 +519,9 @@ pub struct BatchEnded {
     pub outcome: BatchOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub landed: Option<String>,
+    /// The gate's log, as the watchman named it (RAL-162). Declared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate_log: Option<crate::gate_log::GateLog>,
     pub note: String,
 }
 
@@ -2639,6 +2646,7 @@ impl Ledger {
                 batch,
                 outcome,
                 landed,
+                gate_log,
                 note,
             } => {
                 require_kind(record, Kind::Declared)?;
@@ -2651,12 +2659,22 @@ impl Ledger {
                             "record {batch} isn't a batch still gating"
                         ))
                     })?;
+                // The slip it catches (RAL-162): a log of another run, or of a stale tip.
+                if let Some(log) = &gate_log
+                    && !log.commit.eq_ignore_ascii_case(&open.tip)
+                {
+                    return Err(LedgerError::InvalidChange(format!(
+                        "the gate log says it ran on {}, not batch {batch}'s tip {}",
+                        log.commit, open.tip
+                    )));
+                }
                 open.ended = Some(BatchEnded {
                     seq,
                     source: record.source().clone(),
                     at_ms: record.at_ms(),
                     outcome,
                     landed,
+                    gate_log,
                     note,
                 });
                 self.last_seq = seq;
@@ -3834,9 +3852,35 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         Change::BatchEnd {
             outcome,
             landed,
+            gate_log,
             note,
             ..
         } => {
+            if let Some(log) = gate_log {
+                let hex64 =
+                    log.sha256.len() == 64 && log.sha256.bytes().all(|b| b.is_ascii_hexdigit());
+                if !is_commit(&log.commit) || !is_commit(&log.tree) || !hex64 {
+                    return Err(LedgerError::InvalidCommit);
+                }
+                if log.path.trim().is_empty() {
+                    return Err(LedgerError::EmptyField("gate log path"));
+                }
+                if log.scenes.len() > crate::gate_log::MAX_SCENES {
+                    return Err(LedgerError::InvalidChange(format!(
+                        "a gate log records at most {} scenes",
+                        crate::gate_log::MAX_SCENES
+                    )));
+                }
+                let lines = [log.path.as_str(), &log.started, &log.script]
+                    .into_iter()
+                    .chain(log.quick.as_deref())
+                    .chain(log.scenes.iter().map(|s| s.scene.as_str()));
+                for line in lines {
+                    if line.chars().any(char::is_control) {
+                        return Err(LedgerError::ControlCharacter("gate log"));
+                    }
+                }
+            }
             match (outcome, landed) {
                 (BatchOutcome::Landed, None) => {
                     return Err(LedgerError::EmptyField("landed"));
@@ -4079,7 +4123,14 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
             text.extend([("team", project.as_str()), ("note", note)]);
             text.extend(log.as_deref().map(|log| ("evidence", log)));
         }
-        Change::BatchEnd { note, .. } => text.push(("note", note)),
+        Change::BatchEnd { note, gate_log, .. } => {
+            text.push(("note", note));
+            if let Some(log) = gate_log {
+                text.push(("evidence", log.path.as_str()));
+                text.extend(log.quick.as_deref().map(|q| ("note", q)));
+                text.extend(log.scenes.iter().map(|s| ("note", s.scene.as_str())));
+            }
+        }
         Change::Event {
             headline, backing, ..
         } => {
@@ -6367,10 +6418,23 @@ mod tests {
         assert!(refused(&ledger, &end(77, "failed", None)).contains("isn't a batch still gating"));
         push(&mut ledger, &end(one, "failed", None));
         assert!(refused(&ledger, &end(one, "failed", None)).contains("isn't a batch still gating"));
-        push(&mut ledger, &end(two, "landed", Some(sha('d'))));
+        // RAL-162: a gate log is refused unless it ran on the batch's tip.
+        let with_log = |commit: char| {
+            let mut rec = end(two, "landed", Some(sha('d')));
+            let mut body = rec.body().clone();
+            body["gate_log"] = json!({"path": "/x/c.log", "sha256": "f".repeat(64),
+                                      "bytes": 10, "commit": sha(commit), "tree": sha('e'),
+                                      "quick": "QUICK OK",
+                                      "scenes": [{"scene": "ui_flow", "passed": 3, "failed": 0}]});
+            rec = w(body);
+            rec
+        };
+        assert!(refused(&ledger, &with_log('a')).contains("not batch"));
+        push(&mut ledger, &with_log('c'));
         let landed = ledger.batches()[&two].ended.clone().unwrap();
         assert_eq!(landed.outcome, BatchOutcome::Landed);
         assert_eq!(landed.landed, Some(sha('d')));
+        assert_eq!(landed.gate_log.unwrap().scenes[0].passed, Some(3));
         assert_eq!(ledger.story("DSM-1").unwrap().state, State::Claimed);
     }
 
