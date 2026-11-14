@@ -426,6 +426,55 @@ pub fn verified_of(detail: &Value, part: Option<u32>) -> Result<(String, String)
     Ok((repo, verified.to_owned()))
 }
 
+/// The commit to compare a head with, and the repository: the ledger's verified commit (of the
+/// story, or with `part` of that part), or with `given` (`--verified <sha>`, RAL-177) that commit,
+/// for replaying after the fact, with the repository from the story's submissions. The third value
+/// says what the ledger has, when `given` was used, so the output can say it was overridden.
+pub fn pick_verified(
+    detail: &Value,
+    part: Option<u32>,
+    given: Option<&str>,
+) -> Result<(String, String, Option<Value>), String> {
+    let Some(given) = given else {
+        let (repo, verified) = verified_of(detail, part)?;
+        return Ok((repo, verified, None));
+    };
+    if given.len() != 40 || !given.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("--verified takes a full commit".to_owned());
+    }
+    let ledger = verified_of(detail, part);
+    // The repository: the ledger's, or else the latest evidence that names one.
+    let repo = match &ledger {
+        Ok((repo, _)) => repo.clone(),
+        Err(_) => detail["history"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .rev()
+            .filter_map(|e| e["change"]["evidence"].as_str())
+            .find_map(|e| crate::evidence::parse(e).ok())
+            .map(|(repo, _)| repo)
+            .ok_or("no submission of the story names a repository")?,
+    };
+    let note = json!({
+        "given": "with --verified, for a replay: not the ledger's verified commit, and not recorded",
+        "ledger_verified": ledger.ok().map(|(_, v)| v),
+    });
+    Ok((repo, given.to_ascii_lowercase(), Some(note)))
+}
+
+/// A head that is the commit it's compared with (RAL-177): after a check at a re-based head is
+/// recorded, that head is the verified commit, and comparing it with itself means nothing.
+pub fn compared_with_itself(verified: &str, head: &str) -> Option<Value> {
+    verified.eq_ignore_ascii_case(head).then(|| {
+        cant_tell(
+            "--head is the commit it would be compared with: comparing a commit with itself \
+             means nothing. Once a check at a re-based head is recorded, that head is the \
+             verified commit; to replay it, give the commit verified before with --verified",
+        )
+    })
+}
+
 /// What's said when the comparison can't be made at all.
 pub fn cant_tell(why: &str) -> Value {
     json!({"verdict": "can't tell", "why": why})
@@ -811,5 +860,49 @@ mod tests {
                 .unwrap_err()
                 .contains("no part 9")
         );
+    }
+
+    /// RAL-177: `--verified` replays after the fact, saying it was given and what the ledger has;
+    /// a head that is the commit compared with says it means nothing, never "same".
+    #[test]
+    fn a_replay_names_its_verified_commit_and_a_head_never_compares_with_itself() {
+        let (old, now) = ("8".repeat(40), "0".repeat(40));
+        let detail = json!({"verified_commit": now, "state": "verified", "history": [
+            {"change": {"change": "submit", "evidence": format!("o/r@{old}")}},
+            {"change": {"change": "submit", "evidence": format!("o/r@{now}")}},
+        ]});
+        let (repo, verified, note) = pick_verified(&detail, None, Some(&old)).unwrap();
+        assert_eq!((repo.as_str(), verified.as_str()), ("o/r", old.as_str()));
+        let note = note.unwrap();
+        assert_eq!(note["ledger_verified"], now);
+        assert!(note["given"].as_str().unwrap().contains("not recorded"));
+        // Without it, the ledger's, and no note.
+        let (_, ledger, none) = pick_verified(&detail, None, None).unwrap();
+        assert_eq!((ledger.as_str(), none), (now.as_str(), None));
+        // A story not yet verified can still be replayed against a given commit.
+        let unverified = json!({"state": "submitted", "history": [
+            {"change": {"change": "submit", "evidence": format!("o/r@{old}")}}]});
+        assert!(
+            pick_verified(&unverified, None, Some(&old))
+                .unwrap()
+                .2
+                .unwrap()["ledger_verified"]
+                .is_null()
+        );
+        assert!(
+            pick_verified(&detail, None, Some("abc"))
+                .unwrap_err()
+                .contains("full commit")
+        );
+        // The head that is the verified commit.
+        let itself = compared_with_itself(&now, &now.to_uppercase()).unwrap();
+        assert_eq!(itself["verdict"], "can't tell");
+        assert!(
+            itself["why"]
+                .as_str()
+                .unwrap()
+                .contains("with itself means nothing")
+        );
+        assert!(compared_with_itself(&old, &now).is_none());
     }
 }
