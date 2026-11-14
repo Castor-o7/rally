@@ -76,6 +76,10 @@ pub struct CiPending {
     /// Whether a failure to check it has been told already, so it's said once and then retried.
     #[serde(default)]
     pub error_told: bool,
+    /// Whether `repo` came from the projects list, by the story's prefix, because the story had
+    /// no evidence when its merge was taken in (RAL-180): declared, and said so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub repo_from_projects: bool,
 }
 
 /// What the base's CI says about a commit that landed (RAL-102).
@@ -137,6 +141,20 @@ pub fn ci_from_runs(runs: &Value) -> Ci {
 /// since a red base matters whoever merged (RAL-102). `stories` is `/v1/stories`, for each
 /// story's repository.
 pub fn take_in_merges(kept: &mut Kept, recs: &[Rec], stories: &Value, now_ms: i64) {
+    take_in_merges_with(kept, recs, stories, now_ms, &[]);
+}
+
+/// [`take_in_merges`], with each project's prefix and repository (RAL-180): a story claimed when
+/// its merge is recorded (in parts, claimed again, or merged before its closing submit) has no
+/// evidence in the story list, so its repository is taken from its prefix's project instead of
+/// being "no repository in the evidence".
+pub fn take_in_merges_with(
+    kept: &mut Kept,
+    recs: &[Rec],
+    stories: &Value,
+    now_ms: i64,
+    projects: &[(String, String)],
+) {
     let after = kept.ci_checked_to;
     for rec in recs
         .iter()
@@ -149,14 +167,30 @@ pub fn take_in_merges(kept: &mut Kept, recs: &[Rec], stories: &Value, now_ms: i6
             .as_str()
             .or_else(|| row["part_evidence"]["text"].as_str())
             .unwrap_or("");
+        let from_evidence = crate::evidence::parse(evidence).ok().map(|(repo, _)| repo);
+        let from_projects = || {
+            let prefix = story.split_once('-')?.0;
+            projects
+                .iter()
+                .find(|(p, _)| p.eq_ignore_ascii_case(prefix))
+                .map(|(_, repo)| repo.clone())
+        };
+        let (repo, repo_from_projects) = match from_evidence {
+            Some(repo) => (Some(repo), false),
+            None => match from_projects() {
+                Some(repo) => (Some(repo), true),
+                None => (None, false),
+            },
+        };
         kept.ci.push(CiPending {
             seq: rec.seq,
-            repo: crate::evidence::parse(evidence).ok().map(|(repo, _)| repo),
+            repo,
             story,
             commit: rec.text("commit"),
             landed: None,
             since_ms: now_ms,
             error_told: false,
+            repo_from_projects,
         });
         kept.ci_checked_to = kept.ci_checked_to.max(rec.seq);
     }
@@ -203,10 +237,175 @@ pub fn check_ci_with(
     local: &[LocalGate],
     stories: &Value,
 ) -> CiReport {
+    check_ci_gated(kept, landed, ci, now_ms, local, stories, &[], &|_, _| {
+        crate::gate_check::Verdict::CantTell("no gate".into())
+    })
+}
+
+/// What a gate on this machine says about one merged commit (RAL-180), for tests to stand in for.
+pub type GateRead<'a> = &'a dyn Fn(&crate::gate_check::Gate, &str) -> crate::gate_check::Verdict;
+
+/// [`check_ci_with`], with the projects gated on this machine (`rally digest --gate`, RAL-180):
+/// each of their merges is looked for in the gate's own logs and the project's checkout, not on
+/// GitHub, and said, observed, as green, red, running or no gate log, one line for each tip.
+#[allow(clippy::too_many_arguments)]
+pub fn check_ci_gated(
+    kept: &mut Kept,
+    landed: Landed,
+    ci: CiRead,
+    now_ms: i64,
+    local: &[LocalGate],
+    stories: &Value,
+    gates: &[crate::gate_check::Gate],
+    gate_read: GateRead,
+) -> CiReport {
+    use crate::gate_check::Verdict;
     let mut report = CiReport::default();
     let mut still = Vec::new();
     let mut gated: std::collections::BTreeMap<usize, Vec<String>> = Default::default();
+    // Each tip's line, in the order first met: its words, the stories it holds, and whether it's
+    // urgent; keyed by what's said and the tip, so a train's cars share one line.
+    let mut by_tip: Vec<(String, String, Vec<String>, bool)> = Vec::new();
+    let mut tell = |key: String, words: String, story: &str, urgent: bool| {
+        let story = clean(story);
+        match by_tip.iter_mut().find(|(k, ..)| *k == key) {
+            Some((_, _, stories, _)) => {
+                if !stories.contains(&story) {
+                    stories.push(story);
+                }
+            }
+            None => by_tip.push((key, words, vec![story], urgent)),
+        }
+    };
     for mut pending in std::mem::take(&mut kept.ci) {
+        if let Some(gate) = gates.iter().find(|g| g.covers(&pending.story)) {
+            let tip7 = |tip: &str| short(tip);
+            match gate_read(gate, &pending.commit) {
+                Verdict::Green {
+                    tip,
+                    on_main: true,
+                    summary,
+                } => {
+                    report.held = true;
+                    tell(
+                        format!("green {tip}"),
+                        format!(
+                            "landed in {t}: gated locally, green at {t} [observed: {log} names \
+                             {t} ({summary}), its .ok is there, and git shows {t} on \
+                             origin/main in {checkout} and holding each]",
+                            t = tip7(&tip),
+                            log = gate.log_shown(&tip),
+                            checkout = gate.checkout_given,
+                        ),
+                        &pending.story,
+                        false,
+                    );
+                }
+                Verdict::Green {
+                    tip,
+                    on_main: false,
+                    ..
+                } => {
+                    report.urgent = true;
+                    tell(
+                        format!("off-main {tip}"),
+                        format!(
+                            "gated green at {t}, but {t} isn't on origin/main [observed: {log}, \
+                             its .ok, git in {checkout}]: a tip that never landed vouches for \
+                             nothing on main",
+                            t = tip7(&tip),
+                            log = gate.log_shown(&tip),
+                            checkout = gate.checkout_given,
+                        ),
+                        &pending.story,
+                        true,
+                    );
+                }
+                Verdict::Red { tip, why } => {
+                    report.urgent = true;
+                    tell(
+                        format!("red {tip}"),
+                        format!(
+                            "gated locally, RED at {t}: {why} [observed: {log}, no green gated \
+                             tip holds it, by git in {checkout}]",
+                            t = tip7(&tip),
+                            why = clean(&why),
+                            log = gate.log_shown(&tip),
+                            checkout = gate.checkout_given,
+                        ),
+                        &pending.story,
+                        true,
+                    );
+                }
+                Verdict::Running { tip, age_ms } => {
+                    tell(
+                        format!("running {tip}"),
+                        format!(
+                            "gate running at {t} for {m} min [observed: {log}, no .ok yet]; \
+                             checked again each pass",
+                            t = tip7(&tip),
+                            m = age_ms / 60_000,
+                            log = gate.log_shown(&tip),
+                        ),
+                        &pending.story,
+                        false,
+                    );
+                    still.push(pending);
+                }
+                Verdict::NoLog { read } => {
+                    report.urgent = true;
+                    tell(
+                        format!("none {}", pending.commit),
+                        format!(
+                            "merged at {c}: no gate log for {c} [observed: none of the newest \
+                             {read} logs in {logs} holds it, by git in {checkout}]: it landed \
+                             without a gate",
+                            c = short(&pending.commit),
+                            logs = gate.logs_given,
+                            checkout = gate.checkout_given,
+                        ),
+                        &pending.story,
+                        true,
+                    );
+                }
+                Verdict::CantTell(why) => {
+                    let waited = now_ms - pending.since_ms;
+                    if waited >= CI_GIVE_UP_MS {
+                        report.urgent = true;
+                        tell(
+                            format!("gave-up {}", pending.commit),
+                            format!(
+                                "merged at {}: its gate still couldn't be told after {}: {} \
+                                 [observed]; no longer checked",
+                                short(&pending.commit),
+                                age(pending.since_ms, now_ms).trim_end_matches(" ago"),
+                                clean(&why)
+                            ),
+                            &pending.story,
+                            true,
+                        );
+                    } else {
+                        if !pending.error_told {
+                            report.urgent = true;
+                            pending.error_told = true;
+                            tell(
+                                format!("cant {}", pending.commit),
+                                format!(
+                                    "merged at {}: its gate can't be told yet: {} [observed]; \
+                                     tried again each pass",
+                                    short(&pending.commit),
+                                    clean(&why)
+                                ),
+                                &pending.story,
+                                true,
+                            );
+                        }
+                        still.push(pending);
+                    }
+                }
+            }
+            continue;
+        }
         if let Some(index) = pending
             .repo
             .as_deref()
@@ -220,9 +419,14 @@ pub fn check_ci_with(
             continue;
         }
         let head = format!(
-            "- {} merged at {}",
+            "- {} merged at {}{}",
             clean(&pending.story),
-            short(&pending.commit)
+            short(&pending.commit),
+            if pending.repo_from_projects {
+                " (its repository from the projects list [declared])"
+            } else {
+                ""
+            }
         );
         let waited = now_ms - pending.since_ms;
         let Some(repo) = pending.repo.clone() else {
@@ -300,6 +504,12 @@ pub fn check_ci_with(
         }
     }
     kept.ci = still;
+    // One line for each gated tip, naming the stories it holds (RAL-180).
+    for (_, words, stories, _) in by_tip {
+        report
+            .lines
+            .push(format!("- {}: {words}", stories.join(", ")));
+    }
     // One honest line for each project whose gate is local, not one per merge (RAL-161).
     for (index, merged) in gated {
         let gate = &local[index];
@@ -1248,6 +1458,131 @@ mod tests {
             "RAL-2": {"evidence": {"text": format!("Castor-o7/rally@{}", "b".repeat(40))}},
             "RAL-3": {"evidence": {"text": "no repository here"}},
         }})
+    }
+
+    /// RAL-180: a story with no evidence when its merge is taken in (claimed, in parts, merged
+    /// before its closing submit) takes its repository from its prefix's project, said declared;
+    /// one with no project still says "no repository in the evidence".
+    #[test]
+    fn a_merge_without_evidence_takes_its_projects_repository() {
+        let mut kept = start_at(0);
+        let stories = json!({"stories": {"DSM-5": {"state": "claimed"}, "ZZZ-1": {}}});
+        let projects = [("DSM".to_owned(), "Castor-o7/DiscoSim".to_owned())];
+        take_in_merges_with(
+            &mut kept,
+            &[
+                merge_rec(1, "w", "DSM-5", &"e".repeat(40)),
+                merge_rec(2, "w", "ZZZ-1", &"f".repeat(40)),
+            ],
+            &stories,
+            0,
+            &projects,
+        );
+        assert_eq!(kept.ci[0].repo.as_deref(), Some("Castor-o7/DiscoSim"));
+        assert!(kept.ci[0].repo_from_projects);
+        assert_eq!(kept.ci[1].repo, None);
+        let landed = |_: &str, _: &str| -> Result<Option<(String, String)>, String> { Ok(None) };
+        let failed = |_: &str, _: &str| -> Result<Ci, String> {
+            Ok(Ci::Failed {
+                workflow: "CI".into(),
+                url: "u".into(),
+            })
+        };
+        let report = check_ci(&mut kept, &landed, &failed, 1);
+        assert!(
+            report.lines[0].starts_with(
+                "- DSM-5 merged at eeeeeee (its repository from the projects list [declared]): \
+                 left the base red"
+            ),
+            "{report:?}"
+        );
+        assert!(
+            report.lines[1].contains("no repository in the evidence"),
+            "{report:?}"
+        );
+    }
+
+    /// RAL-180: a gated project's merges are told from the gate, one line a tip, each saying what
+    /// was read; green holds the line until it's sent, running is kept, the rest are urgent.
+    #[test]
+    fn a_gated_projects_merges_are_told_one_line_a_tip() {
+        use crate::gate_check::{Gate, Verdict};
+        let gate =
+            Gate::parse("DSM=~/.local/state/dsm-gates,~/Documents/GitHub/Discoteque").unwrap();
+        let tip = "1".repeat(40);
+        let mut kept = start_at(0);
+        let stories = json!({"stories": {}});
+        let commits = ["a", "b", "c", "d", "e", "f"].map(|c| c.repeat(40));
+        let recs: Vec<Rec> = ["DSM-1", "DSM-2", "DSM-3", "DSM-4", "DSM-5", "DSM-6"]
+            .iter()
+            .zip(&commits)
+            .enumerate()
+            .map(|(i, (story, commit))| merge_rec(i as u64 + 1, "w", story, commit))
+            .collect();
+        take_in_merges(&mut kept, &recs, &stories, 0);
+        let read = |_: &Gate, commit: &str| match &commit[..1] {
+            "a" | "b" => Verdict::Green {
+                tip: tip.clone(),
+                on_main: true,
+                summary: "QUICK OK, 3 scenes, 0 failed".into(),
+            },
+            "c" => Verdict::Running {
+                tip: "2".repeat(40),
+                age_ms: 50 * 60_000,
+            },
+            "d" => Verdict::Red {
+                tip: "3".repeat(40),
+                why: "2 failed".into(),
+            },
+            "e" => Verdict::NoLog { read: 200 },
+            _ => Verdict::Green {
+                tip: "4".repeat(40),
+                on_main: false,
+                summary: String::new(),
+            },
+        };
+        let github = |_: &str, _: &str| -> Result<Ci, String> {
+            panic!("a gated merge isn't looked for on GitHub")
+        };
+        let landed = |_: &str, _: &str| -> Result<Option<(String, String)>, String> { Ok(None) };
+        let report = check_ci_gated(
+            &mut kept,
+            &landed,
+            &github,
+            1,
+            &[],
+            &stories,
+            &[gate],
+            &read,
+        );
+        assert_eq!(
+            report.lines,
+            [
+                "- DSM-1, DSM-2: landed in 1111111: gated locally, green at 1111111 [observed: \
+                 ~/.local/state/dsm-gates/1111111111111111111111111111111111111111.log names \
+                 1111111 (QUICK OK, 3 scenes, 0 failed), its .ok is there, and git shows 1111111 \
+                 on origin/main in ~/Documents/GitHub/Discoteque and holding each]",
+                "- DSM-3: gate running at 2222222 for 50 min [observed: \
+                 ~/.local/state/dsm-gates/2222222222222222222222222222222222222222.log, no .ok \
+                 yet]; checked again each pass",
+                "- DSM-4: gated locally, RED at 3333333: 2 failed [observed: \
+                 ~/.local/state/dsm-gates/3333333333333333333333333333333333333333.log, no green \
+                 gated tip holds it, by git in ~/Documents/GitHub/Discoteque]",
+                "- DSM-5: merged at eeeeeee: no gate log for eeeeeee [observed: none of the newest \
+                 200 logs in ~/.local/state/dsm-gates holds it, by git in \
+                 ~/Documents/GitHub/Discoteque]: it landed without a gate",
+                "- DSM-6: gated green at 4444444, but 4444444 isn't on origin/main [observed: \
+                 ~/.local/state/dsm-gates/4444444444444444444444444444444444444444.log, its .ok, \
+                 git in ~/Documents/GitHub/Discoteque]: a tip that never landed vouches for \
+                 nothing on main",
+            ]
+        );
+        assert!(report.urgent && report.held);
+        // Only the running one is kept, to be checked again.
+        assert_eq!(
+            kept.ci.iter().map(|p| p.story.as_str()).collect::<Vec<_>>(),
+            ["DSM-3"]
+        );
     }
 
     /// RAL-102: only push runs count, and a failure wins over one still going.

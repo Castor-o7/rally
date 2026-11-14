@@ -59,8 +59,10 @@ const chromeArgs = [
 const STDERR_KEPT = 4096;
 let browser = null;
 let stderrTail = "";
-// An abort at start that was tried once more: its status and what Chrome said.
+// A crash at start that was tried once more: its status and what Chrome said.
 let firstAbort = null;
+// When this run began, to the second, for coredumpctl's --since (RAL-179).
+const startedAt = Math.floor(Date.now() / 1000);
 
 function launch() {
   stderrTail = "";
@@ -111,20 +113,31 @@ function finish(code, value) {
     if (code !== 0 && exitSeen && said.exit === undefined) said.exit = exitSeen;
     console.log(JSON.stringify(said));
   }
+  // This run's Chrome processes as it ends, by their profile, so a core can be told as this run's.
+  const ours = ourPids();
   let cleaned = false;
-  const done = () => {
+  const done = (closed) => {
     if (cleaned) return;
     cleaned = true;
     reap();
     for (const dir of [profile, sandboxed]) {
       if (dir) try { rmSync(dir, { recursive: true, force: true }); } catch { /* still held */ }
     }
+    // RAL-179: Chrome's exit as it was closed came through the launcher; a crash there is said,
+    // and its core waited for a moment, since systemd writes it after the process has gone.
+    const crashed = closed && isCrash(closed.code, closed.signal);
+    if (crashed) {
+      process.stderr.write(`sign-in.mjs: Chrome ${crashWord(closed)} at teardown `
+        + `(${closed.signal || closed.code}) at ${exitFacts(browser).at}, after the run had its answer; `
+        + `the result stands; the end of what it said: ${JSON.stringify(stderrTail.slice(-600))} (RAL-179)\n`);
+    }
+    sayCores(ours, crashed ? 3000 : 0);
     process.exit(code);
   };
   if (!browser || !browserEndpoint || browser.exitCode !== null) return done();
   // The launcher exits once Chrome has closed, so remove the profile only then, or Chrome writes
   // it back while shutting down; give up waiting after a few seconds.
-  browser.once("exit", done);
+  browser.once("exit", (exitCode, exitSignal) => done({ code: exitCode, signal: exitSignal }));
   setTimeout(done, 5000);
   try {
     const closer = new WebSocket(browserEndpoint);
@@ -144,7 +157,47 @@ const fail = (value) => {
   finish(1, value);
   return new Promise(() => {});
 };
+// RAL-160, RAL-179: a crash at start is an abort (134, SIGABRT) or a segfault (139, SIGSEGV), both
+// seen inside flatpak's zypak spawn helper on Murph. Under flatpak the launcher exits with 128 plus
+// the signal; run directly, Chrome dies by the signal itself.
 const isAbort = (code, signal) => code === 134 || signal === "SIGABRT";
+const isCrash = (code, signal) => isAbort(code, signal) || code === 139 || signal === "SIGSEGV";
+const crashWord = ({ code, signal }) => (isAbort(code, signal) ? "aborted" : "crashed");
+
+// RAL-179: a Chrome that crashes as it's closed, after the run has its answer, fails nothing and
+// was seen nowhere (the lamplighter found one only in coredumpctl, 2026-11-14 05:29:59). So, at the
+// end, this run's crashed Chrome is said on standard error: from the launcher's exit, if Chrome's
+// own exit came through it; and from coredumpctl, each Chrome core dumped since this run began,
+// said as this run's when its pid was one of this run's processes, and otherwise as perhaps a run
+// alongside. Observed only: it never changes the run's result.
+const coredumpctl = process.env.RALLY_BROWSER_COREDUMPCTL || "coredumpctl";
+function chromeCores() {
+  const out = spawnSync(coredumpctl, ["list", "--json=short", "--no-pager", "-q", `--since=@${startedAt}`], {
+    encoding: "utf8", timeout: 3000,
+  });
+  if (out.status !== 0 || !out.stdout) return [];
+  try {
+    return JSON.parse(out.stdout).filter((core) => /chrom/.test(basename(String(core.exe || ""))));
+  } catch { return []; }
+}
+const signalNames = { 6: "SIGABRT", 11: "SIGSEGV", 4: "SIGILL", 7: "SIGBUS", 5: "SIGTRAP" };
+function sayCores(ours, wait) {
+  let cores = chromeCores();
+  for (let waited = 0; !cores.length && waited < wait; waited += 250) {
+    pause(250);
+    cores = chromeCores();
+  }
+  for (const core of cores) {
+    const at = new Date(Number(core.time) / 1000).toISOString().replace(/\.\d+Z$/, "Z");
+    const whose = ours.has(Number(core.pid))
+      ? "one of this run's processes"
+      : "not one of this run's processes, so perhaps a run alongside";
+    process.stderr.write(`sign-in.mjs: a Chrome core was dumped at ${at}, pid ${core.pid} (${whose}), `
+      + `${signalNames[core.sig] || "signal " + core.sig}, ${core.exe} (RAL-179)\n`);
+  }
+}
+const ourPids = () => new Set(spawnSync("pgrep", ["-f", "--", profileName]).stdout.toString()
+  .split(/\s+/).filter(Boolean).map(Number));
 
 // What the machine looked like when Chrome exited, so a failure can be tied to its own records
 // (the lamplighter, RAL-160): the time to the second, which coredumpctl lists a crash by; the pid
@@ -236,8 +289,10 @@ async function startOnce() {
 }
 
 // RAL-160: an abort at start (exit 134, or SIGABRT, before the code page has loaded) is tried once
-// more, and said: on standard error now, and as `retried_after_abort` in what's printed. A second
-// abort, or any other exit, fails with what Chrome said each time. Nothing more is papered over.
+// more, and said: on standard error now, and as `retried_after_abort` in what's printed. RAL-179:
+// a segfault at start (139, or SIGSEGV) as well. Once only: a second crash, or any other exit,
+// fails with what Chrome said each time, so a Chrome that crashes every time still fails.
+// Nothing more is papered over.
 const exitStatus = ({ code, signal }) => signal || code;
 let page;
 try {
@@ -245,7 +300,7 @@ try {
 } catch (error) {
   if (!error.exit) throw error;
   const first = { status: exitStatus(error.exit), ...exitSeen, chrome_stderr: stderrTail };
-  if (!isAbort(error.exit.code, error.exit.signal)) {
+  if (!isCrash(error.exit.code, error.exit.signal)) {
     await fail({ error: `the browser exited with ${first.status} before the page loaded` });
   }
   reap();
@@ -253,7 +308,7 @@ try {
     if (dir) try { rmSync(dir, { recursive: true, force: true }); } catch { /* still held */ }
   }
   firstAbort = first;
-  process.stderr.write(`sign-in.mjs: Chrome aborted at start (${first.status}) at ${first.at}, pid ${first.pid} `
+  process.stderr.write(`sign-in.mjs: Chrome ${crashWord(error.exit)} at start (${first.status}) at ${first.at}, pid ${first.pid} `
     + `(${first.pid_is}), load ${first.loadavg}, document portal mounted: ${first.doc_portal_mounted}; `
     + `trying once more (RAL-160). What it said:\n${first.chrome_stderr}\n`);
   try {
@@ -262,9 +317,10 @@ try {
     if (!again.exit) throw again;
     const status = exitStatus(again.exit);
     await fail({
-      error: isAbort(again.exit.code, again.exit.signal)
-        ? `Chrome aborted at start twice (${first.status}, then ${status})`
-        : `the browser exited with ${status} before the page loaded, after an abort at start`,
+      error: isCrash(again.exit.code, again.exit.signal)
+        ? `Chrome ${isAbort(error.exit.code, error.exit.signal) && isAbort(again.exit.code, again.exit.signal)
+          ? "aborted" : "crashed"} at start twice (${first.status}, then ${status})`
+        : `the browser exited with ${status} before the page loaded, after a crash at start`,
     });
   }
 }

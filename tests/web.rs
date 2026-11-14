@@ -1115,6 +1115,18 @@ fn run_browser(
     schemes: Option<&str>,
     window: Option<&str>,
 ) -> (bool, Value, String) {
+    run_browser_env(viewer, chrome, probe, schemes, window, &[])
+}
+
+/// [`run_browser`], with variables set for the script, such as a stand-in coredumpctl (RAL-179).
+fn run_browser_env(
+    viewer: &Viewer,
+    chrome: &str,
+    probe: Option<&str>,
+    schemes: Option<&str>,
+    window: Option<&str>,
+    env: &[(&str, &str)],
+) -> (bool, Value, String) {
     let url = format!("http://{}{}", viewer.address, login(viewer));
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser/sign-in.mjs");
     let mut command = Command::new("node");
@@ -1133,6 +1145,7 @@ fn run_browser(
     if let Some(window) = window {
         command.env("RALLY_BROWSER_WINDOW", window);
     }
+    command.envs(env.iter().copied());
     let output = command
         .output()
         .expect("node is needed to drive the browser");
@@ -1154,6 +1167,12 @@ fn run_browser(
             first["doc_portal_mounted"],
             first["chrome_stderr"].as_str().unwrap_or("nothing")
         );
+    }
+    // RAL-179: a crash at teardown, and any Chrome core dumped during the run, reach the test's
+    // own standard error, so ci-local's log carries them even when the test passes.
+    for line in stderr.lines().filter(|line| line.contains("(RAL-179)")) {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "browser test: {line}");
     }
     (output.status.success(), seen, stderr)
 }
@@ -1222,6 +1241,90 @@ fn an_abort_at_start_is_tried_once_more_and_said() {
         "{stderr}"
     );
     assert_eq!(seen["after"]["status"], 200, "the retry signed in: {seen}");
+    nothing_of_the_browser_survives(&seen);
+}
+
+/// RAL-179: a segfault at start (139, as flatpak's launcher gives Chrome's SIGSEGV) gets the same
+/// one stated retry; a second fails, so a Chrome that crashes every time still fails the test.
+#[test]
+fn a_segfault_at_start_is_tried_once_more_and_a_second_fails() {
+    let Some(chrome) = browser() else { return };
+    let viewer = start();
+    let dir = tempfile::tempdir().unwrap();
+    let once = chrome_that_fails(dir.path(), 1, 139, &chrome);
+    let (ok, seen, stderr) = run_browser(&viewer, &once, None, None, None);
+    assert!(ok, "{seen}\n{stderr}");
+    assert_eq!(seen["retried_after_abort"]["status"], 139, "{seen}");
+    assert!(
+        stderr.contains("Chrome crashed at start (139) at ") && stderr.contains("trying once more"),
+        "{stderr}"
+    );
+    assert_eq!(seen["after"]["status"], 200, "the retry signed in: {seen}");
+    nothing_of_the_browser_survives(&seen);
+
+    let other = tempfile::tempdir().unwrap();
+    let always = chrome_that_fails(other.path(), 99, 139, &chrome);
+    let (ok, seen, _) = run_browser(&viewer, &always, None, None, None);
+    assert!(!ok, "{seen}");
+    assert_eq!(
+        seen["error"], "Chrome crashed at start twice (139, then 139)",
+        "{seen}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(other.path().join("runs"))
+            .unwrap()
+            .trim(),
+        "2",
+        "tried once more, and only once"
+    );
+    nothing_of_the_browser_survives(&seen);
+}
+
+/// RAL-179: Chrome crashing as it's closed, after the run has its answer, is said on standard
+/// error, with each Chrome core coredumpctl lists since the run began; the result stands.
+#[test]
+fn a_crash_at_teardown_is_said_and_the_result_stands() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(chrome) = browser() else { return };
+    let viewer = start();
+    let dir = tempfile::tempdir().unwrap();
+    // Runs the real browser, then exits as a launcher does whose Chrome segfaulted on closing.
+    let wrapper = dir.path().join("crashes-on-close");
+    std::fs::write(&wrapper, "#!/bin/sh\n\"$@\"\nexit 139\n").unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // A stand-in coredumpctl: one Chrome core of another process, and a core that isn't Chrome's.
+    let cores = dir.path().join("coredumpctl");
+    std::fs::write(
+        &cores,
+        "#!/bin/sh\necho '[{\"time\":1794652199536351,\"pid\":1,\"sig\":11,\"exe\":\"/app/extra/chrome\"},\
+         {\"time\":1794652199536351,\"pid\":2,\"sig\":11,\"exe\":\"/usr/bin/node\"}]'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&cores, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let command = format!("{} {chrome}", wrapper.display());
+    let (ok, seen, stderr) = run_browser_env(
+        &viewer,
+        &command,
+        None,
+        None,
+        None,
+        &[("RALLY_BROWSER_COREDUMPCTL", cores.to_str().unwrap())],
+    );
+    assert!(ok, "the run's answer stands: {seen}\n{stderr}");
+    assert_eq!(seen["after"]["status"], 200, "{seen}");
+    assert!(
+        stderr.contains("Chrome crashed at teardown (139) at ")
+            && stderr.contains("the result stands; the end of what it said: \""),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "a Chrome core was dumped at 2026-11-14T10:29:59Z, pid 1 (not one of this run's \
+             processes, so perhaps a run alongside), SIGSEGV, /app/extra/chrome (RAL-179)"
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("/usr/bin/node"), "{stderr}");
     nothing_of_the_browser_survives(&seen);
 }
 

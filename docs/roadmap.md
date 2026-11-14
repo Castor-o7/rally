@@ -1411,3 +1411,22 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   scenes; a `, K skipped` count reads; a QUICK suite with no count line (the bench) is covered by `QUICK OK` and
   left out, kept as giving no result when there's no `QUICK OK`; the bound is 256; every real `.ok` log on Murph
   reads green; with tests (docs/brief.md).
+- [ ] **RAL-180: The digest tells a locally gated project's merges from its gate, observed.** From the watchman
+  (2026-11-14): every DiscoSim landing showed as "the base's CI couldn't be checked: no repository in the
+  evidence", five lines a train, noise that would hide a real red. Done when: a merge whose story has no evidence
+  takes its repository from its prefix's project, said declared; `rally digest --gate <PREFIX>=<logs>,<checkout>`
+  tells each of the project's merges from the gate's `<tip>.log`/`<tip>.ok` and git, one line a tip, observed:
+  green at the earliest green tip that landed (a red or running tip beside it doesn't turn it red), green but
+  not on main, red, running (limit in the flag, 2h default) or no gate log; paths as given; kept by `--restart`;
+  no projects.json change, no service restart; with tests (docs/digest.md).
+- [ ] **RAL-179: A Chrome segfault at start gets the one stated retry; a crash at teardown is said.** From the
+  lamplighter's third crash on Murph (2026-11-14 05:29:59, SIGSEGV in `/app/extra/chrome` through zypak's libsystemd
+  bus call, during ci-local's check of 90de3d3, which passed and logged nothing of it), assigned by the watchman.
+  Done when: in `tests/browser/sign-in.mjs`, a segfault at start (139, or SIGSEGV) gets RAL-160's one retry, said
+  on standard error and kept as `retried_after_abort` with Chrome's standard error, and a second crash fails, so a
+  Chrome that crashes every time still fails; a crash as Chrome is closed, seen in the launcher's exit, is said on
+  standard error with the end of what Chrome said, and each Chrome core `coredumpctl` lists since the run began is
+  said with its time, pid and signal, as this run's when the pid was one of its processes and otherwise as perhaps a
+  run alongside; observed only, never changing the result; the browser tests carry those lines to their own
+  standard error, so ci-local's log has them; with tests for a segfault retried, a second failing, and a teardown
+  crash with a stand-in coredumpctl.
