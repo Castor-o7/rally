@@ -395,6 +395,14 @@ enum Command {
         /// previous one ended if it wasn't asked to.
         #[arg(long, conflicts_with = "report_only")]
         restart: bool,
+        /// A project gated on this machine, not by CI on GitHub (RAL-180):
+        /// `<PREFIX>=<logs dir>,<checkout>[,running=<window>]`, such as
+        /// `DSM=~/.local/state/dsm-gates,~/Documents/GitHub/Discoteque`. Its merges are told from
+        /// the gate's `<tip>.log` and `<tip>.ok` files and the checkout's git: green at the
+        /// earliest landed tip that holds them, or red, running (2h by default) or no gate log.
+        /// Repeatable; kept in the pid file, so a restart keeps it.
+        #[arg(long = "gate")]
+        gates: Vec<String>,
     },
     /// For the operator: show the service's GitHub token can't merge (RAL-18). Reads pull request
     /// --pull, which must be already merged or closed, then tries to merge it naming a head no
@@ -2680,6 +2688,7 @@ fn run_every(
 fn digest_control(
     pid_file: &Path,
     given: Option<rally::digest_loop::Settings>,
+    gates_only: Option<Vec<String>>,
     stop: bool,
     restart: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -2706,10 +2715,13 @@ fn digest_control(
         )
         .into());
     }
-    let settings = given.or(remembered).ok_or(
+    let mut settings = given.or(remembered).ok_or(
         "no settings to start the digest with: give --every, --quiet and --max (the pid file \
          remembers them after that)",
     )?;
+    if let Some(gates) = gates_only {
+        settings.gates = gates;
+    }
     let exe = std::env::current_exe()?;
     let pid = dl::start(&exe, &settings, pid_file, &log)?;
     out["started"] = json!({"pid": pid, "args": settings.args(pid_file)});
@@ -2728,6 +2740,7 @@ fn digest_pass(
     times: rally::digest::Times,
     named: Option<&str>,
     report_only: bool,
+    gates: &[rally::gate_check::Gate],
 ) -> Result<String, Box<dyn std::error::Error>> {
     use rally::digest::{Decision, Kept, Watchman};
     let backend = Backend::choose(location, config, false)?;
@@ -2771,13 +2784,20 @@ fn digest_pass(
     };
     // The projects whose merges pass a gate that isn't CI on GitHub (RAL-161), from the projects
     // list beside the pairing, or the built-in one.
-    let local_gates: Vec<rally::digest::LocalGate> = {
+    let projects_read = {
         let file = default_projects_file(config)
             .ok()
             .flatten()
             .map(|path| std::fs::read_to_string(&path).map_err(|error| error.to_string()));
-        rally::brief::brief_projects(file)
-            .0
+        rally::brief::brief_projects(file).0
+    };
+    // Each project's prefix and repository, for a merge whose story has no evidence (RAL-180).
+    let prefix_repos: Vec<(String, String)> = projects_read
+        .iter()
+        .map(|p| (p.prefix.clone(), p.repo.clone()))
+        .collect();
+    let local_gates: Vec<rally::digest::LocalGate> = {
+        projects_read
             .into_iter()
             .filter_map(|p| {
                 Some(rally::digest::LocalGate {
@@ -2862,7 +2882,13 @@ fn digest_pass(
                 .any(|r| r.seq > kept.ci_checked_to && r.body["change"] == "merge")
             {
                 let stories = all_stories()?;
-                rally::digest::take_in_merges(&mut kept, &recs, &stories, now_ms);
+                rally::digest::take_in_merges_with(
+                    &mut kept,
+                    &recs,
+                    &stories,
+                    now_ms,
+                    &prefix_repos,
+                );
                 stories_read = Some(stories);
             }
             // A local gate's merges held from an earlier pass are named with their batch, so the
@@ -2880,13 +2906,19 @@ fn digest_pass(
             }
             let before_ci = kept.ci.clone();
             // Projects whose gate isn't CI on GitHub are told once, not looked for (RAL-161).
-            let ci = rally::digest::check_ci_with(
+            // Projects gated on this machine are told from the gate's files and git (RAL-180).
+            let gate_read = |gate: &rally::gate_check::Gate, commit: &str| {
+                rally::gate_check::verdict(gate, commit, now_ms.max(0) as u64)
+            };
+            let ci = rally::digest::check_ci_gated(
                 &mut kept,
                 &web::pr_head,
                 &web::ci_state,
                 now_ms,
                 &local_gates,
                 stories_read.as_ref().unwrap_or(&Value::Null),
+                gates,
+                &gate_read,
             );
             if !ci.lines.is_empty() {
                 row["ci"] = json!(ci.lines);
@@ -4939,8 +4971,14 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             background,
             stop,
             restart,
+            gates,
         } => {
             let config = config_path(cli.config)?;
+            // Read now, so a wrong --gate fails before anything starts.
+            let gate_list = gates
+                .iter()
+                .map(|g| rally::gate_check::Gate::parse(g))
+                .collect::<Result<Vec<_>, _>>()?;
             let state_file = state_file.unwrap_or_else(|| config.with_file_name("digest.json"));
             let pid_file = pid_file.unwrap_or_else(|| config.with_file_name("digest.pid"));
             // RAL-154: stop, start and restart the loop by its pid file.
@@ -4961,12 +4999,15 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                             watchman: watchman.clone(),
                             state_file: state_file.clone(),
                             config: config.clone(),
+                            gates: gates.clone(),
                         })
                     }
                     (Some(_), _, _) => return Err("--every needs --quiet and --max".into()),
                     _ => None,
                 };
-                return digest_control(&pid_file, given, stop, restart);
+                // `--restart --gate …` alone keeps the remembered settings with these gates.
+                let gates_only = (given.is_none() && !gates.is_empty()).then(|| gates.clone());
+                return digest_control(&pid_file, given, gates_only, stop, restart);
             }
             let (Some(quiet), Some(max)) = (quiet, max) else {
                 return Err("a digest needs --quiet and --max".into());
@@ -4983,6 +5024,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     times,
                     watchman.as_deref(),
                     report_only,
+                    &gate_list,
                 )
             };
             let Some(every) = every else {
@@ -5000,6 +5042,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 watchman: watchman.clone(),
                 state_file: state_file.clone(),
                 config: config.clone(),
+                gates: gates.clone(),
             };
             rally::digest_loop::hold(&pid_file, &settings)?;
             let error = run_every(every, preflight, pass);

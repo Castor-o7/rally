@@ -65,8 +65,14 @@ batch (the service's `--rally-openers`). It's declared and changes no story's st
 `rally batch end ... --gate-log <path>` records the gate's own log with the end. Rally hashes the file (sha256 and
 size; nothing is typed) and reads its result lines with one fixed parser, for DiscoSim's `dsm-gate`: the first
 line `# dsm-gate: commit <sha> tree <sha> scenes: ... started <time> script sha256 <hex>`, `QUICK OK`, and each
-scene's `=== N passed, M failed ===`. A log without that first line is refused plainly, and the service refuses a
-log whose commit isn't the batch's tip: the wrong log for the wrong batch, or a gate run on a stale tip.
+suite's or scene's `=== N passed, M failed ===` (or `..., K skipped ===`). Since RAL-181 that's every suite: the
+QUICK phase's (`== test_sim ==`, `== test_layout (what it covers) ==`) by name as well as the scenes
+(`== res://tests/<scene>.tscn ==`), about 112 a gate, where before only the three scenes were. A QUICK suite with
+no count line, such as the bench (judged by its own verdict suite), is covered by `QUICK OK` and left out; without
+a `QUICK OK`, it's kept as giving no result. At most 256 are recorded, and the service checks that bound too, so
+a CLI from RAL-181 on needs a service from RAL-181 on to record a full log. A log without that first line is
+refused plainly, and the service refuses a log whose commit isn't the batch's tip: the wrong log for the wrong
+batch, or a gate run on a stale tip.
 
 What it is worth, and what it isn't. The hash binds the log the watchman keeps to the one it named when the batch
 ended, so a log changed afterwards is caught by anyone who has it. It doesn't show that the gate ran: the
