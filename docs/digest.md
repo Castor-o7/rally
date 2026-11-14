@@ -158,6 +158,27 @@ pass checks the base's CI on what landed, until it can say how it went:
   the watchman's [declared]. Merged: DSM-214 (batch 54), DSM-209", naming the batch each landed in where the
   watchman recorded one (`rally batch`). The line waits for a digest that's going anyway, and isn't lost if none
   goes that pass.
+- **A story with no evidence when its merge is taken in** (claimed again, in parts, or merged before its closing
+  submit, as `dsm-record-merges` records every DiscoSim car) takes its repository from its prefix's project in the
+  projects list, and its line says so: "(its repository from the projects list [declared])" (RAL-180). Only a
+  story whose prefix no project has still says "no repository in the evidence".
+- **A project gated on this machine** (RAL-180): `rally digest --gate DSM=~/.local/state/dsm-gates,~/Documents/GitHub/Discoteque`
+  (repeatable, with `,running=<window>` for how long a gate may run, 2h by default) names the gate's logs and
+  the project's checkout. Its merges are told from them, never from GitHub, one line for each gated tip, naming
+  the stories it holds, and each line says what was read [observed]:
+  - **green** at the earliest tip T that holds the merge, has its `<T>.ok`, has a `<T>.log` naming T with no
+    failure, and is on the checkout's `origin/main`. A train that failed and was rebuilt with the same commit, or
+    one gating on top, doesn't turn a landed, gated merge red. Told once, held until a digest carries it.
+  - **green at T, but T isn't on origin/main**: a tip that never landed vouches for nothing on main. Urgent.
+  - **RED at T**, with the failures: no green tip holds it, and the newest that does failed, or has had no `.ok`
+    for longer than the running limit. Urgent.
+  - **gate running at T**: within the limit. Checked again each pass.
+  - **no gate log**: none of the newest 200 logs holds it; it landed without a gate. Urgent.
+  - **can't be told yet**: the checkout hasn't fetched the merge, or has no `origin/main`. Told once, tried again,
+    and given up after 2 hours.
+  Paths are said as given. The flag needs no projects-list change and no service restart: the digest loop is the
+  CLI, and `--gate` is kept in its pid file, so `rally digest --restart --gate …` adds it to the running loop's
+  settings.
 
 What's pending is kept in the state file beside each watchman's head (`ci`, `ci_checked_to`), so each merge is
 taken in once. Something urgent that couldn't be sent is told again on the next pass. It needs `gh` signed in on
