@@ -2,6 +2,8 @@
 //! force that name it, where they bite rather than only in the brief, and, at a merge, what the
 //! merged commit's CI says. Both inform; neither blocks anything.
 
+use std::time::Duration;
+
 use serde_json::{Value, json};
 
 use crate::digest::Ci;
@@ -67,6 +69,30 @@ pub fn conditions_at_merge(standings: &Value, story: &str) -> Vec<Value> {
     out
 }
 
+/// How often `rally merge` reads again while no run has appeared (RAL-178).
+pub const CI_POLL: Duration = Duration::from_secs(2);
+
+/// Reads the merged commit's CI, and while no run has appeared reads again every `every`, for at
+/// most `wait` in all (RAL-178): a run is usually started a few seconds after the merge's push.
+/// Anything other than no run (passed, failed, running, or a read that failed) is given at once.
+pub fn ci_waiting(
+    read: impl Fn() -> Result<Ci, String>,
+    wait: Duration,
+    every: Duration,
+    sleep: impl Fn(Duration),
+) -> Result<Ci, String> {
+    let mut waited = Duration::ZERO;
+    loop {
+        let got = read();
+        if !matches!(got, Ok(Ci::NoRun)) || waited >= wait || every.is_zero() {
+            return got;
+        }
+        let step = every.min(wait - waited);
+        sleep(step);
+        waited += step;
+    }
+}
+
 /// What the merged commit's CI says, read through `gh` at the merge, observed (RAL-171). Still
 /// running isn't a verdict: the digest's RAL-102 section checks it again.
 pub fn ci_note(read: Result<Ci, String>) -> Value {
@@ -84,7 +110,10 @@ pub fn ci_note(read: Result<Ci, String>) -> Value {
             "running",
             "running; the digest's RAL-102 section checks again".to_owned(),
         ),
-        Ok(Ci::NoRun) => ("none", "no run on the merged commit yet".to_owned()),
+        Ok(Ci::NoRun) => (
+            "not_started",
+            "not started yet; the digest's RAL-102 section checks it".to_owned(),
+        ),
         Err(error) => (
             "unread",
             format!("couldn't be read: {}", crate::session::clean(error)),
@@ -142,6 +171,72 @@ mod tests {
         assert_eq!(other[0]["seq"], 10);
         // A team's session start still lists only what names its stories.
         assert!(conditions_naming(&standings, "RAL-999").is_empty());
+    }
+
+    #[test]
+    fn a_merge_waits_a_bounded_while_for_a_run_to_appear() {
+        use std::cell::{Cell, RefCell};
+        let reads = Cell::new(0);
+        let slept = RefCell::new(Vec::new());
+        // A run appears on the third read: it's given, after two waits.
+        let got = ci_waiting(
+            || {
+                reads.set(reads.get() + 1);
+                Ok(if reads.get() < 3 {
+                    Ci::NoRun
+                } else {
+                    Ci::Running
+                })
+            },
+            Duration::from_secs(8),
+            CI_POLL,
+            |d| slept.borrow_mut().push(d),
+        );
+        assert_eq!(got, Ok(Ci::Running));
+        assert_eq!(*slept.borrow(), [CI_POLL, CI_POLL]);
+        // None ever appears: it stops at the bound, never past it, and says not started.
+        reads.set(0);
+        slept.borrow_mut().clear();
+        let got = ci_waiting(
+            || {
+                reads.set(reads.get() + 1);
+                Ok(Ci::NoRun)
+            },
+            Duration::from_secs(5),
+            CI_POLL,
+            |d| slept.borrow_mut().push(d),
+        );
+        assert_eq!(got, Ok(Ci::NoRun));
+        assert_eq!(
+            slept.borrow().iter().sum::<Duration>(),
+            Duration::from_secs(5)
+        );
+        assert_eq!(reads.get(), 4);
+        assert_eq!(ci_note(got)["state"], "not_started");
+        assert_eq!(
+            ci_note(Ok(Ci::NoRun))["said"],
+            "not started yet; the digest's RAL-102 section checks it"
+        );
+        // A failed read isn't waited on, and no wait reads once.
+        reads.set(0);
+        let failed = ci_waiting(
+            || {
+                reads.set(reads.get() + 1);
+                Err("gh: offline".to_owned())
+            },
+            Duration::from_secs(8),
+            CI_POLL,
+            |_| panic!("no wait after a failed read"),
+        );
+        assert!(failed.is_err());
+        assert_eq!(reads.get(), 1);
+        let once = ci_waiting(
+            || Ok(Ci::NoRun),
+            Duration::ZERO,
+            CI_POLL,
+            |_| panic!("no wait"),
+        );
+        assert_eq!(once, Ok(Ci::NoRun));
     }
 
     #[test]

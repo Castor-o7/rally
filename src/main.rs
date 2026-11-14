@@ -7,7 +7,7 @@
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Value, json};
@@ -905,6 +905,10 @@ enum Command {
         /// The full hash of the merged commit.
         #[arg(long)]
         commit: String,
+        /// How many seconds to wait for a CI run on the merged commit to appear before saying it
+        /// hasn't started yet (RAL-178); 0 reads once.
+        #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u64).range(0..=60))]
+        ci_wait: u64,
     },
     /// Record a batch of commits gated together, a "train" (RAL-157): `start` with its cars, the
     /// base it was built on and the tip the gate runs on; `end` it when it lands, fails or is
@@ -3953,6 +3957,10 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
     );
     let password_file = cli.db_password_file.filter(|_| uses_database);
     let location = location(cli.db, cli.head_file, password_file)?;
+    let ci_wait = match &cli.command {
+        Command::Merge { ci_wait, .. } => Duration::from_secs(*ci_wait),
+        _ => Duration::ZERO,
+    };
     let (kind, body) = match cli.command {
         Command::Serve {
             bind,
@@ -5344,7 +5352,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                        "remove": remove, "note": note}),
             )
         }
-        Command::Merge { story, commit } => (
+        Command::Merge { story, commit, .. } => (
             Kind::Declared,
             json!({"change": "merge", "story": story, "commit": commit}),
         ),
@@ -5429,7 +5437,13 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
     // RAL-171: at a merge, the conditions in force that name the story, and what the merged
     // commit's CI says, read now and printed, recorded nowhere.
     if let Some((story, commit)) = merged {
-        merge_notes(&mut out, location.as_ref(), &config, &story, &commit);
+        merge_notes(
+            &mut out,
+            location.as_ref(),
+            &config,
+            (&story, &commit),
+            ci_wait,
+        );
     }
     Ok(out.to_string())
 }
@@ -5441,8 +5455,8 @@ fn merge_notes(
     out: &mut Value,
     location: Option<&Location>,
     config: &Path,
-    story: &str,
-    commit: &str,
+    (story, commit): (&str, &str),
+    ci_wait: Duration,
 ) {
     let backend = Backend::choose(location, config, false);
     let read = |path: &str, local: fn(&rally::ledger::Ledger, &Page) -> Result<Value, String>| {
@@ -5479,7 +5493,14 @@ fn merge_notes(
             .map(|(repo, _)| repo)
             .map_err(|_| "the story's evidence names no repository".to_owned())
     });
-    out["ci"] = rally::merge_notes::ci_note(repo.and_then(|repo| web::ci_state(&repo, commit)));
+    out["ci"] = rally::merge_notes::ci_note(repo.and_then(|repo| {
+        rally::merge_notes::ci_waiting(
+            || web::ci_state(&repo, commit),
+            ci_wait,
+            rally::merge_notes::CI_POLL,
+            std::thread::sleep,
+        )
+    }));
 }
 
 /// A leading `~/` as the home folder, since a shell doesn't expand it after `=`.
