@@ -1363,3 +1363,9 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   kept in the hunk, so a head that differs only by a final newline reads `changed`, and one after context is not;
   the GitHub fallback's answer says file modes can't be seen there; conflict resolutions are the head's own merges
   (first parent), not those main's history brought in, found replaying RAL-163; with tests (docs/gate.md).
+- [ ] **RAL-174: `rally stalls --prompts-only` says what it couldn't see, and fails.** From checking the watchman's
+  cron line by hand (2026-11-14): under cron's PATH neither shim nor `gh` was found, the roster couldn't be read,
+  two missed check-ins vanished, and the run printed nothing, a silent all clear. Done when: with `--prompts-only`,
+  a run that couldn't read the roster, a roadmap or other read, or a lock file (a pattern matching nothing) writes
+  `can't see: <what>` on a line each and exits non-zero; the report carries `blind`; docs/watchman.md §6 and
+  docs/stalls.md give the cron line with its `PATH=` and say why; tested with no shims on PATH.

@@ -121,12 +121,22 @@ With a rally open and no `--lock` given, each of the rally's projects' `stalls.l
 `hung_after` (sampled over `--cpu-sample`, 5 s by default). Flags still override: `--lock` and `--hung-after` given
 on the command line are used instead, for every lock. The check-in, `--quiet-after`, stays a flag or
 `RALLY_WAKE_QUIET_AFTER`, since it's the muster's window, not a project's. `--prompts-only` prints nothing at all
-when there's nothing to ask (no prompt, no every-team-waiting, no error), and succeeds either way, so the watchman's
-cron line can be:
+when there's nothing to ask (no prompt, no every-team-waiting, no error) and it saw everything it needed, so the
+watchman's cron line can be:
 
-```bash
-RALLY_WAKE_QUIET_AFTER=30m rally stalls --prompts-only
+```cron
+*/10 * * * * PATH=/home/joshd/.local/bin:/home/joshd/.cargo/bin:/usr/local/bin:/usr/bin:/bin /home/joshd/.local/bin/rally stalls --prompts-only --quiet-after 20m --lock '/tmp/discosim-heavy*.lock' --digest-quiet-after 10m >> /home/joshd/.local/state/rally/stalls.log 2>&1
 ```
+
+**A blind run fails** (RAL-174). Silence is only an all clear if the run could see. When the roster couldn't be read
+(no shim found), a read failed (a roadmap through `gh`, the designation) or a lock file couldn't be read (a pattern
+that matched nothing), `--prompts-only` writes `can't see: <what>` on a line each, then the report, and exits
+non-zero. Without `--prompts-only` the report carries the same list as `blind` and succeeds as before.
+
+**Cron needs the PATH.** Cron's default PATH is `/usr/bin:/bin`, which holds neither `gh` (`~/.local/bin`) nor the
+shims (`~/.cargo/bin`). Without `gh` every roadmap read fails. Without a shim, the roster can't be read, so no team
+can be seen to be idle or quiet: on 2026-11-14 that run hid two missed check-ins and, once `gh` was found, printed
+nothing at all. Hence the `PATH=` at the start of the line.
 
 For DiscoSim the watchman set 5m: a parse-error hang shows inside a minute and holds near 0% CPU, and no honest
 heavy job sits under 2% of a CPU for five minutes while holding a slot (a job waiting for a slot holds none).
