@@ -1345,3 +1345,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   conflict cost a merge commit and another read. Done when: `.gitattributes` sets `docs/roadmap.md merge=union`;
   the roadmap's header says entries are appended, that an edit to an existing entry needs a look after merging
   main in, and that GitHub's web merge ignores the driver; tested by merging two branches that each append.
+- [ ] **RAL-170: `rally rebased <STORY> --head <sha>` says whether a re-based head is the change verified.** From
+  the watchman (2026-11-14): on 2026-11-13 it and a team checked by hand, about eight times, that a head with main
+  merged in carried the verified change. Done when: observed, recording nothing, it compares the verified commit's
+  change against its merge base with main and the head's against its merge base with current main, by patch (not
+  by file list); says `same change` only when identical, otherwise names the files and hunks that differ; says
+  separately when the head's merges of main resolved a conflict; says `can't tell` (never `same change`) for a
+  missing commit or a compare cut short at 250; local git first, GitHub as the fallback; with tests for same,
+  changed, conflict-resolved and can't-tell (docs/gate.md).

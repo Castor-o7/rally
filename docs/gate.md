@@ -71,6 +71,41 @@ still needs `--allow` too.
 ## What it doesn't check
 
 - That the commit verified is the one in the range. `rally show <STORY>` gives `verified_commit` and
-  `commit_differs`, and the digest flags a merge whose head wasn't read (RAL-31, RAL-67).
+  `commit_differs`, and the digest flags a merge whose head wasn't read (RAL-31, RAL-67). Whether a
+  re-based head carries the change that was verified is `rally rebased`, below.
 - Work that names no story at all.
 - A range over 5,000 commits, or a ledger over 50 pages of stories, is refused rather than read in part.
+
+## Is the re-based head the change that was verified? (RAL-170)
+
+When main moves under a verified pull request, its team merges main in, and the head that will merge
+isn't the commit that was read. `rally rebased` answers whether it's the same change, observed and
+recording nothing:
+
+```sh
+rally rebased RAL-170 --head <full sha>                   # in a checkout that has both commits
+rally rebased RAL-170 --head <full sha> --checkout ~/src/rally-wt/x --base main
+```
+
+- **The comparison:** the verified commit's change against its merge base with main, and the head's
+  change against its merge base with main's tip (read from GitHub), compared patch by patch: each
+  file's added and removed lines, hunk by hunk, without line numbers or context, so a hunk that only
+  moved is the same and a file list that matches isn't enough. Each file is read from its
+  `diff --git` line, and its header (up to its first `@@`) gives the facts compared too: a mode
+  changed, a rename, a file added or deleted, and a binary file's blob ids, so a binary file, a
+  mode change or a pure rename is never invisible. Inside a hunk, a line starting `--- ` or `+++ `
+  is a removed `-- ` or added `++ ` line, not a header.
+- **What it can't see, said in every answer (`caveat`):** hunks are compared in order without
+  line numbers, so a hunk moved, unchanged, to another place in its file reads as the same change.
+- **The verdict:** `same change` only when every file's changed lines are identical. Otherwise
+  `changed`, with each file that differs and its first differing hunk as it is in each. `can't tell`
+  when it can't be compared: a commit missing, GitHub's compare cut short (over 250 commits or 300
+  files), a file whose patch GitHub won't show, or a verified commit with no change against main (one
+  already merged). It never says `same change` then.
+- **Conflict resolutions, said separately:** every merge into the head since the verified commit is
+  remerged (`git show --remerge-diff`), and any that differs from the merge git would have made, a
+  conflict resolved or a change made in the merge itself, is named with its files. Nobody read that
+  change, whatever the verdict.
+- **Local git first:** if the checkout has the verified commit, the head and main's tip (`git fetch`
+  first). Otherwise GitHub's compares, saying why local git wasn't used; GitHub has no remerge diff,
+  so the conflict resolutions are then `null` and said to be unknown.
