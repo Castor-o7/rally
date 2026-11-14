@@ -94,6 +94,68 @@ pub struct Project {
     /// explicitly, since a session's project doesn't always name its team.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<String>,
+    /// What `rally stalls` checks for this project, as the file's keeper declares it (RAL-164).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stalls: Option<StallsConfig>,
+}
+
+/// A project's own stall checks (RAL-164): its heavy-run lock files, which may hold `*` or `?` in
+/// the file name, and how long a holder may run doing almost nothing before it's possibly hung,
+/// such as "5m". Written down by the projects list's keeper, so the windows are agreed config.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StallsConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub locks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hung_after: Option<String>,
+}
+
+/// Every field a projects list's entry may have, for [`parse_projects`].
+pub const PROJECT_FIELDS: &[&str] = &[
+    "name",
+    "prefix",
+    "repo",
+    "path",
+    "tick_meaning",
+    "team",
+    "gate",
+    "sessions",
+    "stalls",
+];
+
+/// A projects list, tolerating fields this build doesn't know (RAL-164): each is left out, with a
+/// warning naming it, rather than the whole file refused. The file is shared by the CLI, the
+/// digest loop and the viewer, and a field added for a newer build mustn't stop an older one
+/// reading it at all.
+pub fn parse_projects(text: &str) -> Result<(Vec<Project>, Vec<String>), String> {
+    let mut value: Value = serde_json::from_str(text).map_err(|e| format!("it isn't JSON: {e}"))?;
+    let entries = value.as_array_mut().ok_or("it isn't a list of projects")?;
+    let mut warnings = Vec::new();
+    for (index, entry) in entries.iter_mut().enumerate() {
+        let Some(object) = entry.as_object_mut() else {
+            continue;
+        };
+        let name = object
+            .get("prefix")
+            .and_then(Value::as_str)
+            .map_or_else(|| format!("entry {}", index + 1), str::to_owned);
+        let unknown: Vec<String> = object
+            .keys()
+            .filter(|key| !PROJECT_FIELDS.contains(&key.as_str()))
+            .cloned()
+            .collect();
+        for key in unknown {
+            object.remove(&key);
+            warnings.push(format!(
+                "the projects list's {name} has a field this build doesn't know, `{key}`, so \
+                 it's left out: a newer rally knows it"
+            ));
+        }
+    }
+    let projects: Vec<Project> =
+        serde_json::from_value(value).map_err(|e| format!("it isn't a list of projects: {e}"))?;
+    Ok((projects, warnings))
 }
 
 /// Counts of checkboxes.
@@ -1905,7 +1967,14 @@ fn reload_projects(
     let read = std::fs::read_to_string(path)
         .map_err(|e| format!("can't read {}: {e}", path.display()))
         .and_then(|text| {
-            serde_json::from_str::<Vec<Project>>(&text)
+            // Fields this build doesn't know are left out, and said (RAL-164).
+            parse_projects(&text)
+                .map(|(projects, warnings)| {
+                    for warning in warnings {
+                        eprintln!("rally web: {warning}");
+                    }
+                    projects
+                })
                 .map_err(|e| format!("{} isn't a projects list: {e}", path.display()))
         });
     match read {
@@ -2710,6 +2779,46 @@ mod tests {
 
     /// RAL-80: a session lasts 14 days from its sign-in, only under its own key, and a clock set
     /// back doesn't stretch it.
+    /// RAL-164: a field this build doesn't know is left out with a warning, not the whole file
+    /// refused; a project's `stalls` is read; and the known fields are exactly Project's.
+    #[test]
+    fn a_projects_list_tolerates_fields_it_does_not_know() {
+        let text = r#"[{"name": "DiscoSim", "prefix": "DSM", "repo": "o/d", "path": "r.md",
+            "tick_meaning": "done", "gate": "the watchman's", "future": 1,
+            "stalls": {"locks": ["/tmp/discosim-heavy*.lock"], "hung_after": "5m"}}]"#;
+        let (projects, warnings) = parse_projects(text).unwrap();
+        assert_eq!(projects[0].prefix, "DSM");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("DSM") && warnings[0].contains("`future`"));
+        let stalls = projects[0].stalls.as_ref().unwrap();
+        assert_eq!(stalls.locks, ["/tmp/discosim-heavy*.lock"]);
+        assert_eq!(stalls.hung_after.as_deref(), Some("5m"));
+        assert!(parse_projects("{}").unwrap_err().contains("isn't a list"));
+        // Every field Project has is known, so none is dropped by mistake.
+        let full = Project {
+            name: "n".into(),
+            prefix: "P".into(),
+            repo: "o/r".into(),
+            path: "p".into(),
+            tick_meaning: "t".into(),
+            team: Some("t".into()),
+            gate: Some("g".into()),
+            sessions: vec!["s".into()],
+            stalls: Some(StallsConfig::default()),
+        };
+        let value = serde_json::to_value(&full).unwrap();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut known = PROJECT_FIELDS.to_vec();
+        known.sort_unstable();
+        assert_eq!(keys, known);
+    }
+
     #[test]
     fn a_session_lasts_its_age_under_its_own_key() {
         let made = Session {

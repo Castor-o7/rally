@@ -53,6 +53,9 @@ team is named as waiting on the watchman's batch N and for how long. These two r
 alone, so they're shown even when no roster can be read. A team busy on its own long job, such as a slow suite,
 is working, and isn't flagged.
 
+One approximation, noted by the watchman: "submitted since landing" is true after any later submit of the story,
+so a story in parts looks settled once one part is submitted after it landed.
+
 ## A stopped lock holder (RAL-75)
 
 From the DiscoSim rally's issues log, §4.4: on 2026-11-06 a runner shell sat stopped (state `T`) for about 57
@@ -81,6 +84,57 @@ roster, so it's shown even when the roster can't be read.
 
 The issues log also suggests asking a run not to start the next one, rather than to "hold", since a hold may have
 caused that stop. The prompt says so.
+
+## A lock holder doing almost nothing (RAL-163 part 2)
+
+On 2026-11-13 a team's test run, a godot under `dsm-heavy`, sat at 0.9% CPU for 11 minutes under a 40-minute
+timeout, holding one of the heavy-run slots. It wasn't stopped, so the stopped-holder row above didn't see it.
+
+`--lock` now takes a `*` or `?` in the file name, so `--lock '/tmp/discosim-heavy*.lock'` reads every slot of
+`dsm-heavy`'s pool (`/tmp/discosim-heavy.lock` and `/tmp/discosim-heavy.<k>.lock`). With `--hung-after
+<window>`, each holder's whole process tree is read twice, `--cpu-sample` apart (5 s by default), and a holder
+that has run at least the window while its tree used less than 2% of a CPU over the sample is a prompt:
+
+| Row | When it holds | Prompt |
+|---|---|---|
+| `possibly_hung_lock_holder` | The holder has run at least `--hung-after`, and its whole process tree used under 2% of a CPU over `--cpu-sample` | Ask the team whose run it is to look at it |
+
+Each such process is named by the tree's busiest process, with its command line and working directory, as
+"possibly hung: godot --headless ..., ~/.cache/sleek-moth/..., 0.9% CPU over 5 s, running 11 min". The team is
+guessed from a roster nickname in the working directory, and labelled so. It's a prompt, never a finding: a run
+waiting on something legitimate, such as the network, looks the same. Rally stops and kills nothing. No window has
+been agreed with the operator, so `--hung-after` has no default, and without it nothing is sampled. CPU time and
+start times are the kernel's (`/proc/<pid>/stat`, observed). Linux only.
+
+## One command line, from the projects list (RAL-164)
+
+`rally stalls` and `rally wake` read the projects list beside the pairing (`projects.json`) when not given
+`--projects`, as `rally brief`, `rally digest` and `rally next` do, and the built-in list otherwise. A project
+entry may say what stalls checks for it, as the file's keeper declares it:
+
+```json
+{"prefix": "DSM", "repo": "Castor-o7/DiscoSim", ...,
+ "stalls": {"locks": ["/tmp/discosim-heavy*.lock"], "hung_after": "5m"}}
+```
+
+With a rally open and no `--lock` given, each of the rally's projects' `stalls.locks` is read, with its own
+`hung_after` (sampled over `--cpu-sample`, 5 s by default). Flags still override: `--lock` and `--hung-after` given
+on the command line are used instead, for every lock. The check-in, `--quiet-after`, stays a flag or
+`RALLY_WAKE_QUIET_AFTER`, since it's the muster's window, not a project's. `--prompts-only` prints nothing at all
+when there's nothing to ask (no prompt, no every-team-waiting, no error), and succeeds either way, so the watchman's
+cron line can be:
+
+```bash
+RALLY_WAKE_QUIET_AFTER=30m rally stalls --prompts-only
+```
+
+For DiscoSim the watchman set 5m: a parse-error hang shows inside a minute and holds near 0% CPU, and no honest
+heavy job sits under 2% of a CPU for five minutes while holding a slot (a job waiting for a slot holds none).
+
+**The projects list tolerates fields it doesn't know** (RAL-164). The file is shared by the CLI, the digest loop
+and the viewer, so a reader from this build on leaves out a field it doesn't know, saying so on standard error,
+rather than refusing the whole file. Readers from before this build still refuse it: add a new field, such as
+`stalls` or `gate`, only once every reader on the machine runs a build that knows it.
 
 ## A watchman's digest that stopped (RAL-87)
 

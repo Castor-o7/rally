@@ -798,9 +798,23 @@ enum Command {
         #[arg(long, env = "RALLY_WAKE_QUIET_AFTER", value_parser = parse_window)]
         quiet_after: Option<u64>,
         /// A heavy-run lock file, as `flock <lock> <command>` takes it: flag it if its holder, or
-        /// anything under it, is stopped or a zombie (RAL-75). Repeatable. Linux only.
+        /// anything under it, is stopped or a zombie (RAL-75). Repeatable. A `*` or `?` in the
+        /// file name takes every matching file, such as every slot of a pool (RAL-163). Linux only.
         #[arg(long)]
         lock: Vec<PathBuf>,
+        /// With --lock: also flag a holder that's been running at least this long and whose whole
+        /// process tree used almost no CPU over --cpu-sample, as possibly hung (RAL-163). No length
+        /// has been agreed with the operator, so it has no default, and without it nothing is
+        /// sampled.
+        #[arg(long, value_parser = parse_window)]
+        hung_after: Option<u64>,
+        /// How long to sample each lock holder's CPU use for --hung-after.
+        #[arg(long, value_parser = parse_window, default_value = "5s")]
+        cpu_sample: u64,
+        /// Print nothing when there's nothing to ask, for a cron line (RAL-164). It succeeds either
+        /// way.
+        #[arg(long)]
+        prompts_only: bool,
         #[command(flatten)]
         digest: DigestCheck,
     },
@@ -1241,6 +1255,8 @@ fn main() -> ExitCode {
         };
     }
     match run(cli) {
+        // Nothing to say prints nothing, not an empty line (RAL-164, for cron).
+        Ok(output) if output.is_empty() => ExitCode::SUCCESS,
         Ok(output) => {
             println!("{}", escape_for_terminal(&output));
             ExitCode::SUCCESS
@@ -1732,8 +1748,8 @@ fn check_evidence(
         })?,
         None => DEFAULT_PROJECTS.to_owned(),
     };
-    let projects: Vec<Project> = serde_json::from_str(&text)
-        .map_err(|error| format!("the projects list isn't a list of projects: {error}"))?;
+    let projects: Vec<Project> =
+        projects_from(&text).map_err(|error| format!("the projects list isn't usable: {error}"))?;
     match evidence_problem(story, evidence, &projects) {
         Some(problem) => Err(problem.into()),
         None => Ok(()),
@@ -1806,8 +1822,8 @@ fn roadmap_path(
             .map_err(|e| format!("couldn't read the projects list {}: {e}", path.display()))?,
         None => DEFAULT_PROJECTS.to_owned(),
     };
-    let list: Vec<Project> = serde_json::from_str(&text)
-        .map_err(|error| format!("the projects list isn't a list of projects: {error}"))?;
+    let list: Vec<Project> =
+        projects_from(&text).map_err(|error| format!("the projects list isn't usable: {error}"))?;
     let source = file.map_or_else(
         || "the built-in projects list".to_owned(),
         |path| path.display().to_string(),
@@ -2019,6 +2035,33 @@ fn digest_check(check: &DigestCheck, watchmen: &Value, config: &Path, now_ms: i6
     value
 }
 
+/// A projects list, with any field this build doesn't know left out and said on standard error
+/// rather than the whole file refused (RAL-164).
+fn projects_from(text: &str) -> Result<Vec<Project>, String> {
+    let (projects, warnings) = web::parse_projects(text)?;
+    for warning in warnings {
+        eprintln!("rally: {}", escape_for_terminal(&warning));
+    }
+    Ok(projects)
+}
+
+/// The projects list `rally stalls` and `rally wake` read (RAL-164): the one given, else
+/// projects.json beside the pairing as the other commands read it, else the built-in one.
+fn projects_text(
+    given: Option<&Path>,
+    config: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let path = match given {
+        Some(path) => Some(path.to_owned()),
+        None => default_projects_file(config)?,
+    };
+    match path {
+        Some(path) => Ok(std::fs::read_to_string(&path)
+            .map_err(|e| format!("can't read {}: {e}", path.display()))?),
+        None => Ok(DEFAULT_PROJECTS.to_owned()),
+    }
+}
+
 /// The designation report: the host's own, unchecked, or the service's.
 fn designation_value(
     location: Option<&Location>,
@@ -2037,19 +2080,32 @@ fn designation_value(
     )?)
 }
 
+/// What `rally stalls` was asked to check, beyond where to read (RAL-164).
+struct StallOptions<'a> {
+    quiet_after: Option<u64>,
+    locks: &'a [PathBuf],
+    hung: Option<rally::lock_holder::Hung>,
+    cpu_sample: u64,
+    prompts_only: bool,
+}
+
 fn stalls_pass(
     projects: Option<&Path>,
     location: Option<&Location>,
     config: &Path,
-    quiet_after: Option<u64>,
-    locks: &[PathBuf],
+    options: StallOptions,
     digest: &DigestCheck,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let text = match projects {
-        Some(path) => std::fs::read_to_string(path)?,
-        None => DEFAULT_PROJECTS.to_owned(),
-    };
-    let projects: Vec<Project> = serde_json::from_str(&text)?;
+    let StallOptions {
+        quiet_after,
+        locks,
+        hung,
+        cpu_sample,
+        prompts_only,
+    } = options;
+    // Beside the pairing when not given, as the other commands read it (RAL-164).
+    let text = projects_text(projects, config)?;
+    let projects: Vec<Project> = projects_from(&text)?;
     let backend = Backend::choose(location, config, false)?;
     let read = PickRead::read(&backend)?;
     let now_ms = read.now_ms;
@@ -2257,13 +2313,49 @@ fn stalls_pass(
     for field in ["read_with", "passed_over"] {
         report["roster"][field] = roster_read[field].clone();
     }
+    // Which locks to read, and with what window: the flags, or else, with a rally open, each of
+    // its projects' own `stalls` from the projects list (RAL-164).
+    let mut lock_plans: Vec<(Vec<PathBuf>, Option<rally::lock_holder::Hung>)> = Vec::new();
     if !locks.is_empty() {
-        // The kernel's account of each lock, which needs no roster: shown with or without it.
-        let (held, seen) = rally::lock_holder::check(locks, roster.as_ref());
-        if let Some(prompts) = report["prompts"].as_array_mut() {
-            prompts.extend(held);
+        lock_plans.push((locks.to_vec(), hung));
+    } else if let Some(prefixes) = &rally_projects {
+        for project in projects
+            .iter()
+            .filter(|p| prefixes.iter().any(|x| x.eq_ignore_ascii_case(&p.prefix)))
+        {
+            let Some(config) = &project.stalls else {
+                continue;
+            };
+            if config.locks.is_empty() {
+                continue;
+            }
+            let after = match config.hung_after.as_deref().map(parse_window) {
+                Some(Ok(ms)) => Some(ms),
+                Some(Err(why)) => {
+                    errors.push(json!({"project": project.prefix,
+                        "error": format!("its stalls.hung_after isn't a window: {why}")}));
+                    None
+                }
+                None => None,
+            };
+            let hung = after.map(|after_ms| rally::lock_holder::Hung {
+                after_ms,
+                sample_ms: cpu_sample,
+            });
+            lock_plans.push((config.locks.iter().map(PathBuf::from).collect(), hung));
         }
-        report["locks"] = json!(seen);
+    }
+    if !lock_plans.is_empty() {
+        // The kernel's account of each lock, which needs no roster: shown with or without it.
+        let mut seen_all = Vec::new();
+        for (patterns, hung) in &lock_plans {
+            let (held, seen) = rally::lock_holder::check_with(patterns, roster.as_ref(), *hung);
+            if let Some(prompts) = report["prompts"].as_array_mut() {
+                prompts.extend(held);
+            }
+            seen_all.extend(seen);
+        }
+        report["locks"] = json!(seen_all);
     }
     report["last_record_ms"] = json!(last_record_ms);
     if let Some(prefixes) = &rally_projects {
@@ -2298,6 +2390,13 @@ fn stalls_pass(
     }
     if !errors.is_empty() {
         report["errors"] = json!(errors);
+    }
+    // For a cron line (RAL-164): nothing at all when there's nothing to ask.
+    let nothing = report["prompts"].as_array().is_none_or(Vec::is_empty)
+        && report["every_team_waiting"].is_null()
+        && report["errors"].is_null();
+    if prompts_only && nothing {
+        return Ok(String::new());
     }
     Ok(serde_json::to_string_pretty(&report)?)
 }
@@ -2666,11 +2765,9 @@ fn wake_pass(
     report_only: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use rally::wake::{Decision, Sender};
-    let text = match projects {
-        Some(path) => std::fs::read_to_string(path)?,
-        None => DEFAULT_PROJECTS.to_owned(),
-    };
-    let projects: Vec<Project> = serde_json::from_str(&text)?;
+    // Beside the pairing when not given, as the other commands read it (RAL-164).
+    let text = projects_text(projects, config)?;
+    let projects: Vec<Project> = projects_from(&text)?;
     let backend = Backend::choose(location, config, false)?;
     let read = PickRead::read(&backend)?;
     let now_ms = read.now_ms;
@@ -3445,7 +3542,7 @@ fn run_viewer(
             .map_err(|e| format!("can't read {}: {e}", path.display()))?,
         None => DEFAULT_PROJECTS.to_owned(),
     };
-    let projects: Vec<Project> = serde_json::from_str(&text).map_err(|e| {
+    let projects: Vec<Project> = self::projects_from(&text).map_err(|e| {
         let from = projects_from.as_str().unwrap_or("built-in");
         format!("{from} isn't a projects list: {e}")
     })?;
@@ -4468,15 +4565,27 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             projects,
             quiet_after,
             lock,
+            hung_after,
+            cpu_sample,
+            prompts_only,
             digest,
         } => {
             let config = config_path(cli.config)?;
+            let hung = hung_after.map(|after_ms| rally::lock_holder::Hung {
+                after_ms,
+                sample_ms: cpu_sample,
+            });
             return stalls_pass(
                 projects.as_deref(),
                 location.as_ref(),
                 &config,
-                quiet_after,
-                &lock,
+                StallOptions {
+                    quiet_after,
+                    locks: &lock,
+                    hung,
+                    cpu_sample,
+                    prompts_only,
+                },
                 &digest,
             );
         }
@@ -4516,7 +4625,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 if let Some(path) = projects.as_deref() {
                     let text = std::fs::read_to_string(path)
                         .map_err(|e| format!("can't read {}: {e}", path.display()))?;
-                    serde_json::from_str::<Vec<Project>>(&text)
+                    projects_from(&text)
                         .map_err(|e| format!("{} isn't a projects list: {e}", path.display()))?;
                 }
                 Backend::choose(location.as_ref(), &config, false)?;

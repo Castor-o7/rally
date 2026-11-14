@@ -1295,6 +1295,25 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   unit tests and a service test. Part 2: `--lock` takes a glob of lock files (dsm-heavy's slots), and for each
   holder's process tree samples CPU time twice a few seconds apart: "possibly hung: <command>, <cwd>, N% CPU over
   5 s, running M min", a prompt and never a finding, with nothing killed.
+- [ ] **RAL-160: A browser test that loses Chrome at start shows what Chrome said, and tries once more, said.**
+  From the watchman and the lamplighter (2026-11-13/14): headless Chrome aborted at start twice on Murph at load
+  15-20 (22:43:22 and 23:58:52), SIGABRT in libsystemd's bus code called from flatpak's zypak spawn helper, before
+  the page loaded, and its words were lost because the browser tests discarded its standard error. Done when: on any
+  failure, the test's output carries the last 4 KB of Chrome's standard error; an abort at start (exit 134 or
+  SIGABRT before the code page loads) is tried once more, and the retry is said on the test process's own,
+  uncaptured standard error and in the script's output as `retried_after_abort`, never silently; a second abort, or
+  any other exit, fails with what Chrome said each time; each exit is given with what the lamplighter needs to find
+  it in the machine's own records: the time to the second, the pid held (saying when it's flatpak's launcher's),
+  `/proc/loadavg`, and whether the document portal's mount was there; with tests through a stand-in for Chrome's
+  command that aborts once, every time, or exits otherwise.
+- [ ] **RAL-164: `rally stalls` as one command line, from the projects list.** From the watchman (2026-11-14): a
+  cron line had to spell `--quiet-after`, `--lock` and `--hung-after`, with DiscoSim's lock paths, and stalls and
+  wake read the built-in projects list, not the one beside the pairing where DiscoSim is. Done when: stalls and wake
+  read projects.json beside the pairing unless given `--projects`; a project entry may carry `stalls` (`locks`, a
+  glob, and `hung_after`), used with a rally open and no `--lock`, flags overriding; `--prompts-only` prints
+  nothing when there's nothing to ask and succeeds either way; the projects list leaves out a field it doesn't
+  know, with a warning, instead of refusing the whole file; docs/stalls.md gives the cron line and the hazard
+  for readers older than the field; with tests.
 - [ ] **RAL-165: `rally brief --watchman` says what the watchman waits on.** From the watchman (2026-11-14): at
   19:58 it re-derived every team's owed answers from its own file. Messages are Muster's; commitments about stories
   are Rally's, and a blocker already says "X waits on Y". Done when: `brief --watchman` gains "you wait on": the
