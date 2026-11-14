@@ -1295,3 +1295,14 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   unit tests and a service test. Part 2: `--lock` takes a glob of lock files (dsm-heavy's slots), and for each
   holder's process tree samples CPU time twice a few seconds apart: "possibly hung: <command>, <cwd>, N% CPU over
   5 s, running M min", a prompt and never a finding, with nothing killed.
+- [ ] **RAL-160: A browser test that loses Chrome at start shows what Chrome said, and tries once more, said.**
+  From the watchman and the lamplighter (2026-11-13/14): headless Chrome aborted at start twice on Murph at load
+  15-20 (22:43:22 and 23:58:52), SIGABRT in libsystemd's bus code called from flatpak's zypak spawn helper, before
+  the page loaded, and its words were lost because the browser tests discarded its standard error. Done when: on any
+  failure, the test's output carries the last 4 KB of Chrome's standard error; an abort at start (exit 134 or
+  SIGABRT before the code page loads) is tried once more, and the retry is said on the test process's own,
+  uncaptured standard error and in the script's output as `retried_after_abort`, never silently; a second abort, or
+  any other exit, fails with what Chrome said each time; each exit is given with what the lamplighter needs to find
+  it in the machine's own records: the time to the second, the pid held (saying when it's flatpak's launcher's),
+  `/proc/loadavg`, and whether the document portal's mount was there; with tests through a stand-in for Chrome's
+  command that aborts once, every time, or exits otherwise.

@@ -171,7 +171,10 @@ The viewer's browser tests drive a real headless Chrome (RAL-84), since a curl-d
 it's written with and can't catch what a browser does on its own. They run when `RALLY_TEST_CHROME` names a Chrome
 command, with Node 22 or later on `PATH`, and are skipped otherwise. Both CI paths (GitHub Actions and the local
 runner on Murph, `.ci/local.toml`) run them, and set `RALLY_TEST_BROWSER_REQUIRED` so a missing browser fails rather
-than skips. Each run's Chrome is found by its profile and reaped on every path, so none is left behind (RAL-150):
+than skips. Each run's Chrome is found by its profile and reaped on every path, so none is left behind (RAL-150). A
+failure gives the last 4 KB of Chrome's own standard error, and a Chrome that aborts at start (exit 134, before the
+first page loads) is tried exactly once more, which the test run says on its standard error, uncaptured, so it
+shows in the CI log even when the test passes (RAL-160):
 
 ```bash
 RALLY_TEST_CHROME=google-chrome cargo test --test web a_real_browser
