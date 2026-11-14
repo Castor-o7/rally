@@ -77,6 +77,9 @@ rally gate <base>..<new>                                         # before moving
   rally condition --team watchman --story RAL-160 --note "merges next; RAL-163 part 2 waits behind it"
   rally end-standing <N> --note "RAL-160 merged"
   ```
+
+  `rally merge` prints each condition in force that names the story, then each that names none (RAL-171, RAL-175),
+  and a team's session start lists those naming its open stories: information, never a block.
 - **A head that merged `main` in after your verify:** `rally rebased <STORY> --head <full sha> --checkout .` (RAL-170,
   RAL-172) compares the verified commit's change with the new head's, each against its merge base with `main`,
   patch by patch, and records nothing. `same change` means the changed lines are identical; otherwise it names the
