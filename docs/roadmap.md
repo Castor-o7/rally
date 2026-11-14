@@ -1433,3 +1433,10 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
 - [ ] **RAL-184: The digest's gate line counts "suites and scenes".** From the watchman's read of RAL-181: with every
   suite recorded, RAL-180's green line said "112 scenes" of what are mostly the QUICK phase's suites. Done when: the
   line, and the parser's and service's bound messages, say "suites and scenes"; with the tests updated.
+- [ ] **RAL-182: The state-bar redraw test waits on what it reads, not on fixed times.** From the watchman
+  (2026-11-14): `a_redraw_moves_the_state_bar_with_the_counts` failed once under full-suite load for jaunty-harrier
+  (at `in_browser`'s check that the script ended well; its output wasn't kept, and no Chrome core was dumped
+  then). Done when: the probe waits for the board's first draw and says so if there's none in 20 s, rather than
+  going on after 10 s without it; reads the widths once the bar's transitions have finished (`getAnimations`),
+  not after a fixed 1 s, which could read a width mid-transition when frames are starved; and draws its status
+  again if the page's own 30 s poll redrew the bar in between; and it still fails with the style update removed.
