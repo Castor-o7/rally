@@ -1462,3 +1462,9 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   with when a green pull request isn't submitted; and a team's session start, when it has a story claimed or sent
   back, says under its open stories to wait for the checks with `rally wait-green <PR> --repo <owner/repo>` before
   submitting, and says nothing of it when all its stories are in review; with a test (docs/session-hook.md).
+- [ ] **RAL-187: The wait-green line only where stories go by pull request.** From the watchman (2026-11-14),
+  after RAL-186: DiscoSim's teams land by gated trains, with no pull requests. Done when: a team's session start
+  gives RAL-186's wait-green line only for a claimed or sent-back story whose project has no `gate` in the
+  projects list beside the pairing (RAL-161's field), so a team with only DSM stories, DSM gated, isn't told it,
+  and one with a RAL story beside them still is; an unreadable list takes every project as by pull request;
+  with a test (docs/session-hook.md).
