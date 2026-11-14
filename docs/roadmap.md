@@ -1327,3 +1327,8 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   ignores, answering with the ordinary brief as if it were the watchman's. Done when: the CLI tells the watchman's
   brief by its own sections and, given the ordinary one, says the service is older than RAL-157 and needs updating;
   with a unit test of both answers.
+- [ ] **RAL-168: docs/watchman.md, for a watchman starting cold.** From the watchman (2026-11-14): one short page, from
+  the commands as they are on `main`, of what the night of 2026-11-13 taught: what to read first (`rally brief
+  --watchman`, then the brief, handover and inbox), what a restarted session reads, keeping the digest loop running
+  by name, reading and landing work one merge at a time, batches, `rally stalls` from the system's crontab, and what
+  only the operator does. Docs only.
