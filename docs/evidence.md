@@ -93,6 +93,11 @@ each credential's write limit on submissions, but it's a cost a submitter contro
   GitHub sends exactly four requests, each a GET with no body, of the commit, its pull requests, its check runs
   and its status, and nothing else (no clone, no tarball); and the evidence module can't start a program, since
   its source uses no process API.
+- Its tests can point the whole service at a stand-in GitHub, to show what it does when GitHub refuses its token
+  (RAL-153): `RALLY_TEST_GITHUB_BASE=http://127.0.0.1:<port>`. That's kept out of a real start three ways. Only a
+  debug build reads it: a deployed binary is a release build, which ignores it and says so on standard error.
+  Only a loopback `http://127.0.0.1:<port>` is taken, so the token can't be sent to another host. It's never
+  taken under `--secure`. When it is taken, the service says so on standard error.
 - The token is read from `--github-token-file` (or `RALLY_GITHUB_TOKEN_FILE`). Under `--secure`, the file must be
   root-owned like the operator's key. It's never printed.
 

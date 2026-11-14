@@ -298,7 +298,7 @@ impl GitHub {
     }
 
     /// The same client against another base, for tests only.
-    fn at(token: String, base: String) -> Self {
+    pub(crate) fn at(token: String, base: String) -> Self {
         let agent = ureq::Agent::config_builder()
             // A redirect could send the token elsewhere, so none is followed.
             .max_redirects(0)
@@ -849,6 +849,45 @@ pub struct Settings {
     /// The GitHub owners whose repositories the token may be used to read open pull requests'
     /// roadmaps in (RAL-68). Set on the service, never by a request.
     pub owners: Vec<String>,
+    /// A stand-in GitHub for the service's own tests, from [`test_base`]; `None` in every real
+    /// start (RAL-153).
+    pub test_base: Option<String>,
+}
+
+/// The variable a test sets to run the whole service against a stand-in GitHub (RAL-153).
+pub const TEST_BASE_VAR: &str = "RALLY_TEST_GITHUB_BASE";
+
+/// Whether `base` is a stand-in GitHub on this machine: `http://127.0.0.1:<port>` and nothing more.
+pub fn is_loopback_base(base: &str) -> bool {
+    base.strip_prefix("http://127.0.0.1:").is_some_and(|port| {
+        !port.is_empty() && port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
+/// The stand-in GitHub the service's tests ask for in [`TEST_BASE_VAR`], so a test can show what
+/// the service does when GitHub refuses its token (RAL-153). Kept out of a real start three ways:
+/// it's read only in a debug build (a deployed binary is a release build, which ignores the
+/// variable and says so); only a loopback `http://127.0.0.1:<port>` is taken, so the token can't
+/// be sent to another host; and never under `--secure`. When it's taken, the service says so on
+/// standard error. Otherwise `Err` says why it wasn't, and `Ok(None)` means it wasn't asked for.
+pub fn test_base(secure: bool) -> Result<Option<String>, String> {
+    let Ok(base) = std::env::var(TEST_BASE_VAR) else {
+        return Ok(None);
+    };
+    if !cfg!(debug_assertions) {
+        return Err(format!(
+            "{TEST_BASE_VAR} is ignored: only a test build reads it"
+        ));
+    }
+    if secure {
+        return Err(format!("{TEST_BASE_VAR} is ignored under --secure"));
+    }
+    if !is_loopback_base(&base) {
+        return Err(format!(
+            "{TEST_BASE_VAR} is ignored: only http://127.0.0.1:<port> is taken"
+        ));
+    }
+    Ok(Some(base))
 }
 
 /// The owners `/v1/open-ids` may read, unless the service is told otherwise.
@@ -2002,6 +2041,26 @@ mod tests {
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert_eq!(*recorded.lock().unwrap(), [(4, Some(Ci::Passed))]);
+    }
+
+    /// RAL-153: a stand-in GitHub is only ever this machine's loopback address over plain http,
+    /// with a port and nothing after it, so the token can't be pointed at another host.
+    #[test]
+    fn only_a_loopback_stand_in_is_taken() {
+        assert!(is_loopback_base("http://127.0.0.1:8080"));
+        for refused in [
+            "https://api.github.com",
+            "http://127.0.0.1",
+            "http://127.0.0.1:",
+            "http://127.0.0.1:80/path",
+            "http://127.0.0.1:80@evil.example",
+            "http://127.0.0.10:80",
+            "http://localhost:80",
+            "http://[::1]:80",
+            "http://127.0.0.1:123456",
+        ] {
+            assert!(!is_loopback_base(refused), "{refused}");
+        }
     }
 
     #[test]

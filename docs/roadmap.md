@@ -1192,3 +1192,12 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   each of the six DiscoSim nicknames restarted at 19:55, it names the earlier session the watchman found by hand
   (vibrant-gull c2319bd8, wise-crocodile fa76ef71, sleek-moth e2eb2632, silent-dhole 00baf303, steely-ridge
   e9f8a3ac, deft-pelican 4e31e02c).
+- [ ] **RAL-153: Service-level tests of what the service does when GitHub refuses its token.** From the watchman
+  (2026-11-13), the gap jaunty-harrier named in RAL-149: `GitHub::new` had no API base override, so no test of
+  the running service could show RAL-146's own inbox items. Done when: a stand-in GitHub base is taken for tests
+  only (`RALLY_TEST_GITHUB_BASE`, read only by a debug build, only `http://127.0.0.1:<port>`, never under
+  `--secure`, and said on standard error when taken; a release build ignores it and says so), and service-level
+  tests against a stand-in GitHub show: a 401 files exactly one urgent inbox item across several queued checks
+  each tried again, and Rally closes it itself, observed, when a read passes; ten checks made at the start meeting
+  a 401 file one item (RAL-149's case); the check-runs 403 files none and the check is recorded; a token expiring
+  within 7 days files one. docs/evidence.md says how the override is kept out of a production start.
