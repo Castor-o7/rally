@@ -35,6 +35,7 @@ Records that end the rollback window, because a binary older than the one named 
 | `assign` (first written at record 1970) | `fada36c` | RAL-130 |
 | `rally-project` (first written at record 2183) | `aaabbe2` | RAL-135 |
 | `inbox add` or `inbox done` (an `operator_item` or `close_item`), or Rally filing its own token item | not yet deployed | RAL-146 |
+| `batch start` or `batch end` (a `batch_start` or `batch_end`) | not yet deployed | RAL-157 |
 
 Before rolling back to a binary older than the story that added one, check that none has been written.
 

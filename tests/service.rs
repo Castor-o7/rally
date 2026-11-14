@@ -762,6 +762,16 @@ fn with_rally_openers_only_those_credentials_open_or_close_a_rally() {
     assert!(refused.body.contains("assigns a story"), "{}", refused.body);
     let assigned = write(&watchman, "w", "declared", assign);
     assert_eq!(assigned.status, 200, "{}", assigned.body);
+    // RAL-157: so is recording a batch the watchman gates.
+    let sha = |c: char| c.to_string().repeat(40);
+    let batch = json!({"change": "batch_start", "project": "RAL",
+                       "cars": [{"story": "RAL-9", "commit": sha('1')}],
+                       "base": sha('b'), "tip": sha('c'), "note": "train 1"});
+    let refused = write(&a1, "w", "declared", batch.clone());
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert!(refused.body.contains("records a batch"), "{}", refused.body);
+    let started = write(&watchman, "w", "declared", batch);
+    assert_eq!(started.status, 200, "{}", started.body);
     let close = json!({"change": "close_rally", "note": "stood down"});
     assert_eq!(write(&a1, "w", "declared", close.clone()).status, 403);
     let rallies: Value = serde_json::from_str(&call(&a1, "GET", "/v1/rallies", None).body).unwrap();
@@ -3670,4 +3680,98 @@ fn the_digest_loop_is_started_restarted_and_stopped_by_its_pid_file() {
     assert!(!pid_file.exists());
     let (ok, out, _) = digest(&["--stop"]);
     assert!(ok && out.contains("no digest was running"), "{out}");
+}
+
+/// RAL-157: `rally batch start` takes cars as STORY@COMMIT[@PICKED] and prints the record number
+/// its `rally batch end` names; the watchman's brief then shows the batch gating, and once it
+/// lands, the car whose story has no submit since.
+#[test]
+fn a_batch_is_started_and_ended_from_the_command_line() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let sha = |c: char| c.to_string().repeat(40);
+    let run = |args: &[&str]| {
+        let out = cli(&config, "watch", args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    run(&[
+        "open-rally",
+        "--name",
+        "x",
+        "--project",
+        "DSM",
+        "--team",
+        "t",
+    ]);
+    run(&["ready", "DSM-1"]);
+    run(&["claim", "DSM-1", "--team", "t"]);
+    let car = format!("DSM-1@{}@{}", sha('1'), sha('2'));
+    let started = run(&[
+        "batch",
+        "start",
+        "--project",
+        "dsm",
+        "--car",
+        &car,
+        "--base",
+        &sha('b'),
+        "--tip",
+        &sha('c'),
+        "--expect",
+        "50m",
+        "--log",
+        "/x/train1.out",
+        "--note",
+        "train 1",
+    ]);
+    let batch = started["recorded"].as_u64().unwrap();
+    let brief = || -> Value {
+        serde_json::from_str(&call(&pairing, "GET", "/v1/brief?watchman=true", None).body).unwrap()
+    };
+    let gating = brief()["in_the_gate"]["gating"][0].clone();
+    assert_eq!(gating["batch"], batch, "{gating}");
+    assert_eq!(gating["project"], "DSM");
+    assert_eq!(gating["cars"][0]["picked"], sha('2'));
+    assert_eq!(gating["expect_minutes"], 50);
+    // A car that isn't STORY@COMMIT is refused before anything is sent.
+    let bad = cli(
+        &config,
+        "watch",
+        &[
+            "batch",
+            "start",
+            "--project",
+            "DSM",
+            "--car",
+            "DSM-1",
+            "--base",
+            &sha('b'),
+            "--tip",
+            &sha('c'),
+            "--note",
+            "x",
+        ],
+    );
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("isn't a car"));
+    run(&[
+        "batch",
+        "end",
+        "--batch",
+        &batch.to_string(),
+        "--landed",
+        &sha('c'),
+        "--note",
+        "in",
+    ]);
+    let landed = brief()["in_the_gate"]["newest_landed"].clone();
+    assert_eq!(landed["batch"], batch, "{landed}");
+    assert_eq!(landed["no_submit_since_landing"][0]["story"], "DSM-1");
 }

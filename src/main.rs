@@ -890,6 +890,52 @@ enum Command {
         #[arg(long)]
         commit: String,
     },
+    /// Record a batch of commits gated together, a "train" (RAL-157): `start` with its cars, the
+    /// base it was built on and the tip the gate runs on; `end` it when it lands, fails or is
+    /// abandoned. Only those who may open a rally may write these. Declared: it changes no story's
+    /// state, so record each landing with `rally merge` too. `rally brief --watchman` shows the
+    /// open batches first. Prints the record number of a start, which its end names.
+    Batch {
+        /// `start` or `end`.
+        action: String,
+        /// For start: the project's story prefix, such as DSM.
+        #[arg(long)]
+        project: Option<String>,
+        /// For start: a car, as STORY@COMMIT (the commit its team sent) or STORY@COMMIT@PICKED (and
+        /// the sha it became on the batch). Repeat for each, up to 30.
+        #[arg(long = "car")]
+        cars: Vec<String>,
+        /// For start: the sha the batch was built on.
+        #[arg(long)]
+        base: Option<String>,
+        /// For start: the one sha the gate runs on.
+        #[arg(long)]
+        tip: Option<String>,
+        /// For start: the record number of a batch still gating that this one is built on.
+        #[arg(long)]
+        on_batch: Option<u64>,
+        /// For start: how long the gate is expected to take, such as 50m; past it, the brief asks
+        /// whether the gate is alive.
+        #[arg(long, value_parser = parse_window)]
+        expect: Option<u64>,
+        /// For start: where the gate's log is.
+        #[arg(long)]
+        log: Option<String>,
+        /// For end: the start's record number.
+        #[arg(long)]
+        batch: Option<u64>,
+        /// For end: it landed, at this sha.
+        #[arg(long, conflicts_with_all = ["failed", "abandoned"])]
+        landed: Option<String>,
+        /// For end: it failed.
+        #[arg(long, conflicts_with = "abandoned")]
+        failed: bool,
+        /// For end: the gate stopped without an answer.
+        #[arg(long)]
+        abandoned: bool,
+        #[arg(long)]
+        note: String,
+    },
     /// Assign a story to a team (RAL-130), or with --end end its assignment. Normally the
     /// watchman's, once the project's roadmap is cleared (RAL-129); the service takes it only from
     /// those who may open a rally. Declared: it claims nothing and confers no authority, and
@@ -4628,6 +4674,81 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             Kind::Declared,
             json!({"change": "assign", "story": story, "team": team, "note": note, "end": end}),
         ),
+        Command::Batch {
+            action,
+            project,
+            cars,
+            base,
+            tip,
+            on_batch,
+            expect,
+            log,
+            batch,
+            landed,
+            failed,
+            abandoned,
+            note,
+        } => match action.as_str() {
+            "start" => {
+                let need = |value: Option<String>, flag: &str| {
+                    value.ok_or_else(|| format!("a batch start needs --{flag}"))
+                };
+                let cars = cars
+                    .iter()
+                    .map(|car| {
+                        let mut parts = car.split('@');
+                        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+                            (Some(story), Some(commit), picked, None) if !story.is_empty() => {
+                                let mut car = json!({"story": story, "commit": commit});
+                                if let Some(picked) = picked {
+                                    car["picked"] = json!(picked);
+                                }
+                                Ok(car)
+                            }
+                            _ => Err(format!(
+                                "{car:?} isn't a car: give STORY@COMMIT or STORY@COMMIT@PICKED"
+                            )),
+                        }
+                    })
+                    .collect::<Result<Vec<Value>, String>>()?;
+                let mut body = json!({
+                    "change": "batch_start",
+                    "project": need(project, "project")?.trim().to_uppercase(),
+                    "cars": cars, "base": need(base, "base")?, "tip": need(tip, "tip")?,
+                    "note": note,
+                });
+                if let Some(on) = on_batch {
+                    body["on_batch"] = json!(on);
+                }
+                if let Some(ms) = expect {
+                    body["expect_minutes"] = json!(ms.div_ceil(60_000));
+                }
+                if let Some(log) = log {
+                    body["log"] = json!(log);
+                }
+                (Kind::Declared, body)
+            }
+            "end" => {
+                let batch = batch.ok_or("a batch end needs --batch, the start's record number")?;
+                let outcome = match (&landed, failed, abandoned) {
+                    (Some(_), false, false) => "landed",
+                    (None, true, false) => "failed",
+                    (None, false, true) => "abandoned",
+                    _ => {
+                        return Err(
+                            "say how it ended: --landed <sha>, --failed or --abandoned".into()
+                        );
+                    }
+                };
+                let mut body = json!({"change": "batch_end", "batch": batch,
+                                      "outcome": outcome, "note": note});
+                if let Some(sha) = landed {
+                    body["landed"] = json!(sha);
+                }
+                (Kind::Declared, body)
+            }
+            other => return Err(format!("say start or end, not {other:?}").into()),
+        },
         Command::RallyProject {
             action,
             prefix,

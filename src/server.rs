@@ -804,7 +804,10 @@ async fn write_record(
         || applied == "close_rally"
         || applied == "rally_session"
         || applied == "rally_project"
-        || applied == "assign";
+        || applied == "assign"
+        // And records the batches it gates (RAL-157).
+        || applied == "batch_start"
+        || applied == "batch_end";
     if rally_change && let Err(refused) = may_open_rallies(&service, &identity.credential).await {
         return *refused;
     }
@@ -1488,9 +1491,9 @@ async fn may_open_rallies(service: &Arc<Service>, credential: &str) -> Result<()
     Err(Box::new(failure(
         StatusCode::FORBIDDEN,
         format!(
-            "only the operator or the watchman opens or closes a rally, changes its sessions or \
-             assigns a story: {credential} isn't in the service's --rally-openers, nor bound to a \
-             designated watchman"
+            "only the operator or the watchman opens or closes a rally, changes its sessions, \
+             assigns a story or records a batch: {credential} isn't in the service's \
+             --rally-openers, nor bound to a designated watchman"
         ),
     )))
 }
