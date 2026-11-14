@@ -169,6 +169,56 @@ pub struct Seen {
     pub cmdlines: BTreeMap<u32, String>,
     /// How long the machine had been up when this was read, in milliseconds (RAL-163).
     pub uptime_ms: u64,
+    /// The holders `/proc/locks` names, when they aren't the ones above (RAL-192): the process
+    /// that took the lock, which may have exited while its children kept the file open, and the
+    /// lock with it, as `dsm-heavy`'s bash does once it execs `systemd-run --scope`.
+    pub kernel_holders: Vec<u32>,
+    /// Whether the holders were found by their open descriptors on the file (RAL-192).
+    pub by_descriptor: bool,
+    /// How many processes' open files couldn't be read while looking for them (RAL-192).
+    pub unreadable: usize,
+}
+
+/// The processes with an open descriptor on the file with this device and inode, from each
+/// process's `/proc/<pid>/fd` (RAL-192), with how many processes' descriptors couldn't be read.
+/// A descriptor is matched by its link naming `path`, then by the device and inode of what it
+/// opens, so a file renamed or replaced since isn't taken for this one.
+#[cfg(target_os = "linux")]
+fn open_on(path: &Path, dev: u64, ino: u64, pids: impl Iterator<Item = u32>) -> (Vec<u32>, usize) {
+    use std::os::unix::fs::MetadataExt;
+    let mut found = Vec::new();
+    let mut unreadable = 0;
+    for pid in pids {
+        let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+            // Gone since the listing, or another user's: only the second is a blind spot.
+            if Path::new(&format!("/proc/{pid}")).exists() {
+                unreadable += 1;
+            }
+            continue;
+        };
+        let holds = fds.flatten().any(|fd| {
+            std::fs::read_link(fd.path()).is_ok_and(|target| target == path)
+                && std::fs::metadata(fd.path()).is_ok_and(|m| m.dev() == dev && m.ino() == ino)
+        });
+        if holds {
+            found.push(pid);
+        }
+    }
+    (found, unreadable)
+}
+
+/// Of the processes holding a file open, those whose parent doesn't hold it too: the top of each
+/// tree, so a job and its children are one holder.
+fn topmost(holding: &[u32], procs: &BTreeMap<u32, Proc>) -> Vec<u32> {
+    holding
+        .iter()
+        .copied()
+        .filter(|pid| {
+            procs
+                .get(pid)
+                .is_none_or(|proc| !holding.contains(&proc.ppid))
+        })
+        .collect()
 }
 
 /// Below this share of one CPU over the sample, a lock holder's whole process tree is possibly
@@ -365,6 +415,11 @@ pub fn judge(lock: &str, seen: &Seen, roster: &BTreeMap<String, String>) -> Opti
     }))
 }
 
+/// How a holder found by its open descriptor is labelled (RAL-192).
+pub const BY_DESCRIPTOR: &str = "open descriptor: the process /proc/locks names (kernel_holders) \
+    had exited or didn't have the file open, so the holders are the topmost processes with an \
+    open descriptor on it, by device and inode";
+
 /// Reads one lock's holders, waiters and the processes on this machine, from `/proc`.
 #[cfg(target_os = "linux")]
 pub fn read(lock: &Path) -> Result<Seen, String> {
@@ -388,6 +443,7 @@ pub fn read(lock: &Path) -> Result<Seen, String> {
     if seen.holders.is_empty() {
         return Ok(seen);
     }
+    let canonical = std::fs::canonicalize(lock).unwrap_or_else(|_| lock.to_path_buf());
     let entries = std::fs::read_dir("/proc").map_err(|e| format!("can't list /proc: {e}"))?;
     for entry in entries.flatten() {
         let Some(pid) = entry
@@ -403,6 +459,39 @@ pub fn read(lock: &Path) -> Result<Seen, String> {
         if let Some(proc) = parse_stat(&text) {
             seen.procs.insert(pid, proc);
         }
+    }
+    // The kernel names the process that took the lock. If it's gone, or doesn't have the file
+    // open, the lock is held by whatever inherited its descriptor: find those (RAL-192).
+    let (kernel_open, _) = open_on(&canonical, dev, meta.ino(), seen.holders.iter().copied());
+    if seen.holders.iter().any(|pid| !kernel_open.contains(pid)) {
+        // Kernel threads (kthreadd, pid 2, and its children) open no files and show no fd list.
+        let user_space = seen
+            .procs
+            .values()
+            .filter(|proc| proc.pid != 2 && proc.ppid != 2)
+            .map(|proc| proc.pid);
+        let (holding, unreadable) = open_on(&canonical, dev, meta.ino(), user_space);
+        seen.unreadable = unreadable;
+        if holding.is_empty() {
+            let gone: Vec<String> = seen.holders.iter().map(u32::to_string).collect();
+            return Err(if unreadable > 0 {
+                format!(
+                    "its holder by /proc/locks ({}) doesn't have it open, and the open files of \
+                     {unreadable} process{} couldn't be read, so what holds it can't be told",
+                    gone.join(", "),
+                    if unreadable == 1 { "" } else { "es" }
+                )
+            } else {
+                format!(
+                    "its holder by /proc/locks ({}) doesn't have it open, and no process this user \
+                     can see does",
+                    gone.join(", ")
+                )
+            });
+        }
+        seen.kernel_holders = std::mem::take(&mut seen.holders);
+        seen.holders = topmost(&holding, &seen.procs);
+        seen.by_descriptor = true;
     }
     let wanted: Vec<u32> = seen
         .holders
@@ -501,6 +590,13 @@ pub fn check_with(
                     "waiters": seen.waiters.len(), "kind": "observed",
                     "note": "Open file description locks (pid -1) are skipped.",
                 });
+                if seen.by_descriptor {
+                    row["found_by"] = json!(BY_DESCRIPTOR);
+                    row["kernel_holders"] = json!(seen.kernel_holders);
+                    if seen.unreadable > 0 {
+                        row["unreadable_processes"] = json!(seen.unreadable);
+                    }
+                }
                 match seen.matched {
                     Matched::Nothing => {
                         row["holder"] = json!("no holder found in /proc/locks");
@@ -559,6 +655,23 @@ mod tests {
     /// RAL-163: a holder's tree that used almost no CPU between two reads, and has run long
     /// enough, is possibly hung, named by its busiest process's command and working directory,
     /// with the team guessed from a nickname in that directory.
+    /// RAL-192: of the processes holding a file open, only those whose parent doesn't hold it.
+    #[test]
+    fn a_job_and_its_children_holding_a_lock_are_one_holder() {
+        let procs: BTreeMap<u32, Proc> = [
+            proc(10, 1, 'S', "timeout"),
+            proc(11, 10, 'R', "godot"),
+            proc(12, 11, 'S', "godot"),
+            proc(20, 1, 'S', "bash"),
+        ]
+        .into_iter()
+        .map(|p| (p.pid, p))
+        .collect();
+        assert_eq!(topmost(&[10, 11, 12, 20], &procs), [10, 20]);
+        // A parent that doesn't hold it doesn't count; one gone since the listing is a top.
+        assert_eq!(topmost(&[11, 12, 99], &procs), [11, 99]);
+    }
+
     #[test]
     fn a_holder_doing_almost_nothing_is_possibly_hung() {
         let at = |cpu: u64| {

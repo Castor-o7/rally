@@ -39,7 +39,8 @@ rally's projects, with every list bounded and every note cut short (well under 2
 10. **In flight** (RAL-191): the jobs a closed window would end (issues log 1.73, when every session's background
    jobs ended with the shell windows and nothing said what had been running). For each project's `stalls.locks`
    in the projects list beside the pairing, every held lock: its holder's pid, state, command line and working
-   directory, from `/proc` (observed), and the owner its lock file names (declared, as `dsm-heavy` writes it).
+   directory, from `/proc` (observed), and the owner its lock file names (declared, as `dsm-heavy` writes it). A holder whose
+   taker has exited is found by its open descriptor, as stalls finds it (RAL-192).
    Each fair pool's queue comes too, with holders and waiters by owner (RAL-188's reader, see docs/stalls.md).
    Free slots are counted, not listed, and a `summary` says "3 locks held, 1 job waiting for a slot". It's read
    on this machine, by the CLI, wherever the service is, since that's where the jobs run. Read-only. What it
