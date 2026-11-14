@@ -54,4 +54,5 @@ pub mod store;
 pub mod view;
 pub mod views;
 pub mod wake;
+pub mod watchman_brief;
 pub mod web;

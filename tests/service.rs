@@ -2520,6 +2520,22 @@ fn the_service_gives_a_new_watchman_one_brief() {
             .contains("confers no authority")
     );
     assert_eq!(brief["grants"].as_array().unwrap().len(), 0);
+    // The watchman's short brief (RAL-157) comes from the same route, scoped and bounded.
+    let reply = call(&pairing, "GET", "/v1/brief?watchman=true", None);
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert!(reply.body.len() < 20_000, "{} bytes", reply.body.len());
+    let short: Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(
+        short["waiting_on_you"]["submissions"][0]["story"], "RAL-60",
+        "{short}"
+    );
+    assert!(short["since_your_last_record"].is_object());
+    assert!(
+        short["authority"]
+            .as_str()
+            .unwrap()
+            .contains("confers no authority")
+    );
     // Without the operator's key the service can't check designations.
     assert!(brief["watchman"].is_null());
     assert!(
