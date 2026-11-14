@@ -21,7 +21,9 @@ rally's projects, with every list bounded and every note cut short (well under 2
    whose story has no submit since it landed, with its team: the list to chase. Then stories verified and not
    merged, with the commit read.
 4. **Waiting on you:** the rally's submissions waiting for a read, and how many parts stories wait on their close.
-5. **Waiting on the operator:** the operator's inbox (RAL-146), urgent first.
+5. **You wait on** (RAL-165): the open blockers your team raised, oldest first, each with the team it waits on, the
+   story and the note; and each landed story in the rally with no submit since it landed, with its team.
+   **Waiting on the operator:** the operator's inbox (RAL-146), urgent first.
 6. **Rulings:** holds, conditions and grants in force, and the rally's events, newest first. A ruling given
    only in chat isn't here: record it as one of those.
 7. **Teams:** each team's assignments and the stories it holds in the rally.
@@ -69,6 +71,21 @@ as ci-local does for Rally, which Rally would read from GitHub as observed; it n
 write on DiscoSim, which is the operator's to grant. The one that needs no trust at all is rerunning the gate on
 the tip: the log's first line names the commit, the tree and the gate script's hash, so anyone can run that
 script on that commit and compare.
+
+### Recording what you're owed (RAL-165)
+
+What the watchman asks a team for and hasn't had, a sha, a frame, an answer that holds up a story, is a
+commitment about work, so it goes in Rally: when you ask, record it as a blocker of your own team on theirs, and
+close it when it comes.
+
+```bash
+rally block --team <your team> --on-team deft-pelican --story DSM-214 --note "owes the landed sha"
+rally unblock <N> --note "got it: 3a1f..."
+```
+
+`rally brief --watchman` then lists it under "you wait on" until it's closed, so a restarted watchman gets the list
+back from the ledger instead of a file. A question answered in the same exchange needs no record. Messages
+themselves, and whether one was answered, are Muster's, not Rally's: Rally doesn't copy them.
 
 ## `rally brief`: the whole picture
 
