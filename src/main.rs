@@ -362,10 +362,10 @@ enum Command {
     Digest {
         /// Q: a digest goes once no new record has come for this long, such as 2m.
         #[arg(long = "quiet", env = "RALLY_DIGEST_QUIET", value_parser = parse_window)]
-        quiet: u64,
+        quiet: Option<u64>,
         /// M: or once this long has passed since the first new record was seen, such as 10m.
         #[arg(long = "max", env = "RALLY_DIGEST_MAX", value_parser = parse_window)]
-        max: u64,
+        max: Option<u64>,
         /// Repeat every this long until stopped, such as 30s. Without it, one pass.
         #[arg(long, value_parser = parse_window)]
         every: Option<u64>,
@@ -379,6 +379,22 @@ enum Command {
         /// Print the digest instead of sending it, and keep nothing.
         #[arg(long)]
         report_only: bool,
+        /// With --every: the file the loop holds while it runs (RAL-154), with its process and
+        /// settings. Defaults to digest.pid beside the pairing; its log is digest.log beside it.
+        #[arg(long)]
+        pid_file: Option<PathBuf>,
+        /// Start the loop on its own, outliving this command, logging to digest.log. Needs
+        /// --every. Refused while a digest holds the pid file.
+        #[arg(long, requires = "every", conflicts_with_all = ["stop", "restart", "report_only"])]
+        background: bool,
+        /// Stop the digest the pid file names, and remove the file.
+        #[arg(long, conflicts_with_all = ["restart", "report_only"])]
+        stop: bool,
+        /// Stop the digest the pid file names, if it's running, and start it again on its own:
+        /// with the settings given, or without --every the ones it was started with. Logs why the
+        /// previous one ended if it wasn't asked to.
+        #[arg(long, conflicts_with = "report_only")]
+        restart: bool,
     },
     /// For the operator: show the service's GitHub token can't merge (RAL-18). Reads pull request
     /// --pull, which must be already merged or closed, then tries to merge it naming a head no
@@ -2130,6 +2146,47 @@ fn run_every(
         },
         |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
     )
+}
+
+/// `rally digest --stop`, `--background` and `--restart` (RAL-154): what was found and done, as
+/// JSON, with each step also in digest.log beside the pid file.
+fn digest_control(
+    pid_file: &Path,
+    given: Option<rally::digest_loop::Settings>,
+    stop: bool,
+    restart: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use rally::digest_loop as dl;
+    let log = pid_file.with_extension("log");
+    let mut out = json!({"pid_file": pid_file, "log": log});
+    if stop {
+        let stopped = dl::stop(pid_file)?;
+        dl::log_line(&log, &format!("--stop: {}", stopped.line()))?;
+        out["stopped"] = json!(stopped.line());
+        return Ok(out.to_string());
+    }
+    let remembered = dl::read(pid_file)?.map(|held| held.settings);
+    if restart {
+        let stopped = dl::stop(pid_file)?;
+        // An end nobody asked for is said in the log, so an unexpected death is seen.
+        dl::log_line(&log, &format!("--restart: {}", stopped.line()))?;
+        out["before"] = json!(stopped.line());
+    } else if let Some(held) = dl::live(pid_file)? {
+        return Err(format!(
+            "a digest already runs as process {}, holding {}: use --restart",
+            held.pid,
+            pid_file.display()
+        )
+        .into());
+    }
+    let settings = given.or(remembered).ok_or(
+        "no settings to start the digest with: give --every, --quiet and --max (the pid file \
+         remembers them after that)",
+    )?;
+    let exe = std::env::current_exe()?;
+    let pid = dl::start(&exe, &settings, pid_file, &log)?;
+    out["started"] = json!({"pid": pid, "args": settings.args(pid_file)});
+    Ok(out.to_string())
 }
 
 /// The most pages of records one digest pass reads.
@@ -4228,9 +4285,42 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             watchman,
             state_file,
             report_only,
+            pid_file,
+            background,
+            stop,
+            restart,
         } => {
             let config = config_path(cli.config)?;
             let state_file = state_file.unwrap_or_else(|| config.with_file_name("digest.json"));
+            let pid_file = pid_file.unwrap_or_else(|| config.with_file_name("digest.pid"));
+            // RAL-154: stop, start and restart the loop by its pid file.
+            if stop || restart || background {
+                if location.is_some() {
+                    return Err(
+                        "--stop, --restart and --background run the digest through the \
+                                paired service, not --db"
+                            .into(),
+                    );
+                }
+                let given = match (every, quiet, max) {
+                    (Some(every_ms), Some(quiet_ms), Some(max_ms)) => {
+                        Some(rally::digest_loop::Settings {
+                            quiet_ms,
+                            max_ms,
+                            every_ms,
+                            watchman: watchman.clone(),
+                            state_file: state_file.clone(),
+                            config: config.clone(),
+                        })
+                    }
+                    (Some(_), _, _) => return Err("--every needs --quiet and --max".into()),
+                    _ => None,
+                };
+                return digest_control(&pid_file, given, stop, restart);
+            }
+            let (Some(quiet), Some(max)) = (quiet, max) else {
+                return Err("a digest needs --quiet and --max".into());
+            };
             let times = rally::digest::Times {
                 quiet_ms: quiet,
                 max_ms: max,
@@ -4252,7 +4342,19 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 Backend::choose(location.as_ref(), &config, false)?;
                 Ok(())
             };
-            return Err(run_every(every, preflight, pass));
+            // RAL-154: the loop holds its pid file while it runs, and records how it ended.
+            let settings = rally::digest_loop::Settings {
+                quiet_ms: quiet,
+                max_ms: max,
+                every_ms: every,
+                watchman: watchman.clone(),
+                state_file: state_file.clone(),
+                config: config.clone(),
+            };
+            rally::digest_loop::hold(&pid_file, &settings)?;
+            let error = run_every(every, preflight, pass);
+            rally::digest_loop::ended(&pid_file, 1, &error.to_string());
+            return Err(error);
         }
         Command::NewStory {
             prefix,

@@ -21,6 +21,12 @@ if command -v lsof >/dev/null; then export RALLY_TEST_LSOF_REQUIRED=1; else echo
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+# The binary the tests started is this commit's (RAL-144): build.rs embeds the commit, and the
+# runner holds the target directory for this run alone. Skipped where the runner gives no sha.
+if [ -n "${CI_LOCAL_SHA:-}" ]; then
+  grep -aq "$CI_LOCAL_SHA" "$CARGO_TARGET_DIR/debug/rally" || { echo "ci: $CARGO_TARGET_DIR/debug/rally isn't built from $CI_LOCAL_SHA"; exit 1; }
+  echo "ci: the tested rally is built from $CI_LOCAL_SHA"
+fi
 python3 -m unittest discover -s scripts/ci-local
 """
 

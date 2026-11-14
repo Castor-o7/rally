@@ -2759,6 +2759,8 @@ fn a_check_a_stop_cut_short_is_made_late_at_the_start_whatever_the_story_became(
     }
     let checks = |pairing: &Pairing| -> Vec<(String, u64, String)> {
         let reply = call(pairing, "GET", "/v1/export?after=0", None);
+        // Any other answer fails here, saying what it was, not as a missing field further on.
+        assert_eq!(reply.status, 200, "the export answered: {}", reply.body);
         let page: Value = serde_json::from_str(&reply.body).unwrap();
         page["records"]
             .as_array()
@@ -2777,16 +2779,21 @@ fn a_check_a_stop_cut_short_is_made_late_at_the_start_whatever_the_story_became(
             })
             .collect()
     };
+    // Waits, up to 30 s, for at least `n` checks, and fails saying so if they don't come.
     let wait_for = |pairing: &Pairing, n: usize| {
-        let mut found = Vec::new();
-        for _ in 0..100 {
-            found = checks(pairing);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let found = checks(pairing);
             if found.len() >= n {
-                break;
+                return found;
             }
+            assert!(
+                std::time::Instant::now() < until,
+                "only {} of {n} evidence checks within 30 s: {found:?}",
+                found.len()
+            );
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        found
     };
     assert_eq!(wait_for(&pairing, 1).len(), 1);
 
@@ -2841,12 +2848,22 @@ fn a_check_a_stop_cut_short_is_made_late_at_the_start_whatever_the_story_became(
         "{reason}"
     );
 
-    // Nothing is checked twice: another restart queues nothing more.
+    // Nothing is checked twice: another restart queues nothing more. Its start queues anything
+    // unchecked before it takes a new submission, so once RAL-82, submitted after it, is checked,
+    // a second check of RAL-81 would have been recorded too, and none is.
     service.restart("-TERM");
     let mut moved = pairing.clone();
     moved.address = service.address.clone();
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    assert_eq!(checks(&moved).len(), 2);
+    for body in [
+        json!({"change": "ready", "story": "RAL-82"}),
+        json!({"change": "claim", "story": "RAL-82", "team": "rally"}),
+        json!({"change": "submit", "story": "RAL-82", "team": "rally", "evidence": evidence}),
+    ] {
+        assert_eq!(write(&moved, "r", "declared", body).status, 200);
+    }
+    let found = wait_for(&moved, 3);
+    let stories: Vec<&str> = found.iter().map(|(story, _, _)| story.as_str()).collect();
+    assert_eq!(stories, ["RAL-80", "RAL-81", "RAL-82"], "{found:?}");
 }
 
 /// RAL-28: a past moment, as `rally past` and the viewer show it, is a replay of the ledger's own
@@ -3470,4 +3487,116 @@ fn the_service_says_what_it_is() {
         Some(commit) => assert!(version.contains(commit), "{version}"),
         None => assert!(version.contains("no commit"), "{version}"),
     }
+}
+
+/// RAL-154: the digest loop is started, refused a second copy, restarted and stopped by its pid
+/// file, with no pattern search; a restart after it died unasked says so in digest.log.
+#[test]
+fn the_digest_loop_is_started_restarted_and_stopped_by_its_pid_file() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let pid_file = service.dir.path().join("client/digest.pid");
+    let log = service.dir.path().join("client/digest.log");
+    let digest = |args: &[&str]| {
+        let output = rally()
+            .arg("--config")
+            .arg(&config)
+            // Nothing is ever sent from a test.
+            .env("RALLY_ROSTER_FROM", "no-such-shim-for-tests")
+            .arg("digest")
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let held = || -> u64 {
+        let value: Value =
+            serde_json::from_str(&std::fs::read_to_string(&pid_file).unwrap()).unwrap();
+        value["pid"].as_u64().unwrap()
+    };
+    let alive = |pid: u64| {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let settings = [
+        "--quiet",
+        "1s",
+        "--max",
+        "1s",
+        "--every",
+        "1s",
+        "--watchman",
+        "w",
+    ];
+
+    let (ok, out, err) = digest(&[&settings[..], &["--background"]].concat());
+    assert!(ok, "{out}{err}");
+    let first = held();
+    assert!(alive(first));
+
+    // A second, in the background or not, is refused while the first holds the file.
+    let (ok, _, err) = digest(&[&settings[..], &["--background"]].concat());
+    assert!(!ok && err.contains("already runs"), "{err}");
+    let (ok, _, err) = digest(&settings);
+    assert!(!ok && err.contains("already runs"), "{err}");
+    assert!(alive(first));
+
+    // Restarted with the settings it remembers: the old one is gone, a new one holds the file.
+    let (ok, out, err) = digest(&["--restart"]);
+    assert!(ok, "{out}{err}");
+    let second = held();
+    assert_ne!(second, first);
+    assert!(!alive(first) && alive(second));
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        text.contains(&format!(
+            "--restart: stopped the digest, process {first}, as asked"
+        )),
+        "{text}"
+    );
+
+    // It dies unasked; the restart says so in the log.
+    assert!(
+        Command::new("kill")
+            .args(["-KILL", &second.to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    for _ in 0..50 {
+        if !alive(second) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let (ok, out, err) = digest(&["--restart"]);
+    assert!(ok, "{out}{err}");
+    let third = held();
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        text.contains(&format!("as process {second} ended without saying why")),
+        "{text}"
+    );
+
+    // Stopped: the process is gone and so is the file.
+    let (ok, out, err) = digest(&["--stop"]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.contains(&format!("stopped the digest, process {third}")),
+        "{out}"
+    );
+    assert!(!alive(third));
+    assert!(!pid_file.exists());
+    let (ok, out, _) = digest(&["--stop"]);
+    assert!(ok && out.contains("no digest was running"), "{out}");
 }

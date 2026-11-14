@@ -1201,6 +1201,18 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   each tried again, and Rally closes it itself, observed, when a read passes; ten checks made at the start meeting
   a 401 file one item (RAL-149's case); the check-runs 403 files none and the check is recorded; a token expiring
   within 7 days files one. docs/evidence.md says how the override is kept out of a production start.
+- [ ] **RAL-154: The watchman's digest loop is started, stopped and restarted by name.** From the watchman
+  (2026-11-13, issue 1.75): the digest loop ran inside a bash `while true` wrapper started by hand, found again
+  only by searching for its command line, and after RAL-148 the loop needed a restart to pick up the new CLI.
+  The wrapper predates RAL-86 and has never had to restart the loop since (no "digest exited" line in three
+  days), so it needs no 429 work. Done when: `rally digest --every` holds a pid file (digest.pid beside the
+  pairing, or `--pid-file`). The file is written at the loop's start, refused while a live digest holds it, and
+  given the exit status and error when the loop ends by itself. `--background` starts the loop on its own,
+  logging to digest.log. `--stop` stops the process the file names and removes the file. `--restart` does both,
+  with the settings given or the ones remembered, and writes to digest.log why the previous one ended if nobody
+  asked it to. No process is found by pattern, and it works without /proc or systemd (a1 is a Mac). Unit tests
+  cover the file and the command-line check, and a service test covers start, refusal, restart, a kill -9 the
+  restart reports, and stop.
 - [ ] **RAL-155: The docs, read as a new operator and a new watchman would, after the night of 2026-11-13.** From the
   watchman: Rally gained an inbox, a restart briefing, late checks and a scoped digest across five pull requests by
   two teams. Done when: README, service.md, web.md, digest.md, inbox.md, session-hook.md and evidence.md say what
@@ -1219,3 +1231,15 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   so re-running `rally init` here deletes nothing, with a test that the repository's block equals what init writes.
   service.md's "Keeping it current" says plainly that on Murph the service goes live only once the operator
   restarts it with `sudo`.
+- [ ] **RAL-158: An export during an append waits for it instead of reporting a difference.** From the
+  watchman (2026-11-13): main went red on 6395487 when hosted CI failed `a_check_a_stop_cut_short_is_made_late_at_
+  the_start_whatever_the_story_became` at tests/service.rs:2763 (`unwrap()` on None), just after the service
+  printed "writes refused: the service's copy of the ledger in myko was changed past the append path". The cause
+  is in the service. `Store::export` compared myko's copy with the kept state without the writer's lock. An append
+  puts its record in myko's copy a moment before the kept state has it, so an export in that moment reported a
+  difference that wasn't one, and refused. RAL-149's test polls the export while Rally appends its own evidence
+  checks, and a loaded runner widens the moment. Done when: the export reads both under the writer's lock, as
+  `check` does; a unit test holds an append between myko and the kept state, runs an export, and finds that it
+  waits rather than refuses (red without the fix, with the CI log's message); the service test fails on a non-200
+  export saying what it was, waits for checks with a 30 s bound and fails loudly on the timeout, and proves
+  "nothing checked twice" by waiting for a later submission's check rather than sleeping.

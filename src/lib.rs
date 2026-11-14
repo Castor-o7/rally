@@ -29,6 +29,7 @@ pub mod brief;
 pub mod client;
 pub mod designation;
 pub mod digest;
+pub mod digest_loop;
 pub mod entity;
 pub mod evidence;
 pub mod gate;

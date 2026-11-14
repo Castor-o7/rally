@@ -511,7 +511,8 @@ ENV_ALLOW = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ
 ENV_SECRET = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY$|^SSH_|^GH_|^GITHUB_", re.I)
 
 
-def job_env(name: str, job: Job, tmp: Path, base: dict[str, str] | None = None) -> dict[str, str]:
+def job_env(name: str, job: Job, tmp: Path, base: dict[str, str] | None = None,
+            sha: str = "") -> dict[str, str]:
     base = dict(os.environ) if base is None else base
     env = {k: v for k, v in base.items()
            if (k in ENV_ALLOW or k.startswith("LC_")) and not ENV_SECRET.search(k)}
@@ -522,6 +523,9 @@ def job_env(name: str, job: Job, tmp: Path, base: dict[str, str] | None = None) 
         "CARGO_TARGET_DIR": str(ROOT / "target" / name / job.name),
         "TMPDIR": str(tmp),
     })
+    if sha:
+        # The commit under test, so a job can prove what it built is that commit's (RAL-144).
+        env["CI_LOCAL_SHA"] = sha
     for k, v in job.env.items():
         if ENV_SECRET.search(k):
             raise ValueError(f"job {job.name}: env {k} looks like a secret; jobs get none")
@@ -578,15 +582,34 @@ class RunLock:
             if self.stop.is_set():
                 raise InterruptedError("stopping")
             if not announced:
-                log(f"waiting: an earlier run of {self.path.stem[4:]} is still going")
+                log(f"waiting: {self.waiting_for()}")
                 announced = True
             self.stop.wait(5)
+
+    def waiting_for(self) -> str:
+        return f"an earlier run of {self.path.stem[4:]} is still going"
 
     def __exit__(self, *exc):
         # Closed, never unlocked: unlocking would free it for the job's processes too, which hold
         # the same open file; closing leaves it held until the last of them ends.
         if self.fd is not None:
             os.close(self.fd)
+
+
+class TargetLock(RunLock):
+    """One run at a time of a repository's job, at ANY commit: its runs share one cargo target
+    directory (`job_env`), kept across commits so a run rebuilds only what changed. Held from
+    before the build until the job really ends, as RunLock is. Without it, two commits' runs
+    built into the same directory at once, and a test that started the built binary got whichever
+    commit's was there at that moment (2026-11-13: rally 1a9eab6's three service tests ran
+    another commit's `rally`, and a green of an overlapping run proved less than it said)."""
+
+    def __init__(self, name: str, job: str, stop: threading.Event | None = None):
+        super().__init__(name, "", job, stop)
+        self.path = self.path.with_name(f"target-{name}-{job}.lock")
+
+    def waiting_for(self) -> str:
+        return f"another commit's run of {self.path.stem[7:]} has the target directory"
 
 
 def run_job(name: str, sha: str, job: Job, src: Path, stop: threading.Event) -> tuple[bool, str]:
@@ -596,7 +619,9 @@ def run_job(name: str, sha: str, job: Job, src: Path, stop: threading.Event) -> 
     logfile = logdir / f"{job.name}.log"
     work = ROOT / "work" / name / f"{sha[:12]}-{job.name}"
     tmp = short_tmp(name, sha, job.name)
-    with RunLock(name, sha, job.name, stop) as run_lock, Slot(stop) as slot:
+    # The target lock before a slot, so a run waiting for the directory holds no slot meanwhile.
+    with RunLock(name, sha, job.name, stop) as run_lock, \
+            TargetLock(name, job.name, stop) as target_lock, Slot(stop) as slot:
         play = playing()
         for d in (work, tmp):
             if d.exists():
@@ -615,8 +640,9 @@ def run_job(name: str, sha: str, job: Job, src: Path, stop: threading.Event) -> 
                       f"# MemoryMax={job.mem} CPUQuota={job.cpu} timeout={job.timeout_min}m\n"
                       f"# {shlex.join(cmd[:cmd.index('--')])}\n\n")
             out.flush()
-            rc = subprocess.run(cmd, cwd=work, env=job_env(name, job, tmp), stdout=out,
-                                stderr=subprocess.STDOUT, pass_fds=(run_lock.fd,)).returncode
+            rc = subprocess.run(cmd, cwd=work, env=job_env(name, job, tmp, sha=sha), stdout=out,
+                                stderr=subprocess.STDOUT,
+                                pass_fds=(run_lock.fd, target_lock.fd)).returncode
             secs = int(time.time() - started)
             out.write(f"\n# exit {rc} after {secs}s\n")
         shutil.rmtree(tmp, ignore_errors=True)
