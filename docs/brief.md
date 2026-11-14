@@ -28,6 +28,14 @@ rally's projects, with every list bounded and every note cut short (well under 2
    only in chat isn't here: record it as one of those.
 7. **Teams:** each team's assignments and the stories it holds in the rally.
 8. **More:** counts of what's outside the rally or past the bounds, with the command that lists each.
+9. **Builds** (RAL-167): what's live, by the service's own word (`/v1/whoami`'s commit, or "older than RAL-156:
+   the service doesn't say its commit"); this CLI's commit; main's tip; and what's merged but not live, from
+   GitHub's compare of live and main: how many commits, each story named in their messages with the age of its
+   oldest commit, the count, and how long the oldest has waited ("13 stories merged, not live; the oldest for 6 h").
+   GitHub's compare lists at most 250 commits, so a service further behind than that reads short, and
+   `reads_short` says so with both numbers. When this CLI is ahead of the service, a hint says a build looks staged
+   and waiting on a restart: a hint, not a fact. All of it is observed from its own source. Nothing reads the lamplighter's rollout files. It needs `gh`
+   signed in, as the digest does, and says so when a read fails.
 
 What the ledger doesn't hold is said, not guessed at: what's deployed, a batch not recorded, and whether a gate
 process is still running (an open batch past its time is a prompt to look, not a finding).
@@ -40,7 +48,7 @@ requests, it records each batch so a restarted watchman, or anyone, can see what
 ```bash
 rally batch start --project DSM --car DSM-214@<sent sha>@<picked sha> --car DSM-209@<sent sha> \
   --base <sha it was built on> --tip <sha the gate runs on> [--on-batch <N>] [--expect 50m] \
-  [--log ~/.cache/watchman/train54.out] --note "train 54"        # prints its record number, N
+  [--log ~/.local/state/dsm-gates/<sha>.log] --note "train 54"        # prints its record number, N
 rally batch end --batch <N> --landed <sha main moved to> --note "..."
 rally batch end --batch <N> --failed --note "why"
 rally batch end --batch <N> --abandoned --note "the gate died with the session"

@@ -9,6 +9,12 @@ ledger and past ones.
 IDs are permanent. Don't reuse or renumber them, so they aren't in numeric order below. A story without
 a "done when" line isn't ready to claim.
 
+New entries are appended at the end. This file merges with git's `union` driver (`.gitattributes`, RAL-169):
+when two branches each append, a local merge keeps both instead of conflicting. An edit to an existing
+entry merged against another edit to the same entry keeps both versions, silently, so after merging main into
+a branch that edited an entry, look at it before pushing. GitHub's web merge ignores merge drivers: a pull
+request whose roadmap conflicts with main still needs main merged in locally.
+
 Rally tracks itself. Its ledger is the source of truth for every project in `web/projects.json`, Rally's own
 included (the operator, 2026-11-06; RAL-24, RAL-9). The hand-kept board is archived in Muster's
 `docs/board-archive-2026-11-06.md`, and Muster is frozen while the muster moves to Marshal. So stories follow
@@ -1332,3 +1338,15 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   --watchman`, then the brief, handover and inbox), what a restarted session reads, keeping the digest loop running
   by name, reading and landing work one merge at a time, batches, `rally stalls` from the system's crontab, and what
   only the operator does. Docs only.
+- [ ] **RAL-167: `rally brief --watchman` says what's live, staged and merged but not live.** From the watchman
+  (2026-11-14): tonight the service was thirteen stories behind main, and nothing in Rally said so; the lamplighter's
+  staging left files, not records. Done when: `brief --watchman` has a `builds` section, all observed: live (the
+  service's commit from /v1/whoami, or that it's older than RAL-156 and doesn't say), this CLI's commit, main's
+  tip, and the stories merged but not live, from GitHub's compare of live and main, mapped by the story ID in each
+  commit's message, with the count and the oldest's age; a hint when this CLI is ahead of the service (staged,
+  waiting on a restart); no reading of rollout files; with tests.
+- [ ] **RAL-169: The roadmap merges with git's `union` driver.** From the watchman (2026-11-14): on 2026-11-13
+  nearly every pull request conflicted on this file, because every team appends its entries at the end, and each
+  conflict cost a merge commit and another read. Done when: `.gitattributes` sets `docs/roadmap.md merge=union`;
+  the roadmap's header says entries are appended, that an edit to an existing entry needs a look after merging
+  main in, and that GitHub's web merge ignores the driver; tested by merging two branches that each append.
