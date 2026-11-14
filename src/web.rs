@@ -1157,6 +1157,28 @@ pub fn compare(repo: &str, base: &str, head: &str) -> Result<Value, String> {
     serde_json::from_str(out.trim()).map_err(|_| "gh returned a compare that can't be read".into())
 }
 
+/// The files GitHub's compare of `base...head` changes, each `{filename, patch}`, for `rally
+/// rebased` (RAL-170), and `truncated` when the compare can't be whole: more than the 250 commits it
+/// lists, or the 300 files it shows. Read-only through `gh api`.
+pub fn compare_files(repo: &str, base: &str, head: &str) -> Result<Value, String> {
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'/' | b'.'))
+    };
+    if !ok(base) || !ok(head) {
+        return Err("a compare names commits or branches only".into());
+    }
+    let out = run_gh(&[
+        "api",
+        &format!("repos/{repo}/compare/{base}...{head}"),
+        "--jq",
+        "{truncated: ((.total_commits > (.commits | length)) or ((.files | length) >= 300)), \
+         files: [.files[] | {filename, patch}]}",
+    ])?;
+    serde_json::from_str(out.trim()).map_err(|_| "gh returned a compare that can't be read".into())
+}
+
 /// The tip of `branch` in `repo` (RAL-167), read-only through `gh api`.
 pub fn branch_tip(repo: &str, branch: &str) -> Result<String, String> {
     let out = run_gh(&[

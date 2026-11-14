@@ -1334,3 +1334,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   tip, and the stories merged but not live, from GitHub's compare of live and main, mapped by the story ID in each
   commit's message, with the count and the oldest's age; a hint when this CLI is ahead of the service (staged,
   waiting on a restart); no reading of rollout files; with tests.
+- [ ] **RAL-170: `rally rebased <STORY> --head <sha>` says whether a re-based head is the change verified.** From
+  the watchman (2026-11-14): on 2026-11-13 it and a team checked by hand, about eight times, that a head with main
+  merged in carried the verified change. Done when: observed, recording nothing, it compares the verified commit's
+  change against its merge base with main and the head's against its merge base with current main, by patch (not
+  by file list); says `same change` only when identical, otherwise names the files and hunks that differ; says
+  separately when the head's merges of main resolved a conflict; says `can't tell` (never `same change`) for a
+  missing commit or a compare cut short at 250; local git first, GitHub as the fallback; with tests for same,
+  changed, conflict-resolved and can't-tell (docs/gate.md).

@@ -41,6 +41,7 @@ pub mod ledger;
 pub mod levi;
 pub mod lock_holder;
 pub mod next;
+pub mod rebased;
 pub mod record;
 pub mod resume;
 pub mod retry;
