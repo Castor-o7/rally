@@ -77,6 +77,13 @@ rally gate <base>..<new>                                         # before moving
   rally condition --team watchman --story RAL-160 --note "merges next; RAL-163 part 2 waits behind it"
   rally end-standing <N> --note "RAL-160 merged"
   ```
+- **A head that merged `main` in after your verify:** `rally rebased <STORY> --head <full sha> --checkout .` (RAL-170,
+  RAL-172) compares the verified commit's change with the new head's, each against its merge base with `main`,
+  patch by patch, and records nothing. `same change` means the changed lines are identical; otherwise it names the
+  files and hunks that differ, and separately any merge of `main` into the head that resolved a conflict, a change
+  nobody read. It says `can't tell`, never `same change`, when a commit is missing or GitHub's compare was cut
+  short (or a patch too large to show). On GitHub, the fallback when the checkout lacks a commit, file modes and
+  conflict resolutions can't be seen: run it in a checkout that has both commits.
 - **Read the checks yourself before a verify.** A green check can be a check that ran on another commit's build:
   until RAL-144, local CI's target directory was shared between commits.
 
@@ -106,9 +113,10 @@ session:
 
 ## 7. What only the operator does
 
-- **Restarting the service with `sudo`.** Merged and staged changes go live only then. `rally --version` names the
-  commit a CLI was built from, and the service's `/v1/whoami` names its own (RAL-156), so compare the two when you
-  need to know what's live. No `rally` command prints the service's commit yet.
+- **Restarting the service with `sudo`.** Merged and staged changes go live only then. `rally brief --watchman` has
+  a builds section (RAL-167), observed: the live service's commit (from its `/v1/whoami`, RAL-156), this CLI's
+  (`rally --version`), main's tip, and the stories merged but not live, with how long the oldest has waited. Read
+  it when you need to know what's live, and raise a restart with `rally inbox add` when merged work waits on one.
 - **Designating the watchman,** by a signature only the operator can make ([designation.md](designation.md)).
 - **Ticking items off in the inbox,** and answering questions to the operator. Raise his items with
   `rally inbox add`; never act on his behalf.
