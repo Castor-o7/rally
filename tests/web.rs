@@ -1622,6 +1622,8 @@ fn the_board_keeps_its_ages_current_and_shows_commits_short() {
     let seen = in_browser(&viewer, &chrome, Some(probe));
     let probe = &seen["probe"];
     assert_eq!(seen["after"]["status"], 200, "{seen}");
+    // RAL-190: the probe starts once the board has drawn, so its first read has the ages to read.
+    assert_eq!(seen["firstDraw"], "drawn", "{seen}");
     // Some age moved on by itself between polls, with nothing redrawn.
     let before = probe["before"].as_array().unwrap();
     let after = probe["after"].as_array().unwrap();

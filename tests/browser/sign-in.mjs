@@ -365,6 +365,23 @@ const after = await evaluate(`(async () => {
 // each emulated prefers-color-scheme as well, printed as `probes` by scheme (RAL-91).
 let probe;
 let probes;
+// RAL-190: the board draws from the page's own fetch of /api/status, which the load event doesn't wait
+// for, so a probe begun at once could read a board not yet drawn. On Murph the first draw beat the
+// probe by about 20 ms; on a loaded hosted runner it lost (PR #275: the ages probe read no ages, then
+// five 2.5 s later). The page was right: it can't show ages before it has read any. So before any
+// probe, wait up to 20 s for the page's first answer to be shown, a drawn board (`drawnAt`, set once
+// `show` has drawn) or its own warning that it couldn't read or draw one, and say which.
+let firstDraw;
+if (process.env.RALLY_BROWSER_PROBE) {
+  firstDraw = await evaluate(`(async () => {
+    if (typeof drawnAt === "undefined") return "not the board";
+    const until = Date.now() + 20000;
+    while (drawnAt === null && freshnessProblem === null && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return drawnAt !== null ? "drawn" : freshnessProblem !== null ? "the page's warning: " + freshnessProblem : "none within 20 s";
+  })()`);
+}
 if (process.env.RALLY_BROWSER_PROBE) {
   const { readFileSync } = await import("node:fs");
   const expression = readFileSync(process.env.RALLY_BROWSER_PROBE, "utf8");
@@ -389,4 +406,4 @@ if (process.env.RALLY_BROWSER_RELOAD_PROBE) {
   reloaded = await evaluate(expression);
 }
 clearTimeout(timer);
-finish(0, { codePage, after, probe, probes, reloaded });
+finish(0, { codePage, after, firstDraw, probe, probes, reloaded });
