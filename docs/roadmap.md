@@ -1416,3 +1416,10 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   run alongside; observed only, never changing the result; the browser tests carry those lines to their own
   standard error, so ci-local's log has them; with tests for a segfault retried, a second failing, and a teardown
   crash with a stand-in coredumpctl.
+- [ ] **RAL-182: The state-bar redraw test waits on what it reads, not on fixed times.** From the watchman
+  (2026-11-14): `a_redraw_moves_the_state_bar_with_the_counts` failed once under full-suite load for jaunty-harrier
+  (at `in_browser`'s check that the script ended well; its output wasn't kept, and no Chrome core was dumped
+  then). Done when: the probe waits for the board's first draw and says so if there's none in 20 s, rather than
+  going on after 10 s without it; reads the widths once the bar's transitions have finished (`getAnimations`),
+  not after a fixed 1 s, which could read a width mid-transition when frames are starved; and draws its status
+  again if the page's own 30 s poll redrew the bar in between; and it still fails with the style update removed.

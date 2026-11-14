@@ -2436,24 +2436,41 @@ fn a_redraw_moves_the_state_bar_with_the_counts() {
         write(&["ready", "RAL-2"]);
         write(&["claim", "RAL-2", "--team", "rally"]);
     });
+    // RAL-182: the probe waits on what it reads, never on a fixed time. It waits for the board's
+    // first draw and says so if there's none; it reads the widths once the bar's transitions have
+    // finished, however slowly a loaded machine runs them (a fixed 1 s read a width mid-transition
+    // when frames were starved); and if the page's own 30 s poll redrew the bar in between, with
+    // the service's status rather than this one, it draws this one again.
     let probe = r##"(async () => {
-      for (let i = 0; i < 100 && !document.querySelector("#ledger .bar.tall"); i++) {
+      const until = Date.now() + 20000;
+      const bar = () => document.querySelector("#ledger .bar.tall");
+      while (!(lastStatus && bar()) && Date.now() < until) {
         await new Promise((r) => setTimeout(r, 100));
       }
-      const drawn = () => Object.fromEntries([...document.querySelectorAll("#ledger .bar.tall > div")]
+      if (!(lastStatus && bar())) return { error: "the board drew no state bar within 20 s" };
+      const settled = () =>
+        Promise.all(bar().getAnimations({ subtree: true }).map((a) => a.finished.catch(() => {})));
+      const drawn = () => Object.fromEntries([...bar().querySelectorAll(":scope > div")]
         .map((part) => [part.className, getComputedStyle(part).flexGrow]));
+      await settled();
       const before = drawn();
       // One more ready story, as the next poll would bring.
       const status = structuredClone(lastStatus);
       status.ledger.stories["RAL-3"] = { ...status.ledger.stories["RAL-1"] };
       if (status.rally && status.rally.board) status.rally.board.stories.push("RAL-3");
-      show(status, Date.now());
-      // The bar's segments ease to their new widths (.bar > div's 0.6 s transition).
-      await new Promise((r) => setTimeout(r, 1000));
-      return { before, after: drawn() };
+      let redrawnByPoll = 0;
+      for (;;) {
+        const polled = lastStatus;
+        show(status, Date.now());
+        await settled();
+        if (lastStatus === polled || redrawnByPoll === 3) break;
+        redrawnByPoll += 1;
+      }
+      return { before, after: drawn(), redrawnByPoll };
     })()"##;
     let seen = in_browser(&viewer, &chrome, Some(probe));
     let probe = &seen["probe"];
+    assert!(probe["error"].is_null(), "{seen}");
     assert_eq!(probe["before"]["s-ready"], "1", "{seen}");
     assert_eq!(probe["before"]["s-claimed"], "1", "{seen}");
     assert_eq!(
