@@ -1314,3 +1314,10 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   nothing when there's nothing to ask and succeeds either way; the projects list leaves out a field it doesn't
   know, with a warning, instead of refusing the whole file; docs/stalls.md gives the cron line and the hazard
   for readers older than the field; with tests.
+- [ ] **RAL-165: `rally brief --watchman` says what the watchman waits on.** From the watchman (2026-11-14): at
+  19:58 it re-derived every team's owed answers from its own file. Messages are Muster's; commitments about stories
+  are Rally's, and a blocker already says "X waits on Y". Done when: `brief --watchman` gains "you wait on": the
+  open blockers the watchman's team raised (or it raised), oldest first, with the team, story, note and age, scoped
+  to the rally; and each landed story with no submit since its newest landing, with its team; docs/brief.md says to
+  record an owed thing as a blocker when asked and close it when it comes, and that a question answered in the same
+  exchange needs none; with a test.

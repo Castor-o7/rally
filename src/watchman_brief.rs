@@ -349,6 +349,73 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
     let operator_total = items.len();
     items.truncate(ROWS);
 
+    // 5b. What the watchman waits on (RAL-165): the open blockers its team raised, or it raised,
+    // oldest first, and the rally's landed stories with no submit since.
+    let names: Vec<&str> = watchmen.iter().map(|w| w.name.as_str()).collect();
+    let mine = |name: &str| names.iter().any(|n| crate::ledger::same_name(n, name));
+    let mut you_wait: Vec<(u64, Value)> = ledger
+        .blockers()
+        .values()
+        .filter(|b| b.closed.is_none())
+        .filter(|b| {
+            mine(&b.team) || by_watchman(&b.source.credential, b.source.declared_name.as_deref())
+        })
+        .filter(|b| b.story.as_deref().is_none_or(in_rally))
+        .map(|b| {
+            (
+                b.seq,
+                json!({"blocker": b.seq, "on_team": b.on_team, "on_story": b.on_story,
+                       "story": b.story, "note": cut(&b.note), "kind": b.kind,
+                       "age_ms": age(now_ms, b.at_ms)}),
+            )
+        })
+        .collect();
+    you_wait.sort_by_key(|(seq, _)| *seq);
+    let you_wait_total = you_wait.len();
+    let you_wait: Vec<Value> = you_wait.into_iter().take(ROWS).map(|(_, r)| r).collect();
+    let mut owed_submits: Vec<(i64, Value)> = Vec::new();
+    for b in ledger.batches().values() {
+        let Some(end) = &b.ended else { continue };
+        if end.outcome != crate::ledger::BatchOutcome::Landed {
+            continue;
+        }
+        for car in &b.cars {
+            if !in_rally(&car.story) {
+                continue;
+            }
+            let story = ledger.story(&car.story);
+            let submitted = story.is_some_and(|s| {
+                s.history
+                    .iter()
+                    .any(|e| e.seq > end.seq && matches!(e.change, Change::Submit { .. }))
+            });
+            // Only the newest landing of a story counts.
+            let newer = ledger.batches().values().any(|other| {
+                other.seq > b.seq
+                    && other
+                        .ended
+                        .as_ref()
+                        .is_some_and(|e| e.outcome == crate::ledger::BatchOutcome::Landed)
+                    && other.cars.iter().any(|c| c.story == car.story)
+            });
+            if !submitted && !newer {
+                owed_submits.push((
+                    end.at_ms,
+                    json!({"story": car.story, "batch": b.seq,
+                           "team": story.and_then(|s| s.team.clone()),
+                           "since_landing_ms": age(now_ms, end.at_ms)}),
+                ));
+            }
+        }
+    }
+    owed_submits.sort_by_key(|(at, _)| *at);
+    let owed_total = owed_submits.len();
+    let owed_submits: Vec<Value> = owed_submits
+        .into_iter()
+        .take(ROWS)
+        .map(|(_, r)| r)
+        .collect();
+
     // 6. Rulings, newest first: holds, conditions and grants in force, and the rally's events.
     let mut rulings: Vec<(u64, Value)> = ledger
         .standings()
@@ -472,6 +539,13 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
         },
         "waiting_on_you": {"submissions": waiting, "total": waiting_total,
                            "closes_due": closes_due},
+        "you_wait_on": {
+            "blockers": you_wait, "blockers_total": you_wait_total,
+            "owed_submits": owed_submits, "owed_submits_total": owed_total,
+            "note": "What you asked for and haven't had, as you recorded it: a blocker your team \
+                     raised (`rally block --on-team <team>`), and each landed story with no \
+                     submit since. A question answered in the same exchange needs no record.",
+        },
         "waiting_on_the_operator": {"items": items, "total": operator_total,
                                     "open": inbox["open"]},
         "rulings": {"newest": rulings, "total": rulings_total},
@@ -683,6 +757,73 @@ mod tests {
             .find(|b| b["batch"] == t54)
             .unwrap();
         assert!(prompts(failed).contains(&format!("[{t55}]")), "{failed}");
+    }
+
+    /// RAL-165: the brief says what the watchman waits on: the open blockers its team raised,
+    /// oldest first, not another team's or a closed one; and each landed story with no submit
+    /// since its landing.
+    #[test]
+    fn the_watchman_sees_what_it_waits_on() {
+        let sha = |c: char| c.to_string().repeat(40);
+        let dir = tempfile::tempdir().unwrap();
+        let (private, key) = keypair(dir.path(), "operator");
+        let mut chain = Chain::new();
+        chain.designate(&private, &key, Some("watch"));
+        chain.push(json!({"change": "open_rally", "name": "x", "projects": ["RAL"]}));
+        for (story, team) in [("RAL-1", "deft"), ("RAL-2", "sleek"), ("RAL-3", "vibrant")] {
+            chain.push_as(team, json!({"change": "ready", "story": story}));
+            chain.push_as(
+                team,
+                json!({"change": "claim", "story": story, "team": team}),
+            );
+        }
+        let block = |chain: &mut Chain, by: &str, team: &str, on: &str, story: &str| -> u64 {
+            chain.push_as(
+                by,
+                json!({"change": "block", "team": team, "story": story,
+                                     "on_team": on, "note": format!("owes {story}'s sha")}),
+            );
+            chain.records.len() as u64
+        };
+        let first = block(&mut chain, "watch", "watch", "deft", "RAL-1");
+        let answered = block(&mut chain, "watch", "watch", "vibrant", "RAL-3");
+        chain.push_as(
+            "watch",
+            json!({"change": "unblock", "blocker": answered, "note": "got it"}),
+        );
+        // Another team's own blocker isn't the watchman's.
+        block(&mut chain, "sleek", "sleek", "deft", "RAL-2");
+        // RAL-2 and RAL-3 land in a batch; RAL-3's team submits since, RAL-2's doesn't.
+        chain.push_as("watch", json!({"change": "batch_start", "project": "RAL",
+            "cars": [{"story": "RAL-2", "commit": sha('1')}, {"story": "RAL-3", "commit": sha('1')}],
+            "base": sha('b'), "tip": sha('c'), "note": "train"}));
+        let batch = chain.records.len() as u64;
+        chain.push_as(
+            "watch",
+            json!({"change": "batch_end", "batch": batch,
+            "outcome": "landed", "landed": sha('c'), "note": "in"}),
+        );
+        chain.push_as(
+            "vibrant",
+            json!({"change": "submit", "story": "RAL-3", "team": "vibrant",
+            "evidence": format!("o/r@{}", sha('c'))}),
+        );
+
+        let ledger = crate::ledger::Ledger::replay(&chain.records).unwrap();
+        let out = brief(&ledger, &chain.hashes, Some(&key), 10_000);
+        let waits = &out["you_wait_on"];
+        let blockers: Vec<u64> = waits["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["blocker"].as_u64().unwrap())
+            .collect();
+        assert_eq!(blockers, [first], "{waits}");
+        assert_eq!(waits["blockers"][0]["on_team"], "deft");
+        assert_eq!(waits["blockers"][0]["note"], "owes RAL-1's sha");
+        assert_eq!(stories(&waits["owed_submits"]), ["RAL-2"]);
+        assert_eq!(waits["owed_submits"][0]["team"], "sleek");
+        assert_eq!(waits["owed_submits"][0]["batch"], batch);
     }
 
     /// RAL-157: every list is bounded and every note cut short, newest first, with the total.
