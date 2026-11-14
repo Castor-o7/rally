@@ -798,9 +798,19 @@ enum Command {
         #[arg(long, env = "RALLY_WAKE_QUIET_AFTER", value_parser = parse_window)]
         quiet_after: Option<u64>,
         /// A heavy-run lock file, as `flock <lock> <command>` takes it: flag it if its holder, or
-        /// anything under it, is stopped or a zombie (RAL-75). Repeatable. Linux only.
+        /// anything under it, is stopped or a zombie (RAL-75). Repeatable. A `*` or `?` in the
+        /// file name takes every matching file, such as every slot of a pool (RAL-163). Linux only.
         #[arg(long)]
         lock: Vec<PathBuf>,
+        /// With --lock: also flag a holder that's been running at least this long and whose whole
+        /// process tree used almost no CPU over --cpu-sample, as possibly hung (RAL-163). No length
+        /// has been agreed with the operator, so it has no default, and without it nothing is
+        /// sampled.
+        #[arg(long, value_parser = parse_window)]
+        hung_after: Option<u64>,
+        /// How long to sample each lock holder's CPU use for --hung-after.
+        #[arg(long, value_parser = parse_window, default_value = "5s")]
+        cpu_sample: u64,
         #[command(flatten)]
         digest: DigestCheck,
     },
@@ -2043,6 +2053,7 @@ fn stalls_pass(
     config: &Path,
     quiet_after: Option<u64>,
     locks: &[PathBuf],
+    hung: Option<rally::lock_holder::Hung>,
     digest: &DigestCheck,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let text = match projects {
@@ -2259,7 +2270,7 @@ fn stalls_pass(
     }
     if !locks.is_empty() {
         // The kernel's account of each lock, which needs no roster: shown with or without it.
-        let (held, seen) = rally::lock_holder::check(locks, roster.as_ref());
+        let (held, seen) = rally::lock_holder::check_with(locks, roster.as_ref(), hung);
         if let Some(prompts) = report["prompts"].as_array_mut() {
             prompts.extend(held);
         }
@@ -4466,15 +4477,22 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             projects,
             quiet_after,
             lock,
+            hung_after,
+            cpu_sample,
             digest,
         } => {
             let config = config_path(cli.config)?;
+            let hung = hung_after.map(|after_ms| rally::lock_holder::Hung {
+                after_ms,
+                sample_ms: cpu_sample,
+            });
             return stalls_pass(
                 projects.as_deref(),
                 location.as_ref(),
                 &config,
                 quiet_after,
                 &lock,
+                hung,
                 &digest,
             );
         }

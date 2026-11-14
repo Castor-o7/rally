@@ -3957,3 +3957,81 @@ fn stalls_check_the_rallys_teams_and_see_the_watchmans_batches() {
         "{ride}"
     );
 }
+
+/// RAL-163 part 2: a glob of lock files takes every slot, and a holder running but using almost
+/// no CPU over the sample is flagged as possibly hung, naming its command. A prompt; nothing is
+/// stopped.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_lock_holder_doing_almost_nothing_is_flagged_as_possibly_hung() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let slots = service.dir.path().join("slots");
+    std::fs::create_dir_all(&slots).unwrap();
+    std::fs::write(slots.join("heavy.0.lock"), "").unwrap();
+    let held = slots.join("heavy.1.lock");
+    let mut holder = Command::new("flock")
+        .arg(&held)
+        .args(["sleep", "60"])
+        .spawn()
+        .unwrap();
+    let pattern = slots.join("heavy.*.lock").display().to_string();
+    let stalls = || {
+        let out = rally()
+            .arg("--config")
+            .arg(&config)
+            .env("RALLY_ROSTER_FROM", "no-such-shim-for-tests")
+            .args([
+                "stalls",
+                "--lock",
+                &pattern,
+                "--hung-after",
+                "1s",
+                "--cpu-sample",
+                "1s",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    // Waits, up to 10 s, for flock to hold the slot.
+    let until = Instant::now() + Duration::from_secs(10);
+    let out = loop {
+        let out = stalls();
+        if out["prompts"]
+            .to_string()
+            .contains("possibly_hung_lock_holder")
+        {
+            break out;
+        }
+        assert!(
+            Instant::now() < until,
+            "no holder flagged within 10 s: {out}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let _ = holder.kill();
+    let _ = holder.wait();
+    // Both slots were read; only the held one is flagged.
+    assert_eq!(out["locks"].as_array().unwrap().len(), 2, "{out}");
+    let row = out["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["row"] == "possibly_hung_lock_holder")
+        .unwrap();
+    assert_eq!(row["lock"], held.display().to_string());
+    let summary = row["processes"][0]["summary"].as_str().unwrap();
+    assert!(
+        summary.starts_with("possibly hung: sleep 60, ") && summary.contains("% CPU over 1 s"),
+        "{summary}"
+    );
+    assert_eq!(row["kind"], "observed");
+}

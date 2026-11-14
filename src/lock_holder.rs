@@ -23,6 +23,10 @@ pub struct Proc {
     /// The kernel's state letter: `R`, `S`, `D`, `T`, `t`, `Z` and so on.
     pub state: char,
     pub comm: String,
+    /// CPU time used so far, user and system, in clock ticks (RAL-163).
+    pub cpu_ticks: u64,
+    /// When it started, in clock ticks after boot (RAL-163).
+    pub start_ticks: u64,
 }
 
 /// Parses one `/proc/<pid>/stat`. The command name is in parentheses and may itself hold spaces
@@ -32,14 +36,18 @@ pub fn parse_stat(text: &str) -> Option<Proc> {
     let close = text.rfind(')')?;
     let pid = text[..open].trim().parse().ok()?;
     let comm = text.get(open + 1..close)?.to_owned();
-    let mut rest = text.get(close + 1..)?.split_whitespace();
-    let state = rest.next()?.chars().next()?;
-    let ppid = rest.next()?.parse().ok()?;
+    let rest: Vec<&str> = text.get(close + 1..)?.split_whitespace().collect();
+    let state = rest.first()?.chars().next()?;
+    let ppid = rest.get(1)?.parse().ok()?;
+    // Fields 14 and 15 (utime, stime) and 22 (starttime), counted from the pid as 1.
+    let field = |n: usize| rest.get(n - 3).and_then(|v| v.parse::<u64>().ok());
     Some(Proc {
         pid,
         ppid,
         state,
         comm,
+        cpu_ticks: field(14).unwrap_or(0) + field(15).unwrap_or(0),
+        start_ticks: field(22).unwrap_or(0),
     })
 }
 
@@ -157,6 +165,160 @@ pub struct Seen {
     pub procs: BTreeMap<u32, Proc>,
     /// Each process's working directory, where it could be read.
     pub cwds: BTreeMap<u32, String>,
+    /// Each process's command line, where it could be read (RAL-163).
+    pub cmdlines: BTreeMap<u32, String>,
+    /// How long the machine had been up when this was read, in milliseconds (RAL-163).
+    pub uptime_ms: u64,
+}
+
+/// Below this share of one CPU over the sample, a lock holder's whole process tree is possibly
+/// hung (RAL-163). Tonight's was a godot at 0.9% for 11 minutes.
+pub const HUNG_CPU_PERCENT: f64 = 2.0;
+
+/// The team a working directory names, guessed: a path component that's a roster nickname, as
+/// `~/.cache/<nickname>/...` is (RAL-163).
+fn nickname_in(cwd: &str, nicknames: &BTreeSet<String>) -> Option<String> {
+    cwd.split('/')
+        .map(str::to_lowercase)
+        .find(|part| nicknames.contains(part))
+}
+
+/// The `possibly_hung_lock_holder` prompt for one lock (RAL-163): a holder whose whole process
+/// tree used less than [`HUNG_CPU_PERCENT`] of a CPU between two reads `sample_ms` apart, and has
+/// been running at least `after_ms`. It names the process in the tree that has used the most CPU
+/// in its life, with its command and working directory. A prompt, never a finding: a run waiting
+/// on something legitimate looks the same.
+pub fn hung(
+    lock: &str,
+    before: &Seen,
+    after: &Seen,
+    sample_ms: u64,
+    ticks_per_s: u64,
+    after_ms: u64,
+    roster: &BTreeMap<String, String>,
+) -> Option<Value> {
+    let ticks = ticks_per_s.max(1);
+    let nicknames: BTreeSet<String> = roster.values().map(|n| n.to_lowercase()).collect();
+    let mut quiet = Vec::new();
+    for &holder in &after.holders {
+        let Some(top) = after.procs.get(&holder) else {
+            continue;
+        };
+        // Only the tree both reads saw, so a process that came or went isn't counted.
+        let pids: Vec<u32> = tree(holder, &after.procs)
+            .into_iter()
+            .filter(|pid| before.procs.contains_key(pid))
+            .collect();
+        if pids.is_empty() {
+            continue;
+        }
+        let used: u64 = pids
+            .iter()
+            .map(|pid| {
+                after.procs[pid]
+                    .cpu_ticks
+                    .saturating_sub(before.procs[pid].cpu_ticks)
+            })
+            .sum();
+        let percent = used as f64 * 1000.0 * 100.0 / (ticks as f64 * sample_ms.max(1) as f64);
+        let running_ms = after
+            .uptime_ms
+            .saturating_sub(top.start_ticks * 1000 / ticks);
+        if percent >= HUNG_CPU_PERCENT || running_ms < after_ms {
+            continue;
+        }
+        let busiest = pids
+            .iter()
+            .max_by_key(|pid| after.procs[pid].cpu_ticks)
+            .copied()
+            .unwrap_or(holder);
+        let cwd = after.cwds.get(&busiest).or_else(|| after.cwds.get(&holder));
+        let command = after
+            .cmdlines
+            .get(&busiest)
+            .cloned()
+            .unwrap_or_else(|| after.procs[&busiest].comm.clone());
+        let command: String = command.chars().take(200).collect();
+        let team = cwd.and_then(|cwd| nickname_in(cwd, &nicknames));
+        let session = cwd.and_then(|cwd| session_in(cwd));
+        quiet.push(json!({
+            "holder": holder, "pid": busiest, "command": command, "cwd": cwd,
+            "cpu_percent": (percent * 10.0).round() / 10.0, "sample_ms": sample_ms,
+            "running_min": running_ms / 60_000,
+            "summary": format!(
+                "possibly hung: {command}, {}, {:.1}% CPU over {} s, running {} min",
+                cwd.map_or("cwd unknown", String::as_str),
+                percent,
+                sample_ms / 1000,
+                running_ms / 60_000
+            ),
+            "team": team, "session": session,
+            "team_kind": "guessed from the working directory",
+        }));
+    }
+    if quiet.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "row": "possibly_hung_lock_holder",
+        "lock": lock,
+        "likely_meaning": "The lock's holder is running but doing almost nothing, so it may be hung",
+        "action": "Ask the team whose run it is to look at it; nothing is stopped or killed by Rally.",
+        "processes": quiet,
+        "waiters": after.waiters.len(),
+        "kind": "observed",
+        "note": "A prompt for the watchman, not a conclusion: a run waiting on something \
+                 legitimate looks the same.",
+    }))
+}
+
+/// The lock files `patterns` name: each as given, or, where its file name has `*` or `?`, every
+/// file in that directory whose name matches (RAL-163), so `/tmp/discosim-heavy*.lock` takes
+/// every slot. A pattern matching nothing is kept as given, so it's reported as unreadable.
+pub fn expand(patterns: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    fn matches(pattern: &[char], name: &[char]) -> bool {
+        match (pattern.first(), name.first()) {
+            (None, None) => true,
+            (Some('*'), _) => {
+                matches(&pattern[1..], name) || (!name.is_empty() && matches(pattern, &name[1..]))
+            }
+            (Some('?'), Some(_)) => matches(&pattern[1..], &name[1..]),
+            (Some(p), Some(n)) if p == n => matches(&pattern[1..], &name[1..]),
+            _ => false,
+        }
+    }
+    let mut out = Vec::new();
+    for pattern in patterns {
+        let name = pattern
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !name.contains(['*', '?']) {
+            out.push(pattern.clone());
+            continue;
+        }
+        let dir = pattern
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let wanted: Vec<char> = name.chars().collect();
+        let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| {
+                let have: Vec<char> = entry.file_name().to_string_lossy().chars().collect();
+                matches(&wanted, &have)
+            })
+            .map(|entry| entry.path())
+            .collect();
+        found.sort();
+        if found.is_empty() {
+            out.push(pattern.clone());
+        }
+        out.extend(found);
+    }
+    out
 }
 
 /// The `stopped_lock_holder` prompt for one lock, if anything holding it is stopped or the holder
@@ -251,7 +413,19 @@ pub fn read(lock: &Path) -> Result<Seen, String> {
         if let Ok(cwd) = std::fs::read_link(format!("/proc/{pid}/cwd")) {
             seen.cwds.insert(pid, cwd.to_string_lossy().into_owned());
         }
+        if let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) {
+            let line: Vec<String> = raw
+                .split(|b| *b == 0)
+                .filter(|part| !part.is_empty())
+                .map(|part| String::from_utf8_lossy(part).into_owned())
+                .collect();
+            seen.cmdlines.insert(pid, line.join(" "));
+        }
     }
+    seen.uptime_ms = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|text| text.split_whitespace().next()?.parse::<f64>().ok())
+        .map_or(0, |secs| (secs * 1000.0) as u64);
     Ok(seen)
 }
 
@@ -277,12 +451,50 @@ pub fn nicknames(roster: Option<&Value>) -> BTreeMap<String, String> {
 
 /// Every `--lock`, read and judged: the prompts, and what was seen of each lock.
 pub fn check(locks: &[std::path::PathBuf], roster: Option<&Value>) -> (Vec<Value>, Vec<Value>) {
+    check_with(locks, roster, None)
+}
+
+/// When to look for a possibly hung holder (RAL-163): running at least `after_ms`, sampled over
+/// `sample_ms`.
+#[derive(Clone, Copy, Debug)]
+pub struct Hung {
+    pub after_ms: u64,
+    pub sample_ms: u64,
+}
+
+/// [`check`], over every lock the patterns name, and with `hung`, a second read `sample_ms` after
+/// the first for each holder's CPU use.
+pub fn check_with(
+    patterns: &[std::path::PathBuf],
+    roster: Option<&Value>,
+    hung_check: Option<Hung>,
+) -> (Vec<Value>, Vec<Value>) {
     let names = nicknames(roster);
     let mut prompts = Vec::new();
     let mut seen_all = Vec::new();
-    for lock in locks {
+    let locks = expand(patterns);
+    let first: Vec<Result<Seen, String>> = locks.iter().map(|lock| read(lock)).collect();
+    let second: Option<Vec<Result<Seen, String>>> = hung_check.map(|h| {
+        std::thread::sleep(std::time::Duration::from_millis(h.sample_ms));
+        locks.iter().map(|lock| read(lock)).collect()
+    });
+    let ticks = rustix::param::clock_ticks_per_second();
+    for (index, (lock, first)) in locks.iter().zip(first).enumerate() {
         let shown = lock.display().to_string();
-        match read(lock) {
+        if let (Some(h), Some(second), Ok(before)) = (hung_check, &second, &first)
+            && let Ok(after) = &second[index]
+        {
+            prompts.extend(hung(
+                &shown,
+                before,
+                after,
+                h.sample_ms,
+                ticks,
+                h.after_ms,
+                &names,
+            ));
+        }
+        match first {
             Ok(seen) => {
                 let mut row = json!({
                     "lock": shown, "checked": true, "holders": seen.holders,
@@ -325,6 +537,8 @@ mod tests {
             ppid,
             state,
             comm: comm.into(),
+            cpu_ticks: 0,
+            start_ticks: 0,
         }
     }
 
@@ -338,7 +552,108 @@ mod tests {
                 101,
                 format!("/tmp/claude-1000/-home-joshd-src/{SESSION}/scratchpad"),
             )]),
+            ..Seen::default()
         }
+    }
+
+    /// RAL-163: a holder's tree that used almost no CPU between two reads, and has run long
+    /// enough, is possibly hung, named by its busiest process's command and working directory,
+    /// with the team guessed from a nickname in that directory.
+    #[test]
+    fn a_holder_doing_almost_nothing_is_possibly_hung() {
+        let at = |cpu: u64| {
+            let mut godot = proc(101, 100, 'S', "godot");
+            godot.cpu_ticks = cpu;
+            let mut holder = proc(100, 1, 'S', "flock");
+            holder.start_ticks = 100; // 1 s after boot at 100 ticks a second
+            Seen {
+                matched: Matched::DeviceAndInode,
+                holders: vec![100],
+                procs: BTreeMap::from([(100, holder), (101, godot)]),
+                cwds: BTreeMap::from([(101, "/home/j/.cache/sleek-moth/discosim".into())]),
+                cmdlines: BTreeMap::from([(101, "godot --headless -s run_tests.gd".into())]),
+                uptime_ms: 12 * 60_000,
+                ..Seen::default()
+            }
+        };
+        let roster = BTreeMap::from([("id".to_owned(), "sleek-moth".to_owned())]);
+        // 0.9% of a CPU over 5 s: 4.5 ticks, so 4 at 100 a second.
+        let row = hung(
+            "/tmp/discosim-heavy.1.lock",
+            &at(5_000),
+            &at(5_004),
+            5_000,
+            100,
+            5 * 60_000,
+            &roster,
+        )
+        .unwrap();
+        assert_eq!(row["row"], "possibly_hung_lock_holder");
+        let p = &row["processes"][0];
+        assert_eq!(p["pid"], 101);
+        assert_eq!(p["team"], "sleek-moth");
+        assert_eq!(p["running_min"], 11);
+        assert_eq!(
+            p["summary"],
+            "possibly hung: godot --headless -s run_tests.gd, /home/j/.cache/sleek-moth/discosim, \
+             0.8% CPU over 5 s, running 11 min"
+        );
+        // Busy, it isn't.
+        assert!(hung("l", &at(5_000), &at(5_400), 5_000, 100, 5 * 60_000, &roster).is_none());
+        // Not long enough running, it isn't either.
+        assert!(
+            hung(
+                "l",
+                &at(5_000),
+                &at(5_004),
+                5_000,
+                100,
+                60 * 60_000,
+                &roster
+            )
+            .is_none()
+        );
+    }
+
+    /// RAL-163: a pattern with `*` or `?` in its file name takes every matching file; one with
+    /// none is kept as given.
+    #[test]
+    fn lock_patterns_take_every_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "discosim-heavy.lock",
+            "discosim-heavy.1.lock",
+            "discosim-heavy.2.lock",
+            "other.lock",
+        ] {
+            std::fs::write(dir.path().join(name), "").unwrap();
+        }
+        let found = expand(&[dir.path().join("discosim-heavy*.lock")]);
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "discosim-heavy.1.lock",
+                "discosim-heavy.2.lock",
+                "discosim-heavy.lock"
+            ]
+        );
+        let plain = dir.path().join("other.lock");
+        assert_eq!(expand(std::slice::from_ref(&plain)), vec![plain]);
+        let none = dir.path().join("nothing-*.lock");
+        assert_eq!(expand(std::slice::from_ref(&none)), vec![none]);
+    }
+
+    #[test]
+    fn a_stat_line_gives_cpu_and_start_time() {
+        let line = "4242 (godot (x)) S 1 2 3 4 5 6 7 8 9 10 250 50 0 0 20 0 1 0 900 1000 10";
+        let p = parse_stat(line).unwrap();
+        assert_eq!((p.pid, p.ppid, p.comm.as_str()), (4242, 1, "godot (x)"));
+        assert_eq!(p.cpu_ticks, 300);
+        assert_eq!(p.start_ticks, 900);
     }
 
     #[test]
