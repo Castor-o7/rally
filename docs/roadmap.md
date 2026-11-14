@@ -1183,3 +1183,15 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   each of the six DiscoSim nicknames restarted at 19:55, it names the earlier session the watchman found by hand
   (vibrant-gull c2319bd8, wise-crocodile fa76ef71, sleek-moth e2eb2632, silent-dhole 00baf303, steely-ridge
   e9f8a3ac, deft-pelican 4e31e02c).
+- [ ] **RAL-154: The watchman's digest loop is started, stopped and restarted by name.** From the watchman
+  (2026-11-13, issue 1.75): the digest loop ran inside a bash `while true` wrapper started by hand, found again
+  only by searching for its command line, and after RAL-148 the loop needed a restart to pick up the new CLI.
+  The wrapper predates RAL-86 and has never had to restart the loop since (no "digest exited" line in three
+  days), so it needs no 429 work. Done when: `rally digest --every` holds a pid file (digest.pid beside the
+  pairing, or `--pid-file`). The file is written at the loop's start, refused while a live digest holds it, and
+  given the exit status and error when the loop ends by itself. `--background` starts the loop on its own,
+  logging to digest.log. `--stop` stops the process the file names and removes the file. `--restart` does both,
+  with the settings given or the ones remembered, and writes to digest.log why the previous one ended if nobody
+  asked it to. No process is found by pattern, and it works without /proc or systemd (a1 is a Mac). Unit tests
+  cover the file and the command-line check, and a service test covers start, refusal, restart, a kill -9 the
+  restart reports, and stop.

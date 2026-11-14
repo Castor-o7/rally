@@ -98,6 +98,30 @@ nothing to the ledger. Each pass records, per watchman, when it ran and when a d
 `last_sent_ms`), so `rally brief` and `rally stalls --digest-quiet-after <window>` can say when it has stopped
 (RAL-87; see docs/stalls.md).
 
+## Starting, stopping and restarting it by name (RAL-154)
+
+`rally digest --every` holds a pid file while it runs: `digest.pid` beside the pairing, or `--pid-file`. The file
+names the loop's process and the settings it was started with. A second `rally digest --every` on the same
+file is refused while the first is alive, and when the loop ends by itself (an error that waiting won't clear)
+it writes its exit status and the error into the file. No process is ever found by pattern: only the pid in the
+file is used, and only while `ps` still shows it as a `rally digest`, so a reused pid isn't taken for it. It
+needs no `/proc` and no systemd, so it works the same on a Mac.
+
+```bash
+rally digest --quiet 2m --max 10m --every 30s --watchman mellow-weevil --background   # start on its own
+rally digest --restart     # stop it if it runs, and start it again with the settings it remembers
+rally digest --stop        # stop it, and remove the pid file
+```
+
+`--background` starts the loop on its own, outliving the command and the session, with its output appended
+to `digest.log` beside the pid file. `--restart` takes new settings when given `--every`, `--quiet` and
+`--max`, and otherwise the ones in the pid file. It runs the binary it's run as, so a restart after a deploy
+picks up the new CLI. Each `--stop` and `--restart` writes a line to `digest.log` saying what it found. If the
+previous loop had ended without being asked, the line says when and why: the exit status and error it
+recorded, or "ended without saying why" when it was killed by a signal, crashed, or the machine stopped. A
+loop stopped with Ctrl-C in a terminal is also reported that way. These three run through the paired service
+only, not `--db`.
+
 ## When a merge leaves the base red (RAL-102)
 
 From the DiscoSim rally's issues log (§10.3, §10.4): Muster's main was red for about a day, and Rally's for a

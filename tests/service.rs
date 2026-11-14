@@ -2961,3 +2961,115 @@ fn the_operators_inbox_works_end_to_end_through_the_service() {
         .unwrap();
     assert_eq!(answered["closed"]["answer"]["from"], "direct", "{all}");
 }
+
+/// RAL-154: the digest loop is started, refused a second copy, restarted and stopped by its pid
+/// file, with no pattern search; a restart after it died unasked says so in digest.log.
+#[test]
+fn the_digest_loop_is_started_restarted_and_stopped_by_its_pid_file() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let pid_file = service.dir.path().join("client/digest.pid");
+    let log = service.dir.path().join("client/digest.log");
+    let digest = |args: &[&str]| {
+        let output = rally()
+            .arg("--config")
+            .arg(&config)
+            // Nothing is ever sent from a test.
+            .env("RALLY_ROSTER_FROM", "no-such-shim-for-tests")
+            .arg("digest")
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let held = || -> u64 {
+        let value: Value =
+            serde_json::from_str(&std::fs::read_to_string(&pid_file).unwrap()).unwrap();
+        value["pid"].as_u64().unwrap()
+    };
+    let alive = |pid: u64| {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let settings = [
+        "--quiet",
+        "1s",
+        "--max",
+        "1s",
+        "--every",
+        "1s",
+        "--watchman",
+        "w",
+    ];
+
+    let (ok, out, err) = digest(&[&settings[..], &["--background"]].concat());
+    assert!(ok, "{out}{err}");
+    let first = held();
+    assert!(alive(first));
+
+    // A second, in the background or not, is refused while the first holds the file.
+    let (ok, _, err) = digest(&[&settings[..], &["--background"]].concat());
+    assert!(!ok && err.contains("already runs"), "{err}");
+    let (ok, _, err) = digest(&settings);
+    assert!(!ok && err.contains("already runs"), "{err}");
+    assert!(alive(first));
+
+    // Restarted with the settings it remembers: the old one is gone, a new one holds the file.
+    let (ok, out, err) = digest(&["--restart"]);
+    assert!(ok, "{out}{err}");
+    let second = held();
+    assert_ne!(second, first);
+    assert!(!alive(first) && alive(second));
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        text.contains(&format!(
+            "--restart: stopped the digest, process {first}, as asked"
+        )),
+        "{text}"
+    );
+
+    // It dies unasked; the restart says so in the log.
+    assert!(
+        Command::new("kill")
+            .args(["-KILL", &second.to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    for _ in 0..50 {
+        if !alive(second) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let (ok, out, err) = digest(&["--restart"]);
+    assert!(ok, "{out}{err}");
+    let third = held();
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        text.contains(&format!("as process {second} ended without saying why")),
+        "{text}"
+    );
+
+    // Stopped: the process is gone and so is the file.
+    let (ok, out, err) = digest(&["--stop"]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.contains(&format!("stopped the digest, process {third}")),
+        "{out}"
+    );
+    assert!(!alive(third));
+    assert!(!pid_file.exists());
+    let (ok, out, _) = digest(&["--stop"]);
+    assert!(ok && out.contains("no digest was running"), "{out}");
+}
