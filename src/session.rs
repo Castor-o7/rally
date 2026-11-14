@@ -447,9 +447,14 @@ pub struct Extra {
 }
 
 /// One line for each condition in force naming one of `team`'s open stories (RAL-171), from
-/// `/v1/standings`: information, not a block.
-pub fn condition_lines(team: &str, stories: &Map<String, Value>, standings: &Value) -> Vec<String> {
-    stories
+/// `/v1/standings`: information, not a block. When the standings couldn't be read, one line says
+/// so, as the behind-main line does (RAL-175), and only if the team has an open story to name.
+pub fn condition_lines(
+    team: &str,
+    stories: &Map<String, Value>,
+    standings: Result<&Value, &str>,
+) -> Vec<String> {
+    let open: Vec<&String> = stories
         .iter()
         .filter(|(_, row)| row["team"].as_str() == Some(team))
         .filter(|(_, row)| {
@@ -459,7 +464,23 @@ pub fn condition_lines(team: &str, stories: &Map<String, Value>, standings: &Val
             )
         })
         .filter(|(_, row)| row["merged"] != true)
-        .flat_map(|(id, _)| {
+        .map(|(id, _)| id)
+        .collect();
+    if open.is_empty() {
+        return Vec::new();
+    }
+    let standings = match standings {
+        Ok(standings) => standings,
+        Err(why) => {
+            return vec![format!(
+                "- Whether a condition in force names your stories couldn't be checked: {} \
+                 (rally brief says them)",
+                clean(why)
+            )];
+        }
+    };
+    open.into_iter()
+        .flat_map(|id| {
             crate::merge_notes::conditions_naming(standings, id)
                 .into_iter()
                 .map(move |condition| {
@@ -473,17 +494,20 @@ pub fn condition_lines(team: &str, stories: &Map<String, Value>, standings: &Val
         .collect()
 }
 
-/// The conditions and grants in force, through the service within `total`, or `None` from a
-/// service older than RAL-136 or one that didn't answer in time (RAL-171).
-pub fn fetch_standings(pairing: &Pairing, total: Duration) -> Option<Value> {
+/// The conditions and grants in force, through the service within `total`, or why not: no time
+/// left, no answer in time, or a service older than RAL-136 (RAL-171, RAL-175).
+pub fn fetch_standings(pairing: &Pairing, total: Duration) -> Result<Value, String> {
     if total.is_zero() {
-        return None;
+        return Err("no time was left".into());
     }
-    let reply = client::request_for(pairing, "GET", "/v1/standings", total).ok()?;
-    if !(200..300).contains(&reply.status) {
-        return None;
+    let reply = client::request_for(pairing, "GET", "/v1/standings", total)
+        .map_err(|_| "the service didn't answer in time".to_owned())?;
+    match reply.status {
+        200..=299 => serde_json::from_str(&reply.body)
+            .map_err(|_| "the service's answer wasn't readable".to_owned()),
+        404 => Err("the service is older than RAL-136".into()),
+        status => Err(format!("the service answered {status}")),
     }
-    serde_json::from_str(&reply.body).ok()
 }
 
 /// How far back a closed inbox item is told at session start (RAL-146).
@@ -671,7 +695,7 @@ mod tests {
             {"seq": 9, "standing": "condition", "story": "RAL-162", "note": "not yours",
              "declared_by": "mellow-weevil"},
         ]});
-        let lines = condition_lines("rustdaw", stories, &standings);
+        let lines = condition_lines("rustdaw", stories, Ok(&standings));
         assert_eq!(
             lines,
             [
@@ -688,6 +712,16 @@ mod tests {
         let said = out.find("- RAL-160: a condition in force").unwrap();
         let next = out.find("Stories you could verify").unwrap();
         assert!(open < said && said < next, "{out}");
+        // RAL-175: a standings read that failed says so, like the behind-main line, and only for
+        // a team with an open story.
+        assert_eq!(
+            condition_lines("rustdaw", stories, Err("the service didn't answer in time")),
+            [
+                "- Whether a condition in force names your stories couldn't be checked: the \
+                 service didn't answer in time (rally brief says them)"
+            ]
+        );
+        assert!(condition_lines("nobody", stories, Err("no time was left")).is_empty());
     }
 
     /// RAL-131: a session in an open rally is told the rally, each project's roadmap stage, the

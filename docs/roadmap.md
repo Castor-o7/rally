@@ -1372,6 +1372,12 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   kept in the hunk, so a head that differs only by a final newline reads `changed`, and one after context is not;
   the GitHub fallback's answer says file modes can't be seen there; conflict resolutions are the head's own merges
   (first parent), not those main's history brought in, found replaying RAL-163; with tests (docs/gate.md).
+- [ ] **RAL-175: A standings read that fails at session start says so; a condition naming no story is said at every
+  merge.** From the watchman's verify of RAL-171 (2026-11-14). Done when: at a team's session start, a read of the
+  conditions in force that fails or runs out of time gives one line saying it couldn't be checked and why, like the
+  behind-main line, and only for a team with an open story; `rally merge` gives, after the conditions naming the
+  story, each condition in force naming no story, said as naming none and bearing on every merge; a team's session
+  start still lists only those naming its stories; information, never a block; with tests (docs/session-hook.md).
 - [ ] **RAL-174: `rally stalls --prompts-only` says what it couldn't see, and fails.** From checking the watchman's
   cron line by hand (2026-11-14): under cron's PATH neither shim nor `gh` was found, the roster couldn't be read,
   two missed check-ins vanished, and the run printed nothing, a silent all clear. Done when: with `--prompts-only`,
@@ -1388,3 +1394,14 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   verified commit, so `--head` with it compared the commit with itself and read clean. Done when: `--verified`
   overrides the ledger's commit, the output says it was given (not recorded) and what the ledger has; a `--head`
   equal to the commit compared with says `can't tell`, that it means nothing; with tests (docs/gate.md).
+- [ ] **RAL-178: `rally merge` waits briefly for the merged commit's CI run, else says it hasn't started.** From the
+  watchman's live check of RAL-171 (2026-11-14): read seconds after `gh pr merge`, the CI note said `none` at nearly
+  every merge, before the push's run had started. Done when: while no run exists, `rally merge` reads again every 2
+  seconds for at most `--ci-wait` seconds (8 by default, 0 reads once, at most 60), giving a run as soon as one
+  appears and never waiting on a failed read; with none, it says "not started yet; the digest's RAL-102 section
+  checks it" (state `not_started`), observed and recorded nowhere; with tests.
+- [ ] **RAL-176: `rally rebased` remerges with the attributes the merge was made with, and says so.** From the
+  watchman's run (2026-11-14): its checkout, on an old branch without `.gitattributes`, remerged a union-merged
+  roadmap with the default driver and named it a conflict resolved, where a checkout with the attributes named
+  none. Done when: each merge is remerged with its first parent's `.gitattributes` (`--attr-source`), the output
+  says which attributes it used, and a test checks a checkout without the attributes gets the head's answer.

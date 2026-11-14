@@ -265,7 +265,7 @@ fn a_successor_records_its_read_of_the_merged_commit() {
     ok(
         &db,
         "silken-tanager",
-        &["merge", "RAL-3", "--commit", OTHER_COMMIT],
+        &["merge", "RAL-3", "--commit", OTHER_COMMIT, "--ci-wait", "0"],
     );
     let shown = ok(&db, "silken-tanager", &["show", "RAL-3"]);
     assert!(shown["detail"]["commit_differs"].is_object(), "{shown}");
@@ -507,8 +507,8 @@ fn the_submitter_cannot_verify_but_someone_else_can() {
     assert_eq!(all["stories"]["RAL-3"]["state"], "verified");
 }
 
-/// RAL-171: `rally merge` says, beside its record, the conditions in force that name the story,
-/// and what the merged commit's CI says, observed and recorded nowhere; it blocks nothing.
+/// RAL-171: `rally merge` says, beside its record, the conditions in force that name the story
+/// (and, RAL-175, those naming none), and what the merged commit's CI says, observed and recorded nowhere; it blocks nothing.
 #[test]
 fn a_merge_says_the_conditions_naming_its_story_and_its_ci() {
     let db = Ledger::new();
@@ -553,7 +553,11 @@ fn a_merge_says_the_conditions_naming_its_story_and_its_ci() {
             "not this one",
         ],
     );
-    let merged = ok(&db, "author", &["merge", "RAL-3", "--commit", COMMIT]);
+    let merged = ok(
+        &db,
+        "author",
+        &["merge", "RAL-3", "--commit", COMMIT, "--ci-wait", "0"],
+    );
     assert!(merged["recorded"].is_u64(), "{merged}");
     let conditions = merged["conditions"].as_array().unwrap();
     assert_eq!(conditions.len(), 1, "{merged}");
@@ -565,14 +569,50 @@ fn a_merge_says_the_conditions_naming_its_story_and_its_ci() {
         "{merged}"
     );
     // The stand-in gh has no runs for it: said, observed, and not recorded.
-    assert_eq!(merged["ci"]["state"], "none", "{merged}");
+    assert_eq!(merged["ci"]["state"], "not_started", "{merged}");
+    assert_eq!(
+        merged["ci"]["said"],
+        "not started yet; the digest's RAL-102 section checks it"
+    );
     assert_eq!(merged["ci"]["kind"], "observed");
     assert_eq!(merged["ci"]["recorded"], false);
     // A story with no evidence says why its CI wasn't read; the merge stands either way.
     ok(&db, "author", &["ready", "RAL-4"]);
-    let bare = ok(&db, "author", &["merge", "RAL-4", "--commit", OTHER_COMMIT]);
+    let bare = ok(
+        &db,
+        "author",
+        &["merge", "RAL-4", "--commit", OTHER_COMMIT, "--ci-wait", "0"],
+    );
     assert_eq!(bare["ci"]["state"], "unread", "{bare}");
     assert!(bare["conditions"].as_array().unwrap().is_empty());
+    // RAL-175: a condition naming no story is said at every merge, after those naming it.
+    ok(
+        &db,
+        "mellow-weevil",
+        &[
+            "condition",
+            "--team",
+            "watchman",
+            "--note",
+            "one merge at a time",
+        ],
+    );
+    ok(&db, "author", &["ready", "RAL-5"]);
+    let held = ok(
+        &db,
+        "author",
+        &["merge", "RAL-5", "--commit", OTHER_COMMIT, "--ci-wait", "0"],
+    );
+    let conditions = held["conditions"].as_array().unwrap();
+    assert_eq!(conditions.len(), 1, "{held}");
+    assert!(conditions[0]["story"].is_null(), "{held}");
+    assert!(
+        conditions[0]["said"]
+            .as_str()
+            .unwrap()
+            .starts_with("a condition in force names no story, so it bears on every merge: one"),
+        "{held}"
+    );
 }
 
 #[test]
@@ -580,7 +620,11 @@ fn a_merge_is_a_commit_in_any_state_and_is_compared_with_the_verified_one() {
     let db = Ledger::new();
     ok(&db, "author", &["ready", "RAL-3"]);
     // Merged while still Ready, as catapp#78 was merged before its read: the state doesn't move.
-    ok(&db, "author", &["merge", "RAL-3", "--commit", OTHER_COMMIT]);
+    ok(
+        &db,
+        "author",
+        &["merge", "RAL-3", "--commit", OTHER_COMMIT, "--ci-wait", "0"],
+    );
     let shown = ok(&db, "author", &["show", "RAL-3"]);
     assert_eq!(shown["detail"]["state"], "ready");
     assert_eq!(shown["detail"]["merged_commit"], OTHER_COMMIT);
@@ -629,7 +673,11 @@ fn a_merge_is_a_commit_in_any_state_and_is_compared_with_the_verified_one() {
     );
 
     // The verified commit merged after all.
-    ok(&db, "author", &["merge", "RAL-3", "--commit", COMMIT]);
+    ok(
+        &db,
+        "author",
+        &["merge", "RAL-3", "--commit", COMMIT, "--ci-wait", "0"],
+    );
     let shown = ok(&db, "author", &["show", "RAL-3"]);
     assert_eq!(shown["detail"]["state"], "verified");
     assert_eq!(shown["detail"]["merged_commit"], COMMIT);
@@ -672,7 +720,11 @@ fn a_requested_read_is_shown_until_answered_and_a_merge_meanwhile_is_marked() {
     assert!(error.contains("didn't request"), "{error}");
 
     // Merged before the read, as catapp#78 was: the request stays, and says so.
-    ok(&db, "author", &["merge", "RAL-3", "--commit", COMMIT]);
+    ok(
+        &db,
+        "author",
+        &["merge", "RAL-3", "--commit", COMMIT, "--ci-wait", "0"],
+    );
     let shown = ok(&db, "author", &["show", "RAL-3"]);
     assert_eq!(
         shown["detail"]["requested_reads"][0]["merged_before_read"],
@@ -1659,7 +1711,11 @@ fn the_digest_says_at_once_when_a_merge_left_the_base_red() {
         &["submit", "RAL-3", "--team", "rally", "--evidence", EVIDENCE],
     );
     let head = submitted["recorded"].as_u64().unwrap();
-    ok(&db, "author", &["merge", "RAL-3", "--commit", COMMIT]);
+    ok(
+        &db,
+        "author",
+        &["merge", "RAL-3", "--commit", COMMIT, "--ci-wait", "0"],
+    );
 
     // A gh that says COMMIT was a pull request's head, landed as OTHER_COMMIT, whose push run failed.
     let bin = db.dir.path().join("bin");
