@@ -100,12 +100,13 @@ rally rebased RAL-170 --head <full sha> --checkout ~/src/rally-wt/x --base main
 - **What it can't see, said in every answer (`caveat`):** hunks are compared in order without
   line numbers, so a hunk moved, unchanged, to another place in its file reads as the same change.
 - **The verdict:** `same change` only when every file's changed lines are identical. Otherwise
-  `changed`, with each file that differs and its first differing hunk as it is in each. `can't tell`
+  `changed`, with each file that differs and its first differing hunk as it is in each, shown from
+  the first changed line where they part (`from_changed_line`), since a new file is one long hunk. `can't tell`
   when it can't be compared: a commit missing, GitHub's compare cut short (over 250 commits or 300
   files), a file whose patch GitHub won't show, or a verified commit with no change against main (one
   already merged). It never says `same change` then.
-- **Conflict resolutions, said separately:** every merge into the head since the verified commit is
-  remerged (`git show --remerge-diff`), and any that differs from the merge git would have made, a
+- **Conflict resolutions, said separately:** every merge the head made since the verified commit (on its
+  first-parent line, so not the merges main brought with it) is remerged (`git show --remerge-diff`), and any that differs from the merge git would have made, a
   conflict resolved or a change made in the merge itself, is named with its files. Nobody read that
   change, whatever the verdict.
 - **Local git first:** if the checkout has the verified commit, the head and main's tip (`git fetch`
