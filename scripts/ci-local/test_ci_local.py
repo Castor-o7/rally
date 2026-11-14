@@ -240,6 +240,57 @@ class RunLockTests(unittest.TestCase):
             pass
 
 
+class TargetLockTests(unittest.TestCase):
+    """Two commits' runs of one job never share its target directory at once (RAL-144)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_root = ci_local.ROOT
+        ci_local.ROOT = Path(self.tmp.name)
+
+    def tearDown(self):
+        ci_local.ROOT = self.old_root
+        self.tmp.cleanup()
+
+    def test_another_commit_s_run_of_the_job_waits_for_the_target_directory(self):
+        stop = threading.Event()
+        stop.set()      # don't wait: report at once that it's held
+        with ci_local.RunLock("rally", "a" * 40, "check"), \
+                ci_local.TargetLock("rally", "check") as first:
+            job = subprocess.Popen(["sleep", "30"], pass_fds=(first.fd,))
+        # The runner's copy is closed; the first commit's job still holds the directory.
+        try:
+            # Another commit has its own run lock, but not the directory.
+            with ci_local.RunLock("rally", "b" * 40, "check", stop):
+                with self.assertRaises(InterruptedError):
+                    with ci_local.TargetLock("rally", "check", stop):
+                        pass
+            # Another job, or another repository, builds somewhere else and isn't held up.
+            with ci_local.TargetLock("rally", "dependency-audit", stop):
+                pass
+            with ci_local.TargetLock("muster", "check", stop):
+                pass
+        finally:
+            job.kill()
+            job.wait()
+        with ci_local.TargetLock("rally", "check", stop):
+            pass
+
+    def test_the_lock_is_the_one_the_shared_directory_needs(self):
+        # One lock per directory `job_env` hands out, whatever the commit.
+        job = ci_local.Job(name="check", run="x")
+        dirs = {ci_local.job_env("rally", job, Path("/t"), base={}, sha=sha)["CARGO_TARGET_DIR"]
+                for sha in ("a" * 40, "b" * 40)}
+        self.assertEqual(len(dirs), 1)
+        self.assertEqual(ci_local.TargetLock("rally", "check").path.name, "target-rally-check.lock")
+
+    def test_a_job_is_told_the_commit_under_test(self):
+        job = ci_local.Job(name="check", run="x")
+        env = ci_local.job_env("rally", job, Path("/t"), base={}, sha="c" * 40)
+        self.assertEqual(env["CI_LOCAL_SHA"], "c" * 40)
+        self.assertNotIn("CI_LOCAL_SHA", ci_local.job_env("rally", job, Path("/t"), base={}))
+
+
 class PredatesTests(unittest.TestCase):
     """A branch from before local CI gets nothing; one that drops the config is still checked."""
 
