@@ -1487,3 +1487,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   it with `rally::script::write`, which writes through a child process (`sh`, `cat`, `chmod 755`) so the test
   process never holds the file open for writing; no write-then-chmod-755 of a script is left in `src/` or
   `tests/`; with a test that writes and runs a script 200 times beside four forking threads and is never busy.
+- [ ] **RAL-191: The watchman's brief lists the jobs in flight.** From the DiscoSim issues log, 1.73 ("the
+  watchman's handoff names every job in flight, so a restart can tell what died"), and the watchman
+  (2026-11-14). Done when: `rally brief --watchman` has an `in_flight` section, read on this machine and
+  read-only: for each project's `stalls.locks` in the projects list, each held lock with its holder's pid,
+  state, command and working directory (observed) and the owner its file names (declared), free slots counted,
+  and each fair pool's queue by owner (RAL-188), with a one-line summary; an unreadable projects list, no
+  project naming a lock, an unreadable lock or an unseen queue is named in `blind`, never shown as nothing
+  running; with unit tests and a CLI test with real `flock` holders (docs/brief.md).

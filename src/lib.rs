@@ -36,6 +36,7 @@ pub mod evidence;
 pub mod gate;
 pub mod gate_check;
 pub mod gate_log;
+pub mod in_flight;
 pub mod inbox;
 pub mod init;
 pub mod ledger;

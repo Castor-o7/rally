@@ -36,6 +36,16 @@ rally's projects, with every list bounded and every note cut short (well under 2
    `reads_short` says so with both numbers. When this CLI is ahead of the service, a hint says a build looks staged
    and waiting on a restart: a hint, not a fact. All of it is observed from its own source. Nothing reads the lamplighter's rollout files. It needs `gh`
    signed in, as the digest does, and says so when a read fails.
+10. **In flight** (RAL-191): the jobs a closed window would end (issues log 1.73, when every session's background
+   jobs ended with the shell windows and nothing said what had been running). For each project's `stalls.locks`
+   in the projects list beside the pairing, every held lock: its holder's pid, state, command line and working
+   directory, from `/proc` (observed), and the owner its lock file names (declared, as `dsm-heavy` writes it).
+   Each fair pool's queue comes too, with holders and waiters by owner (RAL-188's reader, see docs/stalls.md).
+   Free slots are counted, not listed, and a `summary` says "3 locks held, 1 job waiting for a slot". It's read
+   on this machine, by the CLI, wherever the service is, since that's where the jobs run. Read-only. What it
+   can't read is in `blind`: an unreadable projects list, no project naming a lock, a lock that can't be read, a
+   queue that can't be seen. It never reads as "nothing running". A job that holds no lock isn't seen: a gate or
+   probe run outside `dsm-heavy` or a project's locks won't show.
 
 What the ledger doesn't hold is said, not guessed at: what's deployed, a batch not recorded, and whether a gate
 process is still running (an open batch past its time is a prompt to look, not a finding).
