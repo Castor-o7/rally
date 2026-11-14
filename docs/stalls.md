@@ -106,6 +106,36 @@ waiting on something legitimate, such as the network, looks the same. Rally stop
 been agreed with the operator, so `--hung-after` has no default, and without it nothing is sampled. CPU time and
 start times are the kernel's (`/proc/<pid>/stat`, observed). Linux only.
 
+## One command line, from the projects list (RAL-164)
+
+`rally stalls` and `rally wake` read the projects list beside the pairing (`projects.json`) when not given
+`--projects`, as `rally brief`, `rally digest` and `rally next` do, and the built-in list otherwise. A project
+entry may say what stalls checks for it, as the file's keeper declares it:
+
+```json
+{"prefix": "DSM", "repo": "Castor-o7/DiscoSim", ...,
+ "stalls": {"locks": ["/tmp/discosim-heavy*.lock"], "hung_after": "5m"}}
+```
+
+With a rally open and no `--lock` given, each of the rally's projects' `stalls.locks` is read, with its own
+`hung_after` (sampled over `--cpu-sample`, 5 s by default). Flags still override: `--lock` and `--hung-after` given
+on the command line are used instead, for every lock. The check-in, `--quiet-after`, stays a flag or
+`RALLY_WAKE_QUIET_AFTER`, since it's the muster's window, not a project's. `--prompts-only` prints nothing at all
+when there's nothing to ask (no prompt, no every-team-waiting, no error), and succeeds either way, so the watchman's
+cron line can be:
+
+```bash
+RALLY_WAKE_QUIET_AFTER=30m rally stalls --prompts-only
+```
+
+For DiscoSim the watchman set 5m: a parse-error hang shows inside a minute and holds near 0% CPU, and no honest
+heavy job sits under 2% of a CPU for five minutes while holding a slot (a job waiting for a slot holds none).
+
+**The projects list tolerates fields it doesn't know** (RAL-164). The file is shared by the CLI, the digest loop
+and the viewer, so a reader from this build on leaves out a field it doesn't know, saying so on standard error,
+rather than refusing the whole file. Readers from before this build still refuse it: add a new field, such as
+`stalls` or `gate`, only once every reader on the machine runs a build that knows it.
+
 ## A watchman's digest that stopped (RAL-87)
 
 On 2026-11-06 the watchman's `rally digest --every 30s` exited on a 429 and nothing noticed (issues log §2.7).

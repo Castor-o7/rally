@@ -4063,3 +4063,97 @@ fn a_lock_holder_doing_almost_nothing_is_flagged_as_possibly_hung() {
     );
     assert_eq!(row["kind"], "observed");
 }
+
+/// RAL-164: with no lock flags, `rally stalls` reads each of the open rally's projects' own
+/// `stalls` from the projects list beside the pairing; a field it doesn't know is warned about,
+/// not fatal; and `--prompts-only` prints nothing when there's nothing to ask.
+#[cfg(target_os = "linux")]
+#[test]
+fn stalls_take_a_projects_own_locks_and_window_and_can_say_nothing() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let slots = service.dir.path().join("slots");
+    std::fs::create_dir_all(&slots).unwrap();
+    let held = slots.join("heavy.1.lock");
+    std::fs::write(&held, "").unwrap();
+    let projects = json!([{"name": "DiscoSim", "prefix": "DSM", "repo": "o/DiscoSim",
+        "path": "r.md", "tick_meaning": "done", "a_field_from_the_future": true,
+        "stalls": {"locks": [slots.join("heavy.*.lock").display().to_string()],
+                   "hung_after": "1s"}}]);
+    std::fs::write(
+        service.dir.path().join("client/projects.json"),
+        projects.to_string(),
+    )
+    .unwrap();
+    let stalls = |extra: &[&str]| {
+        rally()
+            .arg("--config")
+            .arg(&config)
+            .args(["--as", "watch"])
+            .env("RALLY_ROSTER_FROM", "no-such-shim-for-tests")
+            .arg("stalls")
+            .args(["--cpu-sample", "1s"])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let opened = rally()
+        .arg("--config")
+        .arg(&config)
+        .args([
+            "--as",
+            "watch",
+            "open-rally",
+            "--name",
+            "x",
+            "--project",
+            "DSM",
+        ])
+        .output()
+        .unwrap();
+    assert!(opened.status.success());
+    // Nothing held: --prompts-only prints nothing, and succeeds.
+    let quiet = stalls(&["--prompts-only"]);
+    assert!(
+        quiet.status.success(),
+        "{}",
+        String::from_utf8_lossy(&quiet.stderr)
+    );
+    assert!(
+        quiet.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&quiet.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&quiet.stderr).contains("`a_field_from_the_future`"),
+        "the unknown field is said: {}",
+        String::from_utf8_lossy(&quiet.stderr)
+    );
+    // A slot held by something doing nothing: flagged from the project's own config, no flags.
+    let mut holder = Command::new("flock")
+        .arg(&held)
+        .args(["sleep", "60"])
+        .spawn()
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    let out: Value = loop {
+        let out = stalls(&["--prompts-only"]);
+        assert!(out.status.success());
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        if text.contains("possibly_hung_lock_holder") {
+            break serde_json::from_str(&text).unwrap();
+        }
+        assert!(Instant::now() < until, "not flagged within 10 s: {text}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let _ = holder.kill();
+    let _ = holder.wait();
+    assert!(
+        out["prompts"]
+            .to_string()
+            .contains("possibly hung: sleep 60"),
+        "{out}"
+    );
+}
