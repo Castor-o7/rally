@@ -28,8 +28,26 @@ impl Ledger {
     }
 }
 
+/// A folder holding a stand-in `gh` that answers every call with an empty list, put first on the
+/// `PATH` of the commands these tests run, so that nothing here reads GitHub (RAL-171: `rally
+/// merge` reads the merged commit's CI through `gh`). A test that wants other answers sets its own.
+fn quiet_gh() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let gh = dir.path().join("gh");
+        std::fs::write(&gh, "#!/bin/sh\necho '[]'\n").unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        dir
+    })
+    .path()
+}
+
 fn rally(db: &Ledger, name: &str, args: &[&str]) -> Output {
+    let path = std::env::var("PATH").unwrap_or_default();
     Command::new(env!("CARGO_BIN_EXE_rally"))
+        .env("PATH", format!("{}:{path}", quiet_gh().display()))
         .arg("--db")
         .arg(&db.db.url)
         .arg("--head-file")
@@ -487,6 +505,74 @@ fn the_submitter_cannot_verify_but_someone_else_can() {
     );
     let all = ok(&db, "reader", &["show"]);
     assert_eq!(all["stories"]["RAL-3"]["state"], "verified");
+}
+
+/// RAL-171: `rally merge` says, beside its record, the conditions in force that name the story,
+/// and what the merged commit's CI says, observed and recorded nowhere; it blocks nothing.
+#[test]
+fn a_merge_says_the_conditions_naming_its_story_and_its_ci() {
+    let db = Ledger::new();
+    ok(&db, "author", &["ready", "RAL-3"]);
+    ok(&db, "author", &["claim", "RAL-3", "--team", "rally"]);
+    let evidence = format!("Castor-o7/rally@{COMMIT}");
+    ok(
+        &db,
+        "author",
+        &[
+            "submit",
+            "RAL-3",
+            "--team",
+            "rally",
+            "--evidence",
+            &evidence,
+        ],
+    );
+    ok(
+        &db,
+        "mellow-weevil",
+        &[
+            "condition",
+            "--team",
+            "watchman",
+            "--story",
+            "RAL-3",
+            "--note",
+            "merges next",
+        ],
+    );
+    ok(
+        &db,
+        "mellow-weevil",
+        &[
+            "condition",
+            "--team",
+            "watchman",
+            "--story",
+            "RAL-9",
+            "--note",
+            "not this one",
+        ],
+    );
+    let merged = ok(&db, "author", &["merge", "RAL-3", "--commit", COMMIT]);
+    assert!(merged["recorded"].is_u64(), "{merged}");
+    let conditions = merged["conditions"].as_array().unwrap();
+    assert_eq!(conditions.len(), 1, "{merged}");
+    assert!(
+        conditions[0]["said"]
+            .as_str()
+            .unwrap()
+            .starts_with("a condition in force names this story: merges next (declared, #"),
+        "{merged}"
+    );
+    // The stand-in gh has no runs for it: said, observed, and not recorded.
+    assert_eq!(merged["ci"]["state"], "none", "{merged}");
+    assert_eq!(merged["ci"]["kind"], "observed");
+    assert_eq!(merged["ci"]["recorded"], false);
+    // A story with no evidence says why its CI wasn't read; the merge stands either way.
+    ok(&db, "author", &["ready", "RAL-4"]);
+    let bare = ok(&db, "author", &["merge", "RAL-4", "--commit", OTHER_COMMIT]);
+    assert_eq!(bare["ci"]["state"], "unread", "{bare}");
+    assert!(bare["conditions"].as_array().unwrap().is_empty());
 }
 
 #[test]

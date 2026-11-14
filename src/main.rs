@@ -1396,6 +1396,18 @@ fn session_start(
                 }
                 None => Vec::new(),
             };
+            // RAL-171: conditions in force naming the team's stories, and its verified pull
+            // requests fallen behind their base, each in what's left of the deadline.
+            let left = rally::session::DEADLINE.saturating_sub(started.elapsed());
+            let mut about_stories = rally::session::fetch_standings(&pairing, left)
+                .map(|standings| rally::session::condition_lines(team, &stories, &standings))
+                .unwrap_or_default();
+            let left = rally::session::DEADLINE.saturating_sub(started.elapsed());
+            about_stories.extend(behind_lines(team, &stories, left));
+            let extra = rally::session::Extra {
+                resume,
+                about_stories,
+            };
             println!(
                 "{}",
                 rally::session::render_in(
@@ -1405,11 +1417,57 @@ fn session_start(
                     harness,
                     context.as_ref(),
                     inbox.as_ref().map(|inbox| (inbox, now)),
-                    &resume,
+                    &extra,
                 )
             )
         }
         Err(error) => quiet(&escape_for_terminal(&error)),
+    }
+}
+
+/// The team's verified, unmerged stories whose open pull request has fallen behind its base
+/// (RAL-171), read through `gh` as the digest's RAL-105 section reads it, within `limit`: past
+/// it, one line says it couldn't be checked in time, and nothing waits on `gh` longer.
+fn behind_lines(
+    team: &str,
+    stories: &serde_json::Map<String, Value>,
+    limit: std::time::Duration,
+) -> Vec<String> {
+    let own: serde_json::Map<String, Value> = stories
+        .iter()
+        .filter(|(_, row)| row["team"].as_str() == Some(team))
+        .filter(|(_, row)| row["state"] == "verified" && row["merged"] != true)
+        .map(|(id, row)| (id.clone(), row.clone()))
+        .collect();
+    if own.is_empty() {
+        return Vec::new();
+    }
+    if limit.is_zero() {
+        return vec![
+            "- Whether your verified pull requests are behind their base couldn't be \
+                     checked in time (rally digest says it)"
+                .into(),
+        ];
+    }
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let stories = json!({ "stories": own });
+        let _ = send.send(rally::digest::behind_base(
+            &stories,
+            &web::open_prs,
+            &web::behind_by,
+        ));
+    });
+    match receive.recv_timeout(limit) {
+        Ok(lines) => lines
+            .into_iter()
+            .map(|line| line.replace(" [observed]", " (observed, through gh)"))
+            .collect(),
+        Err(_) => vec![
+            "- Whether your verified pull requests are behind their base couldn't be \
+                        checked in time (rally digest says it)"
+                .into(),
+        ],
     }
 }
 
@@ -5252,8 +5310,15 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
         }),
         _ => body,
     };
-    let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, true)?;
-    match backend {
+    let config = config_path(cli.config)?;
+    let merged = (body["change"] == "merge").then(|| {
+        (
+            body["story"].as_str().unwrap_or_default().to_owned(),
+            body["commit"].as_str().unwrap_or_default().to_owned(),
+        )
+    });
+    let backend = Backend::choose(location.as_ref(), &config, true)?;
+    let mut out = match backend {
         Backend::File(store) => {
             let credential = cli
                 .credential
@@ -5264,14 +5329,68 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             };
             let record = Record::new(kind, source, now_ms()?, body)?;
             let seq = store.append(&record)?;
-            Ok(json!({"recorded": seq}).to_string())
+            json!({"recorded": seq})
         }
         Backend::Service(pairing) => {
             let request = json!({"kind": kind, "declared_name": name, "body": body}).to_string();
             let reply = client::request(&pairing, "POST", "/v1/records", Some(&request), &[])?;
-            Ok(reply_value(&reply)?.to_string())
+            reply_value(&reply)?
         }
+    };
+    // RAL-171: at a merge, the conditions in force that name the story, and what the merged
+    // commit's CI says, read now and printed, recorded nowhere.
+    if let Some((story, commit)) = merged {
+        merge_notes(&mut out, location.as_ref(), &config, &story, &commit);
     }
+    Ok(out.to_string())
+}
+
+/// What `rally merge` says beside its record (RAL-171): the conditions in force naming the story,
+/// and the merged commit's CI through `gh`, observed. Each says so when it can't be read; neither
+/// changes the merge.
+fn merge_notes(
+    out: &mut Value,
+    location: Option<&Location>,
+    config: &Path,
+    story: &str,
+    commit: &str,
+) {
+    let backend = Backend::choose(location, config, false);
+    let read = |path: &str, local: fn(&rally::ledger::Ledger, &Page) -> Result<Value, String>| {
+        backend.as_ref().map_err(|e| e.to_string()).and_then(|b| {
+            b.read_value(path, None, &Page::default(), local)
+                .map_err(|e| e.to_string())
+        })
+    };
+    out["conditions"] = match read("/v1/standings", views::standings) {
+        Ok(standings) => json!(rally::merge_notes::conditions_naming(&standings, story)),
+        Err(error) => json!({"unread": error}),
+    };
+    let detail = backend.as_ref().map_err(|e| e.to_string()).and_then(|b| {
+        let id = story.to_owned();
+        b.read_value(
+            &format!("/v1/stories/{}", encode(story)),
+            None,
+            &Page::default(),
+            move |ledger, page| views::stories(ledger, Some(&id), page),
+        )
+        .map_err(|e| e.to_string())
+    });
+    let repo = detail.and_then(|detail| {
+        // The newest submission's evidence names the repository the commit is in.
+        let evidence = detail["detail"]["history"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .rev()
+            .find(|entry| entry["change"]["change"] == "submit")
+            .and_then(|entry| entry["change"]["evidence"].as_str())
+            .unwrap_or_default();
+        rally::evidence::parse(evidence)
+            .map(|(repo, _)| repo)
+            .map_err(|_| "the story's evidence names no repository".to_owned())
+    });
+    out["ci"] = rally::merge_notes::ci_note(repo.and_then(|repo| web::ci_state(&repo, commit)));
 }
 
 /// A leading `~/` as the home folder, since a shell doesn't expand it after `=`.
