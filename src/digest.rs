@@ -672,6 +672,8 @@ pub struct Reads<'a> {
     pub behind: &'a [String],
     /// The handover rows the last digest sent listed (RAL-148), from [`Kept::handover_told`].
     pub handover_told: Option<&'a [String]>,
+    /// `/v1/inbox` (RAL-146), or `None` from a service older than it.
+    pub inbox: Option<&'a Value>,
 }
 
 /// RAL-31 for a merge at `merged`: compare what landed with the commits verified (RAL-67: the
@@ -946,6 +948,43 @@ pub fn render(
         always: false,
         heading: None,
     });
+
+    // RAL-146: the operator's inbox, as it stands: how much is open, and each urgent item.
+    if let Some(inbox) = reads.inbox {
+        let open = inbox["open"].as_u64().unwrap_or(0);
+        let urgent: Vec<String> = inbox["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|item| item["urgent"] == true)
+            .map(|item| {
+                let ask = item["ask"]
+                    .as_str()
+                    .map(|ask| format!("; asks: {}", clean(ask)))
+                    .unwrap_or_default();
+                format!(
+                    "- #{} {}: \"{}\" [{}], {}{ask}",
+                    item["seq"].as_u64().unwrap_or(0),
+                    clean(item["raised_by"]["team"].as_str().unwrap_or("?")),
+                    clean(item["note"].as_str().unwrap_or("")),
+                    clean(item["kind"].as_str().unwrap_or("declared")),
+                    age(item["at_ms"].as_i64().unwrap_or(now_ms), now_ms)
+                )
+            })
+            .collect();
+        if open > 0 {
+            let urgent_count = urgent.len();
+            sections.push(Section {
+                title: format!(
+                    "Operator inbox: {open} open, {urgent_count} urgent; the urgent ones"
+                ),
+                lines: urgent,
+                more: "rally inbox",
+                always: true,
+                heading: None,
+            });
+        }
+    }
 
     let shown = ["merge", "block", "unblock", "team_state"];
     let other = theirs
@@ -1454,6 +1493,7 @@ mod tests {
             ci: &[],
             behind: &lines,
             handover_told: None,
+            inbox: None,
         };
         let digest = render(0, 0, &[], &watch(), &reads, 0);
         assert!(
@@ -1466,6 +1506,51 @@ mod tests {
             ..reads
         };
         assert!(!render(0, 0, &[], &watch(), &quiet, 0).contains("behind their base"));
+    }
+
+    /// RAL-146: the digest gives the operator's inbox as it stands, its count and each urgent
+    /// item, and nothing when it's empty or the service is too old to say.
+    #[test]
+    fn a_digest_shows_the_operators_inbox_and_its_urgent_items() {
+        let (waiting, empty) = (json!({"waiting": []}), json!({}));
+        let landed = |_: &str, _: &str| -> Result<Option<(String, String)>, String> { Ok(None) };
+        let inbox = json!({"open": 3, "urgent": 1, "items": [
+            {"seq": 40, "urgent": true, "kind": "observed", "note": "Rally's GitHub token was refused",
+             "ask": "install a new token", "raised_by": {"team": "rally"}, "at_ms": 0},
+            {"seq": 41, "urgent": false, "kind": "declared", "note": "a notice",
+             "raised_by": {"team": "ral"}, "at_ms": 0},
+        ]});
+        let reads = Reads {
+            waiting: &waiting,
+            handover: &empty,
+            stories: &empty,
+            landed: &landed,
+            ci: &[],
+            behind: &[],
+            handover_told: None,
+            inbox: Some(&inbox),
+        };
+        let digest = render(0, 0, &[], &watch(), &reads, 0);
+        assert!(
+            digest.contains(
+                "Operator inbox: 3 open, 1 urgent; the urgent ones (1)\n- #40 rally: \
+                 \"Rally's GitHub token was refused\" [observed]"
+            ),
+            "{digest}"
+        );
+        assert!(digest.contains("asks: install a new token"), "{digest}");
+        assert!(!digest.contains("a notice"), "{digest}");
+        let none = json!({"open": 0, "urgent": 0, "items": []});
+        let quiet = Reads {
+            inbox: Some(&none),
+            ..reads
+        };
+        assert!(!render(0, 0, &[], &watch(), &quiet, 0).contains("Operator inbox"));
+        let older = Reads {
+            inbox: None,
+            ..reads
+        };
+        assert!(!render(0, 0, &[], &watch(), &older, 0).contains("Operator inbox"));
     }
 
     #[test]
@@ -1484,6 +1569,7 @@ mod tests {
             ci: &lines,
             behind: &[],
             handover_told: None,
+            inbox: None,
         };
         let digest = render(0, 0, &[], &watch(), &reads, 0);
         assert!(
@@ -1694,6 +1780,7 @@ mod tests {
             ci: &[],
             behind: &[],
             handover_told: None,
+            inbox: None,
         };
         render(0, to, recs, &watch(), &reads, 1_000_000)
     }
@@ -1724,6 +1811,7 @@ mod tests {
                 ci: &[],
                 behind: &[],
                 handover_told: told,
+                inbox: None,
             };
             render(0, 20, &[claim(15, "a")], &watch(), &reads, 1_000_000)
         };
@@ -1974,6 +2062,7 @@ mod tests {
             ci: &[],
             behind: &[],
             handover_told: None,
+            inbox: None,
         };
         let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
         assert!(
@@ -1994,6 +2083,7 @@ mod tests {
             ci: &[],
             behind: &[],
             handover_told: None,
+            inbox: None,
         };
         let digest = render(0, 1, &[claim(1, "a")], &watch(), &reads, 0);
         assert!(digest.contains("Waiting for you (0)"), "{digest}");

@@ -134,6 +134,16 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
         }
     }
     let (questions, questions_total) = bounded(questions);
+    // The operator's inbox (RAL-146): how much is open, and the urgent items in full.
+    let inbox = crate::inbox::inbox(ledger, false, now_ms);
+    let urgent: Vec<Value> = inbox["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|item| item["urgent"] == true)
+        .cloned()
+        .collect();
+    let (urgent, urgent_total) = bounded(urgent);
 
     // Holds, conditions and grants in force, each as the record its writer declared, never as
     // the brief's own word (RAL-64).
@@ -210,6 +220,10 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
             "questions": questions, "questions_total": questions_total,
             "away": blockers["operator_away"], "away_active": blockers["operator_away_active"],
             "unanswered_shelves": blockers["unanswered_shelves"],
+            "inbox": {
+                "open": inbox["open"], "urgent": urgent, "urgent_total": urgent_total,
+                "read_with": "rally inbox",
+            },
         },
         "handover": handover,
         "holds": holds, "holds_total": holds_total,
@@ -554,9 +568,22 @@ mod tests {
             "turbo",
             json!({"change": "block", "team": "muster", "on_story": "RAL-2", "note": "needs it"}),
         );
+        chain.push_as(
+            "turbo",
+            json!({"change": "operator_item", "item": "action", "urgent": true, "team": "rally",
+                   "note": "the token was refused", "holds_up": "service"}),
+        );
         let ledger = Ledger::replay(&chain.records).unwrap();
         // Records are stamped at 1_000, so everything is 4_000 old.
         let out = brief(&ledger, &chain.hashes, None, 5_000);
+
+        // RAL-146: the inbox counts the question and the item, and gives the urgent one in full.
+        assert_eq!(out["operator"]["inbox"]["open"], 2);
+        assert_eq!(out["operator"]["inbox"]["urgent_total"], 1);
+        assert_eq!(
+            out["operator"]["inbox"]["urgent"][0]["note"],
+            "the token was refused"
+        );
 
         assert_eq!(out["authority"], NO_AUTHORITY);
         assert_eq!(out["standings_note"], STANDINGS);

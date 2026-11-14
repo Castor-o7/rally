@@ -26,7 +26,7 @@
       <div>
         <p class="eyebrow">Muster ledger</p>
         <h1>Rally</h1>
-        <p class="muted">The ledger of the muster. Read-only.</p>
+        <p class="muted">The ledger of the muster. Read-only, but for ticking the operator's inbox.</p>
       </div>
     </div>
     <p id="freshness" class="muted" role="status">Loading…</p>
@@ -34,6 +34,11 @@
   <main id="project-page" hidden></main>
   <main id="past-page" hidden></main>
   <main id="overview">
+    <section id="inbox-section" aria-labelledby="inbox-title">
+      <h2 id="inbox-title">Operator inbox</h2>
+      <p class="muted">Everything waiting on the operator, urgent first, then oldest first. Tick an item off when it's done or seen.</p>
+      <div id="inbox" class="panel"></div>
+    </section>
     <section aria-labelledby="ledger-title">
       <h2 id="ledger-title">Rally status</h2>
       <div id="ledger" class="panel"></div>
