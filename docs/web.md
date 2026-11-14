@@ -1,6 +1,7 @@
 # The Rally viewer
 
-A read-only page showing the rally's status, each roadmap's progress, and each team's status and work.
+A page showing the rally's status, each roadmap's progress, and each team's status and work, read-only but for
+one thing: ticking off an item in the operator's inbox, at the top of the page ([inbox.md](inbox.md), RAL-146).
 It runs on your own machine, on a loopback address only.
 
 ## One command: `rally view` (RAL-82)

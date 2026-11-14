@@ -2960,3 +2960,112 @@ fn a_past_moment_matches_a_replay_to_it_and_shows_later_corrections_as_later() {
     let out = cli(&config, "someone", &["past", "0"]);
     assert!(!out.status.success());
 }
+
+/// RAL-146: the operator's inbox through the service: any team adds an item, `rally inbox` lists
+/// it with the open question to the operator, urgent first, and `rally inbox done` closes each as
+/// it should, at a terminal; a client can't file one as observed, and the reads need a token.
+#[test]
+fn the_operators_inbox_works_end_to_end_through_the_service() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let run = |name: &str, args: &[&str]| {
+        let output = cli(&config, name, args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    run(
+        "ral-team",
+        &[
+            "block",
+            "--team",
+            "ral",
+            "--on-team",
+            "operator",
+            "--note",
+            "may we?",
+        ],
+    );
+    run(
+        "ral-team",
+        &[
+            "inbox",
+            "add",
+            "--team",
+            "ral",
+            "--action",
+            "--urgent",
+            "--note",
+            "a sudo step",
+            "--ask",
+            "sudo systemctl restart rally",
+            "--story",
+            "RAL-146",
+        ],
+    );
+    let inbox = run("anyone", &["inbox"]);
+    assert_eq!(inbox["open"], 2, "{inbox}");
+    assert_eq!(inbox["urgent"], 1);
+    assert_eq!(inbox["items"][0]["note"], "a sudo step");
+    assert_eq!(inbox["items"][0]["holds_up"]["story"], "RAL-146");
+    assert_eq!(inbox["items"][0]["raised_by"]["credential"], "a1");
+    assert_eq!(inbox["items"][1]["from"], "question");
+    let item = inbox["items"][0]["seq"].as_u64().unwrap().to_string();
+    let question = inbox["items"][1]["seq"].as_u64().unwrap().to_string();
+
+    // Secret-looking text is refused before it's written.
+    let leaked = cli(
+        &config,
+        "ral-team",
+        &[
+            "inbox",
+            "add",
+            "--team",
+            "ral",
+            "--notice",
+            "--note",
+            &format!("the token is ghp_{}", "a".repeat(36)),
+        ],
+    );
+    assert!(!leaked.status.success());
+    // Only Rally files an item as observed.
+    let observed = write(
+        &pairing,
+        "x",
+        "observed",
+        json!({"change": "operator_item", "item": "action", "team": "ral", "note": "x"}),
+    );
+    assert_eq!(observed.status, 403);
+    // The reads need a token, as every route does.
+    let mut wrong = service.wrong_token();
+    wrong.token = "not-a-real-token".into();
+    assert_eq!(call(&wrong, "GET", "/v1/inbox", None).status, 401);
+    assert_eq!(call(&wrong, "GET", "/v1/inbox/all", None).status, 401);
+
+    run("josh", &["inbox", "done", &item, "--note", "restarted"]);
+    run("josh", &["inbox", "done", &question, "--note", "yes"]);
+    let refused = cli(&config, "josh", &["inbox", "done", &item]);
+    assert!(!refused.status.success(), "closed already");
+    assert_eq!(run("anyone", &["inbox"])["open"], 0);
+    let all = run("anyone", &["inbox", "--all"]);
+    let closed = all["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["seq"] == item.parse::<u64>().unwrap())
+        .unwrap();
+    assert_eq!(closed["closed"]["via"], "terminal", "{all}");
+    assert_eq!(closed["closed"]["by"], "josh");
+    let answered = all["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["seq"] == question.parse::<u64>().unwrap())
+        .unwrap();
+    assert_eq!(answered["closed"]["answer"]["from"], "direct", "{all}");
+}

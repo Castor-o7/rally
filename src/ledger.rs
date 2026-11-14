@@ -375,6 +375,87 @@ pub enum Change {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         backing: Vec<String>,
     },
+    /// Someone raises an item for the operator's inbox (RAL-146): an action only the operator can
+    /// take, or a notice the operator should know of, in one line, with what it holds up and the
+    /// exact command or decision asked for, if there is one. Any team may raise one, as its
+    /// declared word; Rally files its own as observed. It stays open until it's closed.
+    OperatorItem {
+        item: ItemKind,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        urgent: bool,
+        /// The team that raised it.
+        team: String,
+        /// What's needed, in one line.
+        note: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        holds_up: Option<HoldsUp>,
+        /// The exact command or decision asked of the operator, in one line.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ask: Option<String>,
+    },
+    /// The operator closes an open operator item, ticking it off (RAL-146): an action done, or a
+    /// notice seen. Declared, and says where it was ticked, in a viewer or at a terminal; the
+    /// record's credential names the machine. Rally closes one it filed itself, observed, once
+    /// what it observed has passed.
+    CloseItem {
+        item: u64,
+        note: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        via: Option<CloseVia>,
+    },
+}
+
+/// Where the operator ticked an item off (RAL-146).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseVia {
+    /// The tick box in a Rally viewer.
+    Viewer,
+    /// `rally inbox done` at a terminal.
+    Terminal,
+}
+
+/// What an item in the operator's inbox is (RAL-146).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    /// Something only the operator can do: a token, a sudo step, a merge permission, a purchase.
+    Action,
+    /// Something the operator should know and needn't act on.
+    Notice,
+}
+
+/// What an operator item holds up (RAL-146): a story, a team, or the service itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum HoldsUp {
+    Story(String),
+    Team(String),
+    Service,
+}
+
+/// An item in the operator's inbox, as it was raised (RAL-146), and its close if it has one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OperatorItem {
+    pub seq: u64,
+    pub kind: Kind,
+    pub source: Source,
+    pub at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backfilled: Option<Backfill>,
+    pub item: ItemKind,
+    pub urgent: bool,
+    pub team: String,
+    pub note: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holds_up: Option<HoldsUp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ask: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closed: Option<Closure>,
+    /// Where it was ticked off, when the operator closed it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closed_via: Option<CloseVia>,
 }
 
 /// How serious a rally's event is (RAL-104).
@@ -403,6 +484,8 @@ impl Change {
             | Self::RallySession { .. }
             | Self::RallyProject { .. }
             | Self::Event { .. }
+            | Self::OperatorItem { .. }
+            | Self::CloseItem { .. }
             | Self::Shelve { .. }
             | Self::OperatorAway { .. }
             | Self::Designate { .. }
@@ -995,6 +1078,8 @@ pub enum LedgerError {
     InvalidBlockerTarget(u64),
     /// An `end_standing` names a record that isn't a hold, condition or grant in force (RAL-64).
     InvalidStandingTarget(u64),
+    /// A close of something that isn't an open operator item (RAL-146).
+    InvalidItemTarget(u64),
     /// A rally is opened while another is open, which names the open one's record (RAL-76).
     RallyAlreadyOpen(u64),
     /// A rally is closed while none is open (RAL-76).
@@ -1170,6 +1255,9 @@ impl fmt::Display for LedgerError {
                 )
             }
             Self::InvalidBlockerTarget(seq) => write!(f, "record {seq} isn't an open blocker"),
+            Self::InvalidItemTarget(seq) => {
+                write!(f, "record {seq} isn't an open item in the operator's inbox")
+            }
             Self::InvalidStandingTarget(seq) => {
                 write!(f, "record {seq} isn't a hold, condition or grant in force")
             }
@@ -1343,6 +1431,8 @@ pub struct Ledger {
     aways: Vec<Away>,
     /// Every rally, oldest first; only the last can be open (RAL-76).
     rallies: Vec<Rally>,
+    /// Every operator item by its record number, open and closed (RAL-146).
+    operator_items: BTreeMap<u64, OperatorItem>,
 }
 
 /// `text` with its first letter in capitals, for the start of a sentence.
@@ -1807,6 +1897,11 @@ impl Ledger {
         &self.standings
     }
 
+    /// Every operator item by its record number, open and closed (RAL-146).
+    pub fn operator_items(&self) -> &BTreeMap<u64, OperatorItem> {
+        &self.operator_items
+    }
+
     /// Every rally, oldest first (RAL-76).
     pub fn rallies(&self) -> &[Rally] {
         &self.rallies
@@ -1853,6 +1948,11 @@ impl Ledger {
                 if let Some(open) = self.blockers.get(&blocker) {
                     trial.blockers.insert(blocker, open.clone());
                 }
+            } else if let Change::CloseItem { item, .. } = change {
+                // Closing an operator item depends only on that item.
+                if let Some(open) = self.operator_items.get(&item) {
+                    trial.operator_items.insert(item, open.clone());
+                }
             } else if let Change::EndStanding { standing, .. } = change {
                 // Ending a standing record depends only on that record.
                 if let Some(open) = self.standings.get(&standing) {
@@ -1860,7 +1960,10 @@ impl Ledger {
                 }
             } else if !matches!(
                 change,
-                Change::TeamState { .. } | Change::Block { .. } | Change::Standing { .. }
+                Change::TeamState { .. }
+                    | Change::Block { .. }
+                    | Change::Standing { .. }
+                    | Change::OperatorItem { .. }
             ) && let Some(story) = self.stories.get(change.story())
             {
                 trial
@@ -2225,6 +2328,39 @@ impl Ledger {
                 self.last_seq = seq;
                 return Ok(());
             }
+            Change::OperatorItem {
+                item,
+                urgent,
+                team,
+                note,
+                holds_up,
+                ask,
+            } => {
+                // A team's word, or Rally's own observation of a fault only the operator can fix.
+                if record.kind() != Kind::Observed {
+                    require_kind(record, Kind::Declared)?;
+                }
+                self.operator_items.insert(
+                    seq,
+                    OperatorItem {
+                        seq,
+                        kind: record.kind(),
+                        source: record.source().clone(),
+                        at_ms: record.at_ms(),
+                        backfilled: backfill,
+                        item,
+                        urgent,
+                        team,
+                        note,
+                        holds_up,
+                        ask,
+                        closed: None,
+                        closed_via: None,
+                    },
+                );
+                self.last_seq = seq;
+                return Ok(());
+            }
             Change::OpenRally {
                 name,
                 projects,
@@ -2365,6 +2501,35 @@ impl Ledger {
                     severity,
                     backing,
                 });
+                self.last_seq = seq;
+                return Ok(());
+            }
+            Change::CloseItem { item, note, via } => {
+                // Only Rally closes an item observed, and says nothing of a viewer or terminal.
+                if record.kind() == Kind::Observed {
+                    if via.is_some() {
+                        return Err(LedgerError::InvalidChange(
+                            "an item Rally closes itself isn't ticked anywhere".into(),
+                        ));
+                    }
+                } else {
+                    require_kind(record, Kind::Declared)?;
+                }
+                let open = self
+                    .operator_items
+                    .get_mut(&item)
+                    .filter(|open| open.closed.is_none())
+                    .ok_or(LedgerError::InvalidItemTarget(item))?;
+                open.closed = Some(Closure {
+                    seq,
+                    kind: record.kind(),
+                    source: record.source().clone(),
+                    at_ms: record.at_ms(),
+                    backfilled: backfill,
+                    note,
+                    answer: None,
+                });
+                open.closed_via = via;
                 self.last_seq = seq;
                 return Ok(());
             }
@@ -2655,6 +2820,8 @@ fn transition(
         | Change::RallySession { .. }
         | Change::RallyProject { .. }
         | Change::Event { .. }
+        | Change::OperatorItem { .. }
+        | Change::CloseItem { .. }
         | Change::Shelve { .. }
         | Change::OperatorAway { .. }
         | Change::Designate { .. }
@@ -3295,6 +3462,8 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
             | Change::RallySession { .. }
             | Change::RallyProject { .. }
             | Change::Event { .. }
+            | Change::OperatorItem { .. }
+            | Change::CloseItem { .. }
             | Change::Shelve { .. }
             | Change::OperatorAway { .. }
             | Change::Designate { .. }
@@ -3322,6 +3491,17 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
             && on.trim().is_empty()
         {
             return Err(LedgerError::EmptyField("on_team"));
+        }
+    }
+    if let Change::OperatorItem { holds_up, .. } = change {
+        match holds_up {
+            Some(HoldsUp::Story(story)) if !is_story_id(story) => {
+                return Err(LedgerError::InvalidStoryId(story.clone()));
+            }
+            Some(HoldsUp::Team(team)) if team.trim().is_empty() => {
+                return Err(LedgerError::EmptyField("holds_up"));
+            }
+            _ => {}
         }
     }
     if let Change::Standing {
@@ -3395,7 +3575,26 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
         | Change::Standing { team, note, .. } => &[("team", team), ("note", note)],
         Change::Unblock { note, .. }
         | Change::EndStanding { note, .. }
+        | Change::CloseItem { note, .. }
         | Change::CloseRally { note } => &[("note", note)],
+        Change::OperatorItem {
+            team, note, ask, ..
+        } => {
+            // One line each, so an item can't pass for more than one in the inbox.
+            let line = |text: &str| !text.chars().any(char::is_control);
+            if !line(note) {
+                return Err(LedgerError::ControlCharacter("note"));
+            }
+            if let Some(ask) = ask {
+                if ask.trim().is_empty() {
+                    return Err(LedgerError::EmptyField("ask"));
+                }
+                if !line(ask) {
+                    return Err(LedgerError::ControlCharacter("ask"));
+                }
+            }
+            &[("team", team), ("note", note)]
+        }
         Change::RallySession {
             session,
             remove,
@@ -3536,6 +3735,7 @@ fn own_team(change: &Change) -> Option<&str> {
         | Change::TeamState { team, .. }
         | Change::Block { team, .. }
         | Change::Standing { team, .. }
+        | Change::OperatorItem { team, .. }
         | Change::Annotate { team, .. }
         | Change::Submit { team, .. } => Some(team),
         Change::Correct { team, .. }
@@ -3612,9 +3812,23 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
         }
         Change::Unblock { note, .. }
         | Change::EndStanding { note, .. }
+        | Change::CloseItem { note, .. }
         | Change::CloseRally { note }
         | Change::RequestRead { note, .. }
         | Change::WithdrawRead { note, .. } => text.push(("note", note)),
+        Change::OperatorItem {
+            team,
+            note,
+            holds_up,
+            ask,
+            ..
+        } => {
+            text.extend([("team", team.as_str()), ("note", note)]);
+            text.extend(ask.as_deref().map(|ask| ("note", ask)));
+            if let Some(HoldsUp::Team(held)) = holds_up {
+                text.push(("team", held));
+            }
+        }
         Change::Event {
             headline, backing, ..
         } => {
@@ -4389,6 +4603,89 @@ mod tests {
         assert_eq!(
             ledger.check(3, &rec(Kind::Declared, end)),
             Err(LedgerError::InvalidStandingTarget(1))
+        );
+    }
+
+    /// A record Rally writes itself: observed, with no declared name.
+    fn by_rally_itself(body: serde_json::Value) -> Record {
+        let source = Source {
+            credential: "rally".into(),
+            declared_name: None,
+        };
+        Record::new(Kind::Observed, source, 1_000, body).unwrap()
+    }
+
+    /// RAL-146: any team raises an operator item; it's one line, names a real story if it names
+    /// one, takes no team called operator and nothing that looks like a secret, and is declared,
+    /// or observed when Rally files it.
+    #[test]
+    fn an_operator_item_is_raised_as_declared_and_checked() {
+        let item = json!({"change": "operator_item", "item": "action", "urgent": true,
+                          "team": "ral", "note": "rotate the token",
+                          "holds_up": {"story": "RAL-5"}, "ask": "sudo install ..."});
+        let mut ledger = Ledger::default();
+        ledger.apply(1, &team(item.clone())).unwrap();
+        let raised = &ledger.operator_items()[&1];
+        assert!(raised.urgent);
+        assert_eq!(raised.item, ItemKind::Action);
+        assert_eq!(raised.holds_up, Some(HoldsUp::Story("RAL-5".into())));
+        assert!(raised.closed.is_none());
+        // Rally's own observation is taken too; a verified item isn't.
+        let notice = json!({"change": "operator_item", "item": "notice", "team": "rally",
+                            "note": "the token expires in 6 days", "holds_up": "service"});
+        assert!(ledger.check(2, &by_rally_itself(notice.clone())).is_ok());
+        assert!(ledger.check(2, &verifier(notice)).is_err());
+        for body in [
+            json!({"change": "operator_item", "item": "action", "team": "ral", "note": "two\nlines"}),
+            json!({"change": "operator_item", "item": "action", "team": "ral", "note": "x",
+                   "ask": "a\nb"}),
+            json!({"change": "operator_item", "item": "action", "team": "ral", "note": "x",
+                   "ask": " "}),
+            json!({"change": "operator_item", "item": "action", "team": "ral", "note": " "}),
+            json!({"change": "operator_item", "item": "action", "team": "operator", "note": "x"}),
+            json!({"change": "operator_item", "item": "action", "team": "ral", "note": "x",
+                   "holds_up": {"story": "not a story"}}),
+            json!({"change": "operator_item", "item": "chore", "team": "ral", "note": "x"}),
+            json!({"change": "operator_item", "item": "action", "team": "ral",
+                   "note": format!("the new token is ghp_{}", "a".repeat(36))}),
+        ] {
+            assert!(ledger.check(2, &team(body.clone())).is_err(), "{body}");
+        }
+    }
+
+    /// RAL-146: the operator ticks an item off once, saying where; Rally closes one it filed,
+    /// observed, saying nowhere; and nothing else closes.
+    #[test]
+    fn an_operator_item_is_ticked_off_once() {
+        let item = json!({"change": "operator_item", "item": "notice", "team": "ral",
+                          "note": "fyi"});
+        let mut ledger = Ledger::default();
+        ledger.apply(1, &team(item.clone())).unwrap();
+        ledger.apply(2, &team(item)).unwrap();
+        let tick = json!({"change": "close_item", "item": 1, "note": "ticked in the viewer",
+                          "via": "viewer"});
+        ledger
+            .apply(3, &record(Kind::Declared, "operator", tick.clone()))
+            .unwrap();
+        let closed = &ledger.operator_items()[&1];
+        assert_eq!(closed.closed_via, Some(CloseVia::Viewer));
+        assert_eq!(closed.closed.as_ref().unwrap().source.credential, "a1");
+        assert_eq!(
+            ledger.check(4, &team(tick)),
+            Err(LedgerError::InvalidItemTarget(1)),
+            "only once"
+        );
+        let by_rally = json!({"change": "close_item", "item": 2, "note": "the check passed"});
+        assert!(ledger.check(4, &by_rally_itself(by_rally.clone())).is_ok());
+        let ticked_by_rally = json!({"change": "close_item", "item": 2, "note": "x",
+                                     "via": "terminal"});
+        assert!(ledger.check(4, &by_rally_itself(ticked_by_rally)).is_err());
+        assert!(ledger.check(4, &verifier(by_rally)).is_err());
+        // A blocker or a missing record isn't an item.
+        let elsewhere = json!({"change": "close_item", "item": 9, "note": "x"});
+        assert_eq!(
+            ledger.check(4, &team(elsewhere)),
+            Err(LedgerError::InvalidItemTarget(9))
         );
     }
 

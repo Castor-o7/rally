@@ -288,6 +288,8 @@ pub struct GitHub {
     agent: ureq::Agent,
     token: String,
     base: String,
+    /// When GitHub last said the token expires, as it says it (RAL-146).
+    expiry: std::sync::Mutex<Option<String>>,
 }
 
 impl GitHub {
@@ -304,7 +306,21 @@ impl GitHub {
             .timeout_global(Some(std::time::Duration::from_secs(20)))
             .build()
             .new_agent();
-        Self { agent, token, base }
+        Self {
+            agent,
+            token,
+            base,
+            expiry: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// When the token expires, as GitHub last said in its `GitHub-Authentication-Token-Expiration`
+    /// header, such as `2026-12-01 09:00:00 UTC`, or `None` if it never has (RAL-146).
+    pub fn token_expiry(&self) -> Option<String> {
+        self.expiry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// GETs `path` under the base, returning the status and the body read as JSON.
@@ -318,6 +334,13 @@ impl GitHub {
             .call()
             .map_err(|e| e.to_string())?;
         let status = response.status().as_u16();
+        if let Some(expiry) = response
+            .headers()
+            .get("github-authentication-token-expiration")
+            .and_then(|value| value.to_str().ok())
+        {
+            *self.expiry.lock().unwrap_or_else(|e| e.into_inner()) = Some(expiry.to_owned());
+        }
         if (300..400).contains(&status) {
             return Err(format!(
                 "GitHub answered with a redirect ({status}), not followed"
