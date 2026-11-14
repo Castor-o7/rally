@@ -1468,3 +1468,13 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   projects list beside the pairing (RAL-161's field), so a team with only DSM stories, DSM gated, isn't told it,
   and one with a RAL story beside them still is; an unreadable list takes every project as by pull request;
   with a test (docs/session-hook.md).
+- [ ] **RAL-188: `rally stalls --lock` reads the fair dsm-heavy's queue.** From the DiscoSim issues log, 1.84
+  ("the team check lists waiters by owner"), and the watchman (2026-11-14): since dsm-heavy's fair shares, its
+  waiters hold files in a waiting directory instead of waiting on a slot, so stalls' waiter count read 0. Done
+  when: for each lock pattern, the waiting directory beside it (or `--queue <dir>`) is read, read-only: each held
+  slot's owner from its lock file, and each waiter that something holds locked, by owner, with how long it has
+  waited from its file's time, and dead waiters' files counted apart; an `unfair_slot_wait` prompt names an owner
+  whose job has waited at least `--queue-wait-after` (10 minutes by default) while another owner holds more
+  slots; a waiting directory that exists while `/proc/locks` can't be read, or a `--queue` that isn't there, is a
+  blind spot ("can't see the queue"), never 0 waiting; with unit tests and a CLI test with real `flock` holders
+  (docs/stalls.md).
