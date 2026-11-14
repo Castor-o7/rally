@@ -1232,6 +1232,18 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   waits rather than refuses (red without the fix, with the CI log's message); the service test fails on a non-200
   export saying what it was, waits for checks with a 30 s bound and fails loudly on the timeout, and proves
   "nothing checked twice" by waiting for a later submission's check rather than sleeping.
+- [ ] **RAL-157: `rally brief` is what a restarted watchman reads first.** From the watchman (2026-11-13): at
+  19:58 it rebuilt its picture from a 215 KB handoff file by hand, because `rally brief` was 161 KB (110 KB of it
+  the old handover list), not scoped to the open rally (19 of 30 claims from past rallies), and said nothing
+  about merges, what changed since the watchman last wrote, or what was being gated. In parts. Part 1, done
+  when: `rally brief --watchman` (`/v1/brief?watchman=true`) is under 20 KB, scoped to the open rally, and leads
+  with what others wrote since the watchman's own last record, each team's newest merge since the rally opened,
+  what's verified and not merged, what waits on the watchman and on the operator, and rulings newest first, then
+  each team's assignments and claims and counts with the commands that show more; the full brief counts claims,
+  blockers and teams outside the open rally instead of listing them; a roadmap with no `<PREFIX>-0` says where it
+  is kept; docs/brief.md says so; with unit tests for each and a service test of the route. Part 2, after a
+  note to the watchman on its fields: a declared batch record (the stories and commits gated together, the tip,
+  started, landed or failed), shown first in the watchman's brief.
 - [ ] **RAL-159: Service tests wait on the thing itself, with a bound, never a fixed-sleep bet.** From the
   watchman and earnest-raccoon (2026-11-13), after RAL-158: tests in tests/service.rs bet that something had
   happened after a fixed sleep, or read once after a wait that carried on silently. Done when: the evidence-check

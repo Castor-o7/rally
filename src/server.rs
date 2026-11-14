@@ -1118,10 +1118,17 @@ async fn verifications(
     }
 }
 
+/// What `/v1/brief` takes: `watchman=true` for the short one (RAL-157).
+#[derive(Deserialize)]
+struct BriefQuery {
+    watchman: Option<bool>,
+}
+
 /// One brief for a new watchman (RAL-22a), at the service's clock. Heavy, like a handover.
 async fn brief(
     State(service): State<Arc<Service>>,
     Extension(identity): Extension<Identity>,
+    Query(query): Query<BriefQuery>,
 ) -> Response {
     if !service.allow(&identity.credential, Bucket::Heavy) {
         return failure(
@@ -1135,7 +1142,12 @@ async fn brief(
         .map_or(0, |elapsed| elapsed.as_millis() as i64);
     let result = service
         .run(Work::Heavy, move |store| {
-            store.brief_report(key.as_ref(), now_ms)
+            // The short brief a restarted watchman reads first (RAL-157).
+            if query.watchman.unwrap_or(false) {
+                store.watchman_brief_report(key.as_ref(), now_ms)
+            } else {
+                store.brief_report(key.as_ref(), now_ms)
+            }
         })
         .await;
     match result {

@@ -64,9 +64,44 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
         }
     };
 
+    // RAL-157: with a rally open, claims, blockers and teams outside its projects are counted, not
+    // listed. Questions to the operator stay whole: the operator's inbox is the muster's.
+    let rally = ledger.open_rally();
+    let in_rally = |id: &str| {
+        rally.is_none_or(|rally| {
+            let prefix = id.split_once('-').map_or(id, |(prefix, _)| prefix);
+            rally
+                .projects
+                .iter()
+                .any(|p| p.eq_ignore_ascii_case(prefix))
+        })
+    };
+    // A team is the rally's if it was named when it opened or holds one of its stories.
+    let rally_teams: std::collections::BTreeSet<String> = match rally {
+        None => Default::default(),
+        Some(rally) => rally
+            .teams
+            .iter()
+            .cloned()
+            .chain(
+                ledger
+                    .stories()
+                    .iter()
+                    .filter_map(|(id, story)| in_rally(id).then(|| story.team.clone()).flatten()),
+            )
+            .collect(),
+    };
+    let mut outside = json!({"claims": 0, "blockers": 0, "teams": 0});
     let teams: Vec<Value> = ledger
         .teams()
         .iter()
+        .filter(|(name, _)| {
+            let keep = rally.is_none() || rally_teams.contains(*name);
+            if !keep {
+                outside["teams"] = json!(outside["teams"].as_u64().unwrap_or(0) + 1);
+            }
+            keep
+        })
         .map(|(name, team)| {
             let current = &team.current;
             json!({
@@ -85,6 +120,13 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
         .stories()
         .iter()
         .filter(|(_, story)| matches!(story.state, State::Claimed | State::SentBack))
+        .filter(|(id, _)| {
+            let keep = in_rally(id);
+            if !keep {
+                outside["claims"] = json!(outside["claims"].as_u64().unwrap_or(0) + 1);
+            }
+            keep
+        })
         .map(|(id, story)| {
             let entry = state_entry(&story.history, story.state);
             let claimant = story
@@ -134,6 +176,20 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
         }
     }
     let (questions, questions_total) = bounded(questions);
+    // Blockers outside the rally's stories are counted, not listed; a team's own blocker, with no
+    // story, is kept when the team is the rally's.
+    if rally.is_some()
+        && let Some(rows) = blockers["blockers"].as_array_mut()
+    {
+        let before = rows.len();
+        rows.retain(|row| match row["story"].as_str() {
+            Some(story) => in_rally(story),
+            None => row["team"]
+                .as_str()
+                .is_some_and(|team| rally_teams.contains(team) || team == crate::ledger::OPERATOR),
+        });
+        outside["blockers"] = json!(before - rows.len());
+    }
     // The operator's inbox (RAL-146): how much is open, and the urgent items in full.
     let inbox = crate::inbox::inbox(ledger, false, now_ms);
     let urgent: Vec<Value> = inbox["items"]
@@ -232,6 +288,13 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
         "ended_standings": ended, "ended_standings_total": ended_total,
         "standings_note": STANDINGS,
         "machine_access": MACHINE_ACCESS,
+        "outside_rally": if rally.is_some() {
+            json!({"counts": outside, "note": "With a rally open, claims, blockers and teams outside \
+                    its projects are counted here, not listed: `rally show` and `rally blockers` \
+                    list them all. Questions to the operator are listed whole."})
+        } else {
+            Value::Null
+        },
     })
 }
 
@@ -511,6 +574,48 @@ mod tests {
             .iter()
             .map(|row| row["story"].as_str().unwrap().to_owned())
             .collect()
+    }
+
+    /// RAL-157: with a rally open, claims and blockers outside its projects are counted, not
+    /// listed; questions to the operator stay whole.
+    #[test]
+    fn with_a_rally_open_the_brief_counts_what_is_outside_it() {
+        let mut chain = Chain::new();
+        chain.push(
+            json!({"change": "open_rally", "name": "x", "projects": ["RAL"],
+                          "teams": ["rally"]}),
+        );
+        for (story, team) in [("RAL-1", "rally"), ("MAR-1", "marshal")] {
+            chain.push_as("r", json!({"change": "ready", "story": story}));
+            chain.push_as(
+                "r",
+                json!({"change": "claim", "story": story, "team": team}),
+            );
+            chain.push_as(
+                "r",
+                json!({"change": "block", "team": team, "story": story, "on_team": "operator",
+                       "note": format!("may we do {story}?")}),
+            );
+        }
+        chain.push_as(
+            "r",
+            json!({"change": "block", "team": "marshal", "story": "MAR-1", "on_team": "rally",
+                   "note": "waits on rally"}),
+        );
+        let ledger = Ledger::replay(&chain.records).unwrap();
+        let out = brief(&ledger, &chain.hashes, None, 10_000);
+        assert_eq!(stories(&out["claims"]), ["RAL-1"]);
+        let blocked: Vec<&str> = out["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["story"].as_str().unwrap())
+            .collect();
+        assert_eq!(blocked, ["RAL-1"], "{out}");
+        assert_eq!(out["outside_rally"]["counts"]["claims"], 1);
+        assert_eq!(out["outside_rally"]["counts"]["blockers"], 2);
+        // Both questions to the operator, the rally's and the other's.
+        assert_eq!(out["operator"]["questions_total"], 2);
     }
 
     #[test]
