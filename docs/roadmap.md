@@ -1430,3 +1430,6 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   run alongside; observed only, never changing the result; the browser tests carry those lines to their own
   standard error, so ci-local's log has them; with tests for a segfault retried, a second failing, and a teardown
   crash with a stand-in coredumpctl.
+- [ ] **RAL-184: The digest's gate line counts "suites and scenes".** From the watchman's read of RAL-181: with every
+  suite recorded, RAL-180's green line said "112 scenes" of what are mostly the QUICK phase's suites. Done when: the
+  line, and the parser's and service's bound messages, say "suites and scenes"; with the tests updated.
