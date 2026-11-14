@@ -50,6 +50,7 @@ pub mod retry;
 pub mod roadmaps;
 #[doc(hidden)]
 pub mod scratch_pg;
+pub mod script;
 pub mod secrets;
 pub mod server;
 pub mod session;

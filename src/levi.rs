@@ -367,11 +367,9 @@ mod tests {
 
     /// A stand-in for levi: a shell script in its own directory.
     fn fake_levi(script: &str) -> (tempfile::TempDir, PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("levi");
-        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::script::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
         (dir, path)
     }
 

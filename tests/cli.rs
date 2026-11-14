@@ -34,11 +34,9 @@ impl Ledger {
 fn quiet_gh() -> &'static std::path::Path {
     static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let gh = dir.path().join("gh");
-        std::fs::write(&gh, "#!/bin/sh\necho '[]'\n").unwrap();
-        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        rally::script::write(&gh, "#!/bin/sh\necho '[]'\n").unwrap();
         dir
     })
     .path()
@@ -1726,9 +1724,7 @@ fn the_digest_says_at_once_when_a_merge_left_the_base_red() {
          *\"run list\"*\"--commit {OTHER_COMMIT}\"*) echo '{run}' ;;\n  *) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
     );
     let write_gh = |text: &str| {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::write(bin.join("gh"), text).unwrap();
-        std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        rally::script::write(bin.join("gh"), text).unwrap();
     };
     write_gh(&script);
     let state = db.dir.path().join("digest.json");
@@ -1824,9 +1820,7 @@ fn the_digest_names_a_verified_story_whose_pull_request_is_behind_its_base() {
          *\"compare/main...{COMMIT}\"*) echo 3 ;;\n  *) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
     );
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::write(bin.join("gh"), script).unwrap();
-        std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        rally::script::write(bin.join("gh"), script).unwrap();
     }
     // The watchman's last digest covered everything up to the submission.
     let state = db.dir.path().join("digest.json");
@@ -1884,7 +1878,6 @@ fn the_digest_names_a_verified_story_whose_pull_request_is_behind_its_base() {
 /// the base's tip as `TIP`, and for each commit `runs-<sha>.json` and `status-<sha>.json`, or, on
 /// its n-th read of that kind, `runs-<sha>-<n>.json` where there is one, so checks can progress.
 fn wait_green_gh(dir: &std::path::Path) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let script = format!(
@@ -1910,8 +1903,7 @@ esac
         tip = "e".repeat(40),
         parent = "f".repeat(40)
     );
-    std::fs::write(bin.join("gh"), script).unwrap();
-    std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    rally::script::write(bin.join("gh"), script).unwrap();
     bin
 }
 
