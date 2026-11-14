@@ -471,6 +471,15 @@ tbody tr.cue-activity, .activity li.cue-activity { animation: cue-trace 2.4s eas
 
 /* The operator's inbox (RAL-146): a quest log, urgent items first and marked. */
 #inbox-title[data-urgent="yes"] { color: var(--bad); }
+/* RAL-193: the fold arrow, as the "Past rallies" disclosure marker looks: a small triangle in the
+   secondary colour, pointing down when open, right when folded; the heading's own type and colour. */
+.fold { display: inline-flex; align-items: center; gap: 8px; padding: 0; border: 0; background: none;
+  font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; cursor: pointer; text-align: left; }
+.fold-arrow { flex: none; width: 0; height: 0; border-style: solid; border-width: 5px 0 5px 8px;
+  border-color: transparent transparent transparent var(--text-2); transform: rotate(90deg); transition: transform 0.15s ease; }
+.fold[aria-expanded="false"] .fold-arrow { transform: none; }
+.fold:hover .fold-arrow { border-left-color: var(--arc-1); }
+.fold:focus-visible { outline: 2px solid var(--arc-1); outline-offset: 3px; border-radius: 2px; }
 .inbox { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .inbox-item { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--text-2) 30%, transparent); border-radius: 6px; }

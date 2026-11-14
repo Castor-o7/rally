@@ -377,5 +377,16 @@ if (process.env.RALLY_BROWSER_PROBE) {
     }
   }
 }
+// RAL-193: what a page keeps across a reload, such as a folded panel: RALLY_BROWSER_RELOAD_PROBE names a
+// file holding one more expression, evaluated after the page is reloaded, printed as `reloaded`.
+let reloaded;
+if (process.env.RALLY_BROWSER_RELOAD_PROBE) {
+  const { readFileSync } = await import("node:fs");
+  const expression = readFileSync(process.env.RALLY_BROWSER_RELOAD_PROBE, "utf8");
+  const reload = loaded();
+  await send("Page.reload", { ignoreCache: true });
+  await reload;
+  reloaded = await evaluate(expression);
+}
 clearTimeout(timer);
-finish(0, { codePage, after, probe, probes });
+finish(0, { codePage, after, probe, probes, reloaded });
