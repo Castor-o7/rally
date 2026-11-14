@@ -3823,3 +3823,137 @@ fn a_batch_is_started_and_ended_from_the_command_line() {
         "{ended}"
     );
 }
+
+/// RAL-163: with a rally open, `rally stalls` checks the rally's teams, not the projects list's;
+/// a claim riding a batch built on one that failed prompts the watchman; and a landing with no
+/// submit since is owed once the check-in has passed. Without a roster, these Rally-only rows stay.
+#[test]
+fn stalls_check_the_rallys_teams_and_see_the_watchmans_batches() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let sha = |c: char| c.to_string().repeat(40);
+    let run = |name: &str, args: &[&str]| {
+        let out = rally()
+            .arg("--config")
+            .arg(&config)
+            .args(["--as", name])
+            .env("RALLY_ROSTER_FROM", "no-such-shim-for-tests")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    run(
+        "w",
+        &[
+            "open-rally",
+            "--name",
+            "x",
+            "--project",
+            "DSM",
+            "--team",
+            "sleek-moth",
+        ],
+    );
+    for (story, team) in [
+        ("DSM-1", "sleek-moth"),
+        ("DSM-2", "steely-ridge"),
+        ("MAR-1", "marshal"),
+    ] {
+        run(team, &["ready", story]);
+        run(team, &["claim", story, "--team", team]);
+    }
+    let car = |story: &str| format!("{story}@{}", sha('1'));
+    let start = |car: &str, tip: char, extra: &[&str]| -> u64 {
+        let mut args = vec!["batch", "start", "--project", "DSM", "--car", car];
+        let (base, tip) = (sha('b'), sha(tip));
+        args.extend(["--base", &base, "--tip", &tip, "--note", "train"]);
+        args.extend(extra);
+        run("watch", &args)["recorded"].as_u64().unwrap()
+    };
+    let failed = start(&car("DSM-1"), 'c', &[]);
+    run(
+        "watch",
+        &[
+            "batch",
+            "end",
+            "--batch",
+            &failed.to_string(),
+            "--failed",
+            "--note",
+            "red",
+        ],
+    );
+    let on = failed.to_string();
+    let riding = start(&car("DSM-1"), 'd', &["--on-batch", &on]);
+    let landed = start(&car("DSM-2"), 'e', &[]);
+    run(
+        "watch",
+        &[
+            "batch",
+            "end",
+            "--batch",
+            &landed.to_string(),
+            "--landed",
+            &sha('e'),
+            "--note",
+            "in",
+        ],
+    );
+
+    let stalls = || run("watch", &["stalls", "--quiet-after", "1s"]);
+    // Waits, up to 15 s, for the landing to pass the 1 s check-in, rather than sleeping past it.
+    let until = Instant::now() + Duration::from_secs(15);
+    let out = loop {
+        let out = stalls();
+        if out["prompts"].to_string().contains("owes_submit") {
+            break out;
+        }
+        assert!(Instant::now() < until, "no owes_submit within 15 s: {out}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(
+        out["rally"]["teams_checked"],
+        json!(["sleek-moth", "steely-ridge"]),
+        "{out}"
+    );
+    let rows: Vec<(String, String)> = out["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["team"].as_str().unwrap().into(),
+                p["row"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    assert!(!rows.iter().any(|(team, _)| team == "marshal"), "{rows:?}");
+    assert!(
+        rows.contains(&("sleek-moth".into(), "riding_batch".into())),
+        "{rows:?}"
+    );
+    assert!(
+        rows.contains(&("steely-ridge".into(), "owes_submit".into())),
+        "{rows:?}"
+    );
+    let ride = out["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["row"] == "riding_batch")
+        .unwrap();
+    assert!(
+        ride["rally_says"].to_string().contains(&format!(
+            "batch {riding} is built on batch {failed}, which didn't land"
+        )),
+        "{ride}"
+    );
+}

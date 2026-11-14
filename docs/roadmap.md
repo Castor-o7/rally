@@ -1271,3 +1271,16 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   (3) documented: rerunning the gate script named in the log on the commit it names. Done when (1) is built
   with tests for the parser, the refusals and the brief, and docs/brief.md says what the hash is worth and what
   it isn't.
+- [ ] **RAL-163: `rally stalls` sees the open rally's teams and the watchman's batches.** From the watchman
+  (2026-11-14): at 19:58 what told it the state fastest wasn't in Rally. On the live ledger `rally stalls` checked
+  the projects list's teams, none of which were tonight's, and flagged only past rallies' blockers. Of tonight's
+  facts it caught none: a team idle waiting on the watchman's gate, a hung godot, a claim "stale" while its commit
+  sat on a train. In parts. Part 1, done when: with a rally open, stalls checks the rally's teams (named at its
+  opening, or with live work in its projects), finding their sessions by nickname and confirmed restarts, scoped
+  to the rally, with the projects list's other teams named and not checked; a claim riding a batch still gating
+  is never a missed check-in, is named in every-team-waiting as waiting on the watchman's batch N, and prompts the
+  watchman (`riding_batch`) only when the batch is past its expected time or built on one that didn't land; a
+  landed story with no submit past the check-in prompts the team (`owes_submit`); docs/stalls.md says so; with
+  unit tests and a service test. Part 2: `--lock` takes a glob of lock files (dsm-heavy's slots), and for each
+  holder's process tree samples CPU time twice a few seconds apart: "possibly hung: <command>, <cwd>, N% CPU over
+  5 s, running M min", a prompt and never a finding, with nothing killed.

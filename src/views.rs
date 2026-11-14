@@ -271,6 +271,31 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
                 })
             {
                 row["landed_in_batch"] = json!(batch.seq);
+                // When it landed, and whether its team has submitted since (RAL-163).
+                if let Some(end) = &batch.ended {
+                    row["landed_at_ms"] = json!(end.at_ms);
+                    row["submitted_since_landing"] = json!(story.history.iter().any(|e| {
+                        e.seq > end.seq && matches!(e.change, Change::Submit { .. })
+                    }));
+                }
+            }
+            // The batch it rides now, still gating (RAL-163): what a claim quiet in the ledger
+            // waits on.
+            if let Some(batch) = ledger
+                .batches()
+                .values()
+                .rev()
+                .find(|b| b.ended.is_none() && b.cars.iter().any(|car| car.story == *id))
+            {
+                let failed_under = batch
+                    .on_batch
+                    .and_then(|on| ledger.batches().get(&on))
+                    .and_then(|on| on.ended.as_ref().map(|e| (on.seq, e.outcome)))
+                    .filter(|(_, outcome)| *outcome != crate::ledger::BatchOutcome::Landed)
+                    .map(|(seq, _)| seq);
+                row["riding_batch"] = json!({"batch": batch.seq, "at_ms": batch.at_ms,
+                    "expect_minutes": batch.expect_minutes, "built_on_unlanded": failed_under,
+                    "kind": "declared"});
             }
             if let Some(read) = latest_read_notes(story, ledger.annotations()) {
                 row["read"] = read;

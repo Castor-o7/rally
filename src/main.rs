@@ -2079,37 +2079,138 @@ fn stalls_pass(
         )
         .max()
         .unwrap_or(0);
+    // RAL-163: with a rally open, its teams are the ones checked: those named when it opened and
+    // those holding its stories, each with its own session on the roster (a team is its session's
+    // nickname, and a confirmed restart keeps the link). The projects list's teams are the
+    // fallback, and with a rally open the ones outside it are counted, not checked.
+    let rallies = backend
+        .read_value("/v1/rallies", None, &Page::default(), views::rallies)
+        .ok();
+    let rally_projects = rallies.as_ref().and_then(open_rally_projects);
+    let in_rally = |id: &str| {
+        rally_projects.as_ref().is_none_or(|projects| {
+            let prefix = id.split_once('-').map_or(id, |(prefix, _)| prefix);
+            projects.iter().any(|p| p.eq_ignore_ascii_case(prefix))
+        })
+    };
+    // Each team to check: its name, the names its sessions go by, and the projects whose roadmaps
+    // give its ready story.
+    let mut plans: Vec<(String, Vec<String>, Vec<&Project>)> = Vec::new();
+    let mut outside = Vec::new();
+    match &rally_projects {
+        Some(prefixes) => {
+            let open = &rallies.as_ref().expect("read above")["open"];
+            let mut names: std::collections::BTreeSet<String> = open["teams"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|t| t.as_str().map(|t| t.trim().to_lowercase()))
+                .collect();
+            // A team with live work in the rally: a claim, a story sent back or in review, one
+            // riding a batch, or a landing it owes a submit. A verified story keeps its team, so
+            // that alone doesn't count.
+            for (id, story) in stories {
+                let live = matches!(
+                    story["state"].as_str(),
+                    Some("claimed" | "sent_back" | "in_review")
+                ) || story["riding_batch"].is_object()
+                    || story["submitted_since_landing"] == false;
+                if in_rally(id)
+                    && live
+                    && let Some(team) = story["team"].as_str()
+                {
+                    names.insert(team.trim().to_lowercase());
+                }
+            }
+            let rally_listed: Vec<&Project> = projects
+                .iter()
+                .filter(|p| prefixes.iter().any(|x| x.eq_ignore_ascii_case(&p.prefix)))
+                .collect();
+            for name in names {
+                let sessions = successors(open, &name);
+                plans.push((name, sessions, rally_listed.clone()));
+            }
+            outside = projects
+                .iter()
+                .filter_map(|p| p.team.clone())
+                .filter(|t| {
+                    !plans
+                        .iter()
+                        .any(|(name, _, _)| name == &t.trim().to_lowercase())
+                })
+                .collect();
+        }
+        None => {
+            for project in &projects {
+                if let Some(team) = project.team.as_deref() {
+                    plans.push((team.to_owned(), project.sessions.clone(), vec![project]));
+                }
+            }
+        }
+    }
     let mut facts = Vec::new();
     let mut errors = Vec::new();
-    for project in &projects {
-        let Some(team) = project.team.as_deref() else {
-            continue;
-        };
+    for (team, session_names, roadmaps) in &plans {
+        let team = team.as_str();
         let key = team.trim().to_lowercase();
         let same = |name: Option<&str>| name.is_some_and(|name| name.trim().to_lowercase() == key);
-        let ready = match web::read_roadmap(project) {
-            Ok((_, text)) => {
-                read.pick(team, &rally::next::items(&text, &project.prefix))["next"]["story"]
-                    .as_str()
-                    .map(str::to_owned)
+        let mut ready = None;
+        for project in roadmaps {
+            match web::read_roadmap(project) {
+                Ok((_, text)) => {
+                    ready = ready.or_else(|| {
+                        read.pick(team, &rally::next::items(&text, &project.prefix))["next"]
+                            ["story"]
+                            .as_str()
+                            .map(str::to_owned)
+                    });
+                }
+                Err(error) => errors.push(json!({"team": team, "error":
+                    format!("{}'s roadmap couldn't be read: {error}", project.prefix)})),
             }
-            Err(error) => {
-                errors.push(json!({"team": team, "error":
-                    format!("the roadmap couldn't be read: {error}")}));
-                continue;
-            }
-        };
+        }
+        let mine = |story: &Value| same(story["team"].as_str());
         let claims: Vec<(String, i64)> = stories
             .iter()
-            .filter(|(_, story)| {
-                matches!(story["state"].as_str(), Some("claimed" | "sent_back"))
-                    && same(story["team"].as_str())
+            .filter(|(id, story)| {
+                in_rally(id)
+                    && matches!(story["state"].as_str(), Some("claimed" | "sent_back"))
+                    && mine(story)
             })
             .map(|(id, story)| (id.clone(), story["last_at_ms"].as_i64().unwrap_or(0)))
             .collect();
+        // RAL-163: its claims riding a batch the watchman gates, and landings it owes a submit.
+        let riding = claims
+            .iter()
+            .filter_map(|(id, _)| {
+                let r = &stories[id]["riding_batch"];
+                Some(rally::stall::Riding {
+                    story: id.clone(),
+                    batch: r["batch"].as_u64()?,
+                    started_ms: r["at_ms"].as_i64().unwrap_or(now_ms),
+                    expect_minutes: r["expect_minutes"].as_u64().map(|m| m as u32),
+                    built_on_unlanded: r["built_on_unlanded"].as_u64(),
+                })
+            })
+            .collect();
+        let owed = stories
+            .iter()
+            .filter(|(id, story)| {
+                in_rally(id) && mine(story) && story["submitted_since_landing"] == false
+            })
+            .filter_map(|(id, story)| {
+                Some((
+                    id.clone(),
+                    story["landed_in_batch"].as_u64()?,
+                    story["landed_at_ms"].as_i64()?,
+                ))
+            })
+            .collect();
         let blockers = open
             .iter()
-            .filter(|blocker| same(blocker["team"].as_str()))
+            .filter(|blocker| {
+                same(blocker["team"].as_str()) && blocker["story"].as_str().is_none_or(in_rally)
+            })
             .map(|blocker| rally::stall::Waiting {
                 seq: blocker["seq"].as_u64().unwrap_or(0),
                 story: blocker["story"].as_str().map(str::to_owned),
@@ -2124,23 +2225,31 @@ fn stalls_pass(
             name: team.to_owned(),
             sessions: roster
                 .as_ref()
-                .map(|roster| rally::wake::sessions_of(roster, &project.sessions))
+                .map(|roster| rally::wake::sessions_of(roster, session_names))
                 .unwrap_or_default(),
             status: teams["teams"][&key]["status"].as_str().map(str::to_owned),
             claims,
             ready,
             blockers,
+            riding,
+            owed,
         });
     }
     let mut report = rally::stall::report(&facts, last_record_ms, quiet_after, now_ms);
     if roster.is_none() {
-        // Without the roster, only what Rally alone says holds: the declared blockers.
+        // Without the roster, only what Rally alone says holds: the declared blockers, and the
+        // batches the watchman declared (RAL-163).
         if let Some(prompts) = report["prompts"].as_array_mut() {
-            prompts.retain(|row| row["row"] == "declared_blocked");
+            prompts.retain(|row| {
+                matches!(
+                    row["row"].as_str(),
+                    Some("declared_blocked" | "riding_batch" | "owes_submit")
+                )
+            });
         }
         report["every_team_waiting"] = Value::Null;
         report["roster"] = json!({"available": false, "note": "no shim's roster could be read, so \
-            only declared blockers are shown"});
+            only declared blockers and batches are shown"});
     } else {
         report["roster"] = json!({"available": true});
     }
@@ -2157,6 +2266,14 @@ fn stalls_pass(
         report["locks"] = json!(seen);
     }
     report["last_record_ms"] = json!(last_record_ms);
+    if let Some(prefixes) = &rally_projects {
+        let checked: Vec<&str> = facts.iter().map(|f| f.name.as_str()).collect();
+        report["rally"] = json!({"projects": prefixes, "teams_checked": checked,
+            "outside": outside,
+            "note": "With a rally open, its teams are checked: those named when it opened and \
+                     those holding its stories. Teams in the projects list outside it are named \
+                     here, not checked (RAL-163)."});
+    }
     // A watchman whose digest has stopped is a stall of its own (RAL-87), the one of 2026-11-06.
     if digest.digest_quiet_after.is_some() {
         match designation_value(location, config) {
@@ -2734,6 +2851,38 @@ fn next(
 }
 
 /// The open rally's projects, from `views::rallies`, if one is open.
+/// The names a team's sessions go by in the open rally `open` (RAL-163): the team's own name,
+/// which is its session's nickname, and every session confirmed as a restart of it, either way
+/// and through chains (`rally-session --succeeds`, RAL-110).
+fn successors(open: &Value, team: &str) -> Vec<String> {
+    let links: Vec<(String, String)> = open["sessions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry["remove"] != true)
+        .filter_map(|entry| {
+            Some((
+                entry["session"].as_str()?.trim().to_lowercase(),
+                entry["succeeds"].as_str()?.trim().to_lowercase(),
+            ))
+        })
+        .collect();
+    let mut names = vec![team.trim().to_lowercase()];
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for (a, b) in &links {
+            for (from, to) in [(a, b), (b, a)] {
+                if names.contains(from) && !names.contains(to) {
+                    names.push(to.clone());
+                    grew = true;
+                }
+            }
+        }
+    }
+    names
+}
+
 fn open_rally_projects(rallies: &Value) -> Option<Vec<String>> {
     let projects = rallies["open"]["projects"].as_array()?;
     Some(
