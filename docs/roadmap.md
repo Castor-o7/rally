@@ -1405,3 +1405,9 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   roadmap with the default driver and named it a conflict resolved, where a checkout with the attributes named
   none. Done when: each merge is remerged with its first parent's `.gitattributes` (`--attr-source`), the output
   says which attributes it used, and a test checks a checkout without the attributes gets the head's answer.
+- [ ] **RAL-181: `batch end --gate-log` records every suite, the QUICK phase's too.** From reading the gate logs
+  for RAL-180 (2026-11-14): the parser counted only the three `res://tests/` scenes of about 112 suites. Done when:
+  each `== <suite> ==` or `== <suite> (what it covers) ==` header is recorded by name with its counts, beside the
+  scenes; a `, K skipped` count reads; a QUICK suite with no count line (the bench) is covered by `QUICK OK` and
+  left out, kept as giving no result when there's no `QUICK OK`; the bound is 256; every real `.ok` log on Murph
+  reads green; with tests (docs/brief.md).
