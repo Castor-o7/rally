@@ -421,6 +421,15 @@ fn closed_items(team: &str, inbox: &Value, now_ms: i64) -> Vec<String> {
             (now_ms.saturating_sub(at) <= CLOSED_ITEMS_WITHIN_MS).then_some((item, closed))
         })
         .map(|(item, closed)| {
+            // A question ticked off in the viewer has no answer in the ledger (RAL-150).
+            if item["from"] == "question" && closed["via"] == "viewer" {
+                return format!(
+                    "- #{} {}: the operator ticked your question off in the viewer; if you don't \
+                     have the answer, ask the watchman",
+                    item["seq"].as_u64().unwrap_or(0),
+                    clean(item["note"].as_str().unwrap_or("")),
+                );
+            }
             let how = match closed["via"].as_str() {
                 Some(via) => format!(" in the {via}"),
                 None => String::new(),
@@ -500,6 +509,10 @@ mod tests {
              "closed": {"seq": 6, "at_ms": 10 * day, "by": "operator", "kind": "declared",
                         "note": "done"}},
             {"seq": 8, "note": "still open", "raised_by": {"team": "rustdaw"}, "closed": null},
+            {"seq": 11, "from": "question", "note": "which design?", "raised_by": {"team": "rustdaw"},
+             "closed": {"seq": 12, "at_ms": 10 * day, "by": "operator", "kind": "declared",
+                        "via": "viewer", "note": "ticked in the viewer",
+                        "answer": {"from": "direct"}}},
         ]});
         let out = render_in(
             "rustdaw",
@@ -514,6 +527,14 @@ mod tests {
             out.contains(
                 "- #7 rotate the token: closed by operator in the viewer at record 9 \
             (declared): ticked in the viewer"
+            ),
+            "{out}"
+        );
+        // RAL-150: a question ticked off in the viewer, said plainly, as it carries no answer.
+        assert!(
+            out.contains(
+                "- #11 which design?: the operator ticked your question off in the viewer; if you \
+                 don't have the answer, ask the watchman"
             ),
             "{out}"
         );

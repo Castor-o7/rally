@@ -61,7 +61,10 @@ rally.
 
 The operator closes an item himself (his choice, 2026-11-13): an action when it's done, a notice when it's seen. A
 question to the operator ticked off is answered as `rally unblock --direct` would answer it, so it closes as a
-question always has.
+question always has. A tick records no answer, though, so for a question it means "answered elsewhere": the
+viewer's row for a question says so, the inbox marks a question ticked in the viewer `via: viewer`, and the asking
+team's session start says "the operator ticked your question off in the viewer; if you don't have the answer, ask
+the watchman" (RAL-150).
 
 - **In the viewer**: each item has a box. Ticking it records the close at once, and the item leaves the list. The
   tick is the viewer's one write. It's taken only as a POST from a signed-in session of the page itself: the host
