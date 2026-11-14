@@ -1424,3 +1424,10 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   run alongside; observed only, never changing the result; the browser tests carry those lines to their own
   standard error, so ci-local's log has them; with tests for a segfault retried, a second failing, and a teardown
   crash with a stand-in coredumpctl.
+- [ ] **RAL-183: Browser tests forward only real crash lines, marked as real; the stand-in core can't pass for
+  one.** From the lamplighter reading RAL-179's own faked teardown crash in ci-local's log as a real one
+  (2026-11-14, 61d0dca's check.log 738–739), assigned by the watchman. Done when: `run_browser` writes nothing
+  to the test's own standard error from a run whose Chrome command isn't the real `RALLY_TEST_CHROME` or that uses
+  a stand-in coredumpctl (the tests that fake a crash still assert on the script's output); what a real run
+  forwards begins `browser test: [real Chrome, real coredumpctl]`, so the log can be trusted at a glance; and the
+  stand-in core's time and pid are impossible ones (1970, pid 999999).

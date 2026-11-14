@@ -1153,12 +1153,25 @@ fn run_browser_env(
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let seen: Value = serde_json::from_str(printed.trim())
         .unwrap_or_else(|_| panic!("the script printed no result: {printed}\n{stderr}"));
-    if let Some(first) = seen.get("retried_after_abort") {
+    // RAL-183: only a run of the real browser, with the real coredumpctl, says anything on the
+    // test's own standard error, and says so first, so a line in ci-local's log is never a test's
+    // stand-in. A test that fakes a crash asserts on the script's output itself.
+    let real = browser().as_deref() == Some(chrome)
+        && !env
+            .iter()
+            .any(|(name, _)| *name == "RALLY_BROWSER_COREDUMPCTL");
+    const REAL: &str = "browser test: [real Chrome, real coredumpctl]";
+    if let (true, Some(first)) = (real, seen.get("retried_after_abort")) {
         use std::io::Write;
         let _ = writeln!(
             std::io::stderr(),
-            "browser test: Chrome aborted at start ({}) at {}, pid {} ({}), load {}, document \
+            "{REAL} Chrome {} at start ({}) at {}, pid {} ({}), load {}, document \
              portal mounted: {}; tried once more (RAL-160); it said: {}",
+            if first["status"] == 134 || first["status"] == "SIGABRT" {
+                "aborted"
+            } else {
+                "crashed"
+            },
             first["status"],
             first["at"].as_str().unwrap_or("?"),
             first["pid"],
@@ -1170,9 +1183,12 @@ fn run_browser_env(
     }
     // RAL-179: a crash at teardown, and any Chrome core dumped during the run, reach the test's
     // own standard error, so ci-local's log carries them even when the test passes.
-    for line in stderr.lines().filter(|line| line.contains("(RAL-179)")) {
+    for line in stderr
+        .lines()
+        .filter(|line| real && line.contains("(RAL-179)"))
+    {
         use std::io::Write;
-        let _ = writeln!(std::io::stderr(), "browser test: {line}");
+        let _ = writeln!(std::io::stderr(), "{REAL} {line}");
     }
     (output.status.success(), seen, stderr)
 }
@@ -1296,8 +1312,8 @@ fn a_crash_at_teardown_is_said_and_the_result_stands() {
     let cores = dir.path().join("coredumpctl");
     std::fs::write(
         &cores,
-        "#!/bin/sh\necho '[{\"time\":1794652199536351,\"pid\":1,\"sig\":11,\"exe\":\"/app/extra/chrome\"},\
-         {\"time\":1794652199536351,\"pid\":2,\"sig\":11,\"exe\":\"/usr/bin/node\"}]'\n",
+        "#!/bin/sh\necho '[{\"time\":1000000,\"pid\":999999,\"sig\":11,\"exe\":\"/app/extra/chrome\"},\
+         {\"time\":1000000,\"pid\":999998,\"sig\":11,\"exe\":\"/usr/bin/node\"}]'\n",
     )
     .unwrap();
     std::fs::set_permissions(&cores, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1319,7 +1335,7 @@ fn a_crash_at_teardown_is_said_and_the_result_stands() {
     );
     assert!(
         stderr.contains(
-            "a Chrome core was dumped at 2026-11-14T10:29:59Z, pid 1 (not one of this run's \
+            "a Chrome core was dumped at 1970-01-01T00:00:01Z, pid 999999 (not one of this run's \
              processes, so perhaps a run alongside), SIGSEGV, /app/extra/chrome (RAL-179)"
         ),
         "{stderr}"
