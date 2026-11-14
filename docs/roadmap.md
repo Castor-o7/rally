@@ -1119,6 +1119,16 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
     doesn't), with unit tests for the ordering, the self-filed token item opening once and closing itself, the
     refusal of secret-looking text, and a headless-Chrome check that the panel shows an added item and loses
     it when it's closed.
+- [ ] **RAL-147: Check runs the token can't read are recorded at once, read from commit statuses.** From Josh
+  through the lamplighter (2026-11-13): Rally's fine-grained GitHub token can't read check runs on private
+  repositories (GitHub 403 "Resource not accessible by personal access token"; fine-grained tokens have no Checks
+  permission), so every DiscoSim, RootyRoopsDAW and catapp submission was retried until the CI wait ran out and
+  recorded "its CI couldn't be read". Done when: that 403 on the check runs is taken as permanent for the token,
+  so the check reads the commit's statuses alone, records at once, and says in the reason that check runs can't
+  be read with the token and statuses were used; with tests against a stand-in GitHub that (1) the 403 is
+  recorded at once, not after the wait; (2) a commit with no statuses and unreadable check runs reads as `none`,
+  "no CI reported", never `passed`; (3) a repository whose check runs can be read is checked as before; (4) other
+  refusals (a rate-limit 403, another 403, a 401) are still failed reads tried again. docs/evidence.md says so.
 - [ ] **RAL-148: The watchman's digest keeps to the open rally and stops repeating its handover list.** From
   the watchman (2026-11-13): every `rally digest`, even for one claim, carried "Peer-verified, awaiting your
   re-read (RAL-52) (353)" with 33 lines. Most of them had been verified by the watchman itself (DSM-100..143,
