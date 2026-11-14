@@ -126,6 +126,12 @@ recorded, or "ended without saying why" when it was killed by a signal, crashed,
 loop stopped with Ctrl-C in a terminal is also reported that way. These three run through the paired service
 only, not `--db`.
 
+In "Merged", a merge whose story rode a batch that landed says "landed in batch N" (RAL-161). The watchman's
+own merges aren't listed there, as none of its own records are; the base-CI line above names its batches.
+
+A digest sent with nothing new in the ledger, as when only the base's CI is told, says "no new records since
+your last digest, through record N" rather than a range that ends before it starts (RAL-161).
+
 ## When a merge leaves the base red (RAL-102)
 
 From the DiscoSim rally's issues log (§10.3, §10.4): Muster's main was red for about a day, and Rally's for a
@@ -144,6 +150,14 @@ pass checks the base's CI on what landed, until it can say how it went:
 - **Couldn't be checked** (`gh` failed, or the story's evidence names no repository): told at once, never left
   silent, and tried again each pass; after 2 hours it's told as still uncheckable, and no longer checked.
 - **Passed**: nothing is said.
+- **A story in parts** with no closing submit yet takes its repository from its newest part's evidence (RAL-161).
+- **A project whose gate is local** (RAL-161), such as DiscoSim, which has no CI on GitHub and lands what the
+  watchman's gate passed, is said in the projects list beside the pairing, with `"gate"` saying whose gate it is:
+  `{"prefix": "DSM", "repo": "Castor-o7/DiscoSim", ..., "gate": "the watchman's"}`. Its merges aren't looked
+  for on GitHub. Instead each digest that takes some in says, once, "DiscoSim has no CI on GitHub; its gate is
+  the watchman's [declared]. Merged: DSM-214 (batch 54), DSM-209", naming the batch each landed in where the
+  watchman recorded one (`rally batch`). The line waits for a digest that's going anyway, and isn't lost if none
+  goes that pass.
 
 What's pending is kept in the state file beside each watchman's head (`ci`, `ci_checked_to`), so each merge is
 taken in once. Something urgent that couldn't be sent is told again on the next pass. It needs `gh` signed in on
