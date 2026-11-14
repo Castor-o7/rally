@@ -2006,3 +2006,113 @@ fn wait_green_waits_for_every_check_the_base_had_and_says_how_it_ended() {
     let (code, _) = wait_green(d, &["not-a-pr"]);
     assert_eq!(code, 2);
 }
+
+/// RAL-191: `rally brief --watchman` lists the jobs a closed window would end: each lock a
+/// project's stalls names, held, with its holder's pid, command and working directory (observed)
+/// and the owner its file names (declared), and each fair pool's queue; and says what it couldn't
+/// read rather than showing nothing running. Real `flock` holders, in a temporary folder.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_watchmans_brief_lists_the_jobs_in_flight() {
+    use std::time::{Duration, Instant};
+    let db = Ledger::new();
+    ok(&db, "silken-tanager", &["ready", "RAL-3"]);
+    let config = db.dir.path().join("client.json");
+    let slots = db.dir.path().join("slots");
+    let waiting = slots.join("heavy.waiting");
+    std::fs::create_dir_all(&waiting).unwrap();
+    let held = slots.join("heavy.1.lock");
+    std::fs::write(&held, "teamA 2026-11-14T10:00:00 suite\n").unwrap();
+    std::fs::write(slots.join("heavy.2.lock"), "").unwrap();
+    let waiter = waiting.join("teamB.1.1");
+    std::fs::write(&waiter, "teamB\n").unwrap();
+    let mut holders: Vec<std::process::Child> = [&held, &waiter]
+        .iter()
+        .map(|path| {
+            Command::new("flock")
+                .arg(path)
+                .args(["sleep", "60"])
+                .current_dir(&slots)
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    let projects = |stalls: &str| {
+        std::fs::write(
+            db.dir.path().join("projects.json"),
+            format!(
+                r#"[{{"name": "DiscoSim", "prefix": "DSM", "repo": "o/DiscoSim", "path": "r.md",
+                     "tick_meaning": "done"{stalls}}}]"#
+            ),
+        )
+        .unwrap();
+    };
+    let pattern = slots.join("heavy.*.lock").display().to_string();
+    projects(&format!(r#", "stalls": {{"locks": ["{pattern}"]}}"#));
+    let brief = || {
+        let out = rally(
+            &db,
+            "watch",
+            &["--config", config.to_str().unwrap(), "brief", "--watchman"],
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["in_flight"].clone()
+    };
+    // Waits, up to 10 s, for flock to hold both.
+    let until = Instant::now() + Duration::from_secs(10);
+    let seen = loop {
+        let seen = brief();
+        if seen["summary"] == "1 lock held, 1 job waiting for a slot" {
+            break seen;
+        }
+        assert!(Instant::now() < until, "not seen within 10 s: {seen}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let dsm = &seen["projects"][0];
+    assert_eq!(dsm["project"], "DSM", "{seen}");
+    assert_eq!(dsm["free"], 1);
+    let row = &dsm["held"][0];
+    assert_eq!(row["lock"], held.display().to_string());
+    assert_eq!(row["owner"], "teamA");
+    assert_eq!(row["kind"], "observed");
+    let holder = &row["holders"][0];
+    assert_eq!(holder["pid"], holders[0].id());
+    assert_eq!(
+        holder["command"],
+        format!("flock {} sleep 60", held.display())
+    );
+    assert_eq!(holder["cwd"], slots.display().to_string());
+    assert_eq!(
+        dsm["queues"][0]["waiting"],
+        serde_json::json!([{"owner": "teamB", "jobs": 1, "longest_wait_min": 0}])
+    );
+    assert_eq!(seen["blind"], serde_json::json!([]), "{seen}");
+    for holder in &mut holders {
+        let _ = holder.kill();
+        let _ = holder.wait();
+    }
+    // No project names a lock: blind, never "nothing running".
+    projects("");
+    let seen = brief();
+    assert!(
+        seen["blind"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("no project's stalls in the projects list names a lock"),
+        "{seen}"
+    );
+    // The projects list can't be parsed: blind, saying why.
+    std::fs::write(db.dir.path().join("projects.json"), "not json").unwrap();
+    let seen = brief();
+    assert!(
+        seen["blind"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("the projects list: "),
+        "{seen}"
+    );
+}

@@ -2331,6 +2331,23 @@ fn projects_text(
     }
 }
 
+/// Each project's `stalls.locks` from the projects list beside the pairing (RAL-191), or why the
+/// list couldn't be read.
+fn lock_patterns(config: &Path) -> Result<Vec<(String, Vec<PathBuf>)>, String> {
+    let text = projects_text(None, config).map_err(|e| e.to_string())?;
+    let projects = projects_from(&text)?;
+    Ok(projects
+        .into_iter()
+        .map(|project| {
+            let locks = project
+                .stalls
+                .map(|stalls| stalls.locks.iter().map(PathBuf::from).collect())
+                .unwrap_or_default();
+            (project.prefix, locks)
+        })
+        .collect())
+}
+
 /// The `builds` section of the watchman's brief (RAL-167): the service's commit by its own word,
 /// this CLI's, main's tip, and what's merged but not live, all observed; never fatal to the brief.
 fn builds_section(location: Option<&Location>, config: &Path) -> Value {
@@ -5309,7 +5326,10 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                     rally::watchman_brief::from_service(reply_value(&reply)?)?
                 };
                 let mut report = report;
-                report["builds"] = builds_section(location.as_ref(), &config_path(cli.config)?);
+                let config = config_path(cli.config)?;
+                report["builds"] = builds_section(location.as_ref(), &config);
+                // What a closed window would end (RAL-191): each project's locks and queues.
+                report["in_flight"] = rally::in_flight::section(lock_patterns(&config));
                 return Ok(report.to_string());
             }
             let mut report = if let Some(location) = &location {
