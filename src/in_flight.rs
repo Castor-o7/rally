@@ -48,6 +48,13 @@ pub fn lock_row(lock: &str, seen: &Seen, owner: Option<&str>) -> Value {
         "lock": lock, "held": true, "holders": holders, "kind": "observed",
         "owner": owner, "owner_kind": "declared: the first word of the lock file",
     });
+    if seen.by_descriptor {
+        row["found_by"] = json!(crate::lock_holder::BY_DESCRIPTOR);
+        row["kernel_holders"] = json!(seen.kernel_holders);
+        if seen.unreadable > 0 {
+            row["unreadable_processes"] = json!(seen.unreadable);
+        }
+    }
     if seen.matched == Matched::InodeOnly {
         row["matched_by"] = json!(
             "inode only: no line had the file's device, so a file elsewhere with the same inode \

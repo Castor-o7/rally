@@ -4069,6 +4069,102 @@ fn a_lock_holder_doing_almost_nothing_is_flagged_as_possibly_hung() {
     assert_eq!(row["kind"], "observed");
 }
 
+/// RAL-192: a lock taken by a shell that started its job and exited, as dsm-heavy's bash does once
+/// it execs `systemd-run --scope`, is held by the child that inherited its descriptor, while
+/// /proc/locks still names the shell. The holder is found by its open descriptor, the kernel's pid
+/// kept beside it, so stalls' stopped and possibly-hung checks prompt for the real job.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_lock_whose_taker_exited_is_held_by_the_child_with_its_descriptor() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let slots = service.dir.path().join("slots");
+    std::fs::create_dir_all(&slots).unwrap();
+    let lock = slots.join("heavy.1.lock");
+    let child_pid = slots.join("child.pid");
+    // The shell takes the lock, starts a job that inherits the descriptor, says the job's pid and
+    // exits; the job keeps the lock.
+    let taker = Command::new("sh")
+        .args([
+            "-c",
+            "exec 9>>\"$0\"; flock 9; sleep 60 </dev/null >/dev/null 2>&1 & echo $! > \"$1\"; exit 0",
+        ])
+        .arg(&lock)
+        .arg(&child_pid)
+        .output()
+        .unwrap();
+    assert!(taker.status.success());
+    let job: u32 = std::fs::read_to_string(&child_pid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let pattern = slots.join("heavy.*.lock").display().to_string();
+    let stalls = |extra: &[&str]| {
+        let out = rally()
+            .arg("--config")
+            .arg(&config)
+            .env("RALLY_ROSTER_FROM", "no-such-shim-for-tests")
+            .args(["stalls", "--lock", &pattern])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    // Idle, and running past --hung-after: possibly hung, named by the job's own pid.
+    std::thread::sleep(Duration::from_millis(1200));
+    let out = stalls(&["--hung-after", "1s", "--cpu-sample", "1s"]);
+    let row = &out["locks"][0];
+    assert_eq!(row["holders"], json!([job]), "{out}");
+    assert_eq!(row["found_by"], rally::lock_holder::BY_DESCRIPTOR);
+    let kernel = row["kernel_holders"].as_array().unwrap();
+    assert_eq!(kernel.len(), 1, "{out}");
+    assert_ne!(
+        kernel[0],
+        json!(job),
+        "the kernel names the shell that took it: {out}"
+    );
+    let hung = out["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["row"] == "possibly_hung_lock_holder")
+        .unwrap_or_else(|| panic!("no possibly_hung_lock_holder: {out}"));
+    assert_eq!(hung["processes"][0]["holder"], json!(job));
+    assert!(
+        hung["processes"][0]["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("possibly hung: sleep 60, "),
+        "{hung}"
+    );
+    // Stopped: the stopped-holder prompt names it.
+    let stop = Command::new("kill")
+        .args(["-STOP", &job.to_string()])
+        .status()
+        .unwrap();
+    assert!(stop.success());
+    let out = stalls(&[]);
+    let stopped = out["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["row"] == "stopped_lock_holder")
+        .unwrap_or_else(|| panic!("no stopped_lock_holder: {out}"));
+    assert_eq!(stopped["processes"][0]["pid"], json!(job), "{stopped}");
+    assert_eq!(stopped["processes"][0]["state"], "T");
+    let _ = Command::new("kill")
+        .args(["-KILL", &job.to_string()])
+        .status();
+}
+
 /// RAL-188: a fair slot pool's waiters hold files of their own in a waiting directory, not the
 /// slots, so stalls reads that directory beside the pattern: each held slot's owner, each waiter
 /// by owner and how long, and a prompt when one has waited past --queue-wait-after while another
