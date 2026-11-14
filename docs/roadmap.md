@@ -1430,6 +1430,15 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   run alongside; observed only, never changing the result; the browser tests carry those lines to their own
   standard error, so ci-local's log has them; with tests for a segfault retried, a second failing, and a teardown
   crash with a stand-in coredumpctl.
+- [ ] **RAL-183: Browser tests forward only real crash lines, marked as real; the stand-in core can't pass for
+  one.** From the lamplighter reading RAL-179's own faked teardown crash in ci-local's log as a real one
+  (2026-11-14, 61d0dca's check.log 738–739), assigned by the watchman. Done when: `run_browser` writes nothing
+  to the test's own standard error from a run whose Chrome command isn't the real `RALLY_TEST_CHROME` or that uses
+  a stand-in coredumpctl (the tests that fake a crash still assert on the script's output); what a real run
+  forwards begins `browser test: [real Chrome, real coredumpctl]`, so the log can be trusted at a glance; and the
+  stand-in core's time and pid are impossible ones (1970, pid 999999); and a core within 2 s of the run's own
+  crash at start is said as that crash's, by time, since its process is gone before a pid can be taken (the
+  lamplighter's real abort of 12:05:52Z was listed twice, by two runs, each as "not one of this run's").
 - [ ] **RAL-184: The digest's gate line counts "suites and scenes".** From the watchman's read of RAL-181: with every
   suite recorded, RAL-180's green line said "112 scenes" of what are mostly the QUICK phase's suites. Done when: the
   line, and the parser's and service's bound messages, say "suites and scenes"; with the tests updated.

@@ -61,6 +61,8 @@ let browser = null;
 let stderrTail = "";
 // A crash at start that was tried once more: its status and what Chrome said.
 let firstAbort = null;
+// When that crash at start was seen, in milliseconds, to tie its core to this run (RAL-183).
+let firstCrashMs = null;
 // When this run began, to the second, for coredumpctl's --since (RAL-179).
 const startedAt = Math.floor(Date.now() / 1000);
 
@@ -189,9 +191,15 @@ function sayCores(ours, wait) {
   }
   for (const core of cores) {
     const at = new Date(Number(core.time) / 1000).toISOString().replace(/\.\d+Z$/, "Z");
+    // RAL-183: a crash at start has gone before any pid of it can be taken, so a core within 2 s of
+    // this run's own crash at start is said as that one's, by time; a pid can't say it.
+    const nearOwnCrash = firstCrashMs !== null
+      && Math.abs(Number(core.time) / 1000 - firstCrashMs) <= 2000;
     const whose = ours.has(Number(core.pid))
       ? "one of this run's processes"
-      : "not one of this run's processes, so perhaps a run alongside";
+      : nearOwnCrash
+        ? "within 2 s of this run's own crash at start, so most likely that one"
+        : "not one of this run's processes, so perhaps a run alongside";
     process.stderr.write(`sign-in.mjs: a Chrome core was dumped at ${at}, pid ${core.pid} (${whose}), `
       + `${signalNames[core.sig] || "signal " + core.sig}, ${core.exe} (RAL-179)\n`);
   }
@@ -299,6 +307,7 @@ try {
   page = await startOnce();
 } catch (error) {
   if (!error.exit) throw error;
+  firstCrashMs = Date.now();
   const first = { status: exitStatus(error.exit), ...exitSeen, chrome_stderr: stderrTail };
   if (!isCrash(error.exit.code, error.exit.signal)) {
     await fail({ error: `the browser exited with ${first.status} before the page loaded` });

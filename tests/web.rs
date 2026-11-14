@@ -1153,12 +1153,25 @@ fn run_browser_env(
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let seen: Value = serde_json::from_str(printed.trim())
         .unwrap_or_else(|_| panic!("the script printed no result: {printed}\n{stderr}"));
-    if let Some(first) = seen.get("retried_after_abort") {
+    // RAL-183: only a run of the real browser, with the real coredumpctl, says anything on the
+    // test's own standard error, and says so first, so a line in ci-local's log is never a test's
+    // stand-in. A test that fakes a crash asserts on the script's output itself.
+    let real = browser().as_deref() == Some(chrome)
+        && !env
+            .iter()
+            .any(|(name, _)| *name == "RALLY_BROWSER_COREDUMPCTL");
+    const REAL: &str = "browser test: [real Chrome, real coredumpctl]";
+    if let (true, Some(first)) = (real, seen.get("retried_after_abort")) {
         use std::io::Write;
         let _ = writeln!(
             std::io::stderr(),
-            "browser test: Chrome aborted at start ({}) at {}, pid {} ({}), load {}, document \
+            "{REAL} Chrome {} at start ({}) at {}, pid {} ({}), load {}, document \
              portal mounted: {}; tried once more (RAL-160); it said: {}",
+            if first["status"] == 134 || first["status"] == "SIGABRT" {
+                "aborted"
+            } else {
+                "crashed"
+            },
             first["status"],
             first["at"].as_str().unwrap_or("?"),
             first["pid"],
@@ -1170,9 +1183,12 @@ fn run_browser_env(
     }
     // RAL-179: a crash at teardown, and any Chrome core dumped during the run, reach the test's
     // own standard error, so ci-local's log carries them even when the test passes.
-    for line in stderr.lines().filter(|line| line.contains("(RAL-179)")) {
+    for line in stderr
+        .lines()
+        .filter(|line| real && line.contains("(RAL-179)"))
+    {
         use std::io::Write;
-        let _ = writeln!(std::io::stderr(), "browser test: {line}");
+        let _ = writeln!(std::io::stderr(), "{REAL} {line}");
     }
     (output.status.success(), seen, stderr)
 }
@@ -1189,9 +1205,11 @@ fn chrome_that_fails(dir: &std::path::Path, aborts: u32, status: u32, chrome: &s
         format!(
             "#!/bin/sh\nn=$(cat {counter} 2>/dev/null || echo 0)\necho $((n + 1)) > {counter}\n\
              if [ \"$n\" -lt {aborts} ]; then\n  \
-             echo \"fake zypak: Assertion 'bus' failed (run $((n + 1)))\" >&2\n  exit {status}\nfi\n\
+             echo \"fake zypak: Assertion 'bus' failed (run $((n + 1)))\" >&2\n  \
+             date +%s%6N > {crashed_at}\n  exit {status}\nfi\n\
              exec \"$@\"\n",
-            counter = counter.display()
+            counter = counter.display(),
+            crashed_at = dir.join("crashed_at").display()
         ),
     )
     .unwrap();
@@ -1252,9 +1270,38 @@ fn a_segfault_at_start_is_tried_once_more_and_a_second_fails() {
     let viewer = start();
     let dir = tempfile::tempdir().unwrap();
     let once = chrome_that_fails(dir.path(), 1, 139, &chrome);
-    let (ok, seen, stderr) = run_browser(&viewer, &once, None, None, None);
+    // RAL-183: a stand-in coredumpctl lists a core at the moment the stand-in Chrome crashed, as
+    // systemd would, with a pid the run never held: it's said as this run's crash, by its time.
+    let cores = dir.path().join("coredumpctl");
+    std::fs::write(
+        &cores,
+        format!(
+            "#!/bin/sh\nt=$(cat {})\necho \"[{{\\\"time\\\":$t,\\\"pid\\\":999999,\\\"sig\\\":11,\\\"exe\\\":\\\"/app/extra/chrome\\\"}}]\"\n",
+            dir.path().join("crashed_at").display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cores, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (ok, seen, stderr) = run_browser_env(
+        &viewer,
+        &once,
+        None,
+        None,
+        None,
+        &[("RALLY_BROWSER_COREDUMPCTL", cores.to_str().unwrap())],
+    );
     assert!(ok, "{seen}\n{stderr}");
     assert_eq!(seen["retried_after_abort"]["status"], 139, "{seen}");
+    assert!(
+        stderr.contains(
+            "pid 999999 (within 2 s of this run's own crash at start, so most likely that one), \
+             SIGSEGV"
+        ),
+        "{stderr}"
+    );
     assert!(
         stderr.contains("Chrome crashed at start (139) at ") && stderr.contains("trying once more"),
         "{stderr}"
@@ -1296,8 +1343,8 @@ fn a_crash_at_teardown_is_said_and_the_result_stands() {
     let cores = dir.path().join("coredumpctl");
     std::fs::write(
         &cores,
-        "#!/bin/sh\necho '[{\"time\":1794652199536351,\"pid\":1,\"sig\":11,\"exe\":\"/app/extra/chrome\"},\
-         {\"time\":1794652199536351,\"pid\":2,\"sig\":11,\"exe\":\"/usr/bin/node\"}]'\n",
+        "#!/bin/sh\necho '[{\"time\":1000000,\"pid\":999999,\"sig\":11,\"exe\":\"/app/extra/chrome\"},\
+         {\"time\":1000000,\"pid\":999998,\"sig\":11,\"exe\":\"/usr/bin/node\"}]'\n",
     )
     .unwrap();
     std::fs::set_permissions(&cores, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1319,7 +1366,7 @@ fn a_crash_at_teardown_is_said_and_the_result_stands() {
     );
     assert!(
         stderr.contains(
-            "a Chrome core was dumped at 2026-11-14T10:29:59Z, pid 1 (not one of this run's \
+            "a Chrome core was dumped at 1970-01-01T00:00:01Z, pid 999999 (not one of this run's \
              processes, so perhaps a run alongside), SIGSEGV, /app/extra/chrome (RAL-179)"
         ),
         "{stderr}"
