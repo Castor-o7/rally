@@ -1422,4 +1422,6 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   to the test's own standard error from a run whose Chrome command isn't the real `RALLY_TEST_CHROME` or that uses
   a stand-in coredumpctl (the tests that fake a crash still assert on the script's output); what a real run
   forwards begins `browser test: [real Chrome, real coredumpctl]`, so the log can be trusted at a glance; and the
-  stand-in core's time and pid are impossible ones (1970, pid 999999).
+  stand-in core's time and pid are impossible ones (1970, pid 999999); and a core within 2 s of the run's own
+  crash at start is said as that crash's, by time, since its process is gone before a pid can be taken (the
+  lamplighter's real abort of 12:05:52Z was listed twice, by two runs, each as "not one of this run's").

@@ -1205,9 +1205,11 @@ fn chrome_that_fails(dir: &std::path::Path, aborts: u32, status: u32, chrome: &s
         format!(
             "#!/bin/sh\nn=$(cat {counter} 2>/dev/null || echo 0)\necho $((n + 1)) > {counter}\n\
              if [ \"$n\" -lt {aborts} ]; then\n  \
-             echo \"fake zypak: Assertion 'bus' failed (run $((n + 1)))\" >&2\n  exit {status}\nfi\n\
+             echo \"fake zypak: Assertion 'bus' failed (run $((n + 1)))\" >&2\n  \
+             date +%s%6N > {crashed_at}\n  exit {status}\nfi\n\
              exec \"$@\"\n",
-            counter = counter.display()
+            counter = counter.display(),
+            crashed_at = dir.join("crashed_at").display()
         ),
     )
     .unwrap();
@@ -1268,9 +1270,38 @@ fn a_segfault_at_start_is_tried_once_more_and_a_second_fails() {
     let viewer = start();
     let dir = tempfile::tempdir().unwrap();
     let once = chrome_that_fails(dir.path(), 1, 139, &chrome);
-    let (ok, seen, stderr) = run_browser(&viewer, &once, None, None, None);
+    // RAL-183: a stand-in coredumpctl lists a core at the moment the stand-in Chrome crashed, as
+    // systemd would, with a pid the run never held: it's said as this run's crash, by its time.
+    let cores = dir.path().join("coredumpctl");
+    std::fs::write(
+        &cores,
+        format!(
+            "#!/bin/sh\nt=$(cat {})\necho \"[{{\\\"time\\\":$t,\\\"pid\\\":999999,\\\"sig\\\":11,\\\"exe\\\":\\\"/app/extra/chrome\\\"}}]\"\n",
+            dir.path().join("crashed_at").display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cores, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (ok, seen, stderr) = run_browser_env(
+        &viewer,
+        &once,
+        None,
+        None,
+        None,
+        &[("RALLY_BROWSER_COREDUMPCTL", cores.to_str().unwrap())],
+    );
     assert!(ok, "{seen}\n{stderr}");
     assert_eq!(seen["retried_after_abort"]["status"], 139, "{seen}");
+    assert!(
+        stderr.contains(
+            "pid 999999 (within 2 s of this run's own crash at start, so most likely that one), \
+             SIGSEGV"
+        ),
+        "{stderr}"
+    );
     assert!(
         stderr.contains("Chrome crashed at start (139) at ") && stderr.contains("trying once more"),
         "{stderr}"
