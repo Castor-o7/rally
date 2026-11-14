@@ -1135,6 +1135,44 @@ pub fn pr_head(repo: &str, commit: &str) -> Result<Option<(String, String)>, Str
     }
 }
 
+/// GitHub's compare of `base`…`head` in `repo` (RAL-167), read-only through `gh api`: its status,
+/// how far `head` is ahead, and each commit between with its sha, message and committer date. Both
+/// must be commits or branch names `gh` can pass on.
+pub fn compare(repo: &str, base: &str, head: &str) -> Result<Value, String> {
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'/' | b'.'))
+    };
+    if !ok(base) || !ok(head) {
+        return Err("a compare names commits or branches only".into());
+    }
+    let out = run_gh(&[
+        "api",
+        &format!("repos/{repo}/compare/{base}...{head}"),
+        "--jq",
+        "{status, ahead_by, commits: [.commits[] | {sha, message: .commit.message, \
+         date: .commit.committer.date}]}",
+    ])?;
+    serde_json::from_str(out.trim()).map_err(|_| "gh returned a compare that can't be read".into())
+}
+
+/// The tip of `branch` in `repo` (RAL-167), read-only through `gh api`.
+pub fn branch_tip(repo: &str, branch: &str) -> Result<String, String> {
+    let out = run_gh(&[
+        "api",
+        &format!("repos/{repo}/commits/{branch}"),
+        "--jq",
+        ".sha",
+    ])?;
+    let sha = out.trim().to_owned();
+    if sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(sha)
+    } else {
+        Err("gh returned something that isn't a commit".into())
+    }
+}
+
 /// The CI on `commit` in `repo` (RAL-102), read-only through `gh run list`, for the digest to say
 /// when a merge left the base red. `repo` must already be checked as `owner/repo`; `commit` must
 /// be hex.

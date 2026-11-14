@@ -1321,3 +1321,10 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   to the rally; and each landed story with no submit since its newest landing, with its team; docs/brief.md says to
   record an owed thing as a blocker when asked and close it when it comes, and that a question answered in the same
   exchange needs none; with a test.
+- [ ] **RAL-167: `rally brief --watchman` says what's live, staged and merged but not live.** From the watchman
+  (2026-11-14): tonight the service was thirteen stories behind main, and nothing in Rally said so; the lamplighter's
+  staging left files, not records. Done when: `brief --watchman` has a `builds` section, all observed: live (the
+  service's commit from /v1/whoami, or that it's older than RAL-156 and doesn't say), this CLI's commit, main's
+  tip, and the stories merged but not live, from GitHub's compare of live and main, mapped by the story ID in each
+  commit's message, with the count and the oldest's age; a hint when this CLI is ahead of the service (staged,
+  waiting on a restart); no reading of rollout files; with tests.
