@@ -1503,3 +1503,13 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   storage fails); it looks like the "Past rallies" disclosure marker; web assets only; with a browser test that
   folds, reloads (tests/browser/sign-in.mjs's new `RALLY_BROWSER_RELOAD_PROBE`), finds it still folded with its
   counts, and unfolds it.
+- [ ] **RAL-192: Lock holders found by open descriptor when the locking pid is gone.** From RAL-191's first live
+  run (2026-11-14, issues log 1.86): every dsm-heavy slot's holder by `/proc/locks` was a pid that had exited
+  (dsm-heavy's bash, gone once it execs `systemd-run --scope`), while its job held the lock by the inherited
+  descriptor, so stalls' stopped and possibly-hung checks had never prompted for a dsm-heavy job. Done when: a
+  holder `/proc/locks` names that has exited or doesn't have the file open is replaced by the topmost processes
+  (whose parent doesn't hold it too) with an open descriptor on the file, matched by device and inode through
+  `/proc/<pid>/fd`, the row saying `found_by` and keeping `kernel_holders`; no such process found is a blind
+  spot naming how many processes' open files couldn't be read, never "no holder"; the brief's `in_flight` shows
+  the same; with a test that the stopped and possibly-hung checks prompt for a holder found this way
+  (docs/stalls.md).
