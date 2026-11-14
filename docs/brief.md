@@ -32,8 +32,9 @@ rally's projects, with every list bounded and every note cut short (well under 2
    the service doesn't say its commit"); this CLI's commit; main's tip; and what's merged but not live, from
    GitHub's compare of live and main: how many commits, each story named in their messages with the age of its
    oldest commit, the count, and how long the oldest has waited ("13 stories merged, not live; the oldest for 6 h").
-   When this CLI is ahead of the service, a hint says a build looks staged and waiting on a restart: a hint, not a
-   fact. All of it is observed from its own source. Nothing reads the lamplighter's rollout files. It needs `gh`
+   GitHub's compare lists at most 250 commits, so a service further behind than that reads short, and
+   `reads_short` says so with both numbers. When this CLI is ahead of the service, a hint says a build looks staged
+   and waiting on a restart: a hint, not a fact. All of it is observed from its own source. Nothing reads the lamplighter's rollout files. It needs `gh`
    signed in, as the digest does, and says so when a read fails.
 
 What the ledger doesn't hold is said, not guessed at: what's deployed, a batch not recorded, and whether a gate

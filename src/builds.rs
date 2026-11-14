@@ -113,8 +113,19 @@ pub fn section(
             stories.sort_by_key(|(_, at, _)| *at);
             let oldest_ms = stories.first().map(|(_, at, _)| now_ms.saturating_sub(*at));
             let count = stories.len();
+            // GitHub's compare lists at most 250 commits: further behind, this reads short.
+            let ahead = compare["ahead_by"].as_u64().unwrap_or(commits.len() as u64);
+            let short_read = (ahead > commits.len() as u64).then(|| {
+                format!(
+                    "the service is {ahead} commits behind main, but GitHub's compare lists only \
+                     {}: the stories and the oldest age here read short",
+                    commits.len()
+                )
+            });
             out["merged_not_live"] = json!({
-                "commits": compare["ahead_by"].as_u64().unwrap_or(commits.len() as u64),
+                "commits": ahead,
+                "listed": commits.len(),
+                "reads_short": short_read,
                 "stories": stories.iter().map(|(id, at, sha)| json!({
                     "story": id, "commit": short(sha), "age_ms": now_ms.saturating_sub(*at),
                 })).collect::<Vec<_>>(),
@@ -193,6 +204,7 @@ mod tests {
         let merged = &out["merged_not_live"];
         assert_eq!(merged["count"], 2);
         assert_eq!(merged["commits"], 4);
+        assert!(merged["reads_short"].is_null(), "all four were listed");
         assert_eq!(merged["stories"][0]["story"], "RAL-148");
         assert_eq!(merged["stories"][0]["age_ms"], 7 * hour);
         assert_eq!(merged["oldest_age_ms"], 7 * hour);
@@ -205,6 +217,17 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .starts_with("this CLI (9999999) is ahead")
+        );
+
+        // Further behind than GitHub lists: said, not hidden.
+        let long = json!({"status": "ahead", "ahead_by": 300, "commits": [
+            {"sha": "a".repeat(40), "message": "RAL-1: x", "date": "2026-11-13T21:00:00Z"},
+        ]});
+        let far = section(Some("0"), None, Ok("d".into()), Some(Ok(long)), None, now);
+        assert_eq!(
+            far["merged_not_live"]["reads_short"],
+            "the service is 300 commits behind main, but GitHub's compare lists only 1: the \
+             stories and the oldest age here read short"
         );
 
         // A service older than RAL-156 says nothing, and that's said.
