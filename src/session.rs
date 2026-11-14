@@ -226,7 +226,7 @@ pub fn render_for(
     blockers: &[Value],
     harness: Harness,
 ) -> String {
-    render_in(team, stories, blockers, harness, None, None)
+    render_in(team, stories, blockers, harness, None, None, &[])
 }
 
 /// [`render_for`], led by the open rally, its projects' roadmaps, the stories assigned to the
@@ -238,12 +238,15 @@ pub fn render_in(
     harness: Harness,
     rally: Option<&RallyContext>,
     inbox: Option<(&Value, i64)>,
+    resume: &[String],
 ) -> String {
     let mine = |row: &Value| row["team"].as_str() == Some(team);
     let mut body: Vec<String> = Vec::new();
     if harness == Harness::PrimeAgent {
         body.push(PRIME_AGENT_NOTICE.into());
     }
+    // RAL-152: a restart is told first what it needs to resume, already cleaned.
+    body.extend(resume.iter().cloned());
     if let Some(rally) = rally {
         body.push(format!(
             "Open rally (declared): {}; projects {}",
@@ -387,6 +390,42 @@ pub fn render_in(
     cap(&open, body, close)
 }
 
+/// The team's record from the ledger, oldest first, through the service within `total`, every
+/// page up to [`RECORD_PAGES`], or as much as came in time; empty if none could be read (RAL-152).
+pub fn fetch_record(pairing: &Pairing, team: &str, total: Duration) -> Vec<Value> {
+    let deadline = Instant::now() + total;
+    let mut records = Vec::new();
+    let mut after: Option<String> = None;
+    for _ in 0..RECORD_PAGES {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let path = match &after {
+            Some(after) => format!("/v1/teams/{}/record?after={}", encode(team), encode(after)),
+            None => format!("/v1/teams/{}/record", encode(team)),
+        };
+        let Ok(reply) = client::request_for(pairing, "GET", &path, left) else {
+            break;
+        };
+        if !(200..300).contains(&reply.status) {
+            break;
+        }
+        let Ok(page) = serde_json::from_str::<Value>(&reply.body) else {
+            break;
+        };
+        records.extend(page["records"].as_array().cloned().unwrap_or_default());
+        match page["next"].as_str() {
+            Some(next) => after = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    records
+}
+
+/// The most pages of a team's record read at session start (RAL-152).
+pub const RECORD_PAGES: usize = 10;
+
 /// How far back a closed inbox item is told at session start (RAL-146).
 pub const CLOSED_ITEMS_WITHIN_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -521,6 +560,7 @@ mod tests {
             Harness::Other,
             None,
             Some((&inbox, 10 * day + 60_000)),
+            &[],
         );
         assert!(out.contains("Your team's items in the operator's inbox closed in the last day:"));
         assert!(
@@ -548,6 +588,7 @@ mod tests {
             Harness::Other,
             None,
             Some((&json!({"items": []}), 0)),
+            &[],
         );
         assert!(!none.contains("operator's inbox"));
     }
@@ -576,6 +617,7 @@ mod tests {
             Harness::Other,
             Some(&rally),
             None,
+            &[],
         );
         assert!(
             out.contains("Open rally (declared): rally 0x7; projects MAR, ROO"),
@@ -599,7 +641,7 @@ mod tests {
         assert!(!out.contains("ROO-4"), "{out}");
         assert!(out.lines().count() <= MAX_LINES);
         // Without a rally, as before.
-        let plain = render_in("rustdaw", &Map::new(), &[], Harness::Other, None, None);
+        let plain = render_in("rustdaw", &Map::new(), &[], Harness::Other, None, None, &[]);
         assert!(!plain.contains("Open rally"));
     }
 

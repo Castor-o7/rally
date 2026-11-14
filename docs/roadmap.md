@@ -1169,3 +1169,17 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
     browser to go, up to 20 seconds, kills one still there, and fails only if it survives that.
   - **Proof:** the browser tests run 20 times under load (a release build looping beside them), every run green,
     no Chrome left on a test profile, and the sandbox's `/tmp` no larger after than before.
+- [ ] **RAL-152: Session start tells a restarted session what it needs to resume.** From the watchman (2026-11-13),
+  after issue 1.73: at 19:50 every session ended and came back as a new session under the same nickname, and each
+  team sat until the watchman worked out by hand which earlier session had held its nickname and where its
+  transcript and scratchpad were (about 15 minutes for six teams; one guessed wrong first). Done when: with
+  `--hook`, `rally session-start` ties the session's id to its Muster nickname (its transcript's Muster tag, or the
+  roster), and only then tells it, read-only and first in the block: the earlier session that held the nickname,
+  found from the head of the project's transcripts (observed from the files, never Muster's word, "can't tell"
+  said plainly when none is found), with its transcript and scratchpad paths; what the team holds; what a session
+  under the name last recorded and that story's state now; reads waiting; its last note, each declared. A new,
+  unrelated session is never told another's claims; a compact or resume isn't called a restart; it writes
+  nothing. docs/session-hook.md gives the `settings.json` line for the operator to install. Proof: run by hand as
+  each of the six DiscoSim nicknames restarted at 19:55, it names the earlier session the watchman found by hand
+  (vibrant-gull c2319bd8, wise-crocodile fa76ef71, sleek-moth e2eb2632, silent-dhole 00baf303, steely-ridge
+  e9f8a3ac, deft-pelican 4e31e02c).
