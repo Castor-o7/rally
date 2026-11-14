@@ -344,6 +344,17 @@ enum Command {
         /// messaging can stand in for Muster (RAL-59).
         #[arg(long, env = "RALLY_HARNESS")]
         harness: Option<String>,
+        /// Read Claude Code's SessionStart hook input from standard input: this session's id and
+        /// folder, which tie it to its Muster nickname so a restart is told what it needs to
+        /// resume (RAL-152). Without RALLY_TEAM, the nickname is the team.
+        #[arg(long)]
+        hook: bool,
+        /// This session's id, as the hook gives it, for running by hand.
+        #[arg(long)]
+        session_id: Option<String>,
+        /// This session's folder, as the hook gives it, for running by hand.
+        #[arg(long)]
+        cwd: Option<String>,
     },
     /// Send each designated watchman one batched digest when the ledger changes, and nothing when
     /// it hasn't (RAL-8). See docs/digest.md. Reads only; sends through `marshal-shim` or
@@ -1094,10 +1105,37 @@ fn main() -> ExitCode {
         team,
         verbose,
         harness,
+        hook,
+        session_id,
+        cwd,
     } = &cli.command
     {
         let harness = rally::session::Harness::parse(harness.as_deref());
-        session_start(cli.config.clone(), team.as_deref(), *verbose, harness);
+        // The hook's input: one JSON object with the session's id and folder (RAL-152).
+        let input: Value = if *hook {
+            let mut text = String::new();
+            let _ = std::io::Read::read_to_string(
+                &mut std::io::Read::take(std::io::stdin(), 64 * 1024),
+                &mut text,
+            );
+            serde_json::from_str(&text).unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
+        let session = session_id
+            .clone()
+            .or_else(|| input["session_id"].as_str().map(str::to_owned));
+        let folder = cwd
+            .clone()
+            .or_else(|| input["cwd"].as_str().map(str::to_owned));
+        // After a compact, clear or resume, the hook runs again in the same conversation, so it
+        // isn't a restart, and no earlier session is looked for (RAL-152).
+        let continuing = matches!(
+            input["source"].as_str(),
+            Some("compact" | "clear" | "resume")
+        );
+        let who = session.zip(folder).map(|(id, cwd)| (id, cwd, continuing));
+        session_start(cli.config.clone(), team.as_deref(), *verbose, harness, who);
         return ExitCode::SUCCESS;
     }
     if let Command::CheckGithubToken {
@@ -1178,14 +1216,45 @@ fn session_start(
     team: Option<&str>,
     verbose: bool,
     harness: rally::session::Harness,
+    who: Option<(String, String, bool)>,
 ) {
     let quiet = |why: &str| {
         if verbose {
             eprintln!("rally session-start: {why}");
         }
     };
-    let Some(team) = team.filter(|t| !t.trim().is_empty()) else {
-        return quiet("no team: pass --team or set RALLY_TEAM");
+    let started = std::time::Instant::now();
+    // RAL-152: who this session is, tied to its Muster nickname by its own transcript or the
+    // roster, and where the project's transcripts and scratchpads are.
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let found = who
+        .as_ref()
+        .zip(home.as_ref())
+        .and_then(|((id, cwd, continuing), home)| {
+            let slug = rally::resume::project_slug(cwd);
+            let dir = home.join(".claude/projects").join(&slug);
+            let transcript = dir.join(format!("{id}.jsonl"));
+            // Muster's own hook runs beside this one at a session's start, so the session may not
+            // be on the roster or tagged in its transcript yet: asked again, for up to 1.5 s.
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(1_500);
+            let tie = loop {
+                let roster = muster_roster(std::time::Duration::from_millis(700));
+                if let Some(tie) = rally::resume::identify(&transcript, id, roster.as_ref()) {
+                    break tie;
+                }
+                if std::time::Instant::now() >= until {
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            };
+            let scratch = std::env::temp_dir()
+                .join(format!("claude-{}", rustix::process::getuid().as_raw()))
+                .join(&slug);
+            Some((tie, dir, scratch, id.clone(), *continuing))
+        });
+    let tied = found.as_ref().map(|((nickname, _), ..)| nickname.as_str());
+    let Some(team) = team.filter(|t| !t.trim().is_empty()).or(tied) else {
+        return quiet("no team: pass --team or set RALLY_TEAM, or run it as the hook (--hook)");
     };
     let path = match config_path(config) {
         Ok(path) => path,
@@ -1197,7 +1266,6 @@ fn session_start(
     let Ok(pairing) = serde_json::from_str::<Pairing>(&text) else {
         return quiet(&format!("{} can't be read", path.display()));
     };
-    let started = std::time::Instant::now();
     match rally::session::fetch(&pairing, rally::session::DEADLINE) {
         Ok((stories, blockers)) => {
             // The open rally and its roadmaps (RAL-131), in what's left of the deadline.
@@ -1207,6 +1275,18 @@ fn session_start(
             let left = rally::session::DEADLINE.saturating_sub(started.elapsed());
             let inbox = rally::session::fetch_inbox(&pairing, left);
             let now = now_ms().unwrap_or(0);
+            // RAL-152: what a restart needs to resume, read-only, in what's left.
+            let resume = match &found {
+                Some(((nickname, tie), dir, scratch, id, continuing)) => {
+                    let left = rally::session::DEADLINE.saturating_sub(started.elapsed());
+                    let records = rally::session::fetch_record(&pairing, nickname, left);
+                    let earlier = (!continuing)
+                        .then(|| rally::resume::earlier_session(dir, nickname, id, scratch, now))
+                        .flatten();
+                    rally::resume::lines(nickname, tie, earlier.as_ref(), &records, &stories, now)
+                }
+                None => Vec::new(),
+            };
             println!(
                 "{}",
                 rally::session::render_in(
@@ -1216,11 +1296,40 @@ fn session_start(
                     harness,
                     context.as_ref(),
                     inbox.as_ref().map(|inbox| (inbox, now)),
+                    &resume,
                 )
             )
         }
         Err(error) => quiet(&escape_for_terminal(&error)),
     }
+}
+
+/// Muster's roster through `muster-shim roster`, within `limit`, or `None` (RAL-152). Read-only.
+fn muster_roster(limit: std::time::Duration) -> Option<Value> {
+    let mut child = std::process::Command::new("muster-shim")
+        .arg("roster")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let until = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut out = Vec::new();
+    std::io::Read::read_to_end(&mut child.stdout.take()?, &mut out).ok()?;
+    serde_json::from_slice(&out).ok()
 }
 
 /// The pairing at `path`, for commands that only work through the service.
