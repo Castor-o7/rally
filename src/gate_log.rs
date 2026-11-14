@@ -10,16 +10,19 @@
 //!
 //! The format is DiscoSim's `dsm-gate` (2026-11-13 on): a first line
 //! `# dsm-gate: commit <sha> tree <sha> scenes: <scenes> started <time> script sha256 <hex>`, then
-//! `QUICK OK` (or `QUICK OK (...)`), and for each scene a `== res://tests/<scene>.tscn ==` header
-//! followed by `=== N passed, M failed ===`. A log without the first line is refused plainly
-//! rather than guessed at.
+//! the QUICK phase, a suite at a time (`== test_sim ==`, or `== test_layout (what it covers) ==`),
+//! then `QUICK OK` (or `QUICK OK (...)`), and for each scene a `== res://tests/<scene>.tscn ==`
+//! header. Each suite or scene header is followed by `=== N passed, M failed ===`, and all of them
+//! are recorded, the QUICK phase's suites by name and the scenes by theirs (RAL-181: before, only
+//! the scenes were, three of about 113). A log without the first line is refused plainly rather
+//! than guessed at.
 
 use serde::{Deserialize, Serialize};
 
 /// The longest log read, so a wrong path to a huge file isn't read whole.
 pub const MAX_BYTES: u64 = 64 * 1024 * 1024;
-/// The most scenes recorded.
-pub const MAX_SCENES: usize = 64;
+/// The most suites and scenes recorded (RAL-181: DiscoSim's gate runs about 113).
+pub const MAX_SCENES: usize = 256;
 
 /// One scene's result line, or that its header had none.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +78,24 @@ fn after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     rest.split_whitespace().next()
 }
 
+/// A suite or scene header's name: `== res://tests/<scene>.tscn ==` gives the scene, and
+/// `== <suite> ==` or `== <suite> (what it covers) ==` the suite (RAL-181). A `=== ... ===` result
+/// line isn't one.
+fn suite_header(line: &str) -> Option<&str> {
+    if line.starts_with("===") {
+        return None;
+    }
+    let inner = line.strip_prefix("== ")?.strip_suffix(" ==")?.trim();
+    if let Some(scene) = inner
+        .strip_prefix("res://tests/")
+        .and_then(|rest| rest.strip_suffix(".tscn"))
+    {
+        return Some(scene);
+    }
+    let name = inner.split(" (").next().unwrap_or(inner).trim();
+    (!name.is_empty() && !name.contains(char::is_whitespace)).then_some(name)
+}
+
 /// Reads a `dsm-gate` log's lines. `path`, `sha256` and `bytes` are the caller's, which read the
 /// file; this only parses, so it can be tested without one.
 pub fn parse(text: &str, path: &str, sha256: &str, bytes: u64) -> Result<GateLog, String> {
@@ -104,10 +125,10 @@ pub fn parse(text: &str, path: &str, sha256: &str, bytes: u64) -> Result<GateLog
         let line = line.trim();
         if quick.is_none() && line.starts_with("QUICK OK") {
             quick = Some(line.chars().take(200).collect());
-        } else if let Some(scene) = line
-            .strip_prefix("== res://tests/")
-            .and_then(|rest| rest.strip_suffix(".tscn =="))
-        {
+            // A QUICK suite with no count line, such as the bench, which is judged by its own
+            // verdict suite, is covered by the gate's QUICK OK and left out (RAL-181).
+            scenes.retain(|s| s.passed.is_some());
+        } else if let Some(scene) = suite_header(line) {
             if scenes.len() >= MAX_SCENES {
                 return Err(format!("the log has more than {MAX_SCENES} scenes"));
             }
@@ -121,15 +142,11 @@ pub fn parse(text: &str, path: &str, sha256: &str, bytes: u64) -> Result<GateLog
             .and_then(|rest| rest.strip_suffix(" ==="))
             && let Some(last) = scenes.last_mut().filter(|s| s.passed.is_none())
         {
-            // "N passed, M failed"
-            let mut words = counts.split([' ', ',']).filter(|w| !w.is_empty());
-            if let (Some(p), Some("passed"), Some(f), Some("failed"), None) = (
-                words.next(),
-                words.next(),
-                words.next(),
-                words.next(),
-                words.next(),
-            ) && let (Ok(p), Ok(f)) = (p.parse(), f.parse())
+            // "N passed, M failed", or with ", K skipped" after (RAL-181).
+            let words: Vec<&str> = counts.split([' ', ',']).filter(|w| !w.is_empty()).collect();
+            if let [p, "passed", f, "failed", rest @ ..] = words.as_slice()
+                && (rest.is_empty() || matches!(rest, [k, "skipped"] if k.parse::<u64>().is_ok()))
+                && let (Ok(p), Ok(f)) = (p.parse(), f.parse())
             {
                 last.passed = Some(p);
                 last.failed = Some(f);
@@ -240,5 +257,54 @@ mod tests {
         let out = read(&path).unwrap();
         assert_eq!(out.sha256, hex::encode(Sha256::digest(text.as_bytes())));
         assert_eq!(out.bytes, text.len() as u64);
+    }
+
+    /// RAL-181: the QUICK phase's suites are recorded too, by name, beside the scenes, as today's
+    /// logs have them; a result line or a heading with words isn't a suite.
+    #[test]
+    fn every_suite_is_recorded_the_quick_phases_too() {
+        let text = format!(
+            "# dsm-gate: commit {} tree {} scenes: x started t script sha256 0\n\
+             == test_sim ==\nGodot Engine v4\n=== DISCOSIM test_sim ===\n  PASS 1\n\
+             === 65 passed, 0 failed ===\n\
+             == test_layout (build catalogue, rotation, layout saves) ==\n\
+             === DISCOSIM test_layout ===\n=== 232 passed, 1 failed ===\n\
+             == not a suite name ==\n\
+             == test_club_nav (the sim's walk graph) ==\n=== 25 passed, 0 failed, 0 skipped ===\n\
+             == bench (ms per sim tick by crowd size) ==\nBENCH guests>=0 mean=0.5\n\
+             QUICK OK\n\
+             == res://tests/test_ui_flow.tscn ==\n=== DISCOSIM test_ui_flow ===\n\
+             === 267 passed, 0 failed ===\n",
+            "a".repeat(40),
+            "b".repeat(40)
+        );
+        let out = parse(&text, "p", &"f".repeat(64), 1).unwrap();
+        let got: Vec<(&str, Option<u64>, Option<u64>)> = out
+            .scenes
+            .iter()
+            .map(|s| (s.scene.as_str(), s.passed, s.failed))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("test_sim", Some(65), Some(0)),
+                ("test_layout", Some(232), Some(1)),
+                ("test_club_nav", Some(25), Some(0)),
+                ("test_ui_flow", Some(267), Some(0)),
+            ]
+        );
+        // The bench gives no count and is covered by QUICK OK. Without a QUICK OK, a suite with
+        // no result is kept, and counts as giving none.
+        let no_quick = text.replace("QUICK OK\n", "");
+        let bare = parse(&no_quick, "p", &"f".repeat(64), 1).unwrap();
+        assert!(
+            bare.scenes
+                .iter()
+                .any(|s| s.scene == "bench" && s.passed.is_none())
+        );
+        assert!(!out.scenes.iter().any(|s| s.scene == "bench"));
+        assert_eq!(bare.failures(), (1, 1));
+        assert_eq!(out.failures(), (1, 0));
+        assert_eq!(out.quick.as_deref(), Some("QUICK OK"));
     }
 }
