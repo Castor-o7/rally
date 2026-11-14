@@ -1457,3 +1457,8 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   out (saying what was pending or missing), 2 on a usage error; retries a failed read until the timeout; the
   Rally block in CLAUDE.md tells teams to use it; with unit tests and a CLI test against a stand-in `gh`
   (docs/wait-green.md).
+- [ ] **RAL-186: `rally wait-green` named where it's needed.** From the watchman (2026-11-14), after RAL-185. Done
+  when: docs/watchman.md §4 gives `rally wait-green` in the landing commands and says to ask what a team waits
+  with when a green pull request isn't submitted; and a team's session start, when it has a story claimed or sent
+  back, says under its open stories to wait for the checks with `rally wait-green <PR> --repo <owner/repo>` before
+  submitting, and says nothing of it when all its stories are in review; with a test (docs/session-hook.md).

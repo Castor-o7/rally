@@ -11,7 +11,8 @@ One block, between `<rally_state team="…">` and `</rally_state>`, in this orde
   one can be found, and what that nickname was doing (below, "A restarted session", RAL-152)
 - the open rally, each of its projects' roadmap stages, and the cycle (RAL-131), and the stories assigned to the
   team (RAL-130)
-- the team's open stories (claimed, in review or sent back)
+- the team's open stories (claimed, in review or sent back), and, when one is claimed or sent back, to wait for its
+  pull request's checks with `rally wait-green <PR> --repo <owner/repo>` before submitting (RAL-186)
 - under them, what bears on them (RAL-171): each condition in force naming one of the team's stories ("a condition
   in force names this story: …", declared, information and never a block), and each verified pull request of the
   team's that has fallen behind its base, read through `gh` as the digest's RAL-105 section reads it, in what's left

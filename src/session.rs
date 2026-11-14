@@ -306,8 +306,19 @@ pub fn render_in(
             format!("- {}: {} ({kind})", clean(id), clean(state))
         })
         .collect();
+    // RAL-186: a story still to be submitted is one whose pull request's checks will be waited on.
+    let to_submit = stories
+        .values()
+        .any(|row| mine(row) && matches!(row["state"].as_str(), Some("claimed" | "sent_back")));
     body.push("Your team's open stories:".into());
     push_or_none(&mut body, own);
+    if to_submit {
+        body.push(
+            "  Before you submit, wait for the checks with `rally wait-green <PR> --repo <owner/repo>`: \
+             it exits 0 once every check is green at the pinned head (docs/wait-green.md)."
+                .into(),
+        );
+    }
     // RAL-171: what bears on the team's stories: conditions in force naming them, and a verified
     // pull request fallen behind its base.
     body.extend(extra.about_stories.iter().cloned());
@@ -677,6 +688,35 @@ mod tests {
         assert!(!none.contains("operator's inbox"));
     }
 
+    /// RAL-186: a team with a story still to submit, claimed or sent back, is told to wait for its
+    /// pull request's checks with `rally wait-green`; one whose stories are all in review isn't.
+    #[test]
+    fn a_team_with_a_story_to_submit_is_told_to_wait_with_wait_green() {
+        for (state, told) in [("claimed", true), ("sent_back", true), ("in_review", false)] {
+            let stories = json!({"RAL-1": {"state": state, "team": "rally"},
+                                 "RAL-2": {"state": "claimed", "team": "other"}});
+            let out = render_in(
+                "rally",
+                stories.as_object().unwrap(),
+                &[],
+                Harness::Other,
+                None,
+                None,
+                &Extra::default(),
+            );
+            assert_eq!(
+                out.contains("rally wait-green <PR> --repo <owner/repo>"),
+                told,
+                "{state}: {out}"
+            );
+            if told {
+                let open = out.find("Your team's open stories:").unwrap();
+                let line = out.find("Before you submit, wait for the checks").unwrap();
+                assert!(open < line, "{out}");
+            }
+        }
+    }
+
     /// RAL-171: a condition in force naming one of the team's open stories is said under them,
     /// as information; another team's story, or a merged one, says nothing.
     #[test]
@@ -709,6 +749,8 @@ mod tests {
         };
         let out = render_in("rustdaw", stories, &[], Harness::Other, None, None, &extra);
         let open = out.find("Your team's open stories:").unwrap();
+        // RAL-186: RAL-160 is in review, so no story waits to be submitted: no wait-green line.
+        assert!(!out.contains("rally wait-green"), "{out}");
         let said = out.find("- RAL-160: a condition in force").unwrap();
         let next = out.find("Stories you could verify").unwrap();
         assert!(open < said && said < next, "{out}");
