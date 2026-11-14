@@ -85,6 +85,7 @@ recording nothing:
 ```sh
 rally rebased RAL-170 --head <full sha>                   # in a checkout that has both commits
 rally rebased RAL-170 --head <full sha> --checkout ~/src/rally-wt/x --base main
+rally rebased RAL-163 --part 2 --head <full sha>              # a story in parts, before its close
 ```
 
 - **The comparison:** the verified commit's change against its merge base with main, and the head's
@@ -113,3 +114,6 @@ rally rebased RAL-170 --head <full sha> --checkout ~/src/rally-wt/x --base main
   first). Otherwise GitHub's compares, saying why local git wasn't used; GitHub has no remerge diff,
   so the conflict resolutions are then `null` and said to be unknown, and GitHub's compare shows no
   file modes, so `modes_note` says a mode change can't be seen there (RAL-172).
+- **A story in parts:** until its close, a story in parts has no verified commit of its own, only
+  each part's. `--part k` compares part k's verified commit, from the repository its evidence names;
+  without it, the answer is `can't tell` and names the parts that are verified (RAL-173).

@@ -1378,3 +1378,14 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   behind-main line, and only for a team with an open story; `rally merge` gives, after the conditions naming the
   story, each condition in force naming no story, said as naming none and bearing on every merge; a team's session
   start still lists only those naming its stories; information, never a block; with tests (docs/session-hook.md).
+- [ ] **RAL-174: `rally stalls --prompts-only` says what it couldn't see, and fails.** From checking the watchman's
+  cron line by hand (2026-11-14): under cron's PATH neither shim nor `gh` was found, the roster couldn't be read,
+  two missed check-ins vanished, and the run printed nothing, a silent all clear. Done when: with `--prompts-only`,
+  a run that couldn't read the roster, a roadmap or other read, or a lock file (a pattern matching nothing) writes
+  `can't see: <what>` on a line each and exits non-zero; the report carries `blind`; docs/watchman.md §6 and
+  docs/stalls.md give the cron line with its `PATH=` and say why; tested with no shims on PATH.
+- [ ] **RAL-173: `rally rebased --part k` compares a part's verified commit.** From checking the usage sent to the
+  watchman (2026-11-14): before its close a story in parts has no verified commit, only each part's, so RAL-163's
+  part 2 re-merge couldn't have been read. Done when: `--part k` reads part k's verified commit and the repository
+  its evidence names; without it, a story in parts says `can't tell` and names the verified parts; a missing part
+  or an unverified one says so; with tests (docs/gate.md).

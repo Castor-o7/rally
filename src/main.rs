@@ -811,8 +811,10 @@ enum Command {
         /// How long to sample each lock holder's CPU use for --hung-after.
         #[arg(long, value_parser = parse_window, default_value = "5s")]
         cpu_sample: u64,
-        /// Print nothing when there's nothing to ask, for a cron line (RAL-164). It succeeds either
-        /// way.
+        /// Print nothing when there's nothing to ask and everything needed was read, for a cron
+        /// line (RAL-164). When something couldn't be read (the roster, a roadmap or other read, a
+        /// lock file), it says what on a line each and fails, so a broken run can't read as a
+        /// quiet muster (RAL-174).
         #[arg(long)]
         prompts_only: bool,
         #[command(flatten)]
@@ -1118,6 +1120,9 @@ enum Command {
         /// The branch the head merges into.
         #[arg(long, default_value = "main")]
         base: String,
+        /// For a story in parts, before its close: compare this part's verified commit.
+        #[arg(long)]
+        part: Option<u32>,
     },
     /// Show the state of every story, or one story with its history.
     Show {
@@ -2172,9 +2177,15 @@ fn builds_section(location: Option<&Location>, config: &Path) -> Value {
 
 /// `rally rebased` (RAL-170): local git if the checkout has every commit, else GitHub's compares,
 /// saying why local git wasn't used; never "same change" when it can't tell.
-fn rebased_value(detail: &Value, head: &str, checkout: &Path, base: &str) -> Value {
+fn rebased_value(
+    detail: &Value,
+    part: Option<u32>,
+    head: &str,
+    checkout: &Path,
+    base: &str,
+) -> Value {
     use rally::rebased;
-    let (repo, verified) = match rebased::verified_of(detail) {
+    let (repo, verified) = match rebased::verified_of(detail, part) {
         Ok(found) => found,
         Err(why) => return rebased::cant_tell(&why),
     };
@@ -2534,14 +2545,98 @@ fn stalls_pass(
     if !errors.is_empty() {
         report["errors"] = json!(errors);
     }
-    // For a cron line (RAL-164): nothing at all when there's nothing to ask.
+    // What it needed and couldn't see (RAL-174): a quiet answer is only an all clear when nothing
+    // is on this list.
+    let blind = blind_spots(&report);
+    if !blind.is_empty() {
+        report["blind"] = json!(blind);
+    }
+    // For a cron line (RAL-164): nothing at all when there's nothing to ask, and it saw everything.
     let nothing = report["prompts"].as_array().is_none_or(Vec::is_empty)
         && report["every_team_waiting"].is_null()
         && report["errors"].is_null();
-    if prompts_only && nothing {
+    if prompts_only && blind.is_empty() && nothing {
         return Ok(String::new());
     }
-    Ok(serde_json::to_string_pretty(&report)?)
+    let text = serde_json::to_string_pretty(&report)?;
+    // Under --prompts-only, a blind run fails, each blind spot on a line of its own ahead of the
+    // report, so a broken cron run can't read as a quiet muster (RAL-174).
+    if prompts_only && !blind.is_empty() {
+        let lines: Vec<String> = blind.iter().map(|b| format!("can't see: {b}")).collect();
+        return Err(format!(
+            "stalls couldn't see everything it needed, so no prompt here isn't an all clear:\n{}\n{text}",
+            lines.join("\n")
+        )
+        .into());
+    }
+    Ok(text)
+}
+
+/// What a `rally stalls` report needed and couldn't read (RAL-174): the roster (without it, no
+/// team can be seen to be idle or quiet), each read that failed (a roadmap through `gh`, the
+/// designation), and each lock file that couldn't be read, such as a pattern that matched nothing.
+fn blind_spots(report: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if report["roster"]["available"] == false {
+        let why: Vec<String> = report["roster"]["passed_over"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|p| {
+                format!(
+                    "{}: {}",
+                    p["command"].as_str().unwrap_or("?"),
+                    p["reason"].as_str().unwrap_or("?")
+                )
+            })
+            .collect();
+        out.push(format!(
+            "the roster: no shim's roster could be read{}, so no team can be seen to be idle or \
+             quiet (is the shim on PATH?)",
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", why.join("; "))
+            }
+        ));
+    }
+    // The same failure for many teams (one roadmap read for each) is one line, naming them.
+    let mut failures: Vec<(String, Vec<String>)> = Vec::new();
+    for error in report["errors"].as_array().into_iter().flatten() {
+        let what = error["error"]
+            .as_str()
+            .or_else(|| error["digest"].as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| error.to_string());
+        let whose = error["team"]
+            .as_str()
+            .or_else(|| error["project"].as_str())
+            .map(str::to_owned);
+        match failures.iter_mut().find(|(w, _)| *w == what) {
+            Some((_, names)) => names.extend(whose),
+            None => failures.push((what, whose.into_iter().collect())),
+        }
+    }
+    for (what, names) in failures {
+        out.push(if names.is_empty() {
+            what
+        } else {
+            format!("{what} (for {})", names.join(", "))
+        });
+    }
+    for lock in report["locks"].as_array().into_iter().flatten() {
+        if lock["checked"] == false {
+            out.push(format!(
+                "the lock {}: {}",
+                lock["lock"].as_str().unwrap_or("?"),
+                lock["reason"]
+                    .as_str()
+                    .or_else(|| lock["error"].as_str())
+                    .unwrap_or("it couldn't be read")
+            ));
+        }
+    }
+    out
 }
 
 /// `--every` for `digest` and `wake` (RAL-86): each report and each failed pass on its own line,
@@ -4256,6 +4351,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             head,
             checkout,
             base,
+            part,
         } => {
             if head.len() != 40 || !head.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err("--head takes a full commit".into());
@@ -4271,8 +4367,11 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 &page,
                 |ledger, page| views::stories(ledger, Some(&story), page),
             )?;
-            let mut out = rebased_value(&value["detail"], &head, &checkout, &base);
+            let mut out = rebased_value(&value["detail"], part, &head, &checkout, &base);
             out["story"] = json!(story);
+            if let Some(k) = part {
+                out["part"] = json!(k);
+            }
             return Ok(serde_json::to_string_pretty(&out)?);
         }
         Command::Gate { range, repo, allow } => {
