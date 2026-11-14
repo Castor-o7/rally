@@ -764,6 +764,16 @@ fn with_rally_openers_only_those_credentials_open_or_close_a_rally() {
     assert!(refused.body.contains("assigns a story"), "{}", refused.body);
     let assigned = write(&watchman, "w", "declared", assign);
     assert_eq!(assigned.status, 200, "{}", assigned.body);
+    // RAL-157: so is recording a batch the watchman gates.
+    let sha = |c: char| c.to_string().repeat(40);
+    let batch = json!({"change": "batch_start", "project": "RAL",
+                       "cars": [{"story": "RAL-9", "commit": sha('1')}],
+                       "base": sha('b'), "tip": sha('c'), "note": "train 1"});
+    let refused = write(&a1, "w", "declared", batch.clone());
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert!(refused.body.contains("records a batch"), "{}", refused.body);
+    let started = write(&watchman, "w", "declared", batch);
+    assert_eq!(started.status, 200, "{}", started.body);
     let close = json!({"change": "close_rally", "note": "stood down"});
     assert_eq!(write(&a1, "w", "declared", close.clone()).status, 403);
     let rallies: Value = serde_json::from_str(&call(&a1, "GET", "/v1/rallies", None).body).unwrap();
@@ -3698,4 +3708,280 @@ fn the_digest_loop_is_started_restarted_and_stopped_by_its_pid_file() {
     assert!(!pid_file.exists());
     let (ok, out, _) = digest(&["--stop"]);
     assert!(ok && out.contains("no digest was running"), "{out}");
+}
+
+/// RAL-157: `rally batch start` takes cars as STORY@COMMIT[@PICKED] and prints the record number
+/// its `rally batch end` names; the watchman's brief then shows the batch gating, and once it
+/// lands, the car whose story has no submit since.
+#[test]
+fn a_batch_is_started_and_ended_from_the_command_line() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let sha = |c: char| c.to_string().repeat(40);
+    let run = |args: &[&str]| {
+        let out = cli(&config, "watch", args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    run(&[
+        "open-rally",
+        "--name",
+        "x",
+        "--project",
+        "DSM",
+        "--team",
+        "t",
+    ]);
+    run(&["ready", "DSM-1"]);
+    run(&["claim", "DSM-1", "--team", "t"]);
+    let car = format!("DSM-1@{}@{}", sha('1'), sha('2'));
+    let started = run(&[
+        "batch",
+        "start",
+        "--project",
+        "dsm",
+        "--car",
+        &car,
+        "--base",
+        &sha('b'),
+        "--tip",
+        &sha('c'),
+        "--expect",
+        "50m",
+        "--log",
+        "/x/train1.out",
+        "--note",
+        "train 1",
+    ]);
+    let batch = started["recorded"].as_u64().unwrap();
+    let brief = || -> Value {
+        serde_json::from_str(&call(&pairing, "GET", "/v1/brief?watchman=true", None).body).unwrap()
+    };
+    let gating = brief()["in_the_gate"]["gating"][0].clone();
+    assert_eq!(gating["batch"], batch, "{gating}");
+    assert_eq!(gating["project"], "DSM");
+    assert_eq!(gating["cars"][0]["picked"], sha('2'));
+    assert_eq!(gating["expect_minutes"], 50);
+    // A car that isn't STORY@COMMIT is refused before anything is sent.
+    let bad = cli(
+        &config,
+        "watch",
+        &[
+            "batch",
+            "start",
+            "--project",
+            "DSM",
+            "--car",
+            "DSM-1",
+            "--base",
+            &sha('b'),
+            "--tip",
+            &sha('c'),
+            "--note",
+            "x",
+        ],
+    );
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("isn't a car"));
+    // RAL-162: the gate's log, hashed and read by Rally. One without its commit line is refused
+    // before anything is sent, and one for another commit by the service.
+    let logs = service.dir.path().join("gates");
+    std::fs::create_dir_all(&logs).unwrap();
+    let gate_log = |name: &str, text: String| {
+        let path = logs.join(name);
+        std::fs::write(&path, text).unwrap();
+        path.display().to_string()
+    };
+    let header = |commit: String| {
+        format!(
+            "# dsm-gate: commit {commit} tree {} scenes: ui_flow started t script sha256 0\n\
+             QUICK OK\n== res://tests/ui_flow.tscn ==\n=== 4 passed, 1 failed ===\n",
+            sha('e')
+        )
+    };
+    let end = |log: &str| {
+        cli(
+            &config,
+            "watch",
+            &[
+                "batch",
+                "end",
+                "--batch",
+                &batch.to_string(),
+                "--landed",
+                &sha('c'),
+                "--gate-log",
+                log,
+                "--note",
+                "in",
+            ],
+        )
+    };
+    let old = end(&gate_log("old.log", "QUICK OK\n".into()));
+    assert!(!old.status.success());
+    assert!(String::from_utf8_lossy(&old.stderr).contains("doesn't say which commit"));
+    let other = end(&gate_log("other.log", header(sha('9'))));
+    assert!(!other.status.success());
+    let said = String::from_utf8_lossy(&other.stderr).into_owned();
+    assert!(said.contains("not batch"), "{said}");
+    let right = end(&gate_log("right.log", header(sha('c'))));
+    assert!(
+        right.status.success(),
+        "{}",
+        String::from_utf8_lossy(&right.stderr)
+    );
+    let gate = brief()["in_the_gate"].clone();
+    let landed = &gate["newest_landed"];
+    assert_eq!(landed["batch"], batch, "{landed}");
+    assert_eq!(landed["no_submit_since_landing"][0]["story"], "DSM-1");
+    assert_eq!(landed["gate_log"]["kind"], "declared");
+    assert_eq!(landed["gate_log"]["failed"], 1);
+    assert_eq!(landed["gate_log"]["sha256"].as_str().unwrap().len(), 64);
+    let ended = &gate["ended"][0];
+    assert!(
+        ended["prompts"]
+            .to_string()
+            .contains("landed though its gate log shows 1 failed"),
+        "{ended}"
+    );
+}
+
+/// RAL-163: with a rally open, `rally stalls` checks the rally's teams, not the projects list's;
+/// a claim riding a batch built on one that failed prompts the watchman; and a landing with no
+/// submit since is owed once the check-in has passed. Without a roster, these Rally-only rows stay.
+#[test]
+fn stalls_check_the_rallys_teams_and_see_the_watchmans_batches() {
+    let service = start();
+    let pairing = service.add("a1", false);
+    let config = service.dir.path().join("client/config.json");
+    assert!(pair(&config, &pairing.code()).status.success());
+    let sha = |c: char| c.to_string().repeat(40);
+    let run = |name: &str, args: &[&str]| {
+        let out = rally()
+            .arg("--config")
+            .arg(&config)
+            .args(["--as", name])
+            .env("RALLY_ROSTER_FROM", "no-such-shim-for-tests")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    run(
+        "w",
+        &[
+            "open-rally",
+            "--name",
+            "x",
+            "--project",
+            "DSM",
+            "--team",
+            "sleek-moth",
+        ],
+    );
+    for (story, team) in [
+        ("DSM-1", "sleek-moth"),
+        ("DSM-2", "steely-ridge"),
+        ("MAR-1", "marshal"),
+    ] {
+        run(team, &["ready", story]);
+        run(team, &["claim", story, "--team", team]);
+    }
+    let car = |story: &str| format!("{story}@{}", sha('1'));
+    let start = |car: &str, tip: char, extra: &[&str]| -> u64 {
+        let mut args = vec!["batch", "start", "--project", "DSM", "--car", car];
+        let (base, tip) = (sha('b'), sha(tip));
+        args.extend(["--base", &base, "--tip", &tip, "--note", "train"]);
+        args.extend(extra);
+        run("watch", &args)["recorded"].as_u64().unwrap()
+    };
+    let failed = start(&car("DSM-1"), 'c', &[]);
+    run(
+        "watch",
+        &[
+            "batch",
+            "end",
+            "--batch",
+            &failed.to_string(),
+            "--failed",
+            "--note",
+            "red",
+        ],
+    );
+    let on = failed.to_string();
+    let riding = start(&car("DSM-1"), 'd', &["--on-batch", &on]);
+    let landed = start(&car("DSM-2"), 'e', &[]);
+    run(
+        "watch",
+        &[
+            "batch",
+            "end",
+            "--batch",
+            &landed.to_string(),
+            "--landed",
+            &sha('e'),
+            "--note",
+            "in",
+        ],
+    );
+
+    let stalls = || run("watch", &["stalls", "--quiet-after", "1s"]);
+    // Waits, up to 15 s, for the landing to pass the 1 s check-in, rather than sleeping past it.
+    let until = Instant::now() + Duration::from_secs(15);
+    let out = loop {
+        let out = stalls();
+        if out["prompts"].to_string().contains("owes_submit") {
+            break out;
+        }
+        assert!(Instant::now() < until, "no owes_submit within 15 s: {out}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(
+        out["rally"]["teams_checked"],
+        json!(["sleek-moth", "steely-ridge"]),
+        "{out}"
+    );
+    let rows: Vec<(String, String)> = out["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["team"].as_str().unwrap().into(),
+                p["row"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    assert!(!rows.iter().any(|(team, _)| team == "marshal"), "{rows:?}");
+    assert!(
+        rows.contains(&("sleek-moth".into(), "riding_batch".into())),
+        "{rows:?}"
+    );
+    assert!(
+        rows.contains(&("steely-ridge".into(), "owes_submit".into())),
+        "{rows:?}"
+    );
+    let ride = out["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["row"] == "riding_batch")
+        .unwrap();
+    assert!(
+        ride["rally_says"].to_string().contains(&format!(
+            "batch {riding} is built on batch {failed}, which didn't land"
+        )),
+        "{ride}"
+    );
 }

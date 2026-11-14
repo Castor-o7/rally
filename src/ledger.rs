@@ -366,6 +366,38 @@ pub enum Change {
         remove: bool,
         note: String,
     },
+    /// The watchman starts gating a batch of commits together, a "train" (RAL-157): the cars, each
+    /// a story with the commit its team sent and the sha it was picked as, the base it was built on
+    /// (optionally another batch still gating), and the one sha the gate runs on. Declared; the
+    /// service takes it only from those who may open a rally. It changes no story's state: each
+    /// landing is still recorded with `merge`. A car's story need only exist, since a story is
+    /// often submitted after it lands.
+    BatchStart {
+        project: String,
+        cars: Vec<Car>,
+        base: String,
+        tip: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_batch: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_minutes: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        log: Option<String>,
+        note: String,
+    },
+    /// The batch started at record `batch` ended (RAL-157): landed at a sha, failed, or abandoned
+    /// (the gate stopped without an answer). Declared, from those who may open a rally.
+    BatchEnd {
+        batch: u64,
+        outcome: BatchOutcome,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        landed: Option<String>,
+        /// The gate's log, as the CLI hashed and read it (RAL-162): declared, and refused unless
+        /// it names the batch's tip as the commit it ran on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gate_log: Option<crate::gate_log::GateLog>,
+        note: String,
+    },
     /// Anyone records a major event of the open rally (RAL-104): a one-line headline, how serious
     /// it is, and what backs it (record numbers, pull requests, commits or files), if anything.
     /// Declared, like any other claim. It belongs to the open rally, and stays with it once closed.
@@ -434,6 +466,65 @@ pub enum HoldsUp {
     Service,
 }
 
+/// The most cars in one batch (RAL-157).
+pub const MAX_CARS: usize = 30;
+
+/// One car of a batch: a story, the commit its team sent, and the sha it became on the batch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Car {
+    pub story: String,
+    pub commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picked: Option<String>,
+}
+
+/// How a batch ended (RAL-157).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchOutcome {
+    Landed,
+    Failed,
+    Abandoned,
+}
+
+/// A batch of commits gated together (RAL-157), as it was started, and its end if it has one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Batch {
+    pub seq: u64,
+    pub kind: Kind,
+    pub source: Source,
+    pub at_ms: i64,
+    pub project: String,
+    pub cars: Vec<Car>,
+    pub base: String,
+    pub tip: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_batch: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expect_minutes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log: Option<String>,
+    pub note: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended: Option<BatchEnded>,
+}
+
+/// How and when a batch ended (RAL-157).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct BatchEnded {
+    pub seq: u64,
+    pub source: Source,
+    pub at_ms: i64,
+    pub outcome: BatchOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub landed: Option<String>,
+    /// The gate's log, as the watchman named it (RAL-162). Declared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate_log: Option<crate::gate_log::GateLog>,
+    pub note: String,
+}
+
 /// An item in the operator's inbox, as it was raised (RAL-146), and its close if it has one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct OperatorItem {
@@ -484,6 +575,8 @@ impl Change {
             | Self::RallySession { .. }
             | Self::RallyProject { .. }
             | Self::Event { .. }
+            | Self::BatchStart { .. }
+            | Self::BatchEnd { .. }
             | Self::OperatorItem { .. }
             | Self::CloseItem { .. }
             | Self::Shelve { .. }
@@ -1433,6 +1526,8 @@ pub struct Ledger {
     rallies: Vec<Rally>,
     /// Every operator item by its record number, open and closed (RAL-146).
     operator_items: BTreeMap<u64, OperatorItem>,
+    /// Every batch by its start's record number, gating and ended (RAL-157).
+    batches: BTreeMap<u64, Batch>,
 }
 
 /// `text` with its first letter in capitals, for the start of a sentence.
@@ -1898,6 +1993,11 @@ impl Ledger {
     }
 
     /// Every operator item by its record number, open and closed (RAL-146).
+    /// Every batch by its start's record number, gating and ended (RAL-157).
+    pub fn batches(&self) -> &BTreeMap<u64, Batch> {
+        &self.batches
+    }
+
     pub fn operator_items(&self) -> &BTreeMap<u64, OperatorItem> {
         &self.operator_items
     }
@@ -1952,6 +2052,21 @@ impl Ledger {
                 // Closing an operator item depends only on that item.
                 if let Some(open) = self.operator_items.get(&item) {
                     trial.operator_items.insert(item, open.clone());
+                }
+            } else if let Change::BatchStart { cars, on_batch, .. } = &change {
+                // A start depends on its cars' stories existing and on the batch it's built on.
+                for car in cars {
+                    if let Some(story) = self.stories.get(&car.story) {
+                        trial.stories.insert(car.story.clone(), story.clone());
+                    }
+                }
+                if let Some(on) = on_batch.and_then(|on| self.batches.get(&on)) {
+                    trial.batches.insert(on.seq, on.clone());
+                }
+            } else if let Change::BatchEnd { batch, .. } = change {
+                // An end depends only on its batch.
+                if let Some(open) = self.batches.get(&batch) {
+                    trial.batches.insert(batch, open.clone());
                 }
             } else if let Change::EndStanding { standing, .. } = change {
                 // Ending a standing record depends only on that record.
@@ -2480,6 +2595,91 @@ impl Ledger {
                 self.last_seq = seq;
                 return Ok(());
             }
+            Change::BatchStart {
+                project,
+                cars,
+                base,
+                tip,
+                on_batch,
+                expect_minutes,
+                log,
+                note,
+            } => {
+                require_kind(record, Kind::Declared)?;
+                for car in &cars {
+                    if !self.stories.contains_key(&car.story) {
+                        return Err(LedgerError::InvalidChange(format!(
+                            "{} isn't in the ledger, so it can't ride a batch",
+                            car.story
+                        )));
+                    }
+                }
+                if let Some(on) = on_batch
+                    && !self.batches.contains_key(&on)
+                {
+                    return Err(LedgerError::InvalidChange(format!(
+                        "record {on} isn't a batch, so this can't be built on it"
+                    )));
+                }
+                self.batches.insert(
+                    seq,
+                    Batch {
+                        seq,
+                        kind: record.kind(),
+                        source: record.source().clone(),
+                        at_ms: record.at_ms(),
+                        project,
+                        cars,
+                        base,
+                        tip,
+                        on_batch,
+                        expect_minutes,
+                        log,
+                        note,
+                        ended: None,
+                    },
+                );
+                self.last_seq = seq;
+                return Ok(());
+            }
+            Change::BatchEnd {
+                batch,
+                outcome,
+                landed,
+                gate_log,
+                note,
+            } => {
+                require_kind(record, Kind::Declared)?;
+                let open = self
+                    .batches
+                    .get_mut(&batch)
+                    .filter(|open| open.ended.is_none())
+                    .ok_or_else(|| {
+                        LedgerError::InvalidChange(format!(
+                            "record {batch} isn't a batch still gating"
+                        ))
+                    })?;
+                // The slip it catches (RAL-162): a log of another run, or of a stale tip.
+                if let Some(log) = &gate_log
+                    && !log.commit.eq_ignore_ascii_case(&open.tip)
+                {
+                    return Err(LedgerError::InvalidChange(format!(
+                        "the gate log says it ran on {}, not batch {batch}'s tip {}",
+                        log.commit, open.tip
+                    )));
+                }
+                open.ended = Some(BatchEnded {
+                    seq,
+                    source: record.source().clone(),
+                    at_ms: record.at_ms(),
+                    outcome,
+                    landed,
+                    gate_log,
+                    note,
+                });
+                self.last_seq = seq;
+                return Ok(());
+            }
             Change::Event {
                 headline,
                 severity,
@@ -2820,6 +3020,8 @@ fn transition(
         | Change::RallySession { .. }
         | Change::RallyProject { .. }
         | Change::Event { .. }
+        | Change::BatchStart { .. }
+        | Change::BatchEnd { .. }
         | Change::OperatorItem { .. }
         | Change::CloseItem { .. }
         | Change::Shelve { .. }
@@ -3462,6 +3664,8 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
             | Change::RallySession { .. }
             | Change::RallyProject { .. }
             | Change::Event { .. }
+            | Change::BatchStart { .. }
+            | Change::BatchEnd { .. }
             | Change::OperatorItem { .. }
             | Change::CloseItem { .. }
             | Change::Shelve { .. }
@@ -3608,6 +3812,90 @@ fn check_fields(change: &Change) -> Result<(), LedgerError> {
                 }
             }
             &[("session", session), ("note", note)]
+        }
+        Change::BatchStart {
+            project,
+            cars,
+            base,
+            tip,
+            log,
+            note,
+            ..
+        } => {
+            if cars.is_empty() || cars.len() > MAX_CARS {
+                return Err(LedgerError::InvalidChange(format!(
+                    "a batch has 1 to {MAX_CARS} cars"
+                )));
+            }
+            for car in cars {
+                if !is_story_id(&car.story) {
+                    return Err(LedgerError::InvalidStoryId(car.story.clone()));
+                }
+            }
+            let shas = cars
+                .iter()
+                .flat_map(|car| std::iter::once(car.commit.as_str()).chain(car.picked.as_deref()))
+                .chain([base.as_str(), tip.as_str()]);
+            for sha in shas {
+                if !is_commit(sha) {
+                    return Err(LedgerError::InvalidCommit);
+                }
+            }
+            if log
+                .as_deref()
+                .is_some_and(|log| log.trim().is_empty() || log.chars().any(char::is_control))
+            {
+                return Err(LedgerError::ControlCharacter("log"));
+            }
+            &[("project", project), ("note", note)]
+        }
+        Change::BatchEnd {
+            outcome,
+            landed,
+            gate_log,
+            note,
+            ..
+        } => {
+            if let Some(log) = gate_log {
+                let hex64 =
+                    log.sha256.len() == 64 && log.sha256.bytes().all(|b| b.is_ascii_hexdigit());
+                if !is_commit(&log.commit) || !is_commit(&log.tree) || !hex64 {
+                    return Err(LedgerError::InvalidCommit);
+                }
+                if log.path.trim().is_empty() {
+                    return Err(LedgerError::EmptyField("gate log path"));
+                }
+                if log.scenes.len() > crate::gate_log::MAX_SCENES {
+                    return Err(LedgerError::InvalidChange(format!(
+                        "a gate log records at most {} scenes",
+                        crate::gate_log::MAX_SCENES
+                    )));
+                }
+                let lines = [log.path.as_str(), &log.started, &log.script]
+                    .into_iter()
+                    .chain(log.quick.as_deref())
+                    .chain(log.scenes.iter().map(|s| s.scene.as_str()));
+                for line in lines {
+                    if line.chars().any(char::is_control) {
+                        return Err(LedgerError::ControlCharacter("gate log"));
+                    }
+                }
+            }
+            match (outcome, landed) {
+                (BatchOutcome::Landed, None) => {
+                    return Err(LedgerError::EmptyField("landed"));
+                }
+                (BatchOutcome::Landed, Some(sha)) if !is_commit(sha) => {
+                    return Err(LedgerError::InvalidCommit);
+                }
+                (BatchOutcome::Failed | BatchOutcome::Abandoned, Some(_)) => {
+                    return Err(LedgerError::InvalidChange(
+                        "only a batch that landed names the sha it landed at".into(),
+                    ));
+                }
+                _ => {}
+            }
+            &[("note", note)]
         }
         Change::Event {
             headline, backing, ..
@@ -3827,6 +4115,20 @@ fn limited_text(change: &Change) -> Vec<(&'static str, &str)> {
             text.extend(ask.as_deref().map(|ask| ("note", ask)));
             if let Some(HoldsUp::Team(held)) = holds_up {
                 text.push(("team", held));
+            }
+        }
+        Change::BatchStart {
+            project, log, note, ..
+        } => {
+            text.extend([("team", project.as_str()), ("note", note)]);
+            text.extend(log.as_deref().map(|log| ("evidence", log)));
+        }
+        Change::BatchEnd { note, gate_log, .. } => {
+            text.push(("note", note));
+            if let Some(log) = gate_log {
+                text.push(("evidence", log.path.as_str()));
+                text.extend(log.quick.as_deref().map(|q| ("note", q)));
+                text.extend(log.scenes.iter().map(|s| ("note", s.scene.as_str())));
             }
         }
         Change::Event {
@@ -6039,6 +6341,101 @@ mod tests {
         let again = observed(json!({"change": "evidence_check", "story": "RAL-3",
                                     "submit": three, "outcome": {"checkable": true}}));
         assert!(ledger.check(ledger.last_seq() + 1, &again).is_err());
+    }
+
+    /// RAL-157: a batch's start needs 1 to 30 cars whose stories exist (verified or not), full
+    /// shas, and a batch it's built on that exists; its end names an open batch, and only a
+    /// landing names the sha it landed at. Neither changes any story's state.
+    #[test]
+    fn a_batch_is_started_and_ended_as_the_watchman_gates() {
+        let sha = |c: char| c.to_string().repeat(40);
+        let w = |body: serde_json::Value| record(Kind::Declared, "watch", body);
+        let mut ledger = Ledger::default();
+        push(
+            &mut ledger,
+            &w(json!({"change": "ready", "story": "DSM-1"})),
+        );
+        push(
+            &mut ledger,
+            &w(json!({"change": "claim", "story": "DSM-1", "team": "t"})),
+        );
+        let start = |cars: serde_json::Value, extra: serde_json::Value| {
+            let mut body = json!({"change": "batch_start", "project": "DSM", "cars": cars,
+                                  "base": sha('b'), "tip": sha('c'), "note": "train 53"});
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            w(body)
+        };
+        let car = json!([{"story": "DSM-1", "commit": sha('1'), "picked": sha('2')}]);
+        let refused = |ledger: &Ledger, rec: &Record| {
+            ledger
+                .check(ledger.last_seq() + 1, rec)
+                .unwrap_err()
+                .to_string()
+        };
+        // Refused: no cars, too many, a story not in the ledger, a short sha, a missing base batch.
+        assert!(refused(&ledger, &start(json!([]), json!({}))).contains("1 to 30"));
+        let many: Vec<_> = (0..31).map(|_| car[0].clone()).collect();
+        assert!(refused(&ledger, &start(json!(many), json!({}))).contains("1 to 30"));
+        let ghost = json!([{"story": "DSM-9", "commit": sha('1')}]);
+        assert!(refused(&ledger, &start(ghost, json!({}))).contains("isn't in the ledger"));
+        let short = json!([{"story": "DSM-1", "commit": "abc123"}]);
+        assert!(!refused(&ledger, &start(short, json!({}))).is_empty());
+        assert!(
+            refused(&ledger, &start(car.clone(), json!({"on_batch": 99})))
+                .contains("isn't a batch")
+        );
+
+        // A claimed story rides; the story is unchanged.
+        let first = start(
+            car.clone(),
+            json!({"expect_minutes": 50, "log": "/x/train53.out"}),
+        );
+        ledger.check(ledger.last_seq() + 1, &first).unwrap();
+        push(&mut ledger, &first);
+        let one = ledger.last_seq();
+        assert_eq!(ledger.story("DSM-1").unwrap().state, State::Claimed);
+        // Another built on it, gating in parallel.
+        let second = start(car.clone(), json!({"on_batch": one}));
+        push(&mut ledger, &second);
+        let two = ledger.last_seq();
+        assert_eq!(ledger.batches()[&two].on_batch, Some(one));
+
+        let end = |batch: u64, outcome: &str, landed: Option<String>| {
+            let mut body = json!({"change": "batch_end", "batch": batch, "outcome": outcome,
+                                  "note": "done"});
+            if let Some(sha) = landed {
+                body["landed"] = json!(sha);
+            }
+            w(body)
+        };
+        assert!(!refused(&ledger, &end(one, "landed", None)).is_empty());
+        assert!(
+            refused(&ledger, &end(one, "failed", Some(sha('d'))))
+                .contains("only a batch that landed")
+        );
+        assert!(refused(&ledger, &end(77, "failed", None)).contains("isn't a batch still gating"));
+        push(&mut ledger, &end(one, "failed", None));
+        assert!(refused(&ledger, &end(one, "failed", None)).contains("isn't a batch still gating"));
+        // RAL-162: a gate log is refused unless it ran on the batch's tip.
+        let with_log = |commit: char| {
+            let mut rec = end(two, "landed", Some(sha('d')));
+            let mut body = rec.body().clone();
+            body["gate_log"] = json!({"path": "/x/c.log", "sha256": "f".repeat(64),
+                                      "bytes": 10, "commit": sha(commit), "tree": sha('e'),
+                                      "quick": "QUICK OK",
+                                      "scenes": [{"scene": "ui_flow", "passed": 3, "failed": 0}]});
+            rec = w(body);
+            rec
+        };
+        assert!(refused(&ledger, &with_log('a')).contains("not batch"));
+        push(&mut ledger, &with_log('c'));
+        let landed = ledger.batches()[&two].ended.clone().unwrap();
+        assert_eq!(landed.outcome, BatchOutcome::Landed);
+        assert_eq!(landed.landed, Some(sha('d')));
+        assert_eq!(landed.gate_log.unwrap().scenes[0].passed, Some(3));
+        assert_eq!(ledger.story("DSM-1").unwrap().state, State::Claimed);
     }
 
     #[test]

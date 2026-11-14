@@ -1263,3 +1263,35 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   sleeping; the connection-cap test waits up to 10 s for a freed place; both hung-Postgres tests wait until a
   probe write is told the service is busy (the service's own word that a write holds the slot) and fail if none is
   within 30 s. The reads test, which passed with nothing stuck, is shown red first in that case.
+- [ ] **RAL-161: The digest's small faults from the 0x9 rally.** From the watchman (2026-11-13): an empty range
+  printed backwards ("records 3818-3817"); the base-CI section said "no repository in the evidence" for RAL-144,
+  a story in parts whose part submits named Castor-o7/rally; every DiscoSim merge printed "no CI run on <sha>,
+  10m after the merge was seen", one line each, though DiscoSim has no CI on GitHub and its gate is the
+  watchman's. Done when: a digest with no new records says so; a parts story with no closing submit has its
+  newest part's repository (`/v1/stories` gives `part_evidence` apart from the story's own evidence); a project
+  whose projects-list entry names a `gate` isn't looked for on GitHub, and gets one line per digest naming its
+  merges, held until a digest carries it; a merge whose story rode a landed batch says "landed in batch N"
+  (`/v1/stories` gives `landed_in_batch`); docs/digest.md says so; with tests for each.
+- [ ] **RAL-162: A landed batch carries the gate's own log, hashed and read by Rally.** From the watchman
+  (2026-11-14): a DiscoSim landing is the watchman's word ("landed in batch N"). Of the three ways to back it,
+  in order: (1) now: `rally batch end --gate-log <path>` hashes the log and reads its result lines by one fixed
+  parser, refuses a log without the `# dsm-gate: commit ...` first line, and the service refuses one whose commit
+  isn't the batch's tip; recorded as declared ("the log as the watchman kept it, no retention promised"); the
+  brief shows it and asks about a landing whose log shows a failure. (2) when the operator grants a token with
+  commit-status write on DiscoSim: the gate posts `local/gate` on the tip and Rally reads it as observed.
+  (3) documented: rerunning the gate script named in the log on the commit it names. Done when (1) is built
+  with tests for the parser, the refusals and the brief, and docs/brief.md says what the hash is worth and what
+  it isn't.
+- [ ] **RAL-163: `rally stalls` sees the open rally's teams and the watchman's batches.** From the watchman
+  (2026-11-14): at 19:58 what told it the state fastest wasn't in Rally. On the live ledger `rally stalls` checked
+  the projects list's teams, none of which were tonight's, and flagged only past rallies' blockers. Of tonight's
+  facts it caught none: a team idle waiting on the watchman's gate, a hung godot, a claim "stale" while its commit
+  sat on a train. In parts. Part 1, done when: with a rally open, stalls checks the rally's teams (named at its
+  opening, or with live work in its projects), finding their sessions by nickname and confirmed restarts, scoped
+  to the rally, with the projects list's other teams named and not checked; a claim riding a batch still gating
+  is never a missed check-in, is named in every-team-waiting as waiting on the watchman's batch N, and prompts the
+  watchman (`riding_batch`) only when the batch is past its expected time or built on one that didn't land; a
+  landed story with no submit past the check-in prompts the team (`owes_submit`); docs/stalls.md says so; with
+  unit tests and a service test. Part 2: `--lock` takes a glob of lock files (dsm-heavy's slots), and for each
+  holder's process tree samples CPU time twice a few seconds apart: "possibly hung: <command>, <cwd>, N% CPU over
+  5 s, running M min", a prompt and never a finding, with nothing killed.

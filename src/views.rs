@@ -253,6 +253,49 @@ pub fn stories(ledger: &Ledger, story: Option<&str>, page: &Page) -> Result<Valu
             }
             if let Some(evidence) = latest_evidence(story) {
                 row["evidence"] = evidence;
+            } else if let Some((part, seq, evidence)) = latest_part_evidence(story) {
+                // A story in parts with no closing submit yet (RAL-161): its newest part's
+                // evidence, kept apart, so the story's own still means its own.
+                row["part_evidence"] =
+                    json!({"kind": "declared", "part": part, "seq": seq, "text": clip(&evidence)});
+            }
+            // The newest landed batch it rode in (RAL-161), as the watchman declared it.
+            if let Some(batch) = ledger
+                .batches()
+                .values()
+                .rev()
+                .find(|b| {
+                    b.ended.as_ref().is_some_and(|e| {
+                        e.outcome == crate::ledger::BatchOutcome::Landed
+                    }) && b.cars.iter().any(|car| car.story == *id)
+                })
+            {
+                row["landed_in_batch"] = json!(batch.seq);
+                // When it landed, and whether its team has submitted since (RAL-163).
+                if let Some(end) = &batch.ended {
+                    row["landed_at_ms"] = json!(end.at_ms);
+                    row["submitted_since_landing"] = json!(story.history.iter().any(|e| {
+                        e.seq > end.seq && matches!(e.change, Change::Submit { .. })
+                    }));
+                }
+            }
+            // The batch it rides now, still gating (RAL-163): what a claim quiet in the ledger
+            // waits on.
+            if let Some(batch) = ledger
+                .batches()
+                .values()
+                .rev()
+                .find(|b| b.ended.is_none() && b.cars.iter().any(|car| car.story == *id))
+            {
+                let failed_under = batch
+                    .on_batch
+                    .and_then(|on| ledger.batches().get(&on))
+                    .and_then(|on| on.ended.as_ref().map(|e| (on.seq, e.outcome)))
+                    .filter(|(_, outcome)| *outcome != crate::ledger::BatchOutcome::Landed)
+                    .map(|(seq, _)| seq);
+                row["riding_batch"] = json!({"batch": batch.seq, "at_ms": batch.at_ms,
+                    "expect_minutes": batch.expect_minutes, "built_on_unlanded": failed_under,
+                    "kind": "declared"});
             }
             if let Some(read) = latest_read_notes(story, ledger.annotations()) {
                 row["read"] = read;
@@ -395,6 +438,22 @@ pub fn field(value: &Value, name: &str) -> Result<String, String> {
 
 /// A story's latest submission's evidence, declared and clipped, with Rally's own check of it,
 /// observed, when there is one (RAL-27).
+/// A story's newest part submission: its part, record number and evidence (RAL-161).
+fn latest_part_evidence(story: &crate::ledger::Story) -> Option<(u32, u64, String)> {
+    story
+        .history
+        .iter()
+        .rev()
+        .find_map(|entry| match &entry.change {
+            Change::Submit {
+                part: Some(k),
+                evidence,
+                ..
+            } => Some((*k, entry.seq, evidence.clone())),
+            _ => None,
+        })
+}
+
 fn latest_evidence(story: &crate::ledger::Story) -> Option<Value> {
     // The story's own submission, not a part's (RAL-79).
     let submit = story
@@ -1567,6 +1626,43 @@ mod tests {
         let all = waiting_scoped(&ledger, &Readers::Unchecked, true);
         assert_eq!(stories(&all), ["MAR-1", "RAL-1"], "{all}");
         assert!(all.get("closes_due_outside_rally").is_none());
+    }
+
+    /// RAL-161: a story in parts with no closing submit gives its newest part's evidence apart
+    /// from its own, and a story that rode a landed batch says which.
+    #[test]
+    fn a_story_row_gives_part_evidence_and_its_landed_batch() {
+        let team = |body: Value| as_kind(Kind::Declared, "author", body);
+        let sha = |c: char| c.to_string().repeat(40);
+        let records = vec![
+            team(json!({"change": "ready", "story": "RAL-1"})),
+            team(json!({"change": "claim", "story": "RAL-1", "team": "rally"})),
+            team(
+                json!({"change": "submit", "story": "RAL-1", "team": "rally",
+                        "evidence": format!("o/r@{COMMIT}"), "part": 1, "of": 2}),
+            ),
+            team(
+                json!({"change": "submit", "story": "RAL-1", "team": "rally",
+                        "evidence": format!("o/r@{}", sha('e')), "part": 2}),
+            ),
+            team(json!({"change": "batch_start", "project": "RAL",
+                        "cars": [{"story": "RAL-1", "commit": COMMIT}],
+                        "base": sha('b'), "tip": sha('c'), "note": "train"})),
+            team(
+                json!({"change": "batch_end", "batch": 5, "outcome": "landed",
+                        "landed": sha('c'), "note": "in"}),
+            ),
+        ];
+        let ledger = Ledger::replay(&records).unwrap();
+        let list = stories(&ledger, None, &Page::default()).unwrap();
+        let row = &list["stories"]["RAL-1"];
+        assert!(
+            row.get("evidence").is_none(),
+            "its own evidence stays its own: {row}"
+        );
+        assert_eq!(row["part_evidence"]["part"], 2);
+        assert_eq!(row["part_evidence"]["text"], format!("o/r@{}", sha('e')));
+        assert_eq!(row["landed_in_batch"], 5);
     }
 
     /// RAL-136: only what's in force is listed, each as declared, with who declared it.

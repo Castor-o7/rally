@@ -86,6 +86,10 @@ pub struct Project {
     /// The Rally team that works this roadmap, for `rally wake` (RAL-54).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
+    /// Whose gate the project's merges pass, when it isn't CI on GitHub, such as "the
+    /// watchman's" (RAL-161): its merges aren't looked for on GitHub, and the digest says so once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<String>,
     /// That team's sessions on Muster's roster: Muster project names or session nicknames, listed
     /// explicitly, since a session's project doesn't always name its team.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

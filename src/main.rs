@@ -890,6 +890,57 @@ enum Command {
         #[arg(long)]
         commit: String,
     },
+    /// Record a batch of commits gated together, a "train" (RAL-157): `start` with its cars, the
+    /// base it was built on and the tip the gate runs on; `end` it when it lands, fails or is
+    /// abandoned. Only those who may open a rally may write these. Declared: it changes no story's
+    /// state, so record each landing with `rally merge` too. `rally brief --watchman` shows the
+    /// open batches first. Prints the record number of a start, which its end names.
+    Batch {
+        /// `start` or `end`.
+        action: String,
+        /// For start: the project's story prefix, such as DSM.
+        #[arg(long)]
+        project: Option<String>,
+        /// For start: a car, as STORY@COMMIT (the commit its team sent) or STORY@COMMIT@PICKED (and
+        /// the sha it became on the batch). Repeat for each, up to 30.
+        #[arg(long = "car")]
+        cars: Vec<String>,
+        /// For start: the sha the batch was built on.
+        #[arg(long)]
+        base: Option<String>,
+        /// For start: the one sha the gate runs on.
+        #[arg(long)]
+        tip: Option<String>,
+        /// For start: the record number of a batch still gating that this one is built on.
+        #[arg(long)]
+        on_batch: Option<u64>,
+        /// For start: how long the gate is expected to take, such as 50m; past it, the brief asks
+        /// whether the gate is alive.
+        #[arg(long, value_parser = parse_window)]
+        expect: Option<u64>,
+        /// For start: where the gate's log is.
+        #[arg(long)]
+        log: Option<String>,
+        /// For end: the start's record number.
+        #[arg(long)]
+        batch: Option<u64>,
+        /// For end: it landed, at this sha.
+        #[arg(long, conflicts_with_all = ["failed", "abandoned"])]
+        landed: Option<String>,
+        /// For end: it failed.
+        #[arg(long, conflicts_with = "abandoned")]
+        failed: bool,
+        /// For end: the gate stopped without an answer.
+        #[arg(long)]
+        abandoned: bool,
+        /// For end: the gate's log (RAL-162). Rally hashes it and reads its result lines itself,
+        /// and the service refuses it unless it names the batch's tip as the commit it ran on.
+        /// Recorded as declared: the log as you keep it, with no retention promised.
+        #[arg(long)]
+        gate_log: Option<PathBuf>,
+        #[arg(long)]
+        note: String,
+    },
     /// Assign a story to a team (RAL-130), or with --end end its assignment. Normally the
     /// watchman's, once the project's roadmap is cleared (RAL-129); the service takes it only from
     /// those who may open a rally. Declared: it claims nothing and confers no authority, and
@@ -2028,37 +2079,138 @@ fn stalls_pass(
         )
         .max()
         .unwrap_or(0);
+    // RAL-163: with a rally open, its teams are the ones checked: those named when it opened and
+    // those holding its stories, each with its own session on the roster (a team is its session's
+    // nickname, and a confirmed restart keeps the link). The projects list's teams are the
+    // fallback, and with a rally open the ones outside it are counted, not checked.
+    let rallies = backend
+        .read_value("/v1/rallies", None, &Page::default(), views::rallies)
+        .ok();
+    let rally_projects = rallies.as_ref().and_then(open_rally_projects);
+    let in_rally = |id: &str| {
+        rally_projects.as_ref().is_none_or(|projects| {
+            let prefix = id.split_once('-').map_or(id, |(prefix, _)| prefix);
+            projects.iter().any(|p| p.eq_ignore_ascii_case(prefix))
+        })
+    };
+    // Each team to check: its name, the names its sessions go by, and the projects whose roadmaps
+    // give its ready story.
+    let mut plans: Vec<(String, Vec<String>, Vec<&Project>)> = Vec::new();
+    let mut outside = Vec::new();
+    match &rally_projects {
+        Some(prefixes) => {
+            let open = &rallies.as_ref().expect("read above")["open"];
+            let mut names: std::collections::BTreeSet<String> = open["teams"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|t| t.as_str().map(|t| t.trim().to_lowercase()))
+                .collect();
+            // A team with live work in the rally: a claim, a story sent back or in review, one
+            // riding a batch, or a landing it owes a submit. A verified story keeps its team, so
+            // that alone doesn't count.
+            for (id, story) in stories {
+                let live = matches!(
+                    story["state"].as_str(),
+                    Some("claimed" | "sent_back" | "in_review")
+                ) || story["riding_batch"].is_object()
+                    || story["submitted_since_landing"] == false;
+                if in_rally(id)
+                    && live
+                    && let Some(team) = story["team"].as_str()
+                {
+                    names.insert(team.trim().to_lowercase());
+                }
+            }
+            let rally_listed: Vec<&Project> = projects
+                .iter()
+                .filter(|p| prefixes.iter().any(|x| x.eq_ignore_ascii_case(&p.prefix)))
+                .collect();
+            for name in names {
+                let sessions = successors(open, &name);
+                plans.push((name, sessions, rally_listed.clone()));
+            }
+            outside = projects
+                .iter()
+                .filter_map(|p| p.team.clone())
+                .filter(|t| {
+                    !plans
+                        .iter()
+                        .any(|(name, _, _)| name == &t.trim().to_lowercase())
+                })
+                .collect();
+        }
+        None => {
+            for project in &projects {
+                if let Some(team) = project.team.as_deref() {
+                    plans.push((team.to_owned(), project.sessions.clone(), vec![project]));
+                }
+            }
+        }
+    }
     let mut facts = Vec::new();
     let mut errors = Vec::new();
-    for project in &projects {
-        let Some(team) = project.team.as_deref() else {
-            continue;
-        };
+    for (team, session_names, roadmaps) in &plans {
+        let team = team.as_str();
         let key = team.trim().to_lowercase();
         let same = |name: Option<&str>| name.is_some_and(|name| name.trim().to_lowercase() == key);
-        let ready = match web::read_roadmap(project) {
-            Ok((_, text)) => {
-                read.pick(team, &rally::next::items(&text, &project.prefix))["next"]["story"]
-                    .as_str()
-                    .map(str::to_owned)
+        let mut ready = None;
+        for project in roadmaps {
+            match web::read_roadmap(project) {
+                Ok((_, text)) => {
+                    ready = ready.or_else(|| {
+                        read.pick(team, &rally::next::items(&text, &project.prefix))["next"]
+                            ["story"]
+                            .as_str()
+                            .map(str::to_owned)
+                    });
+                }
+                Err(error) => errors.push(json!({"team": team, "error":
+                    format!("{}'s roadmap couldn't be read: {error}", project.prefix)})),
             }
-            Err(error) => {
-                errors.push(json!({"team": team, "error":
-                    format!("the roadmap couldn't be read: {error}")}));
-                continue;
-            }
-        };
+        }
+        let mine = |story: &Value| same(story["team"].as_str());
         let claims: Vec<(String, i64)> = stories
             .iter()
-            .filter(|(_, story)| {
-                matches!(story["state"].as_str(), Some("claimed" | "sent_back"))
-                    && same(story["team"].as_str())
+            .filter(|(id, story)| {
+                in_rally(id)
+                    && matches!(story["state"].as_str(), Some("claimed" | "sent_back"))
+                    && mine(story)
             })
             .map(|(id, story)| (id.clone(), story["last_at_ms"].as_i64().unwrap_or(0)))
             .collect();
+        // RAL-163: its claims riding a batch the watchman gates, and landings it owes a submit.
+        let riding = claims
+            .iter()
+            .filter_map(|(id, _)| {
+                let r = &stories[id]["riding_batch"];
+                Some(rally::stall::Riding {
+                    story: id.clone(),
+                    batch: r["batch"].as_u64()?,
+                    started_ms: r["at_ms"].as_i64().unwrap_or(now_ms),
+                    expect_minutes: r["expect_minutes"].as_u64().map(|m| m as u32),
+                    built_on_unlanded: r["built_on_unlanded"].as_u64(),
+                })
+            })
+            .collect();
+        let owed = stories
+            .iter()
+            .filter(|(id, story)| {
+                in_rally(id) && mine(story) && story["submitted_since_landing"] == false
+            })
+            .filter_map(|(id, story)| {
+                Some((
+                    id.clone(),
+                    story["landed_in_batch"].as_u64()?,
+                    story["landed_at_ms"].as_i64()?,
+                ))
+            })
+            .collect();
         let blockers = open
             .iter()
-            .filter(|blocker| same(blocker["team"].as_str()))
+            .filter(|blocker| {
+                same(blocker["team"].as_str()) && blocker["story"].as_str().is_none_or(in_rally)
+            })
             .map(|blocker| rally::stall::Waiting {
                 seq: blocker["seq"].as_u64().unwrap_or(0),
                 story: blocker["story"].as_str().map(str::to_owned),
@@ -2073,23 +2225,31 @@ fn stalls_pass(
             name: team.to_owned(),
             sessions: roster
                 .as_ref()
-                .map(|roster| rally::wake::sessions_of(roster, &project.sessions))
+                .map(|roster| rally::wake::sessions_of(roster, session_names))
                 .unwrap_or_default(),
             status: teams["teams"][&key]["status"].as_str().map(str::to_owned),
             claims,
             ready,
             blockers,
+            riding,
+            owed,
         });
     }
     let mut report = rally::stall::report(&facts, last_record_ms, quiet_after, now_ms);
     if roster.is_none() {
-        // Without the roster, only what Rally alone says holds: the declared blockers.
+        // Without the roster, only what Rally alone says holds: the declared blockers, and the
+        // batches the watchman declared (RAL-163).
         if let Some(prompts) = report["prompts"].as_array_mut() {
-            prompts.retain(|row| row["row"] == "declared_blocked");
+            prompts.retain(|row| {
+                matches!(
+                    row["row"].as_str(),
+                    Some("declared_blocked" | "riding_batch" | "owes_submit")
+                )
+            });
         }
         report["every_team_waiting"] = Value::Null;
         report["roster"] = json!({"available": false, "note": "no shim's roster could be read, so \
-            only declared blockers are shown"});
+            only declared blockers and batches are shown"});
     } else {
         report["roster"] = json!({"available": true});
     }
@@ -2106,6 +2266,14 @@ fn stalls_pass(
         report["locks"] = json!(seen);
     }
     report["last_record_ms"] = json!(last_record_ms);
+    if let Some(prefixes) = &rally_projects {
+        let checked: Vec<&str> = facts.iter().map(|f| f.name.as_str()).collect();
+        report["rally"] = json!({"projects": prefixes, "teams_checked": checked,
+            "outside": outside,
+            "note": "With a rally open, its teams are checked: those named when it opened and \
+                     those holding its stories. Teams in the projects list outside it are named \
+                     here, not checked (RAL-163)."});
+    }
     // A watchman whose digest has stopped is a stall of its own (RAL-87), the one of 2026-11-06.
     if digest.digest_quiet_after.is_some() {
         match designation_value(location, config) {
@@ -2247,6 +2415,25 @@ fn digest_pass(
         )?;
         Ok(json!({"stories": stories["stories"]}))
     };
+    // The projects whose merges pass a gate that isn't CI on GitHub (RAL-161), from the projects
+    // list beside the pairing, or the built-in one.
+    let local_gates: Vec<rally::digest::LocalGate> = {
+        let file = default_projects_file(config)
+            .ok()
+            .flatten()
+            .map(|path| std::fs::read_to_string(&path).map_err(|error| error.to_string()));
+        rally::brief::brief_projects(file)
+            .0
+            .into_iter()
+            .filter_map(|p| {
+                Some(rally::digest::LocalGate {
+                    gate: p.gate?,
+                    name: p.name,
+                    repo: p.repo,
+                })
+            })
+            .collect()
+    };
     let handover = get("/v1/handover")?;
     let mut watchmen: Vec<Watchman> = handover["watchmen"]
         .as_array()
@@ -2324,8 +2511,29 @@ fn digest_pass(
                 rally::digest::take_in_merges(&mut kept, &recs, &stories, now_ms);
                 stories_read = Some(stories);
             }
+            // A local gate's merges held from an earlier pass are named with their batch, so the
+            // stories are read for them too (RAL-161).
+            if stories_read.is_none()
+                && kept.ci.iter().any(|pending| {
+                    pending.repo.as_deref().is_some_and(|repo| {
+                        local_gates
+                            .iter()
+                            .any(|g| g.repo.eq_ignore_ascii_case(repo))
+                    })
+                })
+            {
+                stories_read = Some(all_stories()?);
+            }
             let before_ci = kept.ci.clone();
-            let ci = rally::digest::check_ci(&mut kept, &web::pr_head, &web::ci_state, now_ms);
+            // Projects whose gate isn't CI on GitHub are told once, not looked for (RAL-161).
+            let ci = rally::digest::check_ci_with(
+                &mut kept,
+                &web::pr_head,
+                &web::ci_state,
+                now_ms,
+                &local_gates,
+                stories_read.as_ref().unwrap_or(&Value::Null),
+            );
             if !ci.lines.is_empty() {
                 row["ci"] = json!(ci.lines);
             }
@@ -2418,8 +2626,9 @@ fn digest_pass(
                     }
                 }
             }
-            // An urgent CI line that wasn't sent is told again next pass (RAL-102).
-            if ci.urgent && row["decision"] != "sent" {
+            // An urgent CI line that wasn't sent is told again next pass (RAL-102), and so is a
+            // local gate's line, which can wait but mustn't be lost (RAL-161).
+            if (ci.urgent || ci.held) && row["decision"] != "sent" {
                 kept.ci = before_ci;
             }
             // Only a pass that got this far counts as one (RAL-87); a failed one returns above.
@@ -2642,6 +2851,38 @@ fn next(
 }
 
 /// The open rally's projects, from `views::rallies`, if one is open.
+/// The names a team's sessions go by in the open rally `open` (RAL-163): the team's own name,
+/// which is its session's nickname, and every session confirmed as a restart of it, either way
+/// and through chains (`rally-session --succeeds`, RAL-110).
+fn successors(open: &Value, team: &str) -> Vec<String> {
+    let links: Vec<(String, String)> = open["sessions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry["remove"] != true)
+        .filter_map(|entry| {
+            Some((
+                entry["session"].as_str()?.trim().to_lowercase(),
+                entry["succeeds"].as_str()?.trim().to_lowercase(),
+            ))
+        })
+        .collect();
+    let mut names = vec![team.trim().to_lowercase()];
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for (a, b) in &links {
+            for (from, to) in [(a, b), (b, a)] {
+                if names.contains(from) && !names.contains(to) {
+                    names.push(to.clone());
+                    grew = true;
+                }
+            }
+        }
+    }
+    names
+}
+
 fn open_rally_projects(rallies: &Value) -> Option<Vec<String>> {
     let projects = rallies["open"]["projects"].as_array()?;
     Some(
@@ -4630,6 +4871,85 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             Kind::Declared,
             json!({"change": "assign", "story": story, "team": team, "note": note, "end": end}),
         ),
+        Command::Batch {
+            action,
+            project,
+            cars,
+            base,
+            tip,
+            on_batch,
+            expect,
+            log,
+            batch,
+            landed,
+            failed,
+            abandoned,
+            gate_log,
+            note,
+        } => match action.as_str() {
+            "start" => {
+                let need = |value: Option<String>, flag: &str| {
+                    value.ok_or_else(|| format!("a batch start needs --{flag}"))
+                };
+                let cars = cars
+                    .iter()
+                    .map(|car| {
+                        let mut parts = car.split('@');
+                        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+                            (Some(story), Some(commit), picked, None) if !story.is_empty() => {
+                                let mut car = json!({"story": story, "commit": commit});
+                                if let Some(picked) = picked {
+                                    car["picked"] = json!(picked);
+                                }
+                                Ok(car)
+                            }
+                            _ => Err(format!(
+                                "{car:?} isn't a car: give STORY@COMMIT or STORY@COMMIT@PICKED"
+                            )),
+                        }
+                    })
+                    .collect::<Result<Vec<Value>, String>>()?;
+                let mut body = json!({
+                    "change": "batch_start",
+                    "project": need(project, "project")?.trim().to_uppercase(),
+                    "cars": cars, "base": need(base, "base")?, "tip": need(tip, "tip")?,
+                    "note": note,
+                });
+                if let Some(on) = on_batch {
+                    body["on_batch"] = json!(on);
+                }
+                if let Some(ms) = expect {
+                    body["expect_minutes"] = json!(ms.div_ceil(60_000));
+                }
+                if let Some(log) = log {
+                    body["log"] = json!(log);
+                }
+                (Kind::Declared, body)
+            }
+            "end" => {
+                let batch = batch.ok_or("a batch end needs --batch, the start's record number")?;
+                let outcome = match (&landed, failed, abandoned) {
+                    (Some(_), false, false) => "landed",
+                    (None, true, false) => "failed",
+                    (None, false, true) => "abandoned",
+                    _ => {
+                        return Err(
+                            "say how it ended: --landed <sha>, --failed or --abandoned".into()
+                        );
+                    }
+                };
+                let mut body = json!({"change": "batch_end", "batch": batch,
+                                      "outcome": outcome, "note": note});
+                if let Some(sha) = landed {
+                    body["landed"] = json!(sha);
+                }
+                if let Some(path) = gate_log {
+                    body["gate_log"] = json!(rally::gate_log::read(&path)?);
+                }
+                (Kind::Declared, body)
+            }
+            other => return Err(format!("say start or end, not {other:?}").into()),
+        },
         Command::RallyProject {
             action,
             prefix,
