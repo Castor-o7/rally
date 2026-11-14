@@ -59,6 +59,21 @@ fn newest(mut rows: Vec<(u64, Value)>) -> (Vec<Value>, usize) {
     )
 }
 
+/// A gate log as the brief shows it (RAL-162): what its own lines say, its hash, and what it is.
+fn gate_log_row(log: &crate::gate_log::GateLog) -> Value {
+    let (failed, silent) = log.failures();
+    json!({
+        "kind": "declared",
+        "is": "the log as the watchman kept it, hashed and read by Rally when the batch ended; \
+               no retention promised",
+        "path": cut(&log.path), "sha256": log.sha256, "bytes": log.bytes,
+        "commit": log.commit, "quick": log.quick.as_deref().map(cut),
+        "scenes": log.scenes.iter().map(|s| json!({"scene": cut(&s.scene),
+                  "passed": s.passed, "failed": s.failed})).collect::<Vec<_>>(),
+        "failed": failed, "scenes_without_result": silent,
+    })
+}
+
 /// The watchman's brief, as of `now_ms`.
 pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_ms: i64) -> Value {
     let watchmen: Vec<Watch> = designation::in_force(ledger, hashes, key);
@@ -239,13 +254,24 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
                 prompts.push(format!("batches built on it, still gating: {built:?}"));
             }
         }
-        ended.push((
-            end.seq,
-            json!({"batch": b.seq, "project": b.project, "outcome": outcome_word(end.outcome),
-                   "landed": end.landed, "tip": b.tip, "cars": b.cars.len(),
-                   "note": cut(&end.note), "age_ms": age(now_ms, end.at_ms),
-                   "prompts": prompts}),
-        ));
+        let mut row = json!({"batch": b.seq, "project": b.project,
+                             "outcome": outcome_word(end.outcome), "landed": end.landed,
+                             "tip": b.tip, "cars": b.cars.len(), "note": cut(&end.note),
+                             "age_ms": age(now_ms, end.at_ms), "prompts": prompts});
+        if let Some(log) = &end.gate_log {
+            row["gate_log"] = gate_log_row(log);
+            let (failed, silent) = log.failures();
+            if end.outcome == crate::ledger::BatchOutcome::Landed && (failed > 0 || silent > 0) {
+                row["prompts"]
+                    .as_array_mut()
+                    .expect("made as an array")
+                    .push(json!(format!(
+                        "landed though its gate log shows {failed} failed and {silent} scene(s) \
+                     with no result"
+                    )));
+            }
+        }
+        ended.push((end.seq, row));
     }
     ended.sort_by_key(|(seq, _)| std::cmp::Reverse(*seq));
     let ended_total = ended.len();
@@ -274,8 +300,13 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
                            "team": ledger.story(&car.story).and_then(|s| s.team.clone())})
                     })
                     .collect();
-            json!({"batch": b.seq, "landed": end.landed, "age_ms": age(now_ms, end.at_ms),
-                   "no_submit_since_landing": owed})
+            let mut row = json!({"batch": b.seq, "landed": end.landed,
+                                 "age_ms": age(now_ms, end.at_ms),
+                                 "no_submit_since_landing": owed});
+            if let Some(log) = &end.gate_log {
+                row["gate_log"] = gate_log_row(log);
+            }
+            row
         });
 
     // 4. Waiting on the watchman: submissions in the rally waiting for a reader.

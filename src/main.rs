@@ -933,6 +933,11 @@ enum Command {
         /// For end: the gate stopped without an answer.
         #[arg(long)]
         abandoned: bool,
+        /// For end: the gate's log (RAL-162). Rally hashes it and reads its result lines itself,
+        /// and the service refuses it unless it names the batch's tip as the commit it ran on.
+        /// Recorded as declared: the log as you keep it, with no retention promised.
+        #[arg(long)]
+        gate_log: Option<PathBuf>,
         #[arg(long)]
         note: String,
     },
@@ -4728,6 +4733,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             landed,
             failed,
             abandoned,
+            gate_log,
             note,
         } => match action.as_str() {
             "start" => {
@@ -4785,6 +4791,9 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                                       "outcome": outcome, "note": note});
                 if let Some(sha) = landed {
                     body["landed"] = json!(sha);
+                }
+                if let Some(path) = gate_log {
+                    body["gate_log"] = json!(rally::gate_log::read(&path)?);
                 }
                 (Kind::Declared, body)
             }

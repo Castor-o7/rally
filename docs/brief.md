@@ -50,6 +50,26 @@ gating that this one is built on, as a superset gated in parallel. Only those wh
 batch (the service's `--rally-openers`). It's declared and changes no story's state: record each landing with
 `rally merge` as well. A batch is a record kind older binaries can't replay; see docs/service.md.
 
+### The gate's log (RAL-162)
+
+`rally batch end ... --gate-log <path>` records the gate's own log with the end. Rally hashes the file (sha256 and
+size; nothing is typed) and reads its result lines with one fixed parser, for DiscoSim's `dsm-gate`: the first
+line `# dsm-gate: commit <sha> tree <sha> scenes: ... started <time> script sha256 <hex>`, `QUICK OK`, and each
+scene's `=== N passed, M failed ===`. A log without that first line is refused plainly, and the service refuses a
+log whose commit isn't the batch's tip: the wrong log for the wrong batch, or a gate run on a stale tip.
+
+What it is worth, and what it isn't. The hash binds the log the watchman keeps to the one it named when the batch
+ended, so a log changed afterwards is caught by anyone who has it. It doesn't show that the gate ran: the
+watchman could name any file. So it's recorded as declared, "the log as the watchman kept it ... no retention
+promised", with the path as given, and the result lines are the log's own words, not a check. The brief shows
+it with the batch, and asks about a batch recorded as landed whose log shows a failure or a scene with no result.
+
+Two stronger checks aren't built yet. The real one is the gate posting a commit status (`local/gate`) on the tip,
+as ci-local does for Rally, which Rally would read from GitHub as observed; it needs a token with commit-status
+write on DiscoSim, which is the operator's to grant. The one that needs no trust at all is rerunning the gate on
+the tip: the log's first line names the commit, the tree and the gate script's hash, so anyone can run that
+script on that commit and compare.
+
 ## `rally brief`: the whole picture
 
 Without `--watchman`, the brief gives each team's state, open claims (with whether the claimant's session is on

@@ -1261,3 +1261,13 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   whose projects-list entry names a `gate` isn't looked for on GitHub, and gets one line per digest naming its
   merges, held until a digest carries it; a merge whose story rode a landed batch says "landed in batch N"
   (`/v1/stories` gives `landed_in_batch`); docs/digest.md says so; with tests for each.
+- [ ] **RAL-162: A landed batch carries the gate's own log, hashed and read by Rally.** From the watchman
+  (2026-11-14): a DiscoSim landing is the watchman's word ("landed in batch N"). Of the three ways to back it,
+  in order: (1) now: `rally batch end --gate-log <path>` hashes the log and reads its result lines by one fixed
+  parser, refuses a log without the `# dsm-gate: commit ...` first line, and the service refuses one whose commit
+  isn't the batch's tip; recorded as declared ("the log as the watchman kept it, no retention promised"); the
+  brief shows it and asks about a landing whose log shows a failure. (2) when the operator grants a token with
+  commit-status write on DiscoSim: the gate posts `local/gate` on the tip and Rally reads it as observed.
+  (3) documented: rerunning the gate script named in the log on the commit it names. Done when (1) is built
+  with tests for the parser, the refusals and the brief, and docs/brief.md says what the hash is worth and what
+  it isn't.
