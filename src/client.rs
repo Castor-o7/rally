@@ -114,6 +114,77 @@ pub struct Reply {
     /// How long the service asked the client to wait, from a `Retry-After` of whole seconds
     /// (RAL-86). An HTTP date isn't read.
     pub retry_after_ms: Option<u64>,
+    /// When the service has no such route at all: that it's older than the story that added the
+    /// route, said in words (RAL-156).
+    pub older_than: Option<String>,
+}
+
+/// The story that added each of the service's routes, by its path with `{…}` for a part that
+/// varies, so a reply that the route doesn't exist can say the service is older than that story
+/// (RAL-156). `None` for the routes every service has had. `tests/routes.rs` checks every route
+/// the service serves is here.
+pub const ROUTE_STORIES: &[(&str, Option<&str>)] = &[
+    ("/v1/records", None),
+    ("/v1/stories", None),
+    ("/v1/stories/{id}", None),
+    ("/v1/teams", None),
+    ("/v1/teams/{name}", None),
+    ("/v1/check", None),
+    ("/v1/whoami", None),
+    ("/v1/export", Some("RAL-15")),
+    ("/v1/teams/{name}/record", Some("RAL-19")),
+    ("/v1/blockers", Some("RAL-20")),
+    ("/v1/blockers/all", Some("RAL-20")),
+    ("/v1/track-records", Some("RAL-21")),
+    ("/v1/track-records/{name}", Some("RAL-21")),
+    ("/v1/brief", Some("RAL-22a")),
+    ("/v1/corrections", Some("RAL-28")),
+    ("/v1/designation", Some("RAL-51")),
+    ("/v1/verifications", Some("RAL-51")),
+    ("/v1/waiting", Some("RAL-51")),
+    ("/v1/handover", Some("RAL-52")),
+    ("/v1/open-ids", Some("RAL-68")),
+    ("/v1/rallies", Some("RAL-76")),
+    ("/v1/standings", Some("RAL-136")),
+    ("/v1/inbox", Some("RAL-146")),
+    ("/v1/inbox/all", Some("RAL-146")),
+];
+
+/// The story that added the route `path` asks for, its query left aside (RAL-156).
+pub fn route_story(path: &str) -> Option<&'static str> {
+    let path = path.split('?').next().unwrap_or(path);
+    let asked: Vec<&str> = path.split('/').collect();
+    ROUTE_STORIES
+        .iter()
+        .find(|(route, _)| {
+            let parts: Vec<&str> = route.split('/').collect();
+            parts.len() == asked.len()
+                && parts
+                    .iter()
+                    .zip(&asked)
+                    .all(|(part, asked)| part.starts_with('{') || part == asked)
+        })
+        .and_then(|(_, story)| *story)
+}
+
+/// What a client says when the service answers that it has no route for `path` (RAL-156): that
+/// the service is older than the story that added it, as the viewer says, rather than a bare 404.
+pub fn older_service(path: &str) -> String {
+    let route = path.split('?').next().unwrap_or(path);
+    match route_story(path) {
+        Some(story) => format!(
+            "the service is older than {story}, which added {route}: it needs updating to the \
+             current Rally"
+        ),
+        None => format!("the service has no {route}: it may be older or newer than this rally"),
+    }
+}
+
+/// Whether a reply is the service's answer for a route it doesn't have.
+fn no_such_route(status: u16, body: &str) -> bool {
+    status == 404
+        && serde_json::from_str::<serde_json::Value>(body)
+            .is_ok_and(|value| value["error"] == "no such route")
 }
 
 /// A TLS connection to the service, pinned to its certificate, with the handshake done.
@@ -245,7 +316,9 @@ fn request_within(
             Err(error) => return Err(error.into()),
         }
     }
-    parse_reply(&raw)
+    let mut reply = parse_reply(&raw)?;
+    reply.older_than = no_such_route(reply.status, &reply.body).then(|| older_service(path));
+    Ok(reply)
 }
 
 /// Reads a reply, refusing one shorter than it says it is: someone on the network can't forge a
@@ -279,12 +352,74 @@ fn parse_reply(raw: &[u8]) -> Result<Reply, Box<dyn std::error::Error>> {
         status,
         body: String::from_utf8_lossy(body).into_owned(),
         retry_after_ms,
+        older_than: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RAL-156: every route the service serves says which story added it, so a client meeting a
+    /// service without it can say what the service is older than. A new route without an entry
+    /// fails here.
+    #[test]
+    fn every_route_says_which_story_added_it() {
+        let server = include_str!("server.rs");
+        let routes: Vec<&str> = server
+            .match_indices(".route(\"")
+            .map(|(at, open)| {
+                let rest = &server[at + open.len()..];
+                &rest[..rest.find('"').unwrap()]
+            })
+            .collect();
+        assert!(routes.len() > 20, "{routes:?}");
+        for route in routes {
+            assert!(
+                ROUTE_STORIES.iter().any(|(listed, _)| *listed == route),
+                "{route} isn't in ROUTE_STORIES"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_route_names_the_story_that_added_it() {
+        assert_eq!(route_story("/v1/inbox"), Some("RAL-146"));
+        assert_eq!(route_story("/v1/inbox/all?as_of=3"), Some("RAL-146"));
+        assert_eq!(
+            route_story("/v1/teams/rally/record?after=4"),
+            Some("RAL-19")
+        );
+        assert_eq!(route_story("/v1/track-records/rally"), Some("RAL-21"));
+        assert_eq!(route_story("/v1/stories/RAL-1"), None);
+        assert_eq!(route_story("/v1/nope"), None);
+        assert_eq!(
+            older_service("/v1/inbox"),
+            "the service is older than RAL-146, which added /v1/inbox: it needs updating to the \
+             current Rally"
+        );
+        assert!(older_service("/v1/nope?x=1").starts_with("the service has no /v1/nope:"));
+        assert!(no_such_route(404, r#"{"error":"no such route"}"#));
+        assert!(!no_such_route(404, r#"{"error":"no story RAL-9"}"#));
+        assert!(!no_such_route(405, r#"{"error":"no such route"}"#));
+    }
+
+    /// RAL-156: such a reply reads as what it is, not as a refusal.
+    #[test]
+    fn an_older_service_is_said_plainly() {
+        let reply = Reply {
+            status: 404,
+            body: r#"{"error":"no such route"}"#.into(),
+            retry_after_ms: None,
+            older_than: Some(older_service("/v1/inbox")),
+        };
+        let said = crate::retry::Refused::of(&reply).to_string();
+        assert!(
+            said.starts_with("the service is older than RAL-146"),
+            "{said}"
+        );
+        assert!(!said.contains("refused"), "{said}");
+    }
     use rustls::pki_types::PrivatePkcs8KeyDer;
     use rustls::{ServerConfig, ServerConnection};
 
