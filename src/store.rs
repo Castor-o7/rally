@@ -1003,6 +1003,15 @@ impl Store {
         self.with_chain(|ledger, hashes| crate::brief::brief(ledger, hashes, key, now_ms))
     }
 
+    /// The short brief a restarted watchman reads first (RAL-157), as of `now_ms`.
+    pub fn watchman_brief_report(
+        &self,
+        key: Option<&crate::designation::OperatorKey>,
+        now_ms: i64,
+    ) -> Result<serde_json::Value, StoreError> {
+        self.with_chain(|ledger, hashes| crate::watchman_brief::brief(ledger, hashes, key, now_ms))
+    }
+
     /// What a newly designated watchman re-reads: the peer-verified stories since the designation
     /// before it (RAL-52).
     pub fn handover_report(

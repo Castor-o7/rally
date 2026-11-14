@@ -55,6 +55,28 @@ fn by(entry: &Value) -> Value {
 
 /// Where `prefix`'s roadmap stands, from its story's detail (`rally show <PREFIX>-0`), or `None`
 /// when the ledger has no such story.
+/// RAL-157: a project with no `<PREFIX>-0` in the ledger still has a roadmap somewhere; say
+/// where, from the projects list, so "none" reads as "not put forward", not "doesn't exist".
+pub fn locate(row: &mut Value, projects: &[crate::web::Project]) {
+    if row["stage"] != "none" {
+        return;
+    }
+    let Some(project) = row["project"].as_str().and_then(|prefix| {
+        projects
+            .iter()
+            .find(|p| p.prefix.eq_ignore_ascii_case(prefix))
+    }) else {
+        return;
+    };
+    let story = row["story"].as_str().unwrap_or_default().to_owned();
+    row["roadmap_at"] = json!({"repo": project.repo, "path": project.path});
+    row["note"] = json!(format!(
+        "{}'s roadmap is kept at {} in {}, and hasn't been put forward for clearance: the ledger \
+         has no {story}.",
+        project.prefix, project.path, project.repo
+    ));
+}
+
 pub fn summarize(prefix: &str, detail: Option<&Value>) -> Value {
     let story = crate::ledger::roadmap_story(prefix);
     let Some(detail) = detail else {
@@ -212,6 +234,31 @@ mod tests {
             seq,
             json!({"change": "verify", "story": "ROO-0", "note": "ok", "commit": COMMIT}),
         )
+    }
+
+    /// RAL-157: a project with no `<PREFIX>-0` says where its roadmap is kept, from the projects
+    /// list, rather than reading as if it had none; one the list doesn't name is left as it was.
+    #[test]
+    fn a_roadmap_not_put_forward_says_where_it_is_kept() {
+        let projects: Vec<crate::web::Project> = serde_json::from_value(json!([
+            {"name": "DiscoSim", "prefix": "DSM", "repo": "Castor-o7/DiscoSim",
+             "path": "docs/design/99-roadmap.md", "tick_meaning": "done"},
+        ]))
+        .unwrap();
+        let mut row = summarize("DSM", None);
+        locate(&mut row, &projects);
+        assert_eq!(row["stage"], "none");
+        assert_eq!(row["roadmap_at"]["path"], "docs/design/99-roadmap.md");
+        let note = row["note"].as_str().unwrap();
+        assert!(
+            note.contains("kept at docs/design/99-roadmap.md in Castor-o7/DiscoSim"),
+            "{note}"
+        );
+        assert!(note.contains("hasn't been put forward"), "{note}");
+        let mut other = summarize("ZZZ", None);
+        let before = other.clone();
+        locate(&mut other, &projects);
+        assert_eq!(other, before);
     }
 
     #[test]

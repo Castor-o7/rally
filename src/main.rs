@@ -460,6 +460,11 @@ enum Command {
     Brief {
         #[command(flatten)]
         digest: DigestCheck,
+        /// The short brief a restarted watchman reads first (RAL-157): scoped to the open rally,
+        /// leading with what changed since its own last record, what each team landed, what's
+        /// verified and not merged, what waits on it and on the operator, and the newest rulings.
+        #[arg(long)]
+        watchman: bool,
     },
     /// Where each project's roadmap stands (RAL-129): drafting, waiting for clearance, cleared at
     /// a commit, sent back, or revised after a clearance. A project's roadmap is its story
@@ -4399,7 +4404,18 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
             return Ok(serde_json::to_string_pretty(&read_past(&backend, as_of)?)?);
         }
-        Command::Brief { digest } => {
+        Command::Brief { digest, watchman } => {
+            if watchman {
+                let report = if let Some(location) = &location {
+                    Store::open_read_only(location)?.watchman_brief_report(None, now_ms()?)?
+                } else {
+                    let pairing = read_pairing(&config_path(cli.config.clone())?)?;
+                    let reply =
+                        client::request(&pairing, "GET", "/v1/brief?watchman=true", None, &[])?;
+                    reply_value(&reply)?
+                };
+                return Ok(report.to_string());
+            }
             let mut report = if let Some(location) = &location {
                 // On the host, without the service's key: designations can't be checked.
                 Store::open_read_only(location)?.brief_report(None, now_ms()?)?
@@ -4435,12 +4451,18 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
             if let Some(note) = note {
                 report["rally"]["projects_note"] = json!(note);
             }
+            let listed = projects;
             // Each of the open rally's projects' roadmaps, so the watchman sees which wait for
             // clearance (RAL-129).
             if let Some(projects) = rallies.as_ref().and_then(open_rally_projects)
                 && let Ok(backend) = Backend::choose(location.as_ref(), &config, false)
             {
-                report["roadmaps"] = json!(read_roadmaps(&backend, &projects));
+                let mut rows = read_roadmaps(&backend, &projects);
+                // RAL-157: say where a roadmap not put forward is kept.
+                for row in &mut rows {
+                    rally::roadmaps::locate(row, &listed);
+                }
+                report["roadmaps"] = json!(rows);
             }
             let now = report["now_ms"].as_i64().unwrap_or_default();
             report["digest"] =
