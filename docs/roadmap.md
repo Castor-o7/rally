@@ -9,6 +9,12 @@ ledger and past ones.
 IDs are permanent. Don't reuse or renumber them, so they aren't in numeric order below. A story without
 a "done when" line isn't ready to claim.
 
+New entries are appended at the end. This file merges with git's `union` driver (`.gitattributes`, RAL-169):
+when two branches each append, a local merge keeps both instead of conflicting. An edit to an existing
+entry merged against another edit to the same entry keeps both versions, silently, so after merging main into
+a branch that edited an entry, look at it before pushing. GitHub's web merge ignores merge drivers: a pull
+request whose roadmap conflicts with main still needs main merged in locally.
+
 Rally tracks itself. Its ledger is the source of truth for every project in `web/projects.json`, Rally's own
 included (the operator, 2026-11-06; RAL-24, RAL-9). The hand-kept board is archived in Muster's
 `docs/board-archive-2026-11-06.md`, and Muster is frozen while the muster moves to Marshal. So stories follow
@@ -1327,6 +1333,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   ignores, answering with the ordinary brief as if it were the watchman's. Done when: the CLI tells the watchman's
   brief by its own sections and, given the ordinary one, says the service is older than RAL-157 and needs updating;
   with a unit test of both answers.
+- [ ] **RAL-168: docs/watchman.md, for a watchman starting cold.** From the watchman (2026-11-14): one short page, from
+  the commands as they are on `main`, of what the night of 2026-11-13 taught: what to read first (`rally brief
+  --watchman`, then the brief, handover and inbox), what a restarted session reads, keeping the digest loop running
+  by name, reading and landing work one merge at a time, batches, `rally stalls` from the system's crontab, and what
+  only the operator does. Docs only.
 - [ ] **RAL-167: `rally brief --watchman` says what's live, staged and merged but not live.** From the watchman
   (2026-11-14): tonight the service was thirteen stories behind main, and nothing in Rally said so; the lamplighter's
   staging left files, not records. Done when: `brief --watchman` has a `builds` section, all observed: live (the
@@ -1343,3 +1354,21 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   time; (c) `rally merge` prints the merged commit's CI, read through `gh` at the merge, observed and recorded
   nowhere, with "running; the digest's RAL-102 section checks again" rather than a verdict while it runs. The CLI
   tests run with a stand-in `gh` first on `PATH`, so none reads GitHub.
+- [ ] **RAL-169: The roadmap merges with git's `union` driver.** From the watchman (2026-11-14): on 2026-11-13
+  nearly every pull request conflicted on this file, because every team appends its entries at the end, and each
+  conflict cost a merge commit and another read. Done when: `.gitattributes` sets `docs/roadmap.md merge=union`;
+  the roadmap's header says entries are appended, that an edit to an existing entry needs a look after merging
+  main in, and that GitHub's web merge ignores the driver; tested by merging two branches that each append.
+- [ ] **RAL-170: `rally rebased <STORY> --head <sha>` says whether a re-based head is the change verified.** From
+  the watchman (2026-11-14): on 2026-11-13 it and a team checked by hand, about eight times, that a head with main
+  merged in carried the verified change. Done when: observed, recording nothing, it compares the verified commit's
+  change against its merge base with main and the head's against its merge base with current main, by patch (not
+  by file list); says `same change` only when identical, otherwise names the files and hunks that differ; says
+  separately when the head's merges of main resolved a conflict; says `can't tell` (never `same change`) for a
+  missing commit or a compare cut short at 250; local git first, GitHub as the fallback; with tests for same,
+  changed, conflict-resolved and can't-tell (docs/gate.md).
+- [ ] **RAL-172: `rally rebased` counts a final newline, and its GitHub path says modes are unseen.** From the
+  watchman's verify of RAL-170 (2026-11-14). Done when: a `\ No newline at end of file` after a changed line is
+  kept in the hunk, so a head that differs only by a final newline reads `changed`, and one after context is not;
+  the GitHub fallback's answer says file modes can't be seen there; conflict resolutions are the head's own merges
+  (first parent), not those main's history brought in, found replaying RAL-163; with tests (docs/gate.md).

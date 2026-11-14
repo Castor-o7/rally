@@ -1101,6 +1101,24 @@ enum Command {
         #[arg(long)]
         allow: Vec<String>,
     },
+    /// Whether a head is the change that was verified, re-based (RAL-170). Observed, recording
+    /// nothing: the verified commit's change against its merge base with main, and the head's
+    /// against its merge base with main's tip, compared patch by patch. Says "same change" only
+    /// when they're identical, names the files and hunks that differ, and names separately any
+    /// merge into the head that resolved a conflict. Local git first, GitHub as the fallback.
+    Rebased {
+        /// The story whose verified commit is compared.
+        story: String,
+        /// The head to compare, a full commit.
+        #[arg(long)]
+        head: String,
+        /// The checkout to read the commits from.
+        #[arg(long, default_value = ".")]
+        checkout: PathBuf,
+        /// The branch the head merges into.
+        #[arg(long, default_value = "main")]
+        base: String,
+    },
     /// Show the state of every story, or one story with its history.
     Show {
         story: Option<String>,
@@ -2147,6 +2165,41 @@ fn builds_section(location: Option<&Location>, config: &Path) -> Value {
         .filter(|(live, cli)| live != cli)
         .map(|(live, cli)| web::compare(repo, live, cli));
     rally::builds::section(live.as_deref(), cli, main, behind, staged, now)
+}
+
+/// `rally rebased` (RAL-170): local git if the checkout has every commit, else GitHub's compares,
+/// saying why local git wasn't used; never "same change" when it can't tell.
+fn rebased_value(detail: &Value, head: &str, checkout: &Path, base: &str) -> Value {
+    use rally::rebased;
+    let (repo, verified) = match rebased::verified_of(detail) {
+        Ok(found) => found,
+        Err(why) => return rebased::cant_tell(&why),
+    };
+    let main = match web::branch_tip(&repo, base) {
+        Ok(sha) => sha,
+        Err(why) => {
+            return rebased::cant_tell(&format!("can't read {base}'s tip on GitHub: {why}"));
+        }
+    };
+    let mut out = match rebased::local(checkout, &verified, head, &main) {
+        Ok(out) => out,
+        Err(local_why) => {
+            let compares = web::compare_files(&repo, &main, &verified)
+                .and_then(|v| Ok((v, web::compare_files(&repo, &main, head)?)));
+            let mut out = match compares {
+                Ok((v, h)) => rebased::from_github(&v, &h),
+                Err(why) => rebased::cant_tell(&format!("GitHub's compare failed: {why}")),
+            };
+            out["local_git"] = json!(format!("not used: {local_why}"));
+            out
+        }
+    };
+    out["kind"] = json!("observed");
+    out["repo"] = json!(repo);
+    out["verified"] = json!(verified);
+    out["head"] = json!(head);
+    out[base] = json!(main);
+    out
 }
 
 /// The designation report: the host's own, unchecked, or the service's.
@@ -4194,6 +4247,30 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 return Ok(text);
             }
             return Err(format!("the ledger failed its check:\n{text}").into());
+        }
+        Command::Rebased {
+            story,
+            head,
+            checkout,
+            base,
+        } => {
+            if head.len() != 40 || !head.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("--head takes a full commit".into());
+            }
+            let backend = Backend::choose(location.as_ref(), &config_path(cli.config)?, false)?;
+            let page = Page {
+                after: None,
+                before: None,
+            };
+            let value = backend.read_value(
+                &format!("/v1/stories/{}", encode(&story)),
+                None,
+                &page,
+                |ledger, page| views::stories(ledger, Some(&story), page),
+            )?;
+            let mut out = rebased_value(&value["detail"], &head, &checkout, &base);
+            out["story"] = json!(story);
+            return Ok(serde_json::to_string_pretty(&out)?);
         }
         Command::Gate { range, repo, allow } => {
             let commits = rally::gate::commits(&repo, &range)?;

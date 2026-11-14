@@ -42,6 +42,7 @@ pub mod levi;
 pub mod lock_holder;
 pub mod merge_notes;
 pub mod next;
+pub mod rebased;
 pub mod record;
 pub mod resume;
 pub mod retry;

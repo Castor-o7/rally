@@ -125,6 +125,7 @@ commands and to projects not on Levi is still to settle. See "Levi" in [docs/des
 ## Start here
 
 - [docs/handoff.md](docs/handoff.md): for the team taking this on.
+- [docs/watchman.md](docs/watchman.md): for a watchman starting cold.
 - [docs/design.md](docs/design.md): the working design and its open questions.
 - [docs/roadmap.md](docs/roadmap.md): the stories.
 - [docs/deploy-murph.md](docs/deploy-murph.md): deploying on Murph, in one sitting, once the operator says so.
