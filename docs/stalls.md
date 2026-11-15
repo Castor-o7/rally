@@ -127,6 +127,13 @@ user's, or a sandboxed one's). Under `--prompts-only` that fails the run (RAL-17
 some processes' files couldn't be read, `unreadable_processes` says how many. Kernel threads open no files and
 aren't counted. Only processes this user can see are read.
 
+Every process's open files are walked once for a pass, not once for each lock (RAL-194): the first lock of a pass
+that needs it walks them for all the pass's locks, and the others look theirs up. A pass is one reading of
+`rally stalls`' locks, or of the brief's `in_flight` over every project's; the possibly-hung check's second sample
+is a pass of its own. Each process the walk names is still checked afresh by device and inode, and a lock the
+walk found nothing for is looked for alone before it's called a blind spot, since its holder may be newer than
+the walk.
+
 ## A fair slot pool's queue (RAL-188)
 
 From the DiscoSim rally's issues log, 1.84: one team's 25 `dsm-heavy` jobs took most of the heavy slots, and

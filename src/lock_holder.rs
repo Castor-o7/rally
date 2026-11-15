@@ -207,6 +207,90 @@ fn open_on(path: &Path, dev: u64, ino: u64, pids: impl Iterator<Item = u32>) -> 
     (found, unreadable)
 }
 
+/// One pass over a set of locks (RAL-194): what's read of every process once and shared by each
+/// lock read in it. Before, each lock whose taker had exited walked every process's
+/// `/proc/<pid>/fd` for itself, so a pass over dsm-heavy's sixteen slots walked them sixteen times.
+/// Now the first such lock walks them once, for every lock of the pass, and the rest look theirs
+/// up. A pass is one moment's reading: start a new one to read again later, as the possibly-hung
+/// check's second sample does.
+#[derive(Debug, Default)]
+pub struct Pass {
+    /// The locks of this pass, canonical: the files the one walk looks for.
+    wanted: BTreeSet<std::path::PathBuf>,
+    scan: Option<Scan>,
+    /// How many times every process's open files were walked: one for a pass, however many
+    /// locks it reads.
+    pub scans: usize,
+}
+
+/// One walk of every process's open files.
+#[derive(Debug, Default)]
+struct Scan {
+    /// The files it looked for.
+    looked_for: BTreeSet<std::path::PathBuf>,
+    /// For each of them, the processes with a descriptor whose link names it.
+    open: BTreeMap<std::path::PathBuf, Vec<u32>>,
+    /// How many processes' open files couldn't be read.
+    unreadable: usize,
+}
+
+impl Pass {
+    /// A pass over these locks. A lock read in the pass without being named here is still read
+    /// rightly, at the cost of another walk.
+    pub fn over(locks: &[std::path::PathBuf]) -> Pass {
+        Pass {
+            wanted: locks
+                .iter()
+                .map(|lock| std::fs::canonicalize(lock).unwrap_or_else(|_| lock.clone()))
+                .collect(),
+            ..Pass::default()
+        }
+    }
+
+    /// The processes among `pids` whose open files name `path`, from this pass's one walk, with
+    /// how many processes' open files couldn't be read.
+    #[cfg(target_os = "linux")]
+    fn open_by_link(&mut self, path: &Path, pids: &[u32]) -> (Vec<u32>, usize) {
+        self.wanted.insert(path.to_path_buf());
+        if !self
+            .scan
+            .as_ref()
+            .is_some_and(|scan| scan.looked_for.contains(path))
+        {
+            let mut scan = Scan {
+                looked_for: self.wanted.clone(),
+                ..Scan::default()
+            };
+            for &pid in pids {
+                let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+                    // Gone since the listing, or another user's: only the second is a blind spot.
+                    if Path::new(&format!("/proc/{pid}")).exists() {
+                        scan.unreadable += 1;
+                    }
+                    continue;
+                };
+                for fd in fds.flatten() {
+                    if let Ok(target) = std::fs::read_link(fd.path())
+                        && scan.looked_for.contains(&target)
+                    {
+                        let holding = scan.open.entry(target).or_default();
+                        if !holding.contains(&pid) {
+                            holding.push(pid);
+                        }
+                    }
+                }
+            }
+            self.scans += 1;
+            self.scan = Some(scan);
+        }
+        let scan = self.scan.as_ref().expect("just walked");
+        (
+            scan.open.get(path).cloned().unwrap_or_default(),
+            scan.unreadable,
+        )
+    }
+}
+
 /// Of the processes holding a file open, those whose parent doesn't hold it too: the top of each
 /// tree, so a job and its children are one holder.
 fn topmost(holding: &[u32], procs: &BTreeMap<u32, Proc>) -> Vec<u32> {
@@ -420,9 +504,15 @@ pub const BY_DESCRIPTOR: &str = "open descriptor: the process /proc/locks names 
     had exited or didn't have the file open, so the holders are the topmost processes with an \
     open descriptor on it, by device and inode";
 
-/// Reads one lock's holders, waiters and the processes on this machine, from `/proc`.
-#[cfg(target_os = "linux")]
+/// Reads one lock's holders, waiters and the processes on this machine, from `/proc`, in a pass
+/// of its own.
 pub fn read(lock: &Path) -> Result<Seen, String> {
+    read_in(&mut Pass::default(), lock)
+}
+
+/// [`read`], as one lock of a [`Pass`], sharing the pass's walk of every process's open files.
+#[cfg(target_os = "linux")]
+pub fn read_in(pass: &mut Pass, lock: &Path) -> Result<Seen, String> {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::metadata(lock).map_err(|e| format!("can't read the lock file: {e}"))?;
     let dev = meta.dev();
@@ -465,12 +555,22 @@ pub fn read(lock: &Path) -> Result<Seen, String> {
     let (kernel_open, _) = open_on(&canonical, dev, meta.ino(), seen.holders.iter().copied());
     if seen.holders.iter().any(|pid| !kernel_open.contains(pid)) {
         // Kernel threads (kthreadd, pid 2, and its children) open no files and show no fd list.
-        let user_space = seen
+        let user_space: Vec<u32> = seen
             .procs
             .values()
             .filter(|proc| proc.pid != 2 && proc.ppid != 2)
-            .map(|proc| proc.pid);
-        let (holding, unreadable) = open_on(&canonical, dev, meta.ino(), user_space);
+            .map(|proc| proc.pid)
+            .collect();
+        // The pass's one walk says which processes' descriptors name the file; each of those is
+        // then checked now, by device and inode (RAL-194).
+        let (named, unreadable) = pass.open_by_link(&canonical, &user_space);
+        let (mut holding, _) = open_on(&canonical, dev, meta.ino(), named.into_iter());
+        let mut unreadable = unreadable;
+        if holding.is_empty() {
+            // The walk may be older than this lock's holder, when another lock of the pass
+            // made it first: before calling it a blind spot, look for this lock alone.
+            (holding, unreadable) = open_on(&canonical, dev, meta.ino(), user_space.into_iter());
+        }
         seen.unreadable = unreadable;
         if holding.is_empty() {
             let gone: Vec<String> = seen.holders.iter().map(u32::to_string).collect();
@@ -519,7 +619,7 @@ pub fn read(lock: &Path) -> Result<Seen, String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn read(_lock: &Path) -> Result<Seen, String> {
+pub fn read_in(_pass: &mut Pass, _lock: &Path) -> Result<Seen, String> {
     Err("a lock's holder can only be read on Linux".into())
 }
 
@@ -562,10 +662,15 @@ pub fn check_with(
     let mut prompts = Vec::new();
     let mut seen_all = Vec::new();
     let locks = expand(patterns);
-    let first: Vec<Result<Seen, String>> = locks.iter().map(|lock| read(lock)).collect();
+    // Each sample is one pass: every process's open files are walked once for all its locks.
+    let sample = || -> Vec<Result<Seen, String>> {
+        let mut pass = Pass::over(&locks);
+        locks.iter().map(|lock| read_in(&mut pass, lock)).collect()
+    };
+    let first = sample();
     let second: Option<Vec<Result<Seen, String>>> = hung_check.map(|h| {
         std::thread::sleep(std::time::Duration::from_millis(h.sample_ms));
-        locks.iter().map(|lock| read(lock)).collect()
+        sample()
     });
     let ticks = rustix::param::clock_ticks_per_second();
     for (index, (lock, first)) in locks.iter().zip(first).enumerate() {
@@ -933,5 +1038,70 @@ mod tests {
             "the lock is released and nothing is flagged"
         );
         assert_eq!(seen[0]["holder"], "no holder found in /proc/locks");
+    }
+
+    /// RAL-194: three locks whose takers exited, each held by a job with the inherited
+    /// descriptor, are read in one pass with one walk of every process's open files, and each
+    /// names its own job.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pass_walks_every_processs_open_files_once_for_all_its_locks() {
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let mut jobs = Vec::new();
+        let mut locks = Vec::new();
+        let mut groups = Vec::new();
+        for n in 1..=3 {
+            let lock = dir.path().join(format!("heavy.{n}.lock"));
+            let said = dir.path().join(format!("job.{n}.pid"));
+            // The shell takes the lock, starts a job that inherits the descriptor, and waits to
+            // be ended by the guard; a second shell inside is the taker, which exits.
+            let Ok(child) = Command::new("sh")
+                .args([
+                    "-c",
+                    "sh -c 'exec 9>>\"$0\"; flock 9 || exit 1; sleep 60 </dev/null >/dev/null 2>&1 & \
+                     echo $! > \"$1.tmp\"; mv \"$1.tmp\" \"$1\"' \"$0\" \"$1\"; sleep 60",
+                ])
+                .arg(&lock)
+                .arg(&said)
+                .process_group(0)
+                .spawn()
+            else {
+                eprintln!("no sh here; skipped");
+                return;
+            };
+            groups.push(Group(child));
+            let mut job = None;
+            for _ in 0..200 {
+                if let Ok(text) = std::fs::read_to_string(&said) {
+                    job = text.trim().parse::<u32>().ok();
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            let Some(job) = job else {
+                eprintln!("no flock(1) here; skipped");
+                return;
+            };
+            jobs.push(job);
+            locks.push(lock);
+        }
+        let mut pass = Pass::over(&locks);
+        for (lock, job) in locks.iter().zip(&jobs) {
+            let seen = read_in(&mut pass, lock).unwrap();
+            assert!(seen.by_descriptor, "{seen:?}");
+            assert_eq!(seen.holders, [*job]);
+            assert_eq!(seen.kernel_holders.len(), 1);
+        }
+        assert_eq!(pass.scans, 1, "one walk for the three locks");
+        // A lock the pass wasn't told of is still read rightly, with a walk of its own.
+        let mut unnamed = Pass::default();
+        for (lock, job) in locks.iter().zip(&jobs).take(2) {
+            assert_eq!(read_in(&mut unnamed, lock).unwrap().holders, [*job]);
+        }
+        assert_eq!(unnamed.scans, 2);
+        // And one read alone does as before.
+        assert_eq!(read(&locks[2]).unwrap().holders, [jobs[2]]);
     }
 }
