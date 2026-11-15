@@ -1152,7 +1152,7 @@ pub fn compare(repo: &str, base: &str, head: &str) -> Result<Value, String> {
         &format!("repos/{repo}/compare/{base}...{head}"),
         "--jq",
         "{status, ahead_by, commits: [.commits[] | {sha, message: .commit.message, \
-         date: .commit.committer.date}]}",
+         date: .commit.committer.date, parents: [.parents[].sha]}]}",
     ])?;
     serde_json::from_str(out.trim()).map_err(|_| "gh returned a compare that can't be read".into())
 }
@@ -1177,6 +1177,22 @@ pub fn compare_files(repo: &str, base: &str, head: &str) -> Result<Value, String
          files: [.files[] | {filename, patch, status, previous_filename}]}",
     ])?;
     serde_json::from_str(out.trim()).map_err(|_| "gh returned a compare that can't be read".into())
+}
+
+/// The files one commit changes, each `{filename, patch}` (RAL-195): for a merge, against its
+/// first parent, so a pull request's merge lists what the pull request changed. Only `src/lib.rs`
+/// keeps its patch, which is the one `builds` reads. Read-only through `gh api`.
+pub fn commit_files(repo: &str, commit: &str) -> Result<Value, String> {
+    if commit.is_empty() || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("the commit isn't a hash".into());
+    }
+    let out = run_gh(&[
+        "api",
+        &format!("repos/{repo}/commits/{commit}"),
+        "--jq",
+        "[.files[] | {filename, patch: (if .filename == \"src/lib.rs\" then .patch else null end)}]",
+    ])?;
+    serde_json::from_str(out.trim()).map_err(|_| "gh returned files that can't be read".into())
 }
 
 /// The tip of `branch` in `repo` (RAL-167), read-only through `gh api`.
