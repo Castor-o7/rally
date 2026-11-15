@@ -88,6 +88,12 @@ pub fn section(projects: Result<Vec<(String, Vec<PathBuf>)>, String>) -> Value {
     let mut out = Vec::new();
     let mut held = 0;
     let mut waiting = 0;
+    // One pass over every project's locks: each process's open files are walked once (RAL-194).
+    let every: Vec<std::path::PathBuf> = projects
+        .iter()
+        .flat_map(|(_, patterns)| crate::lock_holder::expand(patterns))
+        .collect();
+    let mut pass = crate::lock_holder::Pass::over(&every);
     for (prefix, patterns) in &projects {
         if patterns.is_empty() {
             continue;
@@ -95,7 +101,7 @@ pub fn section(projects: Result<Vec<(String, Vec<PathBuf>)>, String>) -> Value {
         let mut locks = Vec::new();
         for lock in crate::lock_holder::expand(patterns) {
             let shown = lock.display().to_string();
-            match crate::lock_holder::read(&lock) {
+            match crate::lock_holder::read_in(&mut pass, &lock) {
                 Ok(seen) => {
                     let owner = (!seen.holders.is_empty())
                         .then(|| owner_of(&lock))

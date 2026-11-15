@@ -30,15 +30,20 @@ pub fn write(path: impl AsRef<Path>, text: impl AsRef<[u8]>) -> std::io::Result<
         .spawn()?;
     let sent = child.stdin.take().expect("piped").write_all(text.as_ref());
     let status = child.wait()?;
-    sent?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "couldn't write the script {}: sh exited with {status}",
-            path.display()
-        )))
+    // sh's own failure first (RAL-194): when it can't open the file it exits without reading, and
+    // a text too long for the pipe then fails to send with "Broken pipe", which says nothing of
+    // why. The exit status does.
+    if !status.success() {
+        return Err(std::io::Error::other(format!(
+            "couldn't write the script {}: sh exited with {status}{}",
+            path.display(),
+            match &sent {
+                Err(error) => format!(" (and sending the text failed: {error})"),
+                Ok(()) => String::new(),
+            }
+        )));
     }
+    sent
 }
 
 #[cfg(test)]
@@ -71,6 +76,23 @@ mod tests {
             err.to_string().contains("couldn't write the script"),
             "{err}"
         );
+    }
+
+    /// RAL-194: a text too long for the pipe, to where sh can't write: sh exits without reading,
+    /// the send breaks, and the error is still sh's exit status, with the broken pipe beside it.
+    #[test]
+    fn shs_exit_status_is_reported_ahead_of_a_broken_pipe() {
+        let dir = tempfile::tempdir().unwrap();
+        let long = vec![b'#'; 4 * 1024 * 1024];
+        let err = write(dir.path().join("no-such-dir/x"), &long).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("couldn't write the script"), "{text}");
+        assert!(text.contains("sh exited with exit status: "), "{text}");
+        assert!(text.contains("sending the text failed"), "{text}");
+        // A long text where it can be written is written whole.
+        let path = dir.path().join("long");
+        write(&path, &long).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), long);
     }
 
     /// Written and run 200 times while four threads start programs without pause: never busy.
