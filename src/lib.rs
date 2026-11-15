@@ -53,6 +53,7 @@ pub mod roadmaps;
 pub mod scratch_pg;
 pub mod script;
 pub mod secrets;
+pub mod serve;
 pub mod server;
 pub mod session;
 pub mod shims;

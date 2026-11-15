@@ -48,10 +48,12 @@ rally's projects, with every list bounded and every note cut short (well under 2
    - `service`: a file the service runs changed (`builds::SERVICE_MODULES`, or `Cargo.toml`, `Cargo.lock`,
      `build.rs`), listed in `service_files`. Only these are counted: "2 stories merged, not live on the service;
      the oldest for 6 h", and `count` and `oldest_age_ms` are theirs.
-   - `can't tell`: only files the service shares changed, listed in `shared_files`: `src/main.rs` (every
-     command, `serve` among them), `src/web.rs` (the viewer, and the roadmap parser the service uses) and
-     `src/lib.rs` unless its patch only names modules the service doesn't run; or a commit's files couldn't be
-     read. Read the diff. It's never counted as live.
+   - `can't tell`: only files the service shares changed, listed in `shared_files`: `src/web.rs` (the viewer,
+     and the roadmap parser the service uses) and `src/lib.rs` unless its patch only names modules the service
+     doesn't run; or a commit's files couldn't be read. Read the diff. It's never counted as live.
+     `src/main.rs` was one of these until RAL-196 moved `serve`'s flags and startup to `src/serve.rs`, which is
+     the service's, and the `--db`, `--head-file` and `--db-password-file` flags to the store: `main` now only
+     passes that command on and declares none of them, and a test keeps it so.
    - `cli or viewer`: only code the CLI or the viewer runs changed. It's live wherever those are on a build that
      has it: `cli_build` says this CLI's commit, how far behind main it is and which stories it `lacks`, and
      `viewer_build` the build of the viewer `rally view` started on this machine, from its run file.
