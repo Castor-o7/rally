@@ -2374,8 +2374,63 @@ fn builds_section(location: Option<&Location>, config: &Path) -> Value {
         .zip(cli)
         .filter(|(live, cli)| live != cli)
         .map(|(live, cli)| web::compare(repo, live, cli));
-    rally::builds::section(live.as_deref(), cli, main, behind, staged, now)
+    // What this CLI doesn't have yet (RAL-195).
+    let cli_behind = cli
+        .zip(main.as_ref().ok())
+        .filter(|(cli, main)| cli != main)
+        .map(|(cli, _)| web::compare(repo, cli, "main"));
+    // What each merged commit changes (RAL-195), read a few at a time; past BUILDS_FILE_READS
+    // commits it isn't read, and the section says so.
+    let files = behind.as_ref().and_then(|b| b.as_ref().ok()).map(|compare| {
+        let shas = rally::builds::commits_naming_stories(compare);
+        if shas.len() > BUILDS_FILE_READS {
+            return Err(format!(
+                "{} commits name a story, more than the {BUILDS_FILE_READS} whose files are read",
+                shas.len()
+            ));
+        }
+        let mut read = std::collections::HashMap::new();
+        for chunk in shas.chunks(8) {
+            let results: Vec<_> = std::thread::scope(|scope| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|sha| scope.spawn(move || web::commit_files(repo, sha)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| {
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("the read stopped".to_owned()))
+                    })
+                    .collect()
+            });
+            read.extend(chunk.iter().cloned().zip(results));
+        }
+        Ok(read)
+    });
+    // The viewer `rally view` started here, by its own run file.
+    let run_path = config.with_file_name(view::RUN_FILE);
+    let viewer = match view::read_json::<view::Running>(&run_path) {
+        Ok(Some(running)) if view::alive(running.pid) => Ok(running.build),
+        Ok(_) => Err("no viewer started by `rally view` is running on this machine".to_owned()),
+        Err(why) => Err(why),
+    };
+    rally::builds::section(rally::builds::Read {
+        live: live.as_deref(),
+        cli,
+        main: Some(main),
+        behind,
+        staged,
+        cli_behind,
+        files,
+        viewer: Some(viewer),
+        now_ms: now,
+    })
 }
+
+/// The most commits whose files the `builds` section reads from GitHub, one request each.
+const BUILDS_FILE_READS: usize = 60;
 
 /// `rally rebased` (RAL-170): local git if the checkout has every commit, else GitHub's compares,
 /// saying why local git wasn't used; never "same change" when it can't tell.

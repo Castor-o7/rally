@@ -30,12 +30,31 @@ rally's projects, with every list bounded and every note cut short (well under 2
 8. **More:** counts of what's outside the rally or past the bounds, with the command that lists each.
 9. **Builds** (RAL-167): what's live, by the service's own word (`/v1/whoami`'s commit, or "older than RAL-156:
    the service doesn't say its commit"); this CLI's commit; main's tip; and what's merged but not live, from
-   GitHub's compare of live and main: how many commits, each story named in their messages with the age of its
-   oldest commit, the count, and how long the oldest has waited ("13 stories merged, not live; the oldest for 6 h").
-   GitHub's compare lists at most 250 commits, so a service further behind than that reads short, and
-   `reads_short` says so with both numbers. When this CLI is ahead of the service, a hint says a build looks staged
-   and waiting on a restart: a hint, not a fact. All of it is observed from its own source. Nothing reads the lamplighter's rollout files. It needs `gh`
-   signed in, as the digest does, and says so when a read fails.
+   GitHub's compare of live and main: how many commits, and each story named in their messages with the age of its
+   oldest commit. GitHub's compare lists at most 250 commits, so a service further behind than that reads short, and
+   `reads_short` says so with both numbers. All of it is observed from its own source. Nothing reads the
+   lamplighter's rollout files. It needs `gh` signed in, as the digest does, and says so when a read fails.
+
+   The service, the viewer and the CLI are one binary, so a story merged after the service's build isn't thereby
+   waiting on the service (RAL-195, after the brief read "8 stories merged, not live" of commits that changed
+   only the CLI, the viewer, docs and tests). Each story says what it `waits_on`, from the files its commits
+   change (GitHub's list for each commit that names it; a pull request's merge lists what the pull request changed):
+   - `service`: a file the service runs changed (`builds::SERVICE_MODULES`, or `Cargo.toml`, `Cargo.lock`,
+     `build.rs`), listed in `service_files`. Only these are counted: "2 stories merged, not live on the service;
+     the oldest for 6 h", and `count` and `oldest_age_ms` are theirs.
+   - `can't tell`: only files the service shares changed, listed in `shared_files`: `src/main.rs` (every
+     command, `serve` among them), `src/web.rs` (the viewer, and the roadmap parser the service uses) and
+     `src/lib.rs` unless its patch only names modules the service doesn't run; or a commit's files couldn't be
+     read. Read the diff. It's never counted as live.
+   - `cli or viewer`: only code the CLI or the viewer runs changed. It's live wherever those are on a build that
+     has it: `cli_build` says this CLI's commit, how far behind main it is and which stories it `lacks`, and
+     `viewer_build` the build of the viewer `rally view` started on this machine, from its run file.
+   - `nothing running`: docs and tests only.
+
+   Past 60 commits naming a story the files aren't read: `files_unread` says so, and every story counts as before.
+   When this CLI is ahead of the service and a story waits on the service or can't be told, a hint says a build
+   looks staged and waiting on a restart: a hint, not a fact. A new file in `src/` must be placed in one of the
+   lists in `src/builds.rs`, which a test checks; one this CLI's build doesn't know reads as `can't tell`.
 10. **In flight** (RAL-191): the jobs a closed window would end (issues log 1.73, when every session's background
    jobs ended with the shell windows and nothing said what had been running). For each project's `stalls.locks`
    in the projects list beside the pairing, every held lock: its holder's pid, state, command line and working
