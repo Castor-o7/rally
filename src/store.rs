@@ -135,6 +135,28 @@ pub struct Location {
 }
 
 impl Location {
+    /// The ledger `--db`, `--head-file` and `--db-password-file` name, if any: the service's, or
+    /// a host command's. Kept here, not with the CLI's commands, since it's how the service finds
+    /// its ledger (RAL-196).
+    pub fn named(
+        db: Option<String>,
+        head_file: Option<PathBuf>,
+        password_file: Option<PathBuf>,
+    ) -> Result<Option<Location>, String> {
+        match (db, head_file) {
+            (Some(url), Some(head_file)) => Ok(Some(Location {
+                url,
+                head_file,
+                password_file,
+            })),
+            (Some(_), None) => Err("--db needs --head-file or RALLY_HEAD_FILE".into()),
+            (None, _) if password_file.is_some() => {
+                Err("--db-password-file is only for --db, on the host".into())
+            }
+            (None, _) => Ok(None),
+        }
+    }
+
     /// The database's address without any password, for messages.
     pub fn redacted(&self) -> String {
         redact(&self.url)

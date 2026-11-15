@@ -90,17 +90,20 @@ pub const SERVICE_MODULES: &[&str] = &[
     "next",
     "record",
     "secrets",
+    "serve",
     "server",
     "store",
     "views",
     "watchman_brief",
 ];
 
-/// The files every part shares: `main` holds each command, `serve` among them; `lib` names each
-/// module; `web` is the viewer and also the roadmap parser the service's evidence checks use.
-pub const SHARED_MODULES: &[&str] = &["lib", "main", "web"];
+/// The files every part shares: `lib` names each module; `web` is the viewer and also the roadmap
+/// parser the service's evidence checks use.
+pub const SHARED_MODULES: &[&str] = &["lib", "web"];
 
-/// The modules only the CLI or the viewer runs.
+/// The modules only the CLI or the viewer runs. `main` is among them since RAL-196: it holds
+/// every command but the service's, which it passes on whole to `serve`
+/// (`tests::main_only_passes_serve_on` keeps it so).
 pub const CLIENT_MODULES: &[&str] = &[
     "backup",
     "builds",
@@ -113,6 +116,7 @@ pub const CLIENT_MODULES: &[&str] = &[
     "init",
     "levi",
     "lock_holder",
+    "main",
     "merge_notes",
     "rebased",
     "resume",
@@ -675,7 +679,7 @@ pub fn section(read: Read) -> Value {
                         (a pull request's merge lists all it changed) go to the stories it names \
                         or brought, or to `unnamed` when it names none; a file the service runs \
                         (builds::SERVICE_MODULES, Cargo.toml, Cargo.lock, build.rs) waits on the \
-                        service; src/main.rs, src/web.rs and most of src/lib.rs are shared, so \
+                        service; src/web.rs and most of src/lib.rs are shared, so \
                         the path can't tell",
             });
         }
@@ -849,7 +853,7 @@ mod tests {
         ]});
         let mut read = files(&[
             ("a", &["docs/watchman.md", "src/session.rs"]),
-            ("b", &["src/main.rs", "src/session.rs"]),
+            ("b", &["src/web.rs", "src/session.rs"]),
             (
                 "d",
                 &[
@@ -859,7 +863,7 @@ mod tests {
                 ],
             ),
             ("e", &["web/app.js", "web/app.css"]),
-            ("f", &["src/server.rs", "src/main.rs"]),
+            ("f", &["src/server.rs", "src/web.rs"]),
         ]);
         // A patch to lib.rs that only names a module the service doesn't run changes nothing
         // the service runs.
@@ -925,7 +929,7 @@ mod tests {
         assert_eq!(
             merged["summary"],
             "1 story merged, not live on the service; the oldest for 6 h; 1 story can't be told \
-             from the paths (shared with the service: src/main.rs): read the diff; 4 stories \
+             from the paths (shared with the service: src/web.rs): read the diff; 4 stories \
              change only the CLI, the viewer, docs or tests: live wherever those builds have \
              them (see cli_build and viewer_build)"
         );
@@ -1018,7 +1022,7 @@ mod tests {
             ("a", &["docs/watchman.md"]),
             ("b", &["src/server.rs", "tests/service.rs"]),
             ("c", &["docs/brief.md"]),
-            ("d", &["src/main.rs"]),
+            ("d", &["src/web.rs"]),
         ])));
         let merged = &out["merged_not_live"];
         assert_eq!(merged["stories"][0]["waits_on"], "nothing running");
@@ -1030,7 +1034,7 @@ mod tests {
                  "unread": null},
                 {"commit": "ddddddd", "message": "a flag for every command",
                  "age_ms": 8 * 3_600_000, "waits_on": "can't tell", "service_files": [],
-                 "shared_files": ["src/main.rs"], "unread": null},
+                 "shared_files": ["src/web.rs"], "unread": null},
             ])
         );
         assert_eq!(
@@ -1040,7 +1044,7 @@ mod tests {
         assert_eq!(merged["oldest_age_ms"], 10 * 3_600_000);
         assert_eq!(
             merged["summary"],
-            "1 commit naming no story merged, not live on the service; the oldest for 10 h; 1 commit naming no story can't be told from the paths (shared with the service: src/main.rs): read the diff; 1 story changes only the CLI, the viewer, docs or tests: live wherever those builds have it (see cli_build and viewer_build)"
+            "1 commit naming no story merged, not live on the service; the oldest for 10 h; 1 commit naming no story can't be told from the paths (shared with the service: src/web.rs): read the diff; 1 story changes only the CLI, the viewer, docs or tests: live wherever those builds have it (see cli_build and viewer_build)"
         );
         assert!(out["hint"].is_string(), "a commit waits on the service");
 
@@ -1174,7 +1178,8 @@ mod tests {
         assert_eq!(part_of("src/server.rs"), Part::Service);
         assert_eq!(part_of("src/views.rs"), Part::Service);
         assert_eq!(part_of("Cargo.lock"), Part::Service);
-        assert_eq!(part_of("src/main.rs"), Part::Shared);
+        assert_eq!(part_of("src/main.rs"), Part::Client);
+        assert_eq!(part_of("src/serve.rs"), Part::Service);
         assert_eq!(part_of("src/web.rs"), Part::Shared);
         assert_eq!(part_of("src/a_module_added_since.rs"), Part::Shared);
         assert_eq!(part_of("src/session.rs"), Part::Client);
@@ -1200,6 +1205,25 @@ mod tests {
             part_of_file(&json!({"filename": "src/lib.rs"})),
             Part::Shared
         );
+    }
+
+    /// RAL-196: `main` is the client's because all it does for the service is pass `serve` on.
+    /// If serve's wiring comes back into it, a change to it could be the service's again.
+    #[test]
+    fn main_only_passes_serve_on() {
+        let main = include_str!("main.rs");
+        assert!(
+            main.contains("Command::Serve(args) => return rally::serve::run(location, args),"),
+            "main passes `serve` on whole"
+        );
+        assert!(main.contains("    Serve(rally::serve::Args),"));
+        for services in ["server::", "RateLimit", "evidence::Settings"] {
+            assert!(
+                !main.contains(services),
+                "src/main.rs names {services}, which is the service's: keep it in src/serve.rs, \
+                 or move `main` back to builds::SHARED_MODULES"
+            );
+        }
     }
 
     /// Every file in `src/` is placed in one list, so a new module makes its author say whether
