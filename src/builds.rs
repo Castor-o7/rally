@@ -1217,7 +1217,20 @@ mod tests {
             "main passes `serve` on whole"
         );
         assert!(main.contains("    Serve(rally::serve::Args),"));
-        for services in ["server::", "RateLimit", "evidence::Settings"] {
+        // The flags that name the ledger are the store's, flattened in: main declares none.
+        assert!(main.contains("    ledger: rally::store::LedgerFlags,"));
+        assert!(main.contains("cli.ledger.location(uses_database)?"));
+        for services in [
+            "server::",
+            "RateLimit",
+            "evidence::Settings",
+            "RALLY_DB",
+            "RALLY_HEAD_FILE",
+            "cli.db",
+            "cli.head_file",
+            " head_file: ",
+            "Location {",
+        ] {
             assert!(
                 !main.contains(services),
                 "src/main.rs names {services}, which is the service's: keep it in src/serve.rs, \

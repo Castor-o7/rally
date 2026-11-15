@@ -28,18 +28,8 @@ use rally::web::{
 #[derive(Parser)]
 #[command(version = rally::version())]
 struct Cli {
-    /// Work directly on the ledger in this Postgres database, such as
-    /// postgres://rally@127.0.0.1/rally, rather than through the service. Needs --head-file.
-    #[arg(long, env = "RALLY_DB", hide_env_values = true)]
-    db: Option<String>,
-    /// With --db: the ledger's head file, kept outside Postgres so that removing the newest
-    /// records shows.
-    #[arg(long, env = "RALLY_HEAD_FILE")]
-    head_file: Option<PathBuf>,
-    /// With --db: a file holding the Postgres role's password, readable only by this account, so
-    /// the password stays out of the command line and the URL.
-    #[arg(long, env = "RALLY_DB_PASSWORD_FILE", hide_env_values = true)]
-    db_password_file: Option<PathBuf>,
+    #[command(flatten)]
+    ledger: rally::store::LedgerFlags,
     /// The pairing file. Defaults to ~/.config/rally/client.json.
     #[arg(long, env = "RALLY_CONFIG")]
     config: Option<PathBuf>,
@@ -4064,8 +4054,7 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
         cli.command,
         Command::AddMachine { .. } | Command::Revoke { .. } | Command::Pair
     );
-    let password_file = cli.db_password_file.filter(|_| uses_database);
-    let location = Location::named(cli.db, cli.head_file, password_file)?;
+    let location = cli.ledger.location(uses_database)?;
     let ci_wait = match &cli.command {
         Command::Merge { ci_wait, .. } => Duration::from_secs(*ci_wait),
         _ => Duration::ZERO,

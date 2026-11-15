@@ -134,6 +134,34 @@ pub struct Location {
     pub password_file: Option<PathBuf>,
 }
 
+/// The flags that name a ledger for every command: `--db`, `--head-file` and
+/// `--db-password-file`. Declared here, not with the CLI's commands, since they're how the service
+/// finds its ledger: a change to them is a change to what the service runs (RAL-196).
+#[derive(clap::Args)]
+pub struct LedgerFlags {
+    /// Work directly on the ledger in this Postgres database, such as
+    /// postgres://rally@127.0.0.1/rally, rather than through the service. Needs --head-file.
+    #[arg(long, env = "RALLY_DB", hide_env_values = true)]
+    pub db: Option<String>,
+    /// With --db: the ledger's head file, kept outside Postgres so that removing the newest
+    /// records shows.
+    #[arg(long, env = "RALLY_HEAD_FILE")]
+    pub head_file: Option<PathBuf>,
+    /// With --db: a file holding the Postgres role's password, readable only by this account, so
+    /// the password stays out of the command line and the URL.
+    #[arg(long, env = "RALLY_DB_PASSWORD_FILE", hide_env_values = true)]
+    pub db_password_file: Option<PathBuf>,
+}
+
+impl LedgerFlags {
+    /// The ledger these name, if any. A command that never touches the database (`uses_database`
+    /// false) ignores a password file, so a stray setting doesn't block it.
+    pub fn location(self, uses_database: bool) -> Result<Option<Location>, String> {
+        let password_file = self.db_password_file.filter(|_| uses_database);
+        Location::named(self.db, self.head_file, password_file)
+    }
+}
+
 impl Location {
     /// The ledger `--db`, `--head-file` and `--db-password-file` name, if any: the service's, or
     /// a host command's. Kept here, not with the CLI's commands, since it's how the service finds

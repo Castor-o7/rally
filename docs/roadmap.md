@@ -1542,6 +1542,7 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
 - [ ] **RAL-196: Serve's wiring in its own file.** Follow-up to RAL-195, agreed with the watchman (2026-11-15):
   `src/main.rs` held every command, `serve` among them, so the brief's builds read "can't tell" for each story
   that touched it (three of the eight on 2026-11-15). Done when: `serve`'s flags, their checks and the service's
-  start are in `src/serve.rs`, and how the ledger is named by `--db` and `--head-file` is in the store, with no
+  start are in `src/serve.rs`, and the `--db`, `--head-file` and `--db-password-file` flags are declared and read
+  in the store, with no
   change to what `rally serve` accepts or does; `src/main.rs` is placed with the client's files, and
   `src/serve.rs` with the service's; with a test that `main` only passes `serve` on (docs/brief.md).

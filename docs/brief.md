@@ -52,7 +52,8 @@ rally's projects, with every list bounded and every note cut short (well under 2
      and the roadmap parser the service uses) and `src/lib.rs` unless its patch only names modules the service
      doesn't run; or a commit's files couldn't be read. Read the diff. It's never counted as live.
      `src/main.rs` was one of these until RAL-196 moved `serve`'s flags and startup to `src/serve.rs`, which is
-     the service's: `main` now only passes that command on, and a test keeps it so.
+     the service's, and the `--db`, `--head-file` and `--db-password-file` flags to the store: `main` now only
+     passes that command on and declares none of them, and a test keeps it so.
    - `cli or viewer`: only code the CLI or the viewer runs changed. It's live wherever those are on a build that
      has it: `cli_build` says this CLI's commit, how far behind main it is and which stories it `lacks`, and
      `viewer_build` the build of the viewer `rally view` started on this machine, from its run file.
