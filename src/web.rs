@@ -1152,7 +1152,7 @@ pub fn compare(repo: &str, base: &str, head: &str) -> Result<Value, String> {
         &format!("repos/{repo}/compare/{base}...{head}"),
         "--jq",
         "{status, ahead_by, commits: [.commits[] | {sha, message: .commit.message, \
-         date: .commit.committer.date}]}",
+         date: .commit.committer.date, parents: [.parents[].sha]}]}",
     ])?;
     serde_json::from_str(out.trim()).map_err(|_| "gh returned a compare that can't be read".into())
 }

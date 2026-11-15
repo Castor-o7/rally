@@ -1525,8 +1525,8 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   (2026-11-15): `rally brief --watchman` read "8 stories merged, not live; the oldest for 32 h" (RAL-186 to 193)
   because it compared main with the service's commit, when none of those commits changed what the service runs;
   the watchman repeated the reading to the lamplighter and was wrong. Done when: a merged story counts as not
-  live on the service only when a commit naming it changes a file the service runs, from GitHub's files for
-  each commit; a story that changes only files the service shares (`src/main.rs`, `src/web.rs`) says it can't be
+  live on the service only when what it brought to main changes a file the service runs, from GitHub's files for
+  each commit on main's own line; a commit there that names no story is read too, and counts by its commit; a story that changes only files the service shares (`src/main.rs`, `src/web.rs`) says it can't be
   told and is never called live; the rest say they change only the CLI, the viewer, docs or tests, and the
   section says which build this CLI and the viewer here are on; a test keeps every file in `src/` placed as the
   service's, shared or the client's; with tests of each reading (docs/brief.md).

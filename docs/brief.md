@@ -37,8 +37,14 @@ rally's projects, with every list bounded and every note cut short (well under 2
 
    The service, the viewer and the CLI are one binary, so a story merged after the service's build isn't thereby
    waiting on the service (RAL-195, after the brief read "8 stories merged, not live" of commits that changed
-   only the CLI, the viewer, docs and tests). Each story says what it `waits_on`, from the files its commits
-   change (GitHub's list for each commit that names it; a pull request's merge lists what the pull request changed):
+   only the CLI, the viewer, docs and tests). What's read is every commit on main's own line (its first-parent
+   chain) since the service's build: a pull request's merge, or a commit made straight on main. GitHub lists a
+   merge's files against its first parent, so these commits' files together are exactly what changed on main, each
+   change once. A pull request's commits are covered by its merge whatever their messages say ("address review"
+   as much as "RAL-148: ..."), and a merge of main into a branch, which repeats what main already had, isn't read.
+   Each commit's files go to the stories it names or brought to main; one that names and brought none is listed by
+   its commit in `unnamed` when it may wait on the service, and counted with the stories ("1 story and 1 commit
+   naming no story merged, not live on the service"). Each says what it `waits_on`:
    - `service`: a file the service runs changed (`builds::SERVICE_MODULES`, or `Cargo.toml`, `Cargo.lock`,
      `build.rs`), listed in `service_files`. Only these are counted: "2 stories merged, not live on the service;
      the oldest for 6 h", and `count` and `oldest_age_ms` are theirs.
@@ -51,8 +57,9 @@ rally's projects, with every list bounded and every note cut short (well under 2
      `viewer_build` the build of the viewer `rally view` started on this machine, from its run file.
    - `nothing running`: docs and tests only.
 
-   Past 60 commits naming a story the files aren't read: `files_unread` says so, and every story counts as before.
-   When this CLI is ahead of the service and a story waits on the service or can't be told, a hint says a build
+   Past 60 commits landed on main, or when GitHub lists fewer commits than the service is behind, the files
+   aren't read: `files_unread` says so, and every story counts as before.
+   When this CLI is ahead of the service and a story or commit waits on the service or can't be told, a hint says a build
    looks staged and waiting on a restart: a hint, not a fact. A new file in `src/` must be placed in one of the
    lists in `src/builds.rs`, which a test checks; one this CLI's build doesn't know reads as `can't tell`.
 10. **In flight** (RAL-191): the jobs a closed window would end (issues log 1.73, when every session's background
