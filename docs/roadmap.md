@@ -1521,3 +1521,12 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   spot naming how many processes' open files couldn't be read, never "no holder"; the brief's `in_flight` shows
   the same; with a test that the stopped and possibly-hung checks prompt for a holder found this way
   (docs/stalls.md).
+- [ ] **RAL-194: One walk of every process's open files for a pass, and sh's exit status ahead of a broken pipe.**
+  Follow-ups to RAL-192 and RAL-189, from jaunty-harrier (2026-11-14). (a) Each lock whose taker had exited
+  walked every process's `/proc/<pid>/fd` for itself, so a pass over dsm-heavy's sixteen slots walked them sixteen
+  times, and the possibly-hung check twice that. (b) `script::write` returned the failed send ("Broken pipe")
+  ahead of sh's exit status when sh couldn't open the file and the text was too long for the pipe. Done when:
+  `rally stalls` and the brief's `in_flight` walk every process's open files once for all the locks of a pass,
+  each lock still naming its own holders, with a test that three locks held by descriptor are read with one walk;
+  and `script::write` reports sh's exit status first, with the failed send beside it, with a test of a text too
+  long for the pipe (docs/stalls.md).
