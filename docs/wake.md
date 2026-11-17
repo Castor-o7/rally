@@ -4,11 +4,12 @@
 notice. It comes from the operator's question of 2026-11-05, whether a rally can run without a watchman: two
 teams sat idle with ready work that night, and one slept for about 2 hours with no way to wake it.
 
-It runs on a1, beside `rally web`, where `gh` can read each project's roadmap and `muster-shim` could read
-Muster's roster and send messages. Pending RAL-199 part 2: Muster is retired (2026-11-17, condition 5396) and
-Rally doesn't send through Marshal yet, so it reads Marshal's roster and only reports. It reads the ledger
-through the paired service. Each run is one pass, or `--every
-<time>` repeats it until stopped, for example under launchd.
+It was set up to run on a1, beside `rally web`, where `gh` could read each project's roadmap and `muster-shim`
+could read Muster's roster and send messages. Since Muster was retired (2026-11-17, condition 5396), Rally reads
+the roster and sends through Marshal's daemon itself (RAL-199), which on Murph listens only on loopback
+(`127.0.0.1:6155`, [cutover.md](cutover.md)), and a1 is cleared only as a test host (grant 5360). So it has to
+run where it can reach that daemon; where is the operator's call. It reads the ledger through the paired
+service. Each run is one pass, or `--every <time>` repeats it until stopped, for example under launchd.
 
 ## Each pass
 
