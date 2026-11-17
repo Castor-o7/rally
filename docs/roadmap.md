@@ -1579,6 +1579,13 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   row for a team's live session, and say how many they left out; with unit tests of the rule and a headless
   Chrome test of the panel; and the digest's routing and `marshal::recipient` take only live sessions (bound,
   or with a wait held), so a ghost never ends a route early or makes a live nickname ambiguous.
+- [ ] **RAL-205: Browser tests hold up under load.** From the watchman (2026-11-17), after RAL-203's
+  local/check failed in `a_segfault_at_start_is_tried_once_more_and_a_second_fails` at load ~7: the retry's
+  real Chrome timed out before it started. The 12 browser runs in `tests/web.rs` ran in parallel, and
+  `tests/browser/sign-in.mjs` gave the whole run one 45 s timer, which the retry after a crash at start shared.
+  Done when: tests start one real Chrome at a time (a lock held only while the browser runs, which a panic
+  doesn't poison); the retry after a crash at start gets a fresh 45 s, so any run ends within 90 s; and what the
+  browser tests prove is unchanged (one stated retry, a second crash fails, nothing of the browser survives).
 - [ ] **RAL-206: The Marshal e2e's throwaway shim never borrows the runner's session identity.** From fervent-dace's
   read of RAL-199 part 3 (2026-11-17): `tests/marshal.rs`'s shim inherited `CLAUDE_CODE_SESSION_ID`, so it took
   the id and nickname of whichever session ran the test. That only ever reached the throwaway daemon, but the
