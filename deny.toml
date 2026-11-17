@@ -14,6 +14,12 @@ ignore = [
     # statement). No secret integer is ever in Rally's process for timing to leak, and Rally
     # never signs: the operator's key stays in Secretive, on a1.
     { id = "RUSTSEC-2026-0387", reason = "verify-only, no secret integers in Rally; move to ssh-key 0.7 when it's stable; review by 2027-02-05" },
+    # chrono 0.4.45 is unmaintained (informational, 2026-09-14), and there's no safe upgrade. Rally
+    # doesn't use chrono itself. It comes in through myko and myko-server, through postgres-types
+    # (tokio-postgres -> postgres), and through rquickjs-core (rquickjs -> myko-server). This is
+    # an unmaintained notice, not a vulnerability: no flaw is reported in the code Rally runs. Drop
+    # this entry once myko and postgres-types move to jiff or time.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained, not a vulnerability; only through myko, postgres-types and rquickjs-core; review by 2027-02-17" },
 ]
 
 [licenses]

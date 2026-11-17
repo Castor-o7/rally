@@ -1546,3 +1546,7 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   in the store, with no
   change to what `rally serve` accepts or does; `src/main.rs` is placed with the client's files, and
   `src/serve.rs` with the service's; with a test that `main` only passes `serve` on (docs/brief.md).
+- [ ] **RAL-198: List the chrono advisory in deny.toml.** From the watchman (2026-11-17): RUSTSEC-2026-0543
+  (chrono unmaintained, no safe upgrade) reached Murph's advisory db after 11-15, so `local/dependency-audit`
+  failed on every PR. Done when: deny.toml lists it in the file's style, with the paths chrono comes in by, why
+  Rally isn't exposed, and a review date, and `cargo deny check` passes.
