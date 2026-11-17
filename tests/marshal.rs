@@ -1,0 +1,158 @@
+//! RAL-199 against a real Marshal daemon: Rally reads the roster as a Myko client of the daemon.
+//!
+//! Ignored by default, since it needs upstream Marshal's `marshal-daemon` and `marshal-shim`
+//! (0.60.2). It starts its own ephemeral daemon on free loopback ports, never the live one. Run it
+//! with `cargo test --test marshal -- --ignored --nocapture`; `RALLY_TEST_MARSHAL_DAEMON` and
+//! `RALLY_TEST_MARSHAL_SHIM` name the binaries when they aren't on `PATH`.
+
+use std::io::Write as _;
+use std::net::TcpListener;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+
+struct Killed(Child);
+
+impl Drop for Killed {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .expect("a free port")
+        .local_addr()
+        .expect("its address")
+        .port()
+}
+
+fn binary(env: &str, name: &str) -> String {
+    std::env::var(env).unwrap_or_else(|_| name.to_owned())
+}
+
+/// An ephemeral daemon (no Postgres, so it keeps nothing), and its WebSocket address.
+fn daemon() -> (Killed, String) {
+    let (ws, hook) = (free_port(), free_port());
+    let child = Command::new(binary("RALLY_TEST_MARSHAL_DAEMON", "marshal-daemon"))
+        .env("MARSHAL_BIND", format!("127.0.0.1:{ws}"))
+        .env("MARSHAL_HOOK_BIND", format!("127.0.0.1:{hook}"))
+        .env_remove("MYKO_POSTGRES_URL")
+        .env_remove("MARSHAL_AUTH_POSTGRES_URL")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("marshal-daemon runs: set RALLY_TEST_MARSHAL_DAEMON");
+    let until = Instant::now() + Duration::from_secs(20);
+    while std::net::TcpStream::connect(("127.0.0.1", ws)).is_err() {
+        assert!(
+            Instant::now() < until,
+            "the daemon didn't listen on {ws} within 20s"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    (Killed(child), format!("ws://127.0.0.1:{ws}"))
+}
+
+/// A real shim connected to `address`, as a session would run it, with an empty config directory
+/// so no address file on this machine overrides the throwaway daemon's.
+fn shim(address: &str, config: &std::path::Path, cwd: &std::path::Path) -> Killed {
+    let mut child = Command::new(binary("RALLY_TEST_MARSHAL_SHIM", "marshal-shim"))
+        .env("MARSHAL_DAEMON_ADDRESS", address)
+        .env("XDG_CONFIG_HOME", config)
+        .env("HOME", config)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("marshal-shim runs: set RALLY_TEST_MARSHAL_SHIM");
+    // The MCP handshake a harness sends first, so the shim serves as it would for a session.
+    let stdin = child.stdin.as_mut().expect("its stdin");
+    let hello = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "rally-e2e", "version": "0"}}});
+    writeln!(stdin, "{hello}").expect("the handshake is written");
+    Killed(child)
+}
+
+fn sessions(roster: &Value) -> Vec<Value> {
+    roster["sessions"].as_array().cloned().unwrap_or_default()
+}
+
+#[test]
+#[ignore = "needs upstream Marshal 0.60.2's marshal-daemon and marshal-shim"]
+fn rally_reads_a_real_daemon_s_roster_and_puts_no_row_on_it() {
+    let (_daemon, address) = daemon();
+    let limit = Duration::from_secs(10);
+
+    // An empty daemon gives an empty roster, not an error: Rally's own read adds no row.
+    let empty = rally::marshal::roster_at(&address, limit).expect("a roster from the daemon");
+    println!("empty roster: {empty}");
+    assert_eq!(
+        sessions(&empty).len(),
+        0,
+        "Rally's reading client put a row on the roster"
+    );
+
+    let config = tempfile::tempdir().expect("a config dir");
+    let cwd = tempfile::tempdir().expect("a session dir");
+    let _shim = shim(&address, config.path(), cwd.path());
+    let until = Instant::now() + Duration::from_secs(20);
+    let roster = loop {
+        let roster = rally::marshal::roster_at(&address, limit).expect("a roster from the daemon");
+        if !sessions(&roster).is_empty() {
+            break roster;
+        }
+        assert!(
+            Instant::now() < until,
+            "the shim's session never reached the roster"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    println!("roster with one shim: {roster:#}");
+    let rows = sessions(&roster);
+    assert_eq!(rows.len(), 1, "one shim, one row, and none for Rally");
+    let row = &rows[0];
+    assert!(row["session_id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert!(
+        row["nickname"]
+            .as_str()
+            .is_some_and(|name| name.contains('-'))
+    );
+    assert_eq!(
+        row["declared"]["cwd"],
+        cwd.path().to_string_lossy().as_ref()
+    );
+    assert_eq!(row["recorded"]["bound_to_connection"], true);
+
+    // The viewer's reading of it: available, with the session under its labels.
+    let shaped = rally::web::shape_roster(&roster, 1);
+    println!("as the viewer shapes it: {shaped:#}");
+    assert_eq!(shaped["available"], true);
+    assert_eq!(shaped["sessions"][0]["nickname"], row["nickname"]);
+    assert_eq!(shaped["sessions"][0]["machine_label"], "declared");
+    assert_eq!(shaped["sessions"][0]["connection"]["label"], "recorded");
+}
+
+#[test]
+#[ignore = "part of the RAL-199 e2e run against Marshal"]
+fn an_unreachable_daemon_is_said_at_once_and_a_silent_one_within_the_limit() {
+    let address = format!("ws://127.0.0.1:{}", free_port());
+    let started = Instant::now();
+    let error = rally::marshal::roster_at(&address, Duration::from_secs(2)).unwrap_err();
+    println!("unreachable: {error} after {:?}", started.elapsed());
+    assert!(error.contains("couldn't be reached"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(1));
+
+    // Something that takes the connection but never speaks Myko.
+    let silent = TcpListener::bind("127.0.0.1:0").expect("a listener");
+    let address = format!("ws://{}", silent.local_addr().expect("its address"));
+    let started = Instant::now();
+    let error = rally::marshal::roster_at(&address, Duration::from_secs(2)).unwrap_err();
+    println!("silent: {error} after {:?}", started.elapsed());
+    assert!(error.contains("within 2s"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(4));
+}

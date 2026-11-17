@@ -103,8 +103,9 @@ A session named silent-dhole recorded these [declared]:
 How each part is known:
 
 - **Who this session is.** Its id is tied to a nickname by the `<muster_session nickname=… id=…>` tag Muster's own
-  SessionStart hook leaves at the head of the session's transcript, or by Muster's roster (`muster-shim roster`),
-  asked again for up to 1.5 s because Muster's hook runs beside this one. Without such a tie, the nickname isn't
+  SessionStart hook leaves at the head of the session's transcript, or by Marshal's roster, read from its daemon
+  (RAL-199) when `RALLY_ROSTER_FROM` lists `marshal`, as it does by default, and asked again for up to 1.5 s
+  because Marshal's hook runs beside this one. Without such a tie, the nickname isn't
   used, so a new, unrelated session in the same folder is never told it holds another session's claims. Without
   `RALLY_TEAM`, the tied nickname is the team.
 - **The earlier session.** Muster records each takeover (a `Succession`) but offers no read of it, so Rally reads

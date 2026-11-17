@@ -117,6 +117,7 @@ pub const CLIENT_MODULES: &[&str] = &[
     "levi",
     "lock_holder",
     "main",
+    "marshal",
     "merge_notes",
     "rebased",
     "resume",
