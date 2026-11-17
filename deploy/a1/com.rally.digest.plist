@@ -2,7 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Rally's watchman digest for a1 (RAL-8): every 30 seconds, one pass of `rally digest`. It reads
+  <!-- Pending RAL-199 part 2: Muster is retired (2026-11-17, condition 5396) and Rally doesn't send
+       through Marshal yet, so this agent's muster-shim no longer reaches a watchman. See docs/digest.md.
+
+       Rally's watchman digest for a1 (RAL-8): every 30 seconds, one pass of `rally digest`. It reads
        the ledger through this machine's pairing, and when a digest is due (quiet for 2 minutes, or 10
        minutes after the first new record, as the operator agreed) sends it with `muster-shim tell`.
        Nothing new, nothing sent. Each watchman's last digest is kept in digest.json beside the

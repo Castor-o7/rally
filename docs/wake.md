@@ -4,8 +4,10 @@
 notice. It comes from the operator's question of 2026-11-05, whether a rally can run without a watchman: two
 teams sat idle with ready work that night, and one slept for about 2 hours with no way to wake it.
 
-It runs on a1, beside `rally web`, where `gh` can read each project's roadmap and `muster-shim` can read Muster's
-roster and send messages. It reads the ledger through the paired service. Each run is one pass, or `--every
+It runs on a1, beside `rally web`, where `gh` can read each project's roadmap and `muster-shim` could read
+Muster's roster and send messages. Pending RAL-199 part 2: Muster is retired (2026-11-17, condition 5396) and
+Rally doesn't send through Marshal yet, so it reads Marshal's roster and only reports. It reads the ledger
+through the paired service. Each run is one pass, or `--every
 <time>` repeats it until stopped, for example under launchd.
 
 ## Each pass

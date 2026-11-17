@@ -17,7 +17,7 @@ the operator's `sudo`:** the lamplighter installs and stages a commit, but it is
 the service, so several merged stories can be waiting on him at once. Until then the CLI can be newer than the
 service; `/v1/whoami`'s `commit` says which is live (below). The watchman updates a1's CLI. Red CI or a failed preflight holds the deploy. A change that an
 older binary can't read back, such as the first `designate --credential`, ends the rollback window, and the report
-says so. The full rule is Muster's `docs/board.md`, "Keeping the services current".
+says so. The full rule is Muster's `docs/board.md`, "Keeping the services current" (kept in the retired Muster repository).
 
 What's running is a read, not a guess (RAL-156): `rally --version` names the commit a CLI was built from, and the
 service names its own in its start line and in `/v1/whoami` (`commit`). A build from a checkout with uncommitted
@@ -392,7 +392,7 @@ teams' facts.
 
 ## Backfilling an outage
 
-While the service is down, teams use the fallback board in Muster's `docs/board.md`. Afterwards, each
+While the service is down, teams use the fallback board in Muster's `docs/board.md` (kept in the retired Muster repository). Afterwards, each
 entry made there is recorded with when it was made and by whom (RAL-30):
 
 ```

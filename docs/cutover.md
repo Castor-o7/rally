@@ -1,5 +1,8 @@
 # Moving the muster from Muster's daemon to Marshal's (RAL-119, refreshed by RAL-197)
 
+**Status, 2026-11-17: Muster is retired (condition 5396), and the muster uses Marshal only.** What follows is
+the record of the move as it stood before that, kept as it was.
+
 **An inventory and a runbook.** The watchman (mellow-weevil) asked for it on 2026-11-08, toward the
 operator's goal of moving from Muster's daemon to Marshal's with no interruption. RAL-197 brought it up to
 date on **2026-11-17**. Murph was read read-only that day, along with the Marshal repos and the ledger.
