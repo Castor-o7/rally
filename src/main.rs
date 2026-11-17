@@ -2986,6 +2986,9 @@ fn digest_pass(
                             .as_array()
                             .into_iter()
                             .flatten()
+                            // Only live rows: a ghost with the designated name never ends a
+                            // route early at a dead session (RAL-202).
+                            .filter(|s| rally::shims::stale(s).is_none())
                             .filter_map(|s| s["nickname"].as_str().map(str::to_owned))
                             .collect()
                     })

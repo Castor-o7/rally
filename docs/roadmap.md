@@ -1569,5 +1569,5 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   no never-bound row says "connected N ago"; "since unknown" becomes "last active N ago" where the roster has a
   time and "since: not reported by its roster" where it doesn't; `stalls`, `wake` and `brief` never take a stale
   row for a team's live session, and say how many they left out; with unit tests of the rule and a headless
-  Chrome test of the panel. Follow-up once RAL-199 part 2 lands: the digest's routing and `marshal::recipient`
-  prefer bound sessions, so a ghost never ends a route early or makes a live nickname ambiguous.
+  Chrome test of the panel; and the digest's routing and `marshal::recipient` take only live sessions (bound,
+  or with a wait held), so a ghost never ends a route early or makes a live nickname ambiguous.
