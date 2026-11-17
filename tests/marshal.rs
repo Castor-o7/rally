@@ -239,6 +239,22 @@ fn rally_sends_as_its_own_service_session_and_leaves_no_row() {
     };
     assert_eq!(to_session_id, id);
 
+    // By the session's id, as `rally wake` sends to a team's one session (RAL-199 part 3): the
+    // same session, so a team found by its Marshal project name is still reached.
+    let by_id = rally::marshal::send_at(
+        &address,
+        "rally-wake@test",
+        "/state",
+        &id,
+        "<rally_wake>e2e</rally_wake>",
+        limit,
+    );
+    println!("by id {id}: {by_id:?}");
+    assert!(
+        matches!(by_id, rally::marshal::Sent::Delivered { ref to_session_id, .. } if *to_session_id == id),
+        "{by_id:?}"
+    );
+
     // The daemon holds it, from Rally's own session, never the recipient's or an agent's.
     match messages(&address) {
         Ok(all) => {

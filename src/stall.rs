@@ -365,6 +365,7 @@ mod tests {
 
     fn session(activity: &str, wake: &str) -> Session {
         Session {
+            session_id: None,
             activity: Some(activity.into()),
             wake: Some(wake.into()),
             source: None,
