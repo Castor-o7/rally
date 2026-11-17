@@ -140,10 +140,18 @@ runs past the window. Reaching the page from a phone is a separate matter, RAL-3
   Marshal's declared or recorded, with the machine declared. The roster lists each team's session (RAL-99) with
   when it connected, the directory it was started in (home folder as `~`, the whole path on hover), its project
   and branch, its machine, its status (busy or idle, and for how long when the shim declares when that changed, `activity_at`
-  (MAR-58, RAL-124), or "since unknown" when it doesn't, never an age from its last tool; whether a message would wake it, observed or recorded only
+  (MAR-58, RAL-124); without it, "last active N ago" from the roster's `last_activity_at` (RAL-202), or "since: not
+  reported by its roster" when there's no time at all, never "for" an age from its last tool; whether a message would wake it, observed or recorded only
   when the daemon holds a wait: a best guess; and whether the daemon holds it bound to a connection, and waiting
   until when), what it says it's working on and when that was set (Muster only), and its last action with the tool
   it called and when. Nothing here proves a session is alive. The operator's address isn't sent to the page.
+  Live sessions come first, the most recently active first (RAL-202). A row nothing live backs is **stale**:
+  the daemon records it as bound to no connection, or its declared pid is 0, and the daemon holds no wait for
+  it (a hook-only leftover). Stale rows fold under one "N stale sessions" line, closed until clicked, each
+  saying why with its fact's label, and never "connected N ago". A live row that was never bound reads "on the
+  roster since" instead. A stale row's "busy" never shows under "Now". `rally stalls`, `wake` and `brief` use
+  the same rule (`shims::stale`): a stale row is never taken for a team's live session, and their reports
+  count them as `stale_sessions`.
 - **Evidence** (RAL-27), under the ledger's figures, lists each story in review or verified with its latest
   submission: the evidence the team gave, labelled declared, and Rally's own check of that submission
   (whether the commit exists, names the story, and what its CI says, or why it wasn't checked), labelled

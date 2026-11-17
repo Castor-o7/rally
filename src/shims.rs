@@ -84,8 +84,12 @@ pub fn roster(list: &[String]) -> Result<Roster, Vec<(String, String)>> {
     if rosters.is_empty() {
         return Err(passed_over);
     }
+    // A stale row is never a team's live session (RAL-202): left out, and counted.
+    let (live, stale): (Vec<Value>, Vec<Value>) = merge(&rosters)
+        .into_iter()
+        .partition(|row| stale(row).is_none());
     Ok(Roster {
-        value: serde_json::json!({"sessions": merge(&rosters)}),
+        value: serde_json::json!({"sessions": live, "stale_sessions": stale.len()}),
         sources: rosters.into_iter().map(|(command, _)| command).collect(),
         passed_over,
     })
@@ -110,6 +114,29 @@ fn read_one(command: &str) -> Result<Value, String> {
         Ok(_) => Err("printed no roster".to_owned()),
         Err(_) => Err("printed something that isn't JSON".to_owned()),
     }
+}
+
+/// Why a roster row is stale rather than a live session (RAL-202), with the label of the fact it
+/// rests on, or `None` when it's live as far as the roster says. Stale is a row the daemon holds
+/// that nothing live backs: one it records as bound to no connection (a hook registered it, or its
+/// shim went), or one whose declared pid is 0. Such rows are hook-only leftovers, not teams. A row
+/// whose wait the daemon holds now is never stale: a hook is waiting on it, so it's live.
+pub fn stale(row: &Value) -> Option<String> {
+    if ["recorded", "observed"]
+        .iter()
+        .any(|block| row[*block]["waiting"] == Value::Bool(true))
+    {
+        return None;
+    }
+    for (block, label) in [("recorded", "recorded"), ("observed", "observed")] {
+        if row[block]["bound_to_connection"] == Value::Bool(false) {
+            return Some(format!("bound to no connection [{label}]"));
+        }
+    }
+    if row["declared"]["pid"].as_u64() == Some(0) {
+        return Some("its pid is 0 [declared]".to_owned());
+    }
+    None
 }
 
 /// The sessions of every roster, each with the `source` it came from (RAL-126). A session id on
@@ -153,7 +180,9 @@ pub fn roster_or_note(list: &[String]) -> (Option<Value>, Value) {
     match roster(list) {
         Ok(found) => {
             let note = serde_json::json!({"read_with": found.sources,
-                "passed_over": passed(&found.passed_over)});
+                "passed_over": passed(&found.passed_over),
+                // Rows no live shim backs, left out so none is taken for a team (RAL-202).
+                "stale_sessions": found.value["stale_sessions"]});
             (Some(found.value), note)
         }
         Err(failed) => (
@@ -220,6 +249,26 @@ pub fn tell(list: &[String], sender: &str, team: &str, message: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_row_no_live_shim_backs_is_stale() {
+        let live =
+            serde_json::json!({"declared": {"pid": 7}, "recorded": {"bound_to_connection": true}});
+        assert_eq!(stale(&live), None);
+        let unbound =
+            serde_json::json!({"declared": {"pid": 7}, "recorded": {"bound_to_connection": false}});
+        assert_eq!(
+            stale(&unbound).as_deref(),
+            Some("bound to no connection [recorded]")
+        );
+        let no_pid = serde_json::json!({"declared": {"pid": 0}});
+        assert_eq!(stale(&no_pid).as_deref(), Some("its pid is 0 [declared]"));
+        // Unbound, or pid 0, but holding a wait the daemon records: a hook is waiting, so it's live.
+        let waiting = serde_json::json!({"declared": {"pid": 0}, "recorded": {"bound_to_connection": false, "waiting": true}});
+        assert_eq!(stale(&waiting), None);
+        // A roster that says neither, as a shim's might, isn't called stale.
+        assert_eq!(stale(&serde_json::json!({"nickname": "x"})), None);
+    }
 
     #[test]
     fn the_list_is_marshal_s_daemon_unless_set() {

@@ -1811,6 +1811,9 @@ pub fn shape_roster(value: &Value, read_at_ms: u64) -> Value {
                 // behind sign-in, so a path is shown to no one else. The operator's address isn't.
                 "cwd": declared["cwd"],
                 "git_branch": declared["git_branch"],
+                "pid": declared["pid"],
+                // Why no live shim backs it, with the fact's label, or null when it's live (RAL-202).
+                "stale": crate::shims::stale(session),
             })
         })
         .collect();

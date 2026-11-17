@@ -2588,8 +2588,9 @@ fn stalls_pass(
     } else {
         report["roster"] = json!({"available": true});
     }
-    // Which shim the roster came from, and why any before it didn't give one (RAL-120).
-    for field in ["read_with", "passed_over"] {
+    // Which shim the roster came from, and why any before it didn't give one (RAL-120), and how
+    // many rows no live shim backs were left out (RAL-202).
+    for field in ["read_with", "passed_over", "stale_sessions"] {
         report["roster"][field] = roster_read[field].clone();
     }
     // Which locks to read, and with what window: the flags, or else, with a rally open, each of
