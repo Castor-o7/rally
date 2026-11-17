@@ -368,8 +368,9 @@ pub fn recipient(
         .collect();
     // A nickname reaches a live session only (RAL-202): bound to a shim's connection, or with a
     // wait the daemon holds now. A leftover holding the same name is never the one meant.
+    // As `shims::stale` has it: bound with a real pid, or waiting now.
     let live = |s: &Arc<Session>| {
-        s.client_id.is_some()
+        (s.client_id.is_some() && s.pid != 0)
             || watchers
                 .iter()
                 .any(|w| w.id.0.as_ref() == s.id.0.as_ref() && w.until > now_ms)
@@ -678,6 +679,16 @@ mod tests {
         assert!(to("twin-name").unwrap_err().contains("ambiguous"));
         assert!(to("only-a-ghost").unwrap_err().contains("only a stale row"));
         assert_eq!(to("hook-waiter").unwrap().0.as_ref(), "hook-only");
+        // Bound but declaring pid 0 is stale, as the viewer has it, so not a recipient by name.
+        let mut zero = (*bound("z-1")).clone();
+        zero.pid = 0;
+        let zero = [Arc::new(zero)];
+        let zero_name = [nick("z-1", "pid-zero")];
+        assert!(
+            recipient(&zero, &zero_name, &[], 1_000, "pid-zero")
+                .unwrap_err()
+                .contains("only a stale row")
+        );
         assert!(to("rally-digest").unwrap_err().contains("isn't on"));
         assert!(to("rally-digest@Murph").is_err());
         // And the roster Rally shows leaves the service row out, counting it.

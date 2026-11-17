@@ -42,6 +42,8 @@ pub struct Team {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Session {
+    /// Its id on the roster, so a wake reaches this session rather than a name (RAL-199).
+    pub session_id: Option<String>,
     pub activity: Option<String>,
     pub wake: Option<String>,
     /// The roster it came from, such as `marshal-shim` (RAL-126).
@@ -162,6 +164,16 @@ impl Sender for Shims {
     }
 }
 
+/// Who a wake for `team` is sent to: its one session's id when exactly one is on the roster, so a
+/// team found by its Marshal project name is still reached; otherwise the team's name, which the
+/// sender resolves as a nickname, refusing one that's ambiguous (RAL-199).
+pub fn wake_target(team: &Team) -> String {
+    match team.sessions.as_slice() {
+        [one] => one.session_id.clone().unwrap_or_else(|| team.name.clone()),
+        _ => team.name.clone(),
+    }
+}
+
 /// A team's sessions on Marshal's roster, by an explicit list of Marshal project names or session
 /// nicknames, never by guessing from the team's name.
 pub fn sessions_of(roster: &Value, names: &[String]) -> Vec<Session> {
@@ -179,6 +191,7 @@ pub fn sessions_of(roster: &Value, names: &[String]) -> Vec<Session> {
                 .any(|name| Some(name.as_str()) == project || Some(name.as_str()) == nickname)
         })
         .map(|session| Session {
+            session_id: session["session_id"].as_str().map(str::to_owned),
             activity: session["declared"]["activity"].as_str().map(str::to_owned),
             wake: session["wake"].as_str().map(str::to_owned),
             source: session["source"].as_str().map(str::to_owned),
@@ -214,8 +227,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_wake_goes_to_the_team_s_one_session_by_id_else_by_name() {
+        let mut team = Team {
+            name: "rally".into(),
+            sessions: vec![Session {
+                session_id: Some("s-1".into()),
+                ..idle_session()
+            }],
+            status: None,
+            pick: json!({}),
+            claims: Vec::new(),
+            last_woken_ms: None,
+            answered: false,
+        };
+        assert_eq!(wake_target(&team), "s-1");
+        team.sessions.push(Session {
+            session_id: Some("s-2".into()),
+            ..idle_session()
+        });
+        assert_eq!(wake_target(&team), "rally");
+        team.sessions.clear();
+        assert_eq!(wake_target(&team), "rally");
+    }
+
     fn idle_session() -> Session {
         Session {
+            session_id: None,
             activity: Some("idle".into()),
             wake: Some("waiting".into()),
             source: None,
@@ -249,6 +287,7 @@ mod tests {
     fn a_busy_session_waiting_for_messages_is_working_not_idle() {
         // As the roster showed for oceanic-gemsbok on 2026-11-05: busy, and wake: waiting.
         let busy = Session {
+            session_id: None,
             activity: Some("busy".into()),
             wake: Some("waiting".into()),
             source: None,
@@ -262,6 +301,7 @@ mod tests {
         );
         // With no declared activity, wake: waiting still counts as idle.
         let unknown = Session {
+            session_id: None,
             activity: None,
             wake: Some("waiting".into()),
             source: None,
@@ -292,6 +332,7 @@ mod tests {
     fn a_working_team_is_left_until_its_claim_goes_quiet() {
         let mut working = team();
         working.sessions = vec![Session {
+            session_id: None,
             activity: Some("busy".into()),
             wake: Some("busy".into()),
             source: None,
@@ -340,6 +381,7 @@ mod tests {
         // 2026-11-05: tangerine-wombat slept about 2 h with wake `none` and ready work.
         let mut asleep = team();
         asleep.sessions = vec![Session {
+            session_id: None,
             activity: Some("idle".into()),
             wake: Some("none".into()),
             source: None,

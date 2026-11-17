@@ -3339,7 +3339,7 @@ fn wake_pass(
         row["next"] = pick["next"]["story"].clone();
         if let Decision::Wake(digest) = &decision {
             match sender {
-                Some(sender) => match sender.send(team, digest) {
+                Some(sender) => match sender.send(&rally::wake::wake_target(&facts), digest) {
                     Ok(through) => {
                         row["sent_by"] = json!(through);
                         state["teams"][&key]["last_woken_ms"] = json!(now_ms);
