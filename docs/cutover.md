@@ -37,10 +37,11 @@ approve and the lamplighter's to run.
 
 When this was first read on 11-08, the unit set `MARSHAL_BIND=0.0.0.0:6155` with no gate. The operator
 decided that Marshal binds to `127.0.0.1` "until the gate lands" (condition 1416 in Rally). The drop-in still
-does that (box). After the 11-17 decision, the condition's release is no longer the gate (MAR-23/24) but the
-mesh. Marshal binds to the mesh interface once Murph has one. Both listeners have to move, `MARSHAL_BIND`
+does that (box). The operator ended condition 1416 on 2026-11-17 as out of date (record 5356), since the gate
+is no longer the plan. Nothing else changed: the drop-in stays until Murph has a mesh, and then Marshal binds
+to the mesh interface. Both listeners have to move, `MARSHAL_BIND`
 (6155) and `MARSHAL_HOOK_BIND` (6156): a remote agent's hooks register through the hook port
-(`docs/agent-launcher.md` at `27b9e09`). Rewording condition 1416 is the operator's call.
+(`docs/agent-launcher.md` at `27b9e09`).
 
 ## What's wired to Muster on Murph
 
@@ -147,8 +148,8 @@ the two while they're mixed.
 
 ## What's left, in short
 
-1. **The operator decides**: which Marshal Murph runs (fork `82335c2`/`06dd942`, or an upstream build); whether
-   step 3's order stands after 11-09's reversal; and the new wording of condition 1416 (loopback until the mesh).
+1. **The operator decides**: which Marshal Murph runs (fork `82335c2`/`06dd942`, or an upstream build); and whether
+   step 3's order stands after 11-09's reversal. (Condition 1416 was ended on 11-17.)
 2. **The mesh**, set up outside Marshal, and then both listeners bound to it (step 6). Nothing remote joins
    before that.
 3. **A hold in Rally** for the cutover (step 0).
@@ -156,7 +157,7 @@ the two while they're mixed.
 5. Steps 5 to 7 as written.
 
 Couldn't be read: anything on a1; which commit the running binary was built from (the lamplighter's log is
-the only record); whether any Rally hold is in force; condition 1416's current text.
+the only record); whether any Rally hold is in force.
 
 ## Rollback
 
