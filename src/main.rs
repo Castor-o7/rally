@@ -2615,8 +2615,9 @@ fn stalls_pass(
     } else {
         report["roster"] = json!({"available": true});
     }
-    // Which shim the roster came from, and why any before it didn't give one (RAL-120).
-    for field in ["read_with", "passed_over"] {
+    // Which shim the roster came from, and why any before it didn't give one (RAL-120), and how
+    // many rows no live shim backs were left out (RAL-202).
+    for field in ["read_with", "passed_over", "stale_sessions"] {
         report["roster"][field] = roster_read[field].clone();
     }
     // Which locks to read, and with what window: the flags, or else, with a rally open, each of
@@ -3012,6 +3013,9 @@ fn digest_pass(
                             .as_array()
                             .into_iter()
                             .flatten()
+                            // Only live rows: a ghost with the designated name never ends a
+                            // route early at a dead session (RAL-202).
+                            .filter(|s| rally::shims::stale(s).is_none())
                             .filter_map(|s| s["nickname"].as_str().map(str::to_owned))
                             .collect()
                     })

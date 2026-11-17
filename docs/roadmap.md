@@ -1569,3 +1569,13 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   open rally's newest `rally-session add <new> --succeeds <earlier>`, its transcript and record, labelled
   declared with the record and who confirmed it; never tied by session name or folder, not even as a hint;
   and with no confirmed succession it says it can't tell and how one is confirmed.
+- [ ] **RAL-202: The roster shows live sessions first and folds stale ones away.** From Josh via the lamplighter
+  and the watchman (2026-11-17): the 7300 roster was "full of stale sessions, and the data is higgledy-piggledy"
+  (7 of the live roster's rows were stale). Done when: live sessions come first, the most recently active first; a row
+  nothing live backs (recorded bound to no connection, or declared pid 0, with no wait the daemon holds) folds
+  under one "N stale sessions" line with a count, opened by a click, each saying why under its fact's label;
+  no never-bound row says "connected N ago"; "since unknown" becomes "last active N ago" where the roster has a
+  time and "since: not reported by its roster" where it doesn't; `stalls`, `wake` and `brief` never take a stale
+  row for a team's live session, and say how many they left out; with unit tests of the rule and a headless
+  Chrome test of the panel; and the digest's routing and `marshal::recipient` take only live sessions (bound,
+  or with a wait held), so a ghost never ends a route early or makes a live nickname ambiguous.

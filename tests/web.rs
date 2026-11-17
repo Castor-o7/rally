@@ -2774,7 +2774,7 @@ fn the_activity_strip_shows_who_is_working_and_what_just_changed() {
         "agent-written text is never markup: {probe}"
     );
     assert!(
-        now[1].contains("new-moth") && now[1].contains("since unknown"),
+        now[1].contains("new-moth") && now[1].contains("since: not reported by its roster"),
         "{probe}"
     );
     assert!(!now.iter().any(|n| n.contains("idle-ox")), "{probe}");
@@ -2929,7 +2929,9 @@ fn the_roster_shows_every_source_and_keeps_each_sources_labels() {
         text.contains("not bound to a connection, waiting until"),
         "{probe}"
     );
-    assert!(text.contains("connected 2m ago"), "{probe}");
+    // Unbound but waiting: live, but never "connected", since no shim was ever bound (RAL-202).
+    assert!(text.contains("on the roster since 2m ago"), "{probe}");
+    assert!(!text.contains("stale session"), "{probe}");
 
     // Both with sessions, as while they move (RAL-126): both teams, each naming its roster, and
     // each machine under its own roster's label.
@@ -3192,8 +3194,8 @@ fn a_readers_note_on_its_own_read_shows_beside_it() {
 }
 
 /// RAL-124, in the browser: a session whose shim declares when its activity changed reads "busy for
-/// 3m", counting on; one whose shim doesn't reads "idle, since unknown", never an age taken from its
-/// last tool or prompt.
+/// 3m", counting on; one whose shim doesn't reads "idle, last active 7s ago" from the time the roster
+/// has (RAL-202), never "idle for" an age taken from its last tool or prompt.
 #[test]
 fn the_roster_says_how_long_a_session_has_been_busy_only_when_declared() {
     let Some(chrome) = browser() else { return };
@@ -3228,7 +3230,7 @@ fn the_roster_says_how_long_a_session_has_been_busy_only_when_declared() {
     let probe = &seen["probe"];
     let text = probe["text"].as_str().unwrap_or_default();
     assert!(text.contains("busy for 3m"), "{probe}");
-    assert!(text.contains("idle, since unknown"), "{probe}");
+    assert!(text.contains("idle, last active"), "{probe}");
     assert!(!text.contains("idle for"), "{probe}");
 }
 
@@ -3609,4 +3611,112 @@ fn the_operator_inbox_folds_away_and_stays_folded_across_a_reload() {
     assert_eq!(unfolded["expanded"], "true", "{seen}");
     assert_eq!(unfolded["panelShown"], true, "{seen}");
     assert!(unfolded["stored"].is_null(), "{seen}");
+}
+
+/// What the roster panel shows, in order, for RAL-202: the live table's teams, the folded stale
+/// section's summary and its teams, and the "Now" strip's busy names.
+const STALE_PROBE: &str = r##"(async () => {
+  const deadline = Date.now() + 20000;
+  const panel = () => [...document.querySelectorAll("#teams .group")]
+    .find((g) => g.querySelector("h3")?.textContent === "On the roster");
+  while (Date.now() < deadline && !(panel()?.textContent || "").includes("Read with")) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  const group = panel();
+  const folded = group && group.querySelector("details.stale-sessions");
+  const firstCell = (table) => table ? [...table.querySelectorAll("tr")].slice(1)
+    .map((tr) => tr.querySelector("td")?.textContent || "") : [];
+  const liveTable = group && [...group.querySelectorAll(".table-wrap")]
+    .find((wrap) => !wrap.closest("details"));
+  return {
+    live: firstCell(liveTable),
+    stale_summary: folded ? folded.querySelector("summary").textContent : null,
+    stale_open: folded ? folded.open : null,
+    stale: firstCell(folded && folded.querySelector(".table-wrap")),
+    now: [...document.querySelectorAll(".activity-now li")].map((li) => li.dataset.session),
+  };
+})()"##;
+
+/// RAL-202, in the browser: live sessions come first, the most recently active first; rows no live
+/// shim backs (bound to no connection, or pid 0) fold under one "stale sessions" line with a count,
+/// closed until clicked, each saying why it's stale and never "connected N ago"; and a stale row's
+/// "busy" never shows as someone working now.
+#[test]
+fn the_roster_puts_live_sessions_first_and_folds_stale_ones_away() {
+    let Some(chrome) = browser() else { return };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let row = |nick: &str, pid: u64, bound: bool, active_ago: u64, activity: &str| {
+        serde_json::json!({"nickname": nick, "wake": "none",
+            "declared": {"machine": "Murph", "project": "rally", "pid": pid, "activity": activity,
+                         "connected_at": now - 3_600_000, "last_activity_at": now - active_ago},
+            "recorded": {"bound_to_connection": bound, "waiting": false, "waiting_until": null}})
+    };
+    let roster = serde_json::json!({"sessions": [
+        row("older-live", 11, true, 600_000, "idle"),
+        row("ghost-unbound", 12, false, 1_000, "busy"),
+        row("newer-live", 13, true, 5_000, "busy"),
+        row("ghost-no-pid", 0, true, 2_000, "idle"),
+    ]})
+    .to_string();
+    let viewer = start_after_with(
+        "[]",
+        None,
+        60,
+        |_, _| {},
+        |dir| {
+            let marshal = fake_roster_command(dir, "marshal-shim", &roster, 0);
+            vec!["--roster-from".into(), marshal]
+        },
+    );
+    let seen = in_browser(&viewer, &chrome, Some(STALE_PROBE));
+    let probe = &seen["probe"];
+    println!("{probe:#}");
+    let live: Vec<&str> = probe["live"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        live[0].starts_with("newer-live") && live[1].starts_with("older-live"),
+        "{probe}"
+    );
+    assert_eq!(live.len(), 2, "{probe}");
+    assert!(
+        live.iter().all(|cell| cell.contains("connected")),
+        "{probe}"
+    );
+    let summary = probe["stale_summary"].as_str().unwrap_or_default();
+    assert!(summary.starts_with("2 stale sessions"), "{probe}");
+    assert_eq!(probe["stale_open"], false, "folded until clicked: {probe}");
+    let stale: Vec<&str> = probe["stale"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        stale[0].starts_with("ghost-unbound")
+            && stale[0].contains("stale: bound to no connection [recorded]"),
+        "{probe}"
+    );
+    assert!(
+        stale[1].starts_with("ghost-no-pid") && stale[1].contains("stale: its pid is 0 [declared]"),
+        "{probe}"
+    );
+    assert!(
+        stale.iter().all(|cell| !cell.contains("connected ")),
+        "never connected-ago: {probe}"
+    );
+    assert!(
+        !probe["now"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n == "ghost-unbound"),
+        "{probe}"
+    );
 }
