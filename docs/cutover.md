@@ -30,18 +30,28 @@ approve and the lamplighter's to run.
   matches upstream's own posture: coordination stays "on loopback or the private mesh"
   (`docs/browser-auth.md` at `upstream/main`). Upstream has no TLS or pairing code. The quote is relayed
   by the watchman; the ledger doesn't record it yet.
-- **No mesh is set up on Murph yet.** The only interface up is `enp5s0` (192.168.1.241, plus a ULA IPv6).
-  No `tailscale`, `wg`, `zerotier-cli`, `nebula` or `netbird` is installed, and none runs as a unit. (box)
+- **The mesh is NetBird** ("its a netbird vpn"), the same as upstream's. The operator said so on 11-17,
+  relayed through earnest-raccoon (cited in the watchman's send-back, record 5374); the ledger has no
+  record of its own for it.
+- **Murph doesn't join the mesh.** The operator, 11-17, relayed through earnest-raccoon: "Murph isnt allowed
+  to join, we have to develop without connecting" (record 5354, MAR-94's restated Done-when). So Marshal on
+  Murph stays on loopback, and nothing remote reaches it over a mesh. Remote launches are developed and
+  tested without that: against a throwaway daemon on test ports (record 5354), and on a1 as a second host
+  once the operator has powered it on (grant 5360, MAR-94).
+- **No mesh software is on Murph**, which fits that ruling. The only interface up is `enp5s0`
+  (192.168.1.241, plus a ULA IPv6). No `netbird`, `tailscale`, `wg`, `zerotier-cli` or `nebula` is
+  installed, and none runs as a unit. (box)
 
-## The bind: loopback until the mesh is there
+## The bind: loopback
 
 When this was first read on 11-08, the unit set `MARSHAL_BIND=0.0.0.0:6155` with no gate. The operator
 decided that Marshal binds to `127.0.0.1` "until the gate lands" (condition 1416 in Rally). The drop-in still
 does that (box). The operator ended condition 1416 on 2026-11-17 as out of date (record 5356), since the gate
-is no longer the plan. Nothing else changed: the drop-in stays until Murph has a mesh, and then Marshal binds
-to the mesh interface. Both listeners have to move, `MARSHAL_BIND`
-(6155) and `MARSHAL_HOOK_BIND` (6156): a remote agent's hooks register through the hook port
-(`docs/agent-launcher.md` at `27b9e09`).
+is no longer the plan. The drop-in stays. Murph isn't allowed to join the mesh (above), so it has no mesh
+address to move to, and nothing in this runbook changes the bind. If the operator later lets Murph's daemon
+take remote agents, both listeners would have to move together, `MARSHAL_BIND` (6155) and
+`MARSHAL_HOOK_BIND` (6156), because a remote agent's hooks register through the hook port
+(`docs/agent-launcher.md` at `27b9e09`). That's not planned.
 
 ## What's wired to Muster on Murph
 
@@ -63,9 +73,10 @@ Read on Murph, 2026-11-17 (box).
 ### Remote machines (a1, VMs), to confirm there
 
 a1 is a Mac that pairs with Rally's service (`rally pair`, docs/service.md). Nothing of a1 could be read
-from Murph. Under the 11-17 decision, a1 and any VM reach Marshal over the mesh, not through Marshal's own
-gate. Before step 6, someone on each machine lists its hooks, its MCP server, its daemon address and any
-Muster pairing, the same as rows 1, 2 and 4, and confirms it can reach both of Murph's mesh ports.
+from Murph. Since Murph doesn't join the mesh, no remote machine joins Murph's Marshal as part of this
+move (step 6). a1 is cleared only as a test host for the remote launcher, MAR-94 (grant 5360), and that's
+not a cutover path. Whoever runs that test on a1 lists its hooks, MCP server, daemon address and any Muster
+pairing first, the same as rows 1, 2 and 4.
 
 ## Which Marshal: the fork, and upstream
 
@@ -92,7 +103,7 @@ Checked 2026-11-17 against the ledger and fork main `06dd942`.
 |---|---|---|
 | TLS | MAR-23, verified, merged (`a49ade4`); opt-in and off on Murph | **Superseded by the mesh decision (11-17).** Not needed for the move. Upstream doesn't have it |
 | Per-machine pairing | MAR-24, verified, merged (`37f1003`); off on Murph, no pairings | **Superseded by the mesh decision.** Without pairing, the roster has no `attested` facts, and Rally's viewer shows declared and recorded only (RAL-116). That's accepted under the mesh model |
-| A mesh on Murph | none in Rally | **Missing.** Nothing remote can reach Marshal until there is one and both listeners bind to it. Setting it up is outside Marshal (operator, 11-17) |
+| A mesh on Murph | none in Rally | **Not planned.** The operator ruled that Murph doesn't join (record 5354). The mesh is NetBird, outside Marshal |
 | Which Marshal Murph runs | none in Rally | Open (above) |
 | Nickname kept across a restart | MAR-9, verified, merged (`83f5202`) | Done. A move to another daemon is a new session, so the watchman still records it with `rally rally-session add --succeeds` (RAL-108) |
 | Message history and unread mail carried over | RAL-122, verified (option A) | Nothing copies mail between the `muster` and `marshal` databases. Each session reads its Muster mail before it moves, and the Marshal team runs [mail-carryover.md](mail-carryover.md)'s check before each move and before step 7 |
@@ -103,7 +114,7 @@ Checked 2026-11-17 against the ledger and fork main `06dd942`.
 | A health check, and a project's own wiring | MAR-36 and MAR-60, verified, merged | Done: `marshal-shim doctor` (in the deployed binary; upstream has none) |
 | "A full day with no traffic" at step 7 | MAR-65, verified, merged (`15295bb`) | Defined in Marshal's [muster-no-traffic-check.md](https://github.com/Castor-o7/marshal/blob/main/docs/muster-no-traffic-check.md) |
 | "As reliable as Muster" | MAR-73, verified; its soak (MAR-77) set aside by the operator on 11-09 | The operator has said to run both daemons as mutual backups until Marshal proves as reliable (11-09, lamplighter's log), and then that deploying fast came first. The bar is accepted, but no soak has run |
-| macOS CI | MAR-52, ready | Matters for a1 at step 6 |
+| macOS CI | MAR-52, ready | Matters for a1, which is cleared only as a test host (grant 5360) |
 
 ## The order: a session is never unreachable
 
@@ -138,10 +149,12 @@ the two while they're mixed.
    `rally rally-session add <new nickname> --succeeds <old nickname>`.
 5. **Switch the user-wide wiring.** Once every Murph session is on Marshal, replace rows 1 and 2 in
    `~/.claude/settings.json` and `~/.claude.json`, keeping a copy of each file. New sessions start on Marshal.
-6. **Remote machines, over the mesh.** Once Murph is on the mesh and both Marshal listeners bind to its mesh
-   address, a1 and any VMs join with `MARSHAL_DAEMON_ADDRESS` set to that address. The 11-08 plan tied a1
-   (and MAR-35, macOS testing) to the official swap, waiting on MAR-23/24. It now waits on the mesh. A
-   launched remote agent (MAR-93/94) needs the same, and its launcher refuses a loopback address.
+6. **Remote machines: not part of this move.** The 11-08 plan joined a1 (and MAR-35, macOS testing) to
+   Murph's Marshal at the official swap. Under the 11-17 ruling that Murph doesn't join the mesh (record
+   5354), that step doesn't run: the move covers Murph's own sessions only, and Marshal stays on loopback.
+   a1 is used only to test the remote launcher (MAR-94, grant 5360), and the launcher refuses a loopback
+   address for any adapter but tmux. If the operator later wants remote machines on Murph's Marshal, this
+   step needs a new ruling first.
 7. **Retire Muster.** First the Marshal team runs the mail check a last time, and relays anything left. Then,
    only after a full day with no traffic on Muster, as MAR-65 defines it: stop `muster-daemon.service`,
    but don't disable it, and keep its database and binaries for rollback. End the hold in Rally.
@@ -150,8 +163,8 @@ the two while they're mixed.
 
 1. **The operator decides**: which Marshal Murph runs (fork `82335c2`/`06dd942`, or an upstream build); and whether
    step 3's order stands after 11-09's reversal. (Condition 1416 was ended on 11-17.)
-2. **The mesh**, set up outside Marshal, and then both listeners bound to it (step 6). Nothing remote joins
-   before that.
+2. **Nothing remote.** Murph doesn't join the NetBird mesh (record 5354), so step 6 doesn't run and the bind
+   stays on loopback. a1 is a test host for MAR-94 only (grant 5360).
 3. **A hold in Rally** for the cutover (step 0).
 4. **Step 3 again**, then step 4 team by team, with RAL-122's mail check before each move.
 5. Steps 5 to 7 as written.
