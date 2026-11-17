@@ -146,7 +146,13 @@ function finish(code, value) {
     closer.onopen = () => closer.send(JSON.stringify({ id: 1, method: "Browser.close" }));
   } catch { /* the timeout still cleans up */ }
 }
-const timer = setTimeout(() => finish(1, { error: "timed out" }), 45000);
+// A start has 45 s to sign in. RAL-205: the retry after a crash at start gets a fresh 45 s, since
+// under load a slow crashed start would otherwise eat into the retry's time; and 90 s from the
+// script's start ends any run, so a Chrome that never starts holds CI for two budgets at most.
+const BUDGET_MS = 45000;
+const timedOut = () => finish(1, { error: "timed out" });
+let timer = setTimeout(timedOut, BUDGET_MS);
+const cap = setTimeout(() => finish(1, { error: "timed out (the 90 s cap on a run)" }), 2 * BUDGET_MS);
 // A step that throws, such as a fetch refused or a reply without a result, still ends in finish,
 // so its cleanup runs (RAL-150); before, node exited at once and left Chrome running.
 process.on("uncaughtException", (error) => finish(1, { error: "the script failed: " + error }));
@@ -320,6 +326,8 @@ try {
   process.stderr.write(`sign-in.mjs: Chrome ${crashWord(error.exit)} at start (${first.status}) at ${first.at}, pid ${first.pid} `
     + `(${first.pid_is}), load ${first.loadavg}, document portal mounted: ${first.doc_portal_mounted}; `
     + `trying once more (RAL-160). What it said:\n${first.chrome_stderr}\n`);
+  clearTimeout(timer);
+  timer = setTimeout(timedOut, BUDGET_MS);
   try {
     page = await startOnce();
   } catch (again) {
@@ -406,4 +414,5 @@ if (process.env.RALLY_BROWSER_RELOAD_PROBE) {
   reloaded = await evaluate(expression);
 }
 clearTimeout(timer);
+clearTimeout(cap);
 finish(0, { codePage, after, firstDraw, probe, probes, reloaded });

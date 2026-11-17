@@ -1144,9 +1144,18 @@ fn run_browser_env(
         command.env("RALLY_BROWSER_WINDOW", window);
     }
     command.envs(env.iter().copied());
+    // RAL-205: one real Chrome at a time. Tests run in parallel, and several flatpak Chromes
+    // starting at once under load took one past its start limit. Held only while the browser
+    // runs, not while the viewer starts, and a test that panicked holding it doesn't poison the
+    // others.
+    static ONE_CHROME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let one = ONE_CHROME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let output = command
         .output()
         .expect("node is needed to drive the browser");
+    drop(one);
     let printed = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let seen: Value = serde_json::from_str(printed.trim())
