@@ -115,7 +115,7 @@ impl Facts {
     }
 
     /// How Marshal labels what it says about this team, for the row.
-    fn muster_says(&self) -> Value {
+    fn roster_says(&self) -> Value {
         if self.sessions.is_empty() {
             return json!({"sessions": 0, "note": "no session on Marshal's roster for this team"});
         }
@@ -140,7 +140,7 @@ impl Facts {
 fn prompt(team: &Facts, row: &str, meaning: &str, action: &str, rally_says: Value) -> Value {
     json!({
         "team": team.name, "row": row, "likely_meaning": meaning, "action": action,
-        "muster_says": team.muster_says(), "rally_says": rally_says,
+        "roster_says": team.roster_says(), "rally_says": rally_says,
         "note": "A prompt for the watchman, not a conclusion.",
     })
 }
@@ -477,7 +477,7 @@ mod tests {
         gone.claims = vec![("RAL-1".into(), NOW - MIN)];
         assert_eq!(rows(&gone), ["cant_be_woken_with_claim"]);
         let row = &flags(&gone, Some(QUIET), NOW)[0];
-        assert_eq!(row["muster_says"]["rows"][0]["wake_kind"], "declared");
+        assert_eq!(row["roster_says"]["rows"][0]["wake_kind"], "declared");
         assert!(row["action"].as_str().unwrap().contains("isn't proof"));
         // No session on the roster at all is the same prompt.
         gone.sessions.clear();
@@ -493,7 +493,7 @@ mod tests {
         quiet.claims = vec![("RAL-1".into(), NOW - 21 * MIN)];
         assert_eq!(rows(&quiet), ["missed_check_in"]);
         let row = &flags(&quiet, Some(QUIET), NOW)[0];
-        assert_eq!(row["muster_says"]["rows"][0]["wake_kind"], "observed");
+        assert_eq!(row["roster_says"]["rows"][0]["wake_kind"], "observed");
         assert_eq!(row["rally_says"]["claims"][0]["quiet_ms"], 21 * MIN);
         // Inside the check-in, or busy, or with no check-in agreed: nothing.
         quiet.claims = vec![("RAL-1".into(), NOW - 5 * MIN)];
