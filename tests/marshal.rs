@@ -56,10 +56,24 @@ fn daemon() -> (Killed, String) {
     (Killed(child), format!("ws://127.0.0.1:{ws}"))
 }
 
+/// The session id the throwaway shim is given, so the test never borrows the identity of whoever
+/// runs it (a Claude Code session's own `CLAUDE_CODE_SESSION_ID`, which the shim reads first).
+const TEST_SESSION_ID: &str = "e2e00199-0000-4000-8000-000000000199";
+
 /// A real shim connected to `address`, as a session would run it, with an empty config directory
-/// so no address file on this machine overrides the throwaway daemon's.
+/// so no address file on this machine overrides the throwaway daemon's. Nothing of the runner's
+/// own session reaches it: every inherited `CLAUDE*`, `MARSHAL_*` and `MYKO_*` variable is removed,
+/// and it's given [`TEST_SESSION_ID`].
 fn shim(address: &str, config: &std::path::Path, cwd: &std::path::Path) -> Killed {
-    let mut child = Command::new(binary("RALLY_TEST_MARSHAL_SHIM", "marshal-shim"))
+    let mut command = Command::new(binary("RALLY_TEST_MARSHAL_SHIM", "marshal-shim"));
+    for (name, _) in std::env::vars_os() {
+        let name = name.to_string_lossy();
+        if name.starts_with("CLAUDE") || name.starts_with("MARSHAL_") || name.starts_with("MYKO_") {
+            command.env_remove(name.as_ref());
+        }
+    }
+    let mut child = command
+        .env("CLAUDE_CODE_SESSION_ID", TEST_SESSION_ID)
         .env("MARSHAL_DAEMON_ADDRESS", address)
         .env("XDG_CONFIG_HOME", config)
         .env("HOME", config)
@@ -116,7 +130,10 @@ fn rally_reads_a_real_daemon_s_roster_and_puts_no_row_on_it() {
     let rows = sessions(&roster);
     assert_eq!(rows.len(), 1, "one shim, one row, and none for Rally");
     let row = &rows[0];
-    assert!(row["session_id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert_eq!(
+        row["session_id"], TEST_SESSION_ID,
+        "the shim took the runner's identity"
+    );
     assert!(
         row["nickname"]
             .as_str()
@@ -207,6 +224,7 @@ fn rally_sends_as_its_own_service_session_and_leaves_no_row() {
         .expect("a nickname")
         .to_owned();
     let id = watchman["session_id"].as_str().expect("an id").to_owned();
+    assert_eq!(id, TEST_SESSION_ID, "the shim took the runner's identity");
 
     // To someone who isn't there: nothing is sent, and another source may be tried.
     let absent = rally::marshal::send_at(
