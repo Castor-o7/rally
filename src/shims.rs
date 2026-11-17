@@ -53,10 +53,11 @@ pub fn on_path(command: &str) -> bool {
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(command).is_file()))
 }
 
-/// Whether any command in `list` can be run here to send. Rally reading Marshal's daemon itself
-/// ([`crate::marshal::SOURCE`]) reads the roster but doesn't send yet, so it isn't counted.
+/// Whether any source in `list` can send from here: Marshal's daemon, which Rally reaches itself
+/// ([`crate::marshal::SOURCE`]), or a command on `PATH`.
 pub fn available(list: &[String]) -> bool {
-    list.iter().any(|command| on_path(command))
+    list.iter()
+        .any(|command| command == crate::marshal::SOURCE || on_path(command))
 }
 
 /// Every source's roster merged, the commands that gave one, and why any others didn't (RAL-126).
@@ -175,15 +176,24 @@ pub fn try_the_next(stderr: &str) -> bool {
 }
 
 /// Sends `message` to `team` through the first of `list` that knows it: `<command> tell <team>
-/// <message>`. Returns the command that sent it. Falls back only as the module says.
-pub fn tell(list: &[String], team: &str, message: &str) -> Result<String, String> {
+/// <message>`, or Marshal's daemon itself as Rally's own `sender` session (`digest`, `wake`;
+/// RAL-199). Returns the source that sent it. Falls back only as the module says.
+pub fn tell(list: &[String], sender: &str, team: &str, message: &str) -> Result<String, String> {
     let mut tried = Vec::new();
     for command in list {
         if command == crate::marshal::SOURCE {
-            tried.push(format!(
-                "{command}: Rally reads Marshal's roster itself, but doesn't send through it yet"
-            ));
-            continue;
+            match crate::marshal::send(sender, team, message) {
+                crate::marshal::Sent::Delivered { .. } => return Ok(command.clone()),
+                crate::marshal::Sent::NotHere(why) => {
+                    tried.push(format!("{command}: {why}"));
+                    continue;
+                }
+                // It may have delivered: never send a second copy another way.
+                crate::marshal::Sent::Failed(why) => {
+                    tried.push(format!("{command}: {why}"));
+                    return Err(tried.join("; "));
+                }
+            }
         }
         match Command::new(command).args(["tell", team, message]).output() {
             Err(error) => tried.push(format!("{command} couldn't be run ({error})")),

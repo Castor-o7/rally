@@ -156,3 +156,114 @@ fn an_unreachable_daemon_is_said_at_once_and_a_silent_one_within_the_limit() {
     assert!(error.contains("within 2s"), "{error}");
     assert!(started.elapsed() < Duration::from_secs(4));
 }
+
+/// Every message the daemon at `address` holds, read as a Myko client, or why not.
+fn messages(address: &str) -> Result<Vec<std::sync::Arc<marshal_entities::Message>>, String> {
+    use myko::prelude::Gettable as _;
+    marshal_entities::link();
+    let client = myko::client::MykoClient::new_with_auto_reconnect(false);
+    let watch = client
+        .watch_query_state::<marshal_entities::GetAllMessages>(marshal_entities::GetAllMessages {});
+    client.set_address(Some(address.to_owned()));
+    let until = Instant::now() + Duration::from_secs(10);
+    let result = loop {
+        if let Some(error) = watch.error().get() {
+            break Err(error);
+        }
+        if watch.ready().get() {
+            break Ok(watch.items().get());
+        }
+        if Instant::now() >= until {
+            break Err("no answer".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    client.close();
+    result
+}
+
+#[test]
+#[ignore = "needs upstream Marshal 0.60.2's marshal-daemon and marshal-shim"]
+fn rally_sends_as_its_own_service_session_and_leaves_no_row() {
+    let (_daemon, address) = daemon();
+    let limit = Duration::from_secs(10);
+    let config = tempfile::tempdir().expect("a config dir");
+    let cwd = tempfile::tempdir().expect("a session dir");
+    let _shim = shim(&address, config.path(), cwd.path());
+    let until = Instant::now() + Duration::from_secs(20);
+    let watchman = loop {
+        let roster = rally::marshal::roster_at(&address, limit).expect("a roster");
+        if let Some(row) = sessions(&roster).into_iter().next() {
+            break row;
+        }
+        assert!(
+            Instant::now() < until,
+            "the shim's session never reached the roster"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let nickname = watchman["nickname"]
+        .as_str()
+        .expect("a nickname")
+        .to_owned();
+    let id = watchman["session_id"].as_str().expect("an id").to_owned();
+
+    // To someone who isn't there: nothing is sent, and another source may be tried.
+    let absent = rally::marshal::send_at(
+        &address,
+        "rally-digest@test",
+        "/state",
+        "no-such-team",
+        "x",
+        limit,
+    );
+    println!("to an absent team: {absent:?}");
+    assert!(matches!(absent, rally::marshal::Sent::NotHere(ref why) if why.contains("isn't on")));
+
+    let body = "<rally_digest>RAL-199 e2e: from Rally's digest</rally_digest>";
+    let sent = rally::marshal::send_at(
+        &address,
+        "rally-digest@test",
+        "/state",
+        &nickname,
+        body,
+        limit,
+    );
+    println!("to {nickname}: {sent:?}");
+    let rally::marshal::Sent::Delivered {
+        to_session_id,
+        message_id,
+    } = sent
+    else {
+        panic!("not delivered: {sent:?}");
+    };
+    assert_eq!(to_session_id, id);
+
+    // The daemon holds it, from Rally's own session, never the recipient's or an agent's.
+    match messages(&address) {
+        Ok(all) => {
+            let held = all
+                .iter()
+                .find(|m| m.id.0.as_ref() == message_id)
+                .expect("the daemon holds the message");
+            println!(
+                "held: from {} to {:?}: {}",
+                held.from_session_id.0, held.to_session_id, held.body
+            );
+            assert_eq!(held.from_session_id.0.as_ref(), "rally-digest@test");
+            assert_eq!(held.body, body);
+        }
+        Err(why) => println!(
+            "the daemon wouldn't list messages to a reader ({why}); delivery rests on its answer"
+        ),
+    }
+
+    // Rally's session is gone again: only the shim's row, and no service row left behind.
+    let after = rally::marshal::roster_at(&address, limit).expect("a roster");
+    println!("roster after: {after}");
+    assert_eq!(sessions(&after).len(), 1);
+    assert_eq!(
+        after["service_sessions"], 0,
+        "Rally's service session was left behind"
+    );
+}

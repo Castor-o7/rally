@@ -2,18 +2,24 @@
 //! waits on a shim subcommand. Upstream Marshal 0.60.2's `marshal-shim` has no `roster`, and
 //! Muster's daemon is retired, so `<shim> roster` can no longer give the roster.
 //!
-//! It only reads: it watches the daemon's sessions, nicknames, room memberships and wake watchers,
-//! and never publishes a session of its own, so reading the roster puts no row on it. The rows are
-//! shaped the way the viewer and [`crate::shims`] read a shim's roster: what the session said about
-//! itself is `declared`, and what the daemon holds about its connection and wait is `recorded`.
+//! Reading the roster publishes nothing, so it puts no row on it. The rows are shaped the way the
+//! viewer and [`crate::shims`] read a shim's roster: what the session said about itself is
+//! `declared`, and what the daemon holds about its connection and wait is `recorded`.
+//!
+//! Sending ([`send`], RAL-199 part 2) needs a sender on the roster, since the daemon names the
+//! sender from the connection's session. So Rally registers its own: kind `service`, project
+//! `rally`, a stable id per machine and command (`rally-digest@Murph`), only for as long as the
+//! send takes, and deletes it after. It never sends as an agent's session. A `service` row is
+//! never shown as a team or counted as one: [`shape`] leaves it out and counts it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use marshal_entities::{
-    GetAllRoomMembers, GetAllSessionNicknames, GetAllSessions, GetAllWakeWatchers, RoomMember,
-    Session, SessionNickname, WakeWatcher,
+    DeleteSession, DeleteSessionResult, GetAllRoomMembers, GetAllSessionNicknames, GetAllSessions,
+    GetAllWakeWatchers, HostInfo, RegisterSession, RoomMember, SendMessage, SendMessageResult,
+    Session, SessionId, SessionNickname, WakeWatcher,
 };
 use myko::client::MykoClient;
 use myko::prelude::Gettable as _;
@@ -136,6 +142,295 @@ pub fn roster_at(address: &str, limit: Duration) -> Result<Value, String> {
     result
 }
 
+/// The `kind` Rally's own sessions declare, so no reader takes one for a team.
+pub const SERVICE_KIND: &str = "service";
+
+/// How long a send may take, connecting, registering and the daemon's answer included.
+pub const SEND_LIMIT: Duration = Duration::from_secs(15);
+
+/// What came of a [`send`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Sent {
+    /// The daemon stored it: its message id and the session it went to.
+    Delivered {
+        message_id: String,
+        to_session_id: String,
+    },
+    /// Nothing was sent, since the recipient isn't on this daemon's roster or the daemon couldn't
+    /// be reached. Another source may be tried.
+    NotHere(String),
+    /// It failed after it may have been delivered, or the daemon refused it: try nothing else.
+    Failed(String),
+}
+
+/// The id Rally's own session has for `command` on this machine, as `rally-digest@Murph`: stable,
+/// so each run replaces its own row rather than adding one.
+pub fn service_id(command: &str) -> String {
+    format!("rally-{command}@{}", machine())
+}
+
+fn machine() -> String {
+    rustix::system::uname()
+        .nodename()
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Sends `body` to `to`, a session id or a nickname on the roster, from Rally's own `command`
+/// session, through the daemon at [`daemon_address`].
+pub fn send(command: &str, to: &str, body: &str) -> Sent {
+    let state_dir = std::env::var_os("RALLY_STATE_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state/rally"))
+        })
+        .unwrap_or_else(|| PathBuf::from("/"));
+    send_at(
+        &daemon_address(),
+        &service_id(command),
+        &state_dir.to_string_lossy(),
+        to,
+        body,
+        SEND_LIMIT,
+    )
+}
+
+/// [`send`] to the daemon at `address`, as the session `id` started in `cwd`, within `limit`.
+pub fn send_at(address: &str, id: &str, cwd: &str, to: &str, body: &str, limit: Duration) -> Sent {
+    if let Err(why) = reachable(address, limit) {
+        return Sent::NotHere(why);
+    }
+    marshal_entities::link();
+    let until = Instant::now() + limit;
+    let client = MykoClient::new_with_auto_reconnect(false);
+    let sessions = client.watch_query_state::<GetAllSessions>(GetAllSessions {});
+    let nicknames = client.watch_query_state::<GetAllSessionNicknames>(GetAllSessionNicknames {});
+    client.set_address(Some(address.to_owned()));
+    let sent = (|| {
+        wait(until, || {
+            if let Some(error) = sessions.error().get().or_else(|| nicknames.error().get()) {
+                return Some(Err(Sent::NotHere(format!(
+                    "the daemon at {address} refused a query: {error}"
+                ))));
+            }
+            (sessions.ready().get() && nicknames.ready().get()).then_some(Ok(()))
+        })
+        .unwrap_or_else(|| {
+            Err(Sent::NotHere(format!(
+                "no roster from the daemon at {address} within {}s",
+                limit.as_secs()
+            )))
+        })?;
+        let to_session_id = match recipient(&sessions.items().get(), &nicknames.items().get(), to) {
+            Ok(id) => id,
+            Err(why) => return Err(Sent::NotHere(why)),
+        };
+        let me = SessionId(Arc::from(id));
+        let now = now_ms();
+        let session = Session {
+            id: me.clone(),
+            client_id: None,
+            agent_id: None,
+            pid: std::process::id(),
+            cwd: cwd.to_owned(),
+            git_branch: None,
+            current_task: Some(format!(
+                "Rally's {} sending",
+                id.trim_start_matches("rally-")
+            )),
+            session_name: None,
+            activity: Some("busy".to_owned()),
+            kind: Some(SERVICE_KIND.to_owned()),
+            connected_at: now,
+            last_activity_at: Some(now),
+            last_tool: None,
+            last_tool_at: None,
+            operator: std::env::var("USER").ok(),
+            host: Some(HostInfo {
+                name: machine(),
+                os: std::env::consts::OS.to_owned(),
+                arch: std::env::consts::ARCH.to_owned(),
+            }),
+            project: Some("rally".to_owned()),
+            channels_enabled: None,
+            acks_pushes: None,
+        };
+        let registered = client.send_command::<RegisterSession, ()>(&RegisterSession { session });
+        // Registered once the daemon answers and the row is bound to this connection, since the
+        // daemon names a sender by that binding.
+        wait(until, || match registered.get() {
+            Some(Err(error)) => Some(Err(Sent::NotHere(format!(
+                "the daemon refused Rally's session: {error}"
+            )))),
+            Some(Ok(())) => sessions
+                .items()
+                .get()
+                .iter()
+                .any(|s| s.id == me && s.client_id.is_some())
+                .then_some(Ok(())),
+            None => None,
+        })
+        .unwrap_or_else(|| {
+            Err(Sent::NotHere(format!(
+                "the daemon didn't register Rally's session within {}s",
+                limit.as_secs()
+            )))
+        })?;
+        let result = client.send_command::<SendMessage, SendMessageResult>(&SendMessage {
+            to_session_id: to_session_id.clone(),
+            response_required: false,
+            body: body.to_owned(),
+            as_session: None,
+        });
+        // From here it may have been delivered, so nothing else is tried.
+        let sent = wait(until, || match result.get() {
+            Some(Ok(result)) => Some(Sent::Delivered {
+                message_id: result.message_id.0.to_string(),
+                to_session_id: result.to_session_id.0.to_string(),
+            }),
+            Some(Err(error)) => Some(Sent::Failed(format!(
+                "the daemon refused the message: {error}"
+            ))),
+            None => None,
+        })
+        .unwrap_or_else(|| {
+            Sent::Failed(format!(
+                "no answer to the message within {}s: it may have been delivered",
+                limit.as_secs()
+            ))
+        });
+        let deleted =
+            client.send_command::<DeleteSession, DeleteSessionResult>(&DeleteSession { id: me });
+        let _ = wait(Instant::now() + Duration::from_secs(2), || {
+            deleted.get().map(|_| ())
+        });
+        Ok(sent)
+    })();
+    client.close();
+    match sent {
+        Ok(sent) | Err(sent) => sent,
+    }
+}
+
+/// Polls `ready` until it gives a value or `until` passes.
+fn wait<T>(until: Instant, mut ready: impl FnMut() -> Option<T>) -> Option<T> {
+    loop {
+        if let Some(value) = ready() {
+            return Some(value);
+        }
+        if Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The session `to` names: an exact session id, or the one non-service session whose nickname it
+/// is. A name two sessions hold is refused rather than guessed.
+pub fn recipient(
+    sessions: &[Arc<Session>],
+    nicknames: &[Arc<SessionNickname>],
+    to: &str,
+) -> Result<SessionId, String> {
+    let to = to.trim();
+    let teams: Vec<&Arc<Session>> = sessions
+        .iter()
+        .filter(|s| s.kind.as_deref() != Some(SERVICE_KIND))
+        .collect();
+    if let Some(session) = teams.iter().find(|s| s.id.0.as_ref() == to) {
+        return Ok(session.id.clone());
+    }
+    let named: Vec<&&Arc<Session>> = teams
+        .iter()
+        .filter(|s| {
+            let id = s.id.0.as_ref();
+            nicknames
+                .iter()
+                .find(|n| n.id.0.as_ref() == id)
+                .map_or_else(|| marshal_entities::nickname(id), |n| n.nickname.clone())
+                .eq_ignore_ascii_case(to)
+        })
+        .collect();
+    match named.as_slice() {
+        [one] => Ok(one.id.clone()),
+        [] => Err(format!("{to} isn't on Marshal's roster")),
+        _ => Err(format!(
+            "{to} names {} sessions on Marshal's roster, so it's ambiguous",
+            named.len()
+        )),
+    }
+}
+
+/// Where a designated name is reached on Marshal (RAL-199): the nickname of a live roster row, and
+/// the names passed through on the way.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Route {
+    pub to: String,
+    /// From the designated name to `to`, each step a session record of the open rally.
+    pub chain: Vec<String>,
+    /// The record numbers of those steps.
+    pub records: Vec<u64>,
+}
+
+/// The live session a designated name (a watchman's, as the operator signed it) now is, found only
+/// through the open rally's session records: the name itself if it's on the roster, or else the
+/// session recorded as succeeding it, and so on. Routing only: it confers nothing. Never a guess by
+/// directory or project; with no such chain to a live row, `Err` says why and nothing is sent.
+pub fn route(designated: &str, open_rally: &Value, live: &[String]) -> Result<Route, String> {
+    let is_live = |name: &str| live.iter().any(|n| n.eq_ignore_ascii_case(name));
+    let mut current = designated.trim().to_owned();
+    let mut chain = vec![current.clone()];
+    let mut records = Vec::new();
+    let records_of = open_rally["sessions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    loop {
+        if is_live(&current) {
+            return Ok(Route {
+                to: current,
+                chain,
+                records,
+            });
+        }
+        // The latest record naming a successor to `current` that isn't a removal.
+        let next = records_of
+            .iter()
+            .filter(|r| r["remove"] != json!(true))
+            .filter(|r| {
+                r["succeeds"]
+                    .as_str()
+                    .is_some_and(|old| old.eq_ignore_ascii_case(&current))
+            })
+            .max_by_key(|r| r["seq"].as_u64().unwrap_or(0));
+        let Some(next) = next else {
+            let how = if chain.len() == 1 {
+                String::new()
+            } else {
+                format!(" (followed {})", chain.join(" → "))
+            };
+            return Err(format!(
+                "can't find {designated} on Marshal: {current} isn't on the roster, and no session \
+                 of the open rally is recorded as succeeding it{how}"
+            ));
+        };
+        let Some(name) = next["session"].as_str().map(str::to_owned) else {
+            return Err(format!(
+                "a session record for {current}'s successor names no session"
+            ));
+        };
+        if chain.iter().any(|seen| seen.eq_ignore_ascii_case(&name)) {
+            return Err(format!(
+                "can't find {designated} on Marshal: the succession records loop ({} → {name})",
+                chain.join(" → ")
+            ));
+        }
+        records.push(next["seq"].as_u64().unwrap_or(0));
+        chain.push(name.clone());
+        current = name;
+    }
+}
+
 /// `Err` when nothing accepts a TCP connection at `address`'s host and port within `limit`.
 fn reachable(address: &str, limit: Duration) -> Result<(), String> {
     use std::net::{TcpStream, ToSocketAddrs as _};
@@ -184,8 +479,13 @@ pub fn shape(
     watchers: &[Arc<WakeWatcher>],
     now_ms: i64,
 ) -> Value {
+    let services = sessions
+        .iter()
+        .filter(|s| s.kind.as_deref() == Some(SERVICE_KIND))
+        .count();
     let rows: Vec<Value> = sessions
         .iter()
+        .filter(|s| s.kind.as_deref() != Some(SERVICE_KIND))
         .map(|session| {
             let id = session.id.0.as_ref();
             // The daemon's handle, or the one it would give, as the shim shows before it's assigned.
@@ -235,7 +535,8 @@ pub fn shape(
             })
         })
         .collect();
-    json!({"sessions": rows})
+    // Rally's own sessions, left out so none is taken for a team, but counted.
+    json!({"sessions": rows, "service_sessions": services})
 }
 
 #[cfg(test)]
@@ -258,6 +559,92 @@ mod tests {
     fn session(id: &str) -> Session {
         serde_json::from_value(json!({"id": id, "pid": 7, "cwd": "/w", "connectedAt": 1}))
             .expect("a session")
+    }
+
+    #[test]
+    fn a_designated_name_is_routed_only_by_the_open_rally_s_records() {
+        let open = json!({"sessions": [
+            {"seq": 5, "session": "gilded-canyon", "succeeds": "mythic-mackerel", "remove": false},
+            {"seq": 7, "session": "mega-jackdaw", "succeeds": "mellow-weevil", "remove": false},
+            {"seq": 9, "session": "late-heron", "succeeds": "mega-jackdaw", "remove": true},
+        ]});
+        let live = ["mega-jackdaw".to_owned(), "gilded-canyon".to_owned()];
+        // On the roster itself: no chain.
+        let direct = route("Gilded-Canyon", &open, &live).unwrap();
+        assert_eq!(
+            (direct.to.as_str(), direct.records.len()),
+            ("Gilded-Canyon", 0)
+        );
+        // Through one record; the removal isn't a successor.
+        let routed = route("mellow-weevil", &open, &live).unwrap();
+        assert_eq!(routed.to, "mega-jackdaw");
+        assert_eq!(routed.chain, ["mellow-weevil", "mega-jackdaw"]);
+        assert_eq!(routed.records, [7]);
+        // No record: nothing is guessed.
+        let lost = route("fiery-snapper", &open, &live).unwrap_err();
+        assert!(
+            lost.contains("can't find fiery-snapper on Marshal"),
+            "{lost}"
+        );
+        // A successor that isn't live, with no further record, is no route either.
+        let gone = route("mellow-weevil", &open, &["gilded-canyon".to_owned()]).unwrap_err();
+        assert!(
+            gone.contains("followed mellow-weevil → mega-jackdaw"),
+            "{gone}"
+        );
+        // A loop ends.
+        let looped = json!({"sessions": [
+            {"seq": 1, "session": "b", "succeeds": "a"},
+            {"seq": 2, "session": "a", "succeeds": "b"},
+        ]});
+        assert!(route("a", &looped, &[]).unwrap_err().contains("loop"));
+    }
+
+    #[test]
+    fn a_recipient_is_an_id_or_one_team_s_nickname_never_a_service() {
+        let mut service = session("rally-digest@Murph");
+        service.kind = Some(SERVICE_KIND.into());
+        let nick = |id: &str, name: &str| -> Arc<SessionNickname> {
+            Arc::new(serde_json::from_value(json!({"id": id, "nickname": name})).unwrap())
+        };
+        let sessions = [
+            Arc::new(session("s-1")),
+            Arc::new(session("s-2")),
+            Arc::new(session("s-3")),
+            Arc::new(service),
+        ];
+        let names = [
+            nick("s-1", "mega-jackdaw"),
+            nick("s-2", "twin-name"),
+            nick("s-3", "twin-name"),
+            nick("rally-digest@Murph", "rally-digest"),
+        ];
+        assert_eq!(
+            recipient(&sessions, &names, "s-2").unwrap().0.as_ref(),
+            "s-2"
+        );
+        assert_eq!(
+            recipient(&sessions, &names, "Mega-Jackdaw")
+                .unwrap()
+                .0
+                .as_ref(),
+            "s-1"
+        );
+        assert!(
+            recipient(&sessions, &names, "twin-name")
+                .unwrap_err()
+                .contains("ambiguous")
+        );
+        assert!(
+            recipient(&sessions, &names, "rally-digest")
+                .unwrap_err()
+                .contains("isn't on")
+        );
+        assert!(recipient(&sessions, &names, "rally-digest@Murph").is_err());
+        // And the roster Rally shows leaves the service row out, counting it.
+        let shaped = shape(&sessions, &names, &[], &[], 0);
+        assert_eq!(shaped["sessions"].as_array().unwrap().len(), 3);
+        assert_eq!(shaped["service_sessions"], 1);
     }
 
     #[test]
