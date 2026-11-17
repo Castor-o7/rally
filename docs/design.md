@@ -144,7 +144,7 @@ how long a check-in lasts, and test the rules against the stall of 2026-10-30.
 ## How Rally used Muster
 
 Muster was retired on 2026-11-17 (condition 5396): Rally reads Marshal's roster from its daemon itself
-(RAL-199), and sends through Marshal once RAL-199's second part lands. What follows is how Rally used
+(RAL-199), and sends through it as its own `service` session (RAL-199's second part). What follows is how Rally used
 Muster, kept as the record later choices rest on.
 
 Rally doesn't need Muster. It's a ledger reached over its own service: teams record and read their work

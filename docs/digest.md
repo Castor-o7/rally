@@ -32,8 +32,13 @@ so a digest goes at most that long after it's due. Each watchman's head and cloc
 ## How it's delivered
 
 - One direct message to each designated watchman, through the first of `RALLY_ROSTER_FROM` that can reach it, as
-  `rally wake` sends (RAL-120), named in the row's `sent_by`. Rally doesn't send through `marshal`, the default,
-  until RAL-199's second part, so with the default list the digest is only reported.
+  `rally wake` sends (RAL-120), named in the row's `sent_by`. Through `marshal` (the default, RAL-199) Rally sends
+  as its own session, `rally-digest@<machine>` (kind `service`, project `rally`), registered only while it sends
+  and deleted after, never as an agent's. The designated name is followed through the open rally's session
+  records (`rally rally-session add <new> --succeeds <old>`) to a live session on Marshal's roster, and the row's
+  `routed` names the chain and its record numbers. It's routing only: the designation is unchanged. With no such
+  chain, the row says the watchman can't be found on Marshal, and nothing is sent; it never guesses by directory or
+  project.
 - With no watchman designated, nothing is sent: teams verify one another then (`rally waiting`). While the
   service has no operator key, no designation can be checked, so `--watchman <name>` names the one to send to.
   That's declared: the watchman's own records are then told apart by declared name, not credential.

@@ -158,7 +158,7 @@ impl Sender for Shims {
     }
 
     fn send(&self, team: &str, message: &str) -> Result<String, String> {
-        crate::shims::tell(&self.0, team, message)
+        crate::shims::tell(&self.0, "wake", team, message)
     }
 }
 

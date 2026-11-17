@@ -47,8 +47,8 @@ Both times are agreed with the operator and have no default:
 
 `rally wake` reads the roster and sends through Marshal (RAL-120): the sources in
 `RALLY_ROSTER_FROM`, comma-separated, by default `marshal` (Rally reading Marshal's daemon itself, RAL-199), as
-the viewer reads the roster. Rally doesn't send through `marshal` yet (RAL-199's second part), so with the
-default list `rally wake` reports only. The
+the viewer reads the roster. Through `marshal`, Rally sends as its own session, `rally-wake@<machine>`
+(kind `service`), only while it sends (RAL-199). A `service` row is never counted as a team. The
 roster is all of theirs merged (RAL-126), each session naming its `source`, and the report's `roster.read_with`
 lists those read. A message goes through
 the first that knows the team, named in each team's `sent_by`. It falls back to the next only when the shim says
