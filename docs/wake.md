@@ -4,11 +4,11 @@
 notice. It comes from the operator's question of 2026-11-05, whether a rally can run without a watchman: two
 teams sat idle with ready work that night, and one slept for about 2 hours with no way to wake it.
 
-It runs on a1, beside `rally web`, where `gh` can read each project's roadmap and `muster-shim` could read
-Muster's roster and send messages. Pending RAL-199 part 2: Muster is retired (2026-11-17, condition 5396) and
-Rally doesn't send through Marshal yet, so it reads Marshal's roster and only reports. It reads the ledger
-through the paired service. Each run is one pass, or `--every
-<time>` repeats it until stopped, for example under launchd.
+It was set up to run on a1, beside `rally web`, where `gh` could read each project's roadmap and `muster-shim`
+could read Muster's roster and send messages. Muster is retired (2026-11-17, condition 5396), so that install
+reaches nothing. Rally now reads the roster and sends through Marshal's daemon itself (RAL-199). Where wake
+runs is the operator's call; on 2026-11-17 no `rally wake` was running on Murph (read on the box). It reads
+the ledger through the paired service. Each run is one pass, or `--every <time>` repeats it until stopped, for example under launchd.
 
 ## Each pass
 

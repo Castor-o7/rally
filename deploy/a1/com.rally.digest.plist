@@ -2,8 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Pending RAL-199 part 2: Muster is retired (2026-11-17, condition 5396) and Rally doesn't send
-       through Marshal yet, so this agent's muster-shim no longer reaches a watchman. See docs/digest.md.
+  <!-- Not current: Muster is retired (2026-11-17, condition 5396), so this agent's muster-shim
+       reaches nothing. Don't install it. Rally sends through Marshal's daemon itself (RAL-199).
+       Kept as the record of the a1 setup. See docs/digest.md, "Running it on a1".
 
        Rally's watchman digest for a1 (RAL-8): every 30 seconds, one pass of `rally digest`. It reads
        the ledger through this machine's pairing, and when a digest is due (quiet for 2 minutes, or 10
