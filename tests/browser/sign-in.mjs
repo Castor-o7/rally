@@ -147,12 +147,13 @@ function finish(code, value) {
   } catch { /* the timeout still cleans up */ }
 }
 // A start has 45 s to sign in. RAL-205: the retry after a crash at start gets a fresh 45 s, since
-// under load a slow crashed start would otherwise eat into the retry's time; and 90 s from the
-// script's start ends any run, so a Chrome that never starts holds CI for two budgets at most.
+// under load a slow crashed start would otherwise eat into the retry's time. A run still ends
+// within two budgets, by construction: the retry's timer is set only while the first is pending
+// (had it fired, finish would have exited), so the retry's deadline is under 90 s from the start,
+// and there's only one retry. So no separate cap is kept.
 const BUDGET_MS = 45000;
 const timedOut = () => finish(1, { error: "timed out" });
 let timer = setTimeout(timedOut, BUDGET_MS);
-const cap = setTimeout(() => finish(1, { error: "timed out (the 90 s cap on a run)" }), 2 * BUDGET_MS);
 // A step that throws, such as a fetch refused or a reply without a result, still ends in finish,
 // so its cleanup runs (RAL-150); before, node exited at once and left Chrome running.
 process.on("uncaughtException", (error) => finish(1, { error: "the script failed: " + error }));
@@ -414,5 +415,4 @@ if (process.env.RALLY_BROWSER_RELOAD_PROBE) {
   reloaded = await evaluate(expression);
 }
 clearTimeout(timer);
-clearTimeout(cap);
 finish(0, { codePage, after, firstDraw, probe, probes, reloaded });

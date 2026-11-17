@@ -1584,7 +1584,7 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   real Chrome timed out before it started. The 12 browser runs in `tests/web.rs` ran in parallel, and
   `tests/browser/sign-in.mjs` gave the whole run one 45 s timer, which the retry after a crash at start shared.
   Done when: tests start one real Chrome at a time (a lock held only while the browser runs, which a panic
-  doesn't poison); the retry after a crash at start gets a fresh 45 s; any run ends within 90 s; and what the
+  doesn't poison); the retry after a crash at start gets a fresh 45 s, so any run ends within 90 s; and what the
   browser tests prove is unchanged (one stated retry, a second crash fails, nothing of the browser survives).
 - [ ] **RAL-206: The Marshal e2e's throwaway shim never borrows the runner's session identity.** From fervent-dace's
   read of RAL-199 part 3 (2026-11-17): `tests/marshal.rs`'s shim inherited `CLAUDE_CODE_SESSION_ID`, so it took
