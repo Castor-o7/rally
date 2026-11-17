@@ -205,15 +205,22 @@ pub fn send_at(address: &str, id: &str, cwd: &str, to: &str, body: &str, limit: 
     let client = MykoClient::new_with_auto_reconnect(false);
     let sessions = client.watch_query_state::<GetAllSessions>(GetAllSessions {});
     let nicknames = client.watch_query_state::<GetAllSessionNicknames>(GetAllSessionNicknames {});
+    let watchers = client.watch_query_state::<GetAllWakeWatchers>(GetAllWakeWatchers {});
     client.set_address(Some(address.to_owned()));
     let sent = (|| {
         wait(until, || {
-            if let Some(error) = sessions.error().get().or_else(|| nicknames.error().get()) {
+            if let Some(error) = sessions
+                .error()
+                .get()
+                .or_else(|| nicknames.error().get())
+                .or_else(|| watchers.error().get())
+            {
                 return Some(Err(Sent::NotHere(format!(
                     "the daemon at {address} refused a query: {error}"
                 ))));
             }
-            (sessions.ready().get() && nicknames.ready().get()).then_some(Ok(()))
+            (sessions.ready().get() && nicknames.ready().get() && watchers.ready().get())
+                .then_some(Ok(()))
         })
         .unwrap_or_else(|| {
             Err(Sent::NotHere(format!(
@@ -221,7 +228,13 @@ pub fn send_at(address: &str, id: &str, cwd: &str, to: &str, body: &str, limit: 
                 limit.as_secs()
             )))
         })?;
-        let to_session_id = match recipient(&sessions.items().get(), &nicknames.items().get(), to) {
+        let to_session_id = match recipient(
+            &sessions.items().get(),
+            &nicknames.items().get(),
+            &watchers.items().get(),
+            now_ms(),
+            to,
+        ) {
             Ok(id) => id,
             Err(why) => return Err(Sent::NotHere(why)),
         };
@@ -330,6 +343,8 @@ fn wait<T>(until: Instant, mut ready: impl FnMut() -> Option<T>) -> Option<T> {
 pub fn recipient(
     sessions: &[Arc<Session>],
     nicknames: &[Arc<SessionNickname>],
+    watchers: &[Arc<WakeWatcher>],
+    now_ms: i64,
     to: &str,
 ) -> Result<SessionId, String> {
     let to = to.trim();
@@ -351,8 +366,21 @@ pub fn recipient(
                 .eq_ignore_ascii_case(to)
         })
         .collect();
+    // A nickname reaches a live session only (RAL-202): bound to a shim's connection, or with a
+    // wait the daemon holds now. A leftover holding the same name is never the one meant.
+    let live = |s: &Arc<Session>| {
+        s.client_id.is_some()
+            || watchers
+                .iter()
+                .any(|w| w.id.0.as_ref() == s.id.0.as_ref() && w.until > now_ms)
+    };
+    let stale_only = !named.is_empty() && !named.iter().any(|s| live(s));
+    let named: Vec<&&Arc<Session>> = named.into_iter().filter(|s| live(s)).collect();
     match named.as_slice() {
         [one] => Ok(one.id.clone()),
+        [] if stale_only => Err(format!(
+            "{to} isn't on Marshal's roster as a live session: only a stale row (no shim bound, no wait) holds the name"
+        )),
         [] => Err(format!("{to} isn't on Marshal's roster")),
         _ => Err(format!(
             "{to} names {} sessions on Marshal's roster, so it's ambiguous",
@@ -601,49 +629,60 @@ mod tests {
     }
 
     #[test]
-    fn a_recipient_is_an_id_or_one_team_s_nickname_never_a_service() {
+    fn a_recipient_is_an_id_or_one_live_team_s_nickname_never_a_service_or_a_ghost() {
+        let bound = |id: &str| {
+            let mut s = session(id);
+            s.client_id = Some(myko::entities::client::ClientId(Arc::from(id)));
+            Arc::new(s)
+        };
         let mut service = session("rally-digest@Murph");
         service.kind = Some(SERVICE_KIND.into());
+        service.client_id = Some(myko::entities::client::ClientId(Arc::from("svc")));
         let nick = |id: &str, name: &str| -> Arc<SessionNickname> {
             Arc::new(serde_json::from_value(json!({"id": id, "nickname": name})).unwrap())
         };
+        let waiter: Arc<WakeWatcher> =
+            Arc::new(serde_json::from_value(json!({"id": "hook-only", "until": 2_000})).unwrap());
         let sessions = [
-            Arc::new(session("s-1")),
-            Arc::new(session("s-2")),
-            Arc::new(session("s-3")),
+            bound("s-1"),
+            bound("s-2"),
+            bound("s-3"),
             Arc::new(service),
+            // Hook-only leftovers: no shim bound, one sharing a live team's name.
+            Arc::new(session("ghost-1")),
+            Arc::new(session("ghost-2")),
+            // Unbound, but a hook holds a wait now: live.
+            Arc::new(session("hook-only")),
         ];
         let names = [
             nick("s-1", "mega-jackdaw"),
             nick("s-2", "twin-name"),
             nick("s-3", "twin-name"),
             nick("rally-digest@Murph", "rally-digest"),
+            nick("ghost-1", "mega-jackdaw"),
+            nick("ghost-2", "only-a-ghost"),
+            nick("hook-only", "hook-waiter"),
         ];
-        assert_eq!(
-            recipient(&sessions, &names, "s-2").unwrap().0.as_ref(),
-            "s-2"
-        );
-        assert_eq!(
-            recipient(&sessions, &names, "Mega-Jackdaw")
-                .unwrap()
-                .0
-                .as_ref(),
-            "s-1"
-        );
-        assert!(
-            recipient(&sessions, &names, "twin-name")
-                .unwrap_err()
-                .contains("ambiguous")
-        );
-        assert!(
-            recipient(&sessions, &names, "rally-digest")
-                .unwrap_err()
-                .contains("isn't on")
-        );
-        assert!(recipient(&sessions, &names, "rally-digest@Murph").is_err());
+        let to = |name: &str| {
+            recipient(
+                &sessions,
+                &names,
+                std::slice::from_ref(&waiter),
+                1_000,
+                name,
+            )
+        };
+        assert_eq!(to("s-2").unwrap().0.as_ref(), "s-2");
+        // A ghost sharing a live team's name never makes it ambiguous.
+        assert_eq!(to("Mega-Jackdaw").unwrap().0.as_ref(), "s-1");
+        assert!(to("twin-name").unwrap_err().contains("ambiguous"));
+        assert!(to("only-a-ghost").unwrap_err().contains("only a stale row"));
+        assert_eq!(to("hook-waiter").unwrap().0.as_ref(), "hook-only");
+        assert!(to("rally-digest").unwrap_err().contains("isn't on"));
+        assert!(to("rally-digest@Murph").is_err());
         // And the roster Rally shows leaves the service row out, counting it.
         let shaped = shape(&sessions, &names, &[], &[], 0);
-        assert_eq!(shaped["sessions"].as_array().unwrap().len(), 3);
+        assert_eq!(shaped["sessions"].as_array().unwrap().len(), 6);
         assert_eq!(shaped["service_sessions"], 1);
     }
 

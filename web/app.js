@@ -920,12 +920,17 @@ function renderTeams(status, now) {
   live.append(el("h3", "", "On the roster"));
   if (roster.available) {
     live.append(rosterSource(roster));
-    const rows = roster.sessions.filter((session) => sessionInRally(status.rally, session)).sort((a, b) =>
-      String(a.project).localeCompare(String(b.project)));
+    const rows = roster.sessions.filter((session) => sessionInRally(status.rally, session));
+    // Live sessions first, the most recently active first (RAL-202); a row no live shim backs
+    // (`stale`, worked out by the viewer from the roster's own facts) is folded away below them.
+    const lastActive = (session) => Number(session.last_activity_at || session.connected_at || 0);
+    const byActivity = (a, b) => lastActive(b) - lastActive(a);
+    const current = rows.filter((session) => !session.stale).sort(byActivity);
+    const stale = rows.filter((session) => session.stale).sort(byActivity);
     // Who each team is, where it was started, what it's on and when it last acted (RAL-99), each
     // fact under the label its source gives it (RAL-116).
-    live.append(table(["Team", "Directory", "Project", "Machine", "Status", "Working on", "Last action"],
-      rows.map((session) => [
+    const rosterTable = (list) => table(["Team", "Directory", "Project", "Machine", "Status", "Working on", "Last action"],
+      list.map((session) => [
         { text: rosterTeam(session, now), className: "nowrap" },
         { text: rosterDirectory(session.cwd), label: "declared" },
         { text: rosterProject(session.project, session.git_branch), label: "declared" },
@@ -933,7 +938,20 @@ function renderTeams(status, now) {
         { text: rosterStatus(session, now), className: "nowrap" },
         { text: rosterWorkingOn(session, now), label: "declared", className: "text" },
         { text: rosterLastAction(session, now), label: "declared", className: "nowrap" },
-      ])));
+      ]));
+    if (current.length) {
+      live.append(rosterTable(current));
+    } else {
+      live.append(el("p", "muted", "No live session on the roster" + (stale.length ? ", only stale ones." : ".")));
+    }
+    if (stale.length) {
+      const details = el("details", "sections stale-sessions");
+      const summary = el("summary", "", counted(stale.length, "stale session", "stale sessions")
+        + ": rows no live shim backs, such as hook-only leftovers. None is taken for a team.");
+      summary.dataset.key = "stale-sessions";
+      details.append(summary, rosterTable(stale));
+      live.append(details);
+    }
     if (now - roster.read_at_ms > LIVE_STALE_MS) {
       live.append(el("p", "warning figure", "⚠ This roster is out of date"));
     }
@@ -1606,8 +1624,14 @@ function rosterTeam(session, now) {
     span.append(el("br"), el("span", "muted roster-source", "via " + sourceName(session.source)
       + (also.length ? ", also on " + also.join(", ") : "")));
   }
-  if (session.connected_at) {
-    span.append(el("br"), el("span", "muted", [labelled("declared", "connected ", ago(session.connected_at, now))]));
+  // A row no shim was ever bound to has no connection to date: only why it's stale is said.
+  if (session.stale) {
+    span.append(el("br"), el("span", "muted", "stale: " + session.stale));
+  } else if (session.connected_at) {
+    // Never bound to a connection, it never connected: only when it reached the roster is known.
+    const bound = !session.connection || session.connection.bound_to_connection !== false;
+    span.append(el("br"), el("span", "muted", [labelled("declared",
+      bound ? "connected " : "on the roster since ", ago(session.connected_at, now))]));
   }
   return span;
 }
@@ -1621,7 +1645,9 @@ function rosterStatus(session, now) {
   const activity = [session.activity || "unknown"];
   if (session.activity) {
     if (session.activity_at) activity.push(" for ", ago(session.activity_at, now, "for"));
-    else activity.push(el("span", "muted", ", since unknown"));
+    // Without when it changed, the time the roster does have, under its own name (RAL-202).
+    else if (session.last_activity_at) activity.push(el("span", "muted", [", last active ", ago(session.last_activity_at, now)]));
+    else activity.push(el("span", "muted", ", since: not reported by its roster"));
   }
   span.append(labelled("declared", ...activity));
   if (session.wake) {
@@ -1671,13 +1697,18 @@ function statePill(state) {
 
 // Which collapsible sections are open, by their summary text, so the 30-second
 // redraw doesn't snap them shut (RAL-96).
+// A summary whose text holds a count names itself with `data-key`, so a changed count keeps it open.
+function sectionKey(summary) {
+  return summary.dataset.key || summary.textContent;
+}
+
 function openSections() {
-  return new Set([...document.querySelectorAll("details[open] > summary")].map((s) => s.textContent));
+  return new Set([...document.querySelectorAll("details[open] > summary")].map(sectionKey));
 }
 
 function reopen(open) {
   for (const summary of document.querySelectorAll("details > summary")) {
-    if (open.has(summary.textContent)) summary.parentElement.open = true;
+    if (open.has(sectionKey(summary))) summary.parentElement.open = true;
   }
 }
 
@@ -1718,7 +1749,8 @@ const ACTIVITY_RECENT = 6;
 function activityStrip(stories, roster, rally, now) {
   const strip = el("div", "activity");
   const busy = ((roster && roster.sessions) || [])
-    .filter((session) => session.activity === "busy" && sessionInRally(rally, session));
+    // A stale row's "busy" is a leftover's, not anyone working (RAL-202).
+    .filter((session) => session.activity === "busy" && !session.stale && sessionInRally(rally, session));
   const working = el("div", "activity-now");
   working.append(el("h3", "", "Now"));
   if (!busy.length) {
@@ -1730,7 +1762,8 @@ function activityStrip(stories, roster, rally, now) {
       const line = el("li");
       line.dataset.session = session.nickname || "";
       const since = session.activity_at ? ["busy for ", ago(session.activity_at, now, "for")]
-        : ["busy", el("span", "muted", ", since unknown")];
+        : session.last_activity_at ? ["busy", el("span", "muted", [", last active ", ago(session.last_activity_at, now)])]
+        : ["busy", el("span", "muted", ", since: not reported by its roster")];
       line.append(el("span", "activity-who", session.nickname || "unnamed"), " ",
         labelled("declared", ...since));
       if (session.current_task) line.append(el("br"), el("span", "muted activity-task", session.current_task));
