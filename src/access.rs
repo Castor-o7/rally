@@ -1,7 +1,7 @@
 //! Who may connect to the service (RAL-13): the service's certificate and machines' tokens.
 //!
 //! Tokens are stored only as SHA-256 hashes. They're long and random, so a plain hash is enough,
-//! and they're Rally's own, separate from Muster's. A pair code holds a token, so treat it like a
+//! and they're Rally's own, separate from Marshal's. A pair code holds a token, so treat it like a
 //! password. See `docs/service.md`.
 
 use std::collections::BTreeMap;

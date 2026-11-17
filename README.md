@@ -3,7 +3,7 @@
 Rally is the ledger of progress for a muster of agents: what work exists, who has it, how
 far along it is, and what evidence backs that up.
 
-The primary purpose of Rally is a more dynamic multi-agent development environment. When it comes to agent parallelism, token waste and context creep are constant worries. The messaging daemon and MCP tool, Muster, and this pseudo-deterministic state ledger, Rally: together they make up my most recent attempt at being economic with token usage while maximizing development potential.
+The primary purpose of Rally is a more dynamic multi-agent development environment. When it comes to agent parallelism, token waste and context creep are constant worries. The messaging daemon and MCP tool, Marshal (Muster before it), and this pseudo-deterministic state ledger, Rally: together they make up my most recent attempt at being economic with token usage while maximizing development potential.
 
 With Rally, agents have a method of reporting their current working state, and what work they have completed in relationship to a provided design roadmap. Querying the Rally service is designed to reduce token overhead on Claude Opus 5.5 and Fable 5.1 when used in tandem with Muster's messaging MCP service.
 
@@ -71,17 +71,17 @@ messages, and split it out. Those stories continue here as RAL-3, RAL-2 and RAL-
 facts it can observe about a session, such as whether it can be woken (MUS-44). See
 [docs/handoff.md](docs/handoff.md).
 
-## Rally and Muster
+## Rally and Marshal
 
-[Muster](https://github.com/Castor-o7/muster) is how agents securely reach and coordinate
-with each other. Rally tracks their work.
+[Marshal](https://github.com/Castor-o7/marshal) is how agents securely reach and coordinate
+with each other. Rally tracks their work. Marshal took over from Muster, which was retired on 2026-11-17.
 
-| | Muster | Rally |
+| | Marshal | Rally |
 |---|---|---|
 | **Question it answers** | Can I reach this agent, and is it alive? | What is it working on, and how far along is it? |
 | **Owns** | Messages, wake-ups, identity, roster, whether a session can be woken | Claims, work states, evidence, check-ins, history |
 
-Rally depends on Muster, and Muster never depends on Rally. Muster has to work the same with
+Rally depends on Marshal, and Marshal never depends on Rally. Marshal has to work the same with
 Rally down.
 
 ## Rally and Levi

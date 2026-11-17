@@ -230,7 +230,7 @@ enum Command {
         #[arg(long)]
         dir: Option<PathBuf>,
         /// The agents' harness, said explicitly: `prime-agent` adds a notice that its own
-        /// messaging can stand in for Muster (RAL-59).
+        /// messaging can stand in for Marshal (RAL-59).
         #[arg(long, env = "RALLY_HARNESS")]
         harness: Option<String>,
     },
@@ -245,11 +245,11 @@ enum Command {
         #[arg(long)]
         verbose: bool,
         /// The session's harness, said explicitly: `prime-agent` adds a notice that its own
-        /// messaging can stand in for Muster (RAL-59).
+        /// messaging can stand in for Marshal (RAL-59).
         #[arg(long, env = "RALLY_HARNESS")]
         harness: Option<String>,
         /// Read Claude Code's SessionStart hook input from standard input: this session's id and
-        /// folder, which tie it to its Muster nickname so a restart is told what it needs to
+        /// folder, which tie it to its Marshal nickname so a restart is told what it needs to
         /// resume (RAL-152). Without RALLY_TEAM, the nickname is the team.
         #[arg(long)]
         hook: bool,
@@ -261,8 +261,8 @@ enum Command {
         cwd: Option<String>,
     },
     /// Send each designated watchman one batched digest when the ledger changes, and nothing when
-    /// it hasn't (RAL-8). See docs/digest.md. Reads only; sends through `marshal-shim` or
-    /// `muster-shim tell`, the first of RALLY_ROSTER_FROM that knows the watchman (RAL-120).
+    /// it hasn't (RAL-8). See docs/digest.md. Reads only; sends through the first of
+    /// RALLY_ROSTER_FROM that can reach the watchman (RAL-120), and otherwise only reports.
     Digest {
         /// Q: a digest goes once no new record has come for this long, such as 2m.
         #[arg(long = "quiet", env = "RALLY_DIGEST_QUIET", value_parser = parse_window)]
@@ -366,7 +366,7 @@ enum Command {
     /// it, merged or not, each awaiting the watchman's re-read until it records its own (RAL-52).
     Handover,
     /// One brief for a new watchman: each team's state, open claims (with whether the claimant's
-    /// session is still on Muster's roster), submissions waiting, open blockers, questions to the
+    /// session is still on Marshal's roster), submissions waiting, open blockers, questions to the
     /// operator and who each holds up, and the handover list, each fact with its kind and age
     /// (RAL-22a). It confers no authority.
     Brief {
@@ -588,7 +588,7 @@ enum Command {
         /// A story prefix the rally works on, such as RAL. Repeat for each.
         #[arg(long = "project", required = true)]
         projects: Vec<String>,
-        /// A team in the rally: a team name or a Muster session nickname. Repeat for each.
+        /// A team in the rally: a team name or a Marshal session nickname. Repeat for each.
         #[arg(long = "team")]
         teams: Vec<String>,
     },
@@ -608,12 +608,12 @@ enum Command {
         #[arg(long)]
         note: String,
     },
-    /// Add a session to the open rally by its Muster nickname, or remove one (RAL-110). Only those
+    /// Add a session to the open rally by its Marshal nickname, or remove one (RAL-110). Only those
     /// who may open a rally may do it. `--succeeds` confirms a session as a restart of a listed one.
     RallySession {
         /// `add` or `remove`.
         action: String,
-        /// The session's Muster nickname, such as mellow-weevil.
+        /// The session's Marshal nickname, such as mellow-weevil.
         nickname: String,
         /// With `add`: the session this one is a restart of, which confirms the succession.
         #[arg(long)]
@@ -697,7 +697,7 @@ enum Command {
         #[arg(long)]
         projects: Option<PathBuf>,
     },
-    /// Prompts for the watchman from Muster's roster and Rally's records (RAL-7): each row of the
+    /// Prompts for the watchman from Marshal's roster and Rally's records (RAL-7): each row of the
     /// design's stall table that holds for a team, and whether every team is waiting at once, as
     /// on 2026-10-30. Read-only. Prompts, never conclusions. See docs/stalls.md.
     Stalls {
@@ -744,8 +744,8 @@ enum Command {
     },
     /// Wake idle teams with their next story (RAL-54): for each team in the projects list with
     /// sessions mapped to it, idle (or its claim quiet) with a ready story, send one digest through
-    /// Marshal or Muster, at most once per interval. Without `marshal-shim` or `muster-shim` (as
-    /// RALLY_ROSTER_FROM lists them), or with --report-only, it only reports. See docs/wake.md.
+    /// Marshal, at most once per interval. Without a sender in RALLY_ROSTER_FROM, or with
+    /// --report-only, it only reports. See docs/wake.md.
     Wake {
         /// The projects, with each one's `team` and `sessions`, instead of the defaults.
         #[arg(long)]
@@ -1380,7 +1380,7 @@ fn session_start(
         }
     };
     let started = std::time::Instant::now();
-    // RAL-152: who this session is, tied to its Muster nickname by its own transcript or the
+    // RAL-152: who this session is, tied to its Marshal nickname by its own transcript or the
     // roster, and where the project's transcripts and scratchpads are.
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let found = who
@@ -2391,7 +2391,7 @@ fn stalls_pass(
     let teams = backend.read_value("/v1/teams", None, &Page::default(), |ledger, page| {
         views::teams(ledger, None, page)
     })?;
-    // From Marshal's daemon or Muster's, whichever has one (RAL-120).
+    // From the daemons in RALLY_ROSTER_FROM, by default Marshal's (RAL-120, RAL-199).
     let (roster, roster_read) = rally::shims::roster_or_note(&rally::shims::from_env());
     let empty = serde_json::Map::new();
     let stories = read.stories["stories"].as_object().unwrap_or(&empty);
@@ -3184,7 +3184,7 @@ fn wake_pass(
     let teams = backend.read_value("/v1/teams", None, &Page::default(), |ledger, page| {
         views::teams(ledger, None, page)
     })?;
-    // Muster or Marshal is optional: without either, teams are only reported (RAL-120).
+    // Marshal is optional: without it, teams are only reported (RAL-120).
     let shims = rally::wake::Shims(rally::shims::from_env());
     let can_send = rally::shims::available(&shims.0);
     let sender: Option<&dyn Sender> = (can_send && !report_only).then_some(&shims);
@@ -5028,8 +5028,8 @@ fn run(cli: Cli) -> Result<String, Box<dyn std::error::Error>> {
                 let reply = client::request(&pairing, "GET", "/v1/brief", None, &[])?;
                 reply_value(&reply)?
             };
-            // Muster or Marshal is optional: without either, claims say their sessions couldn't be
-            // checked. The roster comes from whichever daemon has one (RAL-120).
+            // Marshal is optional: without it, claims say their sessions couldn't be checked
+            // (RAL-120).
             let (roster, roster_read) = rally::shims::roster_or_note(&rally::shims::from_env());
             rally::brief::mark_sessions(&mut report, roster.as_ref());
             report["roster_read"] = roster_read;

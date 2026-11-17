@@ -3,7 +3,7 @@
 //! The decision is a pure function of what was read: each team's sessions on the roster, its
 //! pick from `rally next`'s rule, its declared state, when it was last woken, the times agreed with
 //! the operator, and now. Reading the roster, the roadmaps and the ledger, and sending through
-//! `marshal-shim` or `muster-shim tell` ([`crate::shims`]), happen around it, so it can be tested
+//! Marshal ([`crate::shims`]), happen around it, so it can be tested
 //! without any of them.
 
 use std::collections::BTreeMap;
@@ -139,7 +139,7 @@ pub fn decide(team: &Team, times: Times, now_ms: i64) -> Decision {
     Decision::Wake(digest)
 }
 
-/// Sends a team its digest. Rally sends through Muster or Marshal ([`Shims`]); without one, it
+/// Sends a team its digest. Rally sends through Marshal ([`Shims`]); without one, it
 /// only reports. Another harness's messaging, such as Prime Agent's, can be another sender.
 pub trait Sender {
     /// A short name for the report.
@@ -162,7 +162,7 @@ impl Sender for Shims {
     }
 }
 
-/// A team's sessions on Muster's roster, by an explicit list of Muster project names or session
+/// A team's sessions on Marshal's roster, by an explicit list of Marshal project names or session
 /// nicknames, never by guessing from the team's name.
 pub fn sessions_of(roster: &Value, names: &[String]) -> Vec<Session> {
     let list = roster["sessions"]

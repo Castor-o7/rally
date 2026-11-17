@@ -68,26 +68,26 @@ through printing. `rally` must be on the hook's `PATH`, or give its full path. `
 
 To check it by hand: `rally session-start --team rally --verbose`.
 
-Where teams are named by their sessions' Muster nicknames, as on Murph, one settings file can't name each session's
+Where teams are named by their sessions' Marshal nicknames, as on Murph, one settings file can't name each session's
 team: use `--hook` instead of `RALLY_TEAM`, and the session's tied nickname is its team (below).
 
 ## Prime Agent
 
 A Prime Agent session can say so with `--harness prime-agent`, or `RALLY_HARNESS=prime-agent` (RAL-59). Its
-briefing then starts with a notice that Prime Agent's built-in messaging is a fine substitute for Muster when
-it uses Rally, and that Muster is only needed to reach other harnesses' sessions or other machines.
+briefing then starts with a notice that Prime Agent's built-in messaging is a fine substitute for Marshal when
+it uses Rally, and that Marshal is only needed to reach other harnesses' sessions or other machines.
 `rally init --harness prime-agent` puts the same notice in the repository's block. Rally never guesses the
 harness: Prime Agent documents no variable or header that identifies it, so it's said explicitly or not at all.
 
 ## A restarted session (RAL-152)
 
-When every session on a machine ends at once and comes back under the same Muster nicknames (11-13 19:50, issue
+When every session on a machine ends at once and comes back under the same nicknames (11-13 19:50, issue
 1.73), each new session starts with no memory. With `--hook`, `rally session-start` reads Claude Code's
 SessionStart input (one JSON object on standard input: the session's id, its folder and why it started) and, at
 the top of the block, tells the session what it needs to resume:
 
 ```
-You are a restart of silent-dhole: this session's id is tied to silent-dhole by its transcript's Muster tag
+You are a restart of silent-dhole: this session's id is tied to silent-dhole by its transcript's Marshal tag
 [observed], and an earlier session held it. Nothing here was done for you: claim, release and note as you decide.
 - Earlier session of silent-dhole: 00baf303-… [observed from its transcript on this machine, last written 2h ago]
   transcript: ~/.claude/projects/-home-joshd-Documents-GitHub-Discoteque/00baf303-….jsonl
@@ -102,17 +102,17 @@ A session named silent-dhole recorded these [declared]:
 
 How each part is known:
 
-- **Who this session is.** Its id is tied to a nickname by the `<muster_session nickname=… id=…>` tag Muster's own
+- **Who this session is.** Its id is tied to a nickname by the `<marshal_session nickname=… id=…>` tag Marshal's own
   SessionStart hook leaves at the head of the session's transcript, or by Marshal's roster, read from its daemon
   (RAL-199) when `RALLY_ROSTER_FROM` lists `marshal`, as it does by default, and asked again for up to 1.5 s
   because Marshal's hook runs beside this one. Without such a tie, the nickname isn't
   used, so a new, unrelated session in the same folder is never told it holds another session's claims. Without
   `RALLY_TEAM`, the tied nickname is the team.
-- **The earlier session.** Muster records each takeover (a `Succession`) but offers no read of it, so Rally reads
+- **The earlier session.** Rally reads no record of a takeover from Marshal, so it reads
   only the head (64 KB) of each transcript in the project's folder from the last 14 days, newest first, for the
   same tag, and takes the newest other session whose tag names this nickname and its own file. That's observed
-  from the transcript files on this machine, never Muster's word, and it's "the session that held this
-  nickname", not proof of the same conversation, since every session in one folder shares Muster's identity key.
+  from the transcript files on this machine, never Marshal's word, and it's "the session that held this
+  nickname", not proof of the same conversation.
   Nothing of a transcript but its tag is read into the block, shown or recorded. With none found it says so:
   "Rally can't tell whether an earlier session held X". After a compact, clear or resume (`source` in the hook's
   input) the session is continuing, so no earlier session is looked for and it isn't called a restart.
@@ -126,10 +126,10 @@ To check it by hand, as a session would: `rally session-start --session-id <id> 
 
 ### Installing it on Murph
 
-As of 2026-11-13 no session on Murph gets a `<rally_state>` block at all: `~/.claude/settings.json` runs only
-Muster's hooks, and `RALLY_TEAM` isn't set (teams there are named by nickname, so one settings file can't name
-each session's team). The operator's file is his to change; with his word, add this beside Muster's two
-SessionStart hooks in `~/.claude/settings.json`:
+As of 2026-11-17 no session on Murph gets a `<rally_state>` block at all: `~/.claude/settings.json` runs only
+Marshal's hooks (Muster's until 11-17), and `RALLY_TEAM` isn't set (teams there are named by nickname, so one
+settings file can't name each session's team). The operator's file is his to change; with his word, add this
+beside Marshal's two SessionStart hooks in `~/.claude/settings.json`:
 
 ```json
 { "type": "command", "command": "/home/joshd/.local/bin/rally session-start --hook", "timeout": 5 }

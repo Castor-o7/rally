@@ -3,13 +3,13 @@
 //! and the watchman had to work out by hand which earlier session had held each nickname and where
 //! its transcript was. `rally session-start` now tells it, read-only:
 //!
-//! - **Who it is.** This session's id ties it to a Muster nickname through the tag Muster's own
-//!   SessionStart hook leaves at the head of its transcript, or through Muster's roster. Without
+//! - **Who it is.** This session's id ties it to a Marshal nickname through the tag Marshal's own
+//!   SessionStart hook leaves at the head of its transcript, or through Marshal's roster. Without
 //!   such a tie it says nothing of anyone else's work: a new, unrelated session in the same folder
 //!   is never told it holds another session's claims.
-//! - **Which session held that nickname before.** Muster records each takeover but offers no read
-//!   of it, so Rally reads the head of each recent transcript in the project's folder for the same
-//!   tag. That's observed from the transcript files on this machine, never Muster's word. Only the
+//! - **Which session held that nickname before.** Rally reads no record of a takeover from Marshal,
+//!   so it reads the head of each recent transcript in the project's folder for the same tag.
+//!   That's observed from the transcript files on this machine, never Marshal's word. Only the
 //!   tag is taken from a transcript; nothing of its content is shown or recorded.
 //! - **What that nickname was doing,** from the ledger: what it holds, what it last recorded,
 //!   reads waiting on it and its last note, each declared, as the session that wrote it said.
@@ -40,10 +40,10 @@ pub fn project_slug(cwd: &str) -> String {
         .collect()
 }
 
-/// Every Muster session tag in `head`, `<muster_session nickname="X" id="Y">`, as written in a
+/// Every Marshal session tag in `head`, `<marshal_session nickname="X" id="Y">`, as written in a
 /// transcript, where its quotes are escaped once or more: `(nickname, id)`, in order.
 pub fn tags_of(head: &str) -> Vec<(String, String)> {
-    const OPEN: &str = "muster_session nickname=";
+    const OPEN: &str = "marshal_session nickname=";
     let unquote = |text: &str| -> Option<String> {
         let text = text.trim_start_matches('\\').strip_prefix('"')?;
         let end = text.find(['"', '\\'])?;
@@ -97,15 +97,15 @@ pub fn transcript_tag(path: &Path) -> Option<(String, String)> {
 pub enum Tie {
     /// The tag at the head of this session's own transcript.
     Transcript,
-    /// Muster's roster, matched by this session's id.
+    /// Marshal's roster, matched by this session's id.
     Roster,
 }
 
 impl Tie {
     fn words(&self) -> &'static str {
         match self {
-            Self::Transcript => "its transcript's Muster tag",
-            Self::Roster => "Muster's roster",
+            Self::Transcript => "its transcript's Marshal tag",
+            Self::Roster => "Marshal's roster",
         }
     }
 }
@@ -270,8 +270,8 @@ pub fn lines(
         }
         None => out.push(format!(
             "- Rally can't tell whether an earlier session held {name}: no earlier transcript of \
-             it on this machine, or this session is continuing. Muster records each takeover but \
-             offers no read of it yet."
+             it on this machine, or this session is continuing. Rally reads no record of a takeover \
+             from Marshal."
         )),
     }
     if mine.is_empty() {
@@ -377,8 +377,8 @@ mod tests {
             &path,
             format!(
                 "{{\"type\":\"attachment\",\"content\":\"SessionStart hook additional context: \
-                 <muster_session nickname=\\\"{nickname}\\\" id=\\\"{id}\\\">Muster tools attach \
-                 this identity.</muster_session>\"}}\n{{\"type\":\"user\"}}\n"
+                 <marshal_session nickname=\\\"{nickname}\\\" id=\\\"{id}\\\">Marshal tools attach \
+                 this identity.</marshal_session>\"}}\n{{\"type\":\"user\"}}\n"
             ),
         )
         .unwrap();
@@ -397,17 +397,17 @@ mod tests {
 
     #[test]
     fn a_tag_is_read_quoted_or_escaped_and_nothing_else_passes() {
-        let escaped = format!("x <muster_session nickname=\\\"silent-dhole\\\" id=\\\"{ME}\\\">");
+        let escaped = format!("x <marshal_session nickname=\\\"silent-dhole\\\" id=\\\"{ME}\\\">");
         assert_eq!(tag_of(&escaped), Some(("silent-dhole".into(), ME.into())));
-        let plain = format!("<muster_session nickname=\"silent-dhole\" id=\"{ME}\">");
+        let plain = format!("<marshal_session nickname=\"silent-dhole\" id=\"{ME}\">");
         // As a transcript holds it inside JSON inside JSON, escaped twice.
         let twice = format!(
-            "<muster_session nickname=\\\\\\\"silent-dhole\\\\\\\" id=\\\\\\\"{ME}\\\\\\\">"
+            "<marshal_session nickname=\\\\\\\"silent-dhole\\\\\\\" id=\\\\\\\"{ME}\\\\\\\">"
         );
         assert_eq!(tag_of(&twice), Some(("silent-dhole".into(), ME.into())));
         assert_eq!(tag_of(&plain), Some(("silent-dhole".into(), ME.into())));
         assert_eq!(
-            tag_of("<muster_session nickname=\"Bad Name\" id=\"x\">"),
+            tag_of("<marshal_session nickname=\"Bad Name\" id=\"x\">"),
             None
         );
         assert_eq!(tag_of("nothing here"), None);
@@ -426,7 +426,7 @@ mod tests {
         std::fs::write(
             dir.path()
                 .join("11111111-1111-4111-8111-111111111111.jsonl"),
-            format!("<muster_session nickname=\"silent-dhole\" id=\"{ME}\">"),
+            format!("<marshal_session nickname=\"silent-dhole\" id=\"{ME}\">"),
         )
         .unwrap();
         assert_eq!(
@@ -507,7 +507,7 @@ mod tests {
         .join("\n");
         for expected in [
             "You are a restart of silent-dhole: this session's id is tied to silent-dhole by its \
-             transcript's Muster tag [observed], and an earlier session held it.",
+             transcript's Marshal tag [observed], and an earlier session held it.",
             "Nothing here was done for you",
             &format!("- Earlier session of silent-dhole: {BEFORE} [observed from its transcript"),
             "scratchpad: /s/00baf303/scratchpad (gone)",
@@ -550,7 +550,7 @@ mod tests {
         )
         .join("\n");
         assert!(
-            out.contains("tied to silent-dhole by Muster's roster"),
+            out.contains("tied to silent-dhole by Marshal's roster"),
             "{out}"
         );
         assert!(out.contains("This session is silent-dhole"), "{out}");

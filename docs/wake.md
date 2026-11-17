@@ -13,7 +13,7 @@ roster and send messages. It reads the ledger through the paired service. Each r
 For each project in the projects list (`--projects`, or the defaults in `web/projects.json`) that names a
 `team`:
 
-1. **Its sessions** are the roster's sessions listed for it in `sessions`, by Muster project name or session
+1. **Its sessions** are the roster's sessions listed for it in `sessions`, by Marshal project name or session
    nickname. Rally never guesses them from the team's name, because a session's project doesn't always name its
    team: on 2026-11-05 both Rally's and Muster's teams had sessions in a project called `src`. A team with no
    sessions listed or found is reported as "no sessions known", never as idle.
@@ -41,9 +41,9 @@ Both times are agreed with the operator and have no default:
 | A claim counts as quiet after | `--quiet-after` | `RALLY_WAKE_QUIET_AFTER` | only idle teams are woken |
 | Least time between two digests to a team | `--interval` | `RALLY_WAKE_INTERVAL` | nothing is sent; teams are reported |
 
-## Muster or Marshal is optional
+## Marshal is optional
 
-`rally wake` reads the roster and sends through Marshal's shim or Muster's (RAL-120): the commands in
+`rally wake` reads the roster and sends through Marshal (RAL-120): the sources in
 `RALLY_ROSTER_FROM`, comma-separated, by default `marshal` (Rally reading Marshal's daemon itself, RAL-199), as
 the viewer reads the roster. Rally doesn't send through `marshal` yet (RAL-199's second part), so with the
 default list `rally wake` reports only. The
@@ -66,7 +66,7 @@ messaging, such as Prime Agent's (RAL-59), can be added as a sender later.
 
 With `--every`, a pass that fails doesn't end the loop when the failure can clear with time: the service refusing
 with 429 ("too many requests", "too many checks and past-state reads"), 408 or 5xx; the service being unreachable or
-restarting; Muster being down. The failed pass is logged on stdout as one JSON line, and the loop waits and tries
+restarting; Marshal being down. The failed pass is logged on stdout as one JSON line, and the loop waits and tries
 again:
 
 ```json
@@ -90,7 +90,7 @@ to write it is a failed pass, retried as usual.
 ## Limits
 
 - Activity and wake on the roster are mostly declared, except `wake: waiting` (see design.md, "What Muster's
-  roster can tell Rally"). So idle is a reading, not a fact. A digest to a busy team is a nudge it can ignore.
-- `muster-shim tell` can be sent by any process on the account, so a team can't tell Rally's digest from
+  roster can tell Rally", kept as the record it's built on). So idle is a reading, not a fact. A digest to a busy team is a nudge it can ignore.
+- A message through `marshal-shim tell` can be sent by any process on the account, so a team can't tell Rally's digest from
   another's, apart from its wording.
 - The quiet time counts from the newest record on each claimed story, which is the team's own declaration.

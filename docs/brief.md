@@ -138,7 +138,7 @@ rally unblock <N> --note "got it: 3a1f..."
 
 `rally brief --watchman` then lists it under "you wait on" until it's closed, so a restarted watchman gets the list
 back from the ledger instead of a file. A question answered in the same exchange needs no record. Messages
-themselves, and whether one was answered, are Muster's, not Rally's: Rally doesn't copy them.
+themselves, and whether one was answered, are Marshal's, not Rally's: Rally doesn't copy them.
 
 ## `rally brief`: the whole picture
 

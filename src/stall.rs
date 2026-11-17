@@ -1,12 +1,12 @@
-//! `rally stalls`: prompts for the watchman, from Muster's roster and Rally's records (RAL-7).
+//! `rally stalls`: prompts for the watchman, from Marshal's roster and Rally's records (RAL-7).
 //!
 //! Each row of the design's stall table (`docs/design.md`, "Stalls") is one rule here, and the
 //! stall of 2026-10-30 is one more: every team waiting at once, each correctly, with nothing
-//! recorded for a while. These are prompts, never conclusions. Muster's facts keep Muster's own
+//! recorded for a while. These are prompts, never conclusions. The roster's facts keep their own
 //! labels: `wake: waiting` is observed and "probably wakeable", everything else on a roster row is
 //! declared, and `wake: none` is no sign that a message would wake a session, not proof it's gone.
 //!
-//! The decisions are pure functions of what was read, so they're tested without Muster, the
+//! The decisions are pure functions of what was read, so they're tested without Marshal, the
 //! roadmaps or the ledger. How long a check-in lasts hasn't been agreed with the operator; the
 //! caller passes `rally wake`'s `--quiet-after`, and without it the rules that need it say so.
 
@@ -28,7 +28,7 @@ pub struct Waiting {
 #[derive(Clone, Debug, Default)]
 pub struct Facts {
     pub name: String,
-    /// The team's sessions on Muster's roster.
+    /// The team's sessions on Marshal's roster.
     pub sessions: Vec<Session>,
     /// The team's declared state, such as `resting` or `blocked`.
     pub status: Option<String>,
@@ -114,10 +114,10 @@ impl Facts {
                 .all(|(_, last)| now_ms.saturating_sub(*last) >= quiet_after_ms as i64)
     }
 
-    /// How Muster labels what it says about this team, for the row.
+    /// How Marshal labels what it says about this team, for the row.
     fn muster_says(&self) -> Value {
         if self.sessions.is_empty() {
-            return json!({"sessions": 0, "note": "no session on Muster's roster for this team"});
+            return json!({"sessions": 0, "note": "no session on Marshal's roster for this team"});
         }
         let rows: Vec<Value> = self
             .sessions

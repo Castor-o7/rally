@@ -39,7 +39,7 @@ ideals can be read in one place, and they are not reopened.
 
 - Rally records and informs. It doesn't command, and agents and the operator can correct it
   ([design.md](design.md), carried over from Muster).
-- Rally is the bones and Muster is the musculature: a deterministic ledger of the muster's state, and
+- Rally is the bones and Marshal is the musculature: a deterministic ledger of the muster's state, and
   the place where work is recorded and verified ([design.md](design.md), 2026-11-02).
 - Rally maintains a relationship to security, both of the information and of the environment
   ([design.md](design.md); [threat-model.md](threat-model.md)).

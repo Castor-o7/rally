@@ -95,7 +95,7 @@ pub enum Kind {
 /// Sorts an error. A refusal for too many requests (429), a timeout (408) or the service's own
 /// trouble (5xx) clears with time; any other refusal (a bad or revoked token, a read-only
 /// credential, a bad request) won't. Errors marked [`Fatal`] exit. Everything else, such as the
-/// service being unreachable or restarting, or Muster being down, is taken to clear with time.
+/// service being unreachable or restarting, or Marshal being down, is taken to clear with time.
 pub fn classify(error: &(dyn Error + 'static)) -> Kind {
     if error.downcast_ref::<Fatal>().is_some() {
         return Kind::Fatal;

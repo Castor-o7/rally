@@ -1,6 +1,6 @@
 # Stalls (RAL-7)
 
-`rally stalls` gives the watchman prompts from Muster's roster and Rally's records: each row of the design's stall
+`rally stalls` gives the watchman prompts from Marshal's roster and Rally's records: each row of the design's stall
 table that holds for a team (`docs/design.md`, "Stalls"), and whether every team is waiting at once. It's
 read-only and sends nothing. Every row is a prompt for the watchman, never a conclusion.
 
@@ -8,7 +8,7 @@ read-only and sends nothing. Every row is a prompt for the watchman, never a con
 rally stalls [--projects projects.json] [--quiet-after 20m] [--lock /tmp/discosim-heavy.lock]
 ```
 
-Teams come from the projects list, as for `rally wake` (`docs/wake.md`): each project's `team`, and the Muster
+Teams come from the projects list, as for `rally wake` (`docs/wake.md`): each project's `team`, and the Marshal
 project names or session nicknames in `sessions` that are that team's sessions on the roster.
 
 ## The rows
@@ -72,7 +72,7 @@ a zombie (`Z`):
 | `stopped_lock_holder` | A process holding the lock, or under its holder, is stopped, or the holder is a zombie | Ask its session, or the operator, to resume it (`kill -CONT`) or end it |
 
 Each process is listed with its pid, state, command and working directory. Its session is guessed from a session
-ID in that directory, such as a scratchpad path, and named from Muster's roster when the roster has it. The guess is
+ID in that directory, such as a scratchpad path, and named from Marshal's roster when the roster has it. The guess is
 labelled as one. The process states are the kernel's account (observed). A lock that isn't held, or whose holder is
 running or asleep, gives no prompt. Every lock read is listed under `locks`, with its holders and the number
 waiting, or why it couldn't be read. A lock nobody holds says "no holder found in /proc/locks", rather than showing
@@ -171,7 +171,7 @@ while `/proc/locks` can't be read, or a `--queue` directory that isn't there. Th
 queue", and under `--prompts-only` the run fails with it on a `can't see:` line (RAL-174).
 
 The kernel's locks and the files' times are observed. The owners are declared: each job names its own, from
-`DSM_HEAVY_OWNER`, `RALLY_NAME`, the `~/.cache/<team>` folder it runs from, or its session's Muster nickname.
+`DSM_HEAVY_OWNER`, `RALLY_NAME`, the `~/.cache/<team>` folder it runs from, or its session's nickname.
 
 ## One command line, from the projects list (RAL-164)
 
@@ -227,12 +227,12 @@ check where the digest runs.
 
 ## Labels
 
-Muster's facts keep Muster's own labels. `wake: waiting` is observed, and means "probably wakeable". Every other
+The roster's facts keep their own labels. `wake: waiting` is observed, and means "probably wakeable". Every other
 wake value, and `activity`, are declared. `wake: none` means no sign that a message would wake the session, not that
 it's gone. Idleness is judged by a session's declared activity, since a busy session can be waiting for messages
 too. Only a session that declares no activity counts as idle on `wake: waiting` alone. Rally's facts (claims, states,
-blockers) are declared. The roster is every one of `RALLY_ROSTER_FROM`'s (by default `marshal-shim` and
-`muster-shim`) merged, each session row naming its `source` (RAL-126); the report's `roster.read_with` lists those
+blockers) are declared. The roster is every one of `RALLY_ROSTER_FROM`'s (by default `marshal`, Rally reading
+Marshal's daemon itself, RAL-199) merged, each session row naming its `source` (RAL-126); the report's `roster.read_with` lists those
 read, and `roster.passed_over` any that failed. Without one, only
 `declared_blocked` is shown, since the other rows need the roster.
 

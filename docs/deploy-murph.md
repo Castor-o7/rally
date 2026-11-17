@@ -1,7 +1,7 @@
 # Deploying Rally on Murph
 
 One sitting, once the operator says deploy. Setup details are in [service.md](service.md); this page is the order
-of work. Murph is the host that runs Muster's daemon, at 192.168.1.241 on the LAN ([design.md](design.md)). It runs
+of work. Murph is the host that runs Marshal's daemon, at 192.168.1.241 on the LAN ([design.md](design.md)). It runs
 Manjaro Linux, a rolling release, per its `/etc/os-release` as read by `vibrant-mink` on 2026-11-03.
 
 ## Before this page is used
@@ -16,9 +16,9 @@ operator approves the deployment itself, directly, not through a relayed message
 1. **Reserve Murph's address on the router:** a DHCP reservation of 192.168.1.241 for Murph's network
    interface, so that the address in every pair code stays right.
 2. **Give Rally a role and database on Murph's Postgres.** Postgres 18.6, from Manjaro's `extra` repository, is
-   already running there for Muster's daemon, as the `marshal-postgres` user unit, with no TCP listener
+   already running there for Marshal's daemon, as the `marshal-postgres` user unit, with no TCP listener
    (`listen_addresses` empty) and its socket in `/run/user/1000/marshal-pg` (`vibrant-mink`, 2026-11-03). So
-   nothing is installed and Postgres isn't restarted, which would drop Muster's connection. Rally connects over
+   nothing is installed and Postgres isn't restarted, which would drop Marshal's connection. Rally connects over
    that socket:
    ```sql
    CREATE ROLE rally LOGIN PASSWORD '<a new random password>';
@@ -29,7 +29,7 @@ operator approves the deployment itself, directly, not through a relayed message
    reload. Give the password to Rally's account on Murph in a file only that account can read (step 2 below),
    never in chat. Tested on a1 against a Postgres with only a Unix socket: writes, myko's replay, `check` and
    `serve` all work through `?host=<socket directory>`.
-3. **Check headroom on Murph:** at least 5 GiB free under Postgres's data directory, beyond what Muster's
+3. **Check headroom on Murph:** at least 5 GiB free under Postgres's data directory, beyond what Marshal's
    daemon needs (RAL-36 stops writes below that), and about 0.5 GiB of memory for Rally at its 64 MiB
    ledger limit (RAL-35).
 4. If Rally's account should keep running after logout, allow it: `loginctl enable-linger <account>`.
@@ -109,5 +109,5 @@ Backups run by hand until the operator installs the launchd agent in `docs/servi
 ## Undoing it
 
 Stop and disable the user service. The ledger stays in Postgres and the head file stays in the state directory,
-so it can be restarted or backed up later. Nothing in Muster changes either way, since Muster never depends on
+so it can be restarted or backed up later. Nothing in Marshal changes either way, since Marshal never depends on
 Rally.

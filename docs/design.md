@@ -127,10 +127,10 @@ The operator's rulings of 2026-11-04, relayed by the watchman:
 
 ## Stalls
 
-A stall is worked out from both systems. Rally reads Muster's observed roster and combines it
-with its own records:
+A stall is worked out from both systems. Rally reads Marshal's roster (Muster's until it was retired on
+2026-11-17) and combines it with its own records:
 
-| Muster says | Rally says | Likely meaning | What the watchman does |
+| The roster says | Rally says | Likely meaning | What the watchman does |
 |---|---|---|---|
 | Can't be woken | Has an open claim | Agent is gone | Reassign the work |
 | Idle, can be woken | Open claim, missed check-in | Possibly stuck | Ask the team |
@@ -141,7 +141,11 @@ These are prompts for the watchman, not conclusions. Resting after a story is no
 board process, so the rules mustn't treat every idle team as a problem. Agree with the operator
 how long a check-in lasts, and test the rules against the stall of 2026-10-30.
 
-## How Rally uses Muster
+## How Rally used Muster
+
+Muster was retired on 2026-11-17 (condition 5396): Rally reads Marshal's roster from its daemon itself
+(RAL-199), and sends through Marshal once RAL-199's second part lands. What follows is how Rally used
+Muster, kept as the record later choices rest on.
 
 Rally doesn't need Muster. It's a ledger reached over its own service: teams record and read their work
 there whatever they use to talk. Muster is one way for sessions to reach each other, and Rally uses it where
