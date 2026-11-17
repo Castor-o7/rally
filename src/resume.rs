@@ -110,6 +110,52 @@ impl Tie {
     }
 }
 
+/// A confirmed succession (RAL-201): the open rally's record that this session is a restart of
+/// an earlier nickname, added with `rally rally-session add <new> --succeeds <earlier>`. Marshal
+/// gives a restarted session a new nickname and records no succession of its own, so this record
+/// is the only tie Rally takes between two nicknames. It's declared, by whoever added it, and never
+/// guessed from a session's name or folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Succession {
+    /// The earlier nickname, folded.
+    pub earlier: String,
+    /// The record that confirmed it.
+    pub seq: u64,
+    /// Who declared it, as the record's source says.
+    pub confirmed_by: String,
+}
+
+/// The newest confirmed succession of `nickname` among the open rally's `sessions` entries
+/// ([`crate::ledger::RallySessionEntry`], as `/v1/rallies` serves them), or `None`. A removal
+/// confirms nothing, and nobody succeeds themselves.
+pub fn succession(sessions: &[Value], nickname: &str) -> Option<Succession> {
+    let fold = |name: &str| name.trim().to_lowercase();
+    let me = fold(nickname);
+    sessions
+        .iter()
+        .rev()
+        .filter(|entry| entry["remove"] != true)
+        .filter(|entry| entry["session"].as_str().map(fold).as_deref() == Some(me.as_str()))
+        .find_map(|entry| {
+            let earlier = fold(entry["succeeds"].as_str()?);
+            if earlier.is_empty() || earlier == me {
+                return None;
+            }
+            let credential = entry["source"]["credential"]
+                .as_str()
+                .unwrap_or("an unknown");
+            let confirmed_by = match entry["source"]["declared_name"].as_str() {
+                Some(name) => format!("{}, on the {} credential", clean(name), clean(credential)),
+                None => format!("the {} credential", clean(credential)),
+            };
+            Some(Succession {
+                earlier,
+                seq: entry["seq"].as_u64()?,
+                confirmed_by,
+            })
+        })
+}
+
 /// This session's nickname, and how it's known: from its own transcript's tag, else the roster.
 pub fn identify(
     transcript: &Path,
@@ -217,30 +263,45 @@ fn what(record: &Value) -> String {
 /// team's record from the ledger, oldest first; `stories` the ledger's stories. Empty when the
 /// nickname has nothing behind it: no earlier session and no records, so a new session is told
 /// nothing.
+///
+/// With `via`, a confirmed succession (RAL-201), what's shown is the earlier nickname's: its
+/// transcript as `earlier` and its `records`. Without one, it's this nickname's own.
 pub fn lines(
     nickname: &str,
     tie: &Tie,
+    via: Option<&Succession>,
     earlier: Option<&Earlier>,
     records: &[Value],
     stories: &Map<String, Value>,
     now_ms: i64,
 ) -> Vec<String> {
+    let me = clean(nickname);
+    // Whose work is shown: the earlier nickname a confirmed succession names, else this one.
+    let nickname = via.map_or(nickname, |via| via.earlier.as_str());
     let mine: Vec<&Value> = records
         .iter()
         .filter(|r| r["by"].as_str() == Some(nickname))
         .collect();
-    if earlier.is_none() && mine.is_empty() {
+    if via.is_none() && earlier.is_none() && mine.is_empty() {
         return Vec::new();
     }
     let name = clean(nickname);
-    let mut out = vec![match earlier {
-        Some(_) => format!(
+    let mut out = vec![match (via, earlier) {
+        (Some(via), _) => format!(
+            "You are a restart of {name}: record #{} confirms this session, {me}, as its \
+             successor [declared by {}]. Its id is tied to {me} by {} [observed]. Nothing here \
+             was done for you: claim, release and note as you decide.",
+            via.seq,
+            via.confirmed_by,
+            tie.words()
+        ),
+        (None, Some(_)) => format!(
             "You are a restart of {name}: this session's id is tied to {name} by {} [observed], \
              and an earlier session held it. Nothing here was done for you: claim, release and \
              note as you decide.",
             tie.words()
         ),
-        None => format!(
+        (None, None) => format!(
             "This session is {name}: its id is tied to {name} by {} [observed]. Nothing here was \
              done for you: claim, release and note as you decide.",
             tie.words()
@@ -268,10 +329,16 @@ pub fn lines(
                 }
             ));
         }
+        None if via.is_some() => out.push(format!(
+            "- No transcript of {name} on this machine in the last 14 days, or this session is \
+             continuing."
+        )),
         None => out.push(format!(
             "- Rally can't tell whether an earlier session held {name}: no earlier transcript of \
-             it on this machine, or this session is continuing. Rally reads no record of a takeover \
-             from Marshal."
+             it on this machine, or this session is continuing, and no record confirms this \
+             session as a restart. Marshal gives a restarted session a new nickname; whoever may \
+             open a rally can confirm one with `rally rally-session add {name} --succeeds \
+             <earlier>`."
         )),
     }
     if mine.is_empty() {
@@ -499,6 +566,7 @@ mod tests {
         let out = lines(
             "silent-dhole",
             &Tie::Transcript,
+            None,
             Some(&earlier),
             &records(),
             &stories(),
@@ -527,12 +595,13 @@ mod tests {
     /// records but no transcript, it's told plainly that Rally can't tell.
     #[test]
     fn a_new_session_is_told_nothing_and_an_unknown_one_is_said_plainly() {
-        assert!(lines("fresh-name", &Tie::Roster, None, &[], &stories(), 0).is_empty());
+        assert!(lines("fresh-name", &Tie::Roster, None, None, &[], &stories(), 0).is_empty());
         let only_others = vec![records()[0].clone()];
         assert!(
             lines(
                 "silent-dhole",
                 &Tie::Roster,
+                None,
                 None,
                 &only_others,
                 &stories(),
@@ -544,6 +613,7 @@ mod tests {
             "silent-dhole",
             &Tie::Roster,
             None,
+            None,
             &records(),
             &stories(),
             0,
@@ -554,10 +624,120 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("This session is silent-dhole"), "{out}");
-        assert!(!out.contains("restart"), "{out}");
+        assert!(!out.contains("You are a restart"), "{out}");
         assert!(
             out.contains("Rally can't tell whether an earlier session held silent-dhole"),
             "{out}"
         );
+    }
+
+    fn entry(seq: u64, session: &str, succeeds: Option<&str>, remove: bool) -> Value {
+        json!({"seq": seq, "kind": "declared", "at_ms": 0, "session": session, "remove": remove,
+               "succeeds": succeeds, "note": "x",
+               "source": {"credential": "murph", "declared_name": "mega-jackdaw"}})
+    }
+
+    /// RAL-201: the newest confirmed succession of a nickname is found, named by who declared
+    /// it; a removal, a blank or a self-succession confirms nothing, and other sessions' don't
+    /// count.
+    #[test]
+    fn a_succession_is_only_what_the_rally_confirmed() {
+        let sessions = vec![
+            entry(1, "Coral-Bay", None, false),
+            entry(2, "mega-jackdaw", Some("old-name"), false),
+            entry(3, "mega-jackdaw", Some(" Coral-Bay "), false),
+            entry(4, "mega-jackdaw", Some("someone"), true),
+            entry(5, "mega-jackdaw", Some("mega-jackdaw"), false),
+            entry(6, "other-one", Some("coral-bay"), false),
+        ];
+        assert_eq!(
+            succession(&sessions, " Mega-Jackdaw"),
+            Some(Succession {
+                earlier: "coral-bay".into(),
+                seq: 3,
+                confirmed_by: "mega-jackdaw, on the murph credential".into(),
+            })
+        );
+        assert_eq!(succession(&sessions, "coral-bay"), None);
+        assert_eq!(succession(&sessions, "nobody"), None);
+        assert_eq!(succession(&[entry(1, "a", Some(" "), false)], "a"), None);
+        let unnamed = vec![
+            json!({"seq": 9, "session": "a", "remove": false, "succeeds": "b",
+                                  "source": {"credential": "a1"}}),
+        ];
+        assert_eq!(
+            succession(&unnamed, "a").map(|s| s.confirmed_by),
+            Some("the a1 credential".into())
+        );
+    }
+
+    /// RAL-201: a restart under a new nickname, with a confirmed succession, is told the earlier
+    /// nickname's work, labelled with the record and who declared it; without one it's told only
+    /// how one is confirmed, and nothing of anyone else's work.
+    #[test]
+    fn a_new_nickname_is_told_its_predecessor_only_through_the_record() {
+        let via = Succession {
+            earlier: "silent-dhole".into(),
+            seq: 42,
+            confirmed_by: "mega-jackdaw, on the murph credential".into(),
+        };
+        let out = lines(
+            "brave-otter",
+            &Tie::Transcript,
+            Some(&via),
+            None,
+            &records(),
+            &stories(),
+            60_000,
+        )
+        .join("\n");
+        for expected in [
+            "You are a restart of silent-dhole: record #42 confirms this session, brave-otter, as \
+             its successor [declared by mega-jackdaw, on the murph credential].",
+            "Its id is tied to brave-otter by its transcript's Marshal tag [observed].",
+            "- No transcript of silent-dhole on this machine in the last 14 days",
+            "A session named silent-dhole recorded these [declared]:",
+            "- Holds: DSM-211 (in_review)",
+            "- Its last note: \"part 2 renders\"",
+        ] {
+            assert!(out.contains(expected), "{expected}\n{out}");
+        }
+        assert!(!out.contains("DSM-5"), "another team's claim: {out}");
+        // No succession: brave-otter recorded nothing, so it's told nothing.
+        assert!(
+            lines(
+                "brave-otter",
+                &Tie::Transcript,
+                None,
+                None,
+                &records(),
+                &stories(),
+                0
+            )
+            .is_empty()
+        );
+        // With its own records but no earlier session, it's told how to confirm one.
+        let own: Vec<Value> = records()
+            .into_iter()
+            .map(|mut r| {
+                r["by"] = json!("brave-otter");
+                r
+            })
+            .collect();
+        let out = lines(
+            "brave-otter",
+            &Tie::Transcript,
+            None,
+            None,
+            &own,
+            &stories(),
+            0,
+        )
+        .join("\n");
+        assert!(
+            out.contains("rally rally-session add brave-otter --succeeds <earlier>"),
+            "{out}"
+        );
+        assert!(!out.contains("restart of"), "{out}");
     }
 }

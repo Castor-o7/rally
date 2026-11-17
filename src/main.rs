@@ -1434,12 +1434,39 @@ fn session_start(
             // RAL-152: what a restart needs to resume, read-only, in what's left.
             let resume = match &found {
                 Some(((nickname, tie), dir, scratch, id, continuing)) => {
+                    let earlier_of = |name: &str| {
+                        (!continuing)
+                            .then(|| rally::resume::earlier_session(dir, name, id, scratch, now))
+                            .flatten()
+                    };
+                    // An earlier session under this nickname, else (RAL-201) the earlier
+                    // nickname a confirmed succession in the open rally names. Nothing else ties
+                    // two nicknames: never a session's name or folder.
+                    let mut earlier = earlier_of(nickname);
+                    let via = if earlier.is_none() && !continuing {
+                        context
+                            .as_ref()
+                            .and_then(|c| rally::resume::succession(&c.sessions, nickname))
+                    } else {
+                        None
+                    };
+                    if let Some(via) = &via {
+                        earlier = earlier_of(&via.earlier);
+                    }
+                    let whose = via
+                        .as_ref()
+                        .map_or(nickname.as_str(), |v| v.earlier.as_str());
                     let left = rally::session::DEADLINE.saturating_sub(started.elapsed());
-                    let records = rally::session::fetch_record(&pairing, nickname, left);
-                    let earlier = (!continuing)
-                        .then(|| rally::resume::earlier_session(dir, nickname, id, scratch, now))
-                        .flatten();
-                    rally::resume::lines(nickname, tie, earlier.as_ref(), &records, &stories, now)
+                    let records = rally::session::fetch_record(&pairing, whose, left);
+                    rally::resume::lines(
+                        nickname,
+                        tie,
+                        via.as_ref(),
+                        earlier.as_ref(),
+                        &records,
+                        &stories,
+                        now,
+                    )
                 }
                 None => Vec::new(),
             };

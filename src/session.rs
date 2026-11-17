@@ -52,6 +52,9 @@ pub struct RallyContext {
     pub projects: Vec<String>,
     /// [`crate::roadmaps::summarize`] for each project, in order.
     pub roadmaps: Vec<Value>,
+    /// Sessions added to or removed from it, oldest first, as `/v1/rallies` serves them: what
+    /// [`crate::resume::succession`] reads (RAL-201).
+    pub sessions: Vec<Value>,
 }
 
 /// The open rally and its roadmaps through the service within `total`, or `None` when no rally is
@@ -93,6 +96,7 @@ pub fn fetch_rally(pairing: &Pairing, total: Duration) -> Option<RallyContext> {
         name: open["name"].as_str().unwrap_or_default().to_owned(),
         projects,
         roadmaps,
+        sessions: open["sessions"].as_array().cloned().unwrap_or_default(),
     })
 }
 
@@ -827,6 +831,7 @@ mod tests {
                 json!({"project": "ROO", "story": "ROO-0", "stage": "cleared", "kind": "verified",
                        "cleared": {"commit": "0123456789abcdef0123456789abcdef01234567"}}),
             ],
+            sessions: Vec::new(),
         };
         let stories = json!({
             "ROO-3": {"state": "ready", "assigned": {"team": "rustdaw", "by": "mellow-weevil"}},
