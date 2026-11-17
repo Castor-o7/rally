@@ -113,8 +113,15 @@ How each part is known:
   same tag, and takes the newest other session whose tag names this nickname and its own file. That's observed
   from the transcript files on this machine, never Marshal's word, and it's "the session that held this
   nickname", not proof of the same conversation.
-  Nothing of a transcript but its tag is read into the block, shown or recorded. With none found it says so:
-  "Rally can't tell whether an earlier session held X". After a compact, clear or resume (`source` in the hook's
+  Nothing of a transcript but its tag is read into the block, shown or recorded.
+- **A new nickname (RAL-201).** Marshal gives a restarted session a new nickname and records no succession, so
+  the same-tag search above rarely finds anything. With none found, Rally looks in the open rally for a
+  confirmed succession, `rally rally-session add <new> --succeeds <earlier>`, the newest that names this
+  nickname, and shows the earlier nickname's transcript and record instead, labelled with the record's number
+  and who declared it. That record is the only tie Rally takes between two nicknames: never a session's name,
+  folder or anything else it would have to guess, since a wrong tie would tell a stranger another session's
+  work. With neither it says so: "Rally can't tell whether an earlier session held X", and how a succession
+  is confirmed. After a compact, clear or resume (`source` in the hook's
   input) the session is continuing, so no earlier session is looked for and it isn't called a restart.
 - **What it was doing.** From the ledger, the team's record (`/v1/teams/<nickname>/record`): what the team holds
   now, and what a session under this name last recorded, each labelled declared, as that session said.

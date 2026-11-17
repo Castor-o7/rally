@@ -1561,3 +1561,11 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   through it, with nothing left on shim `roster`/`tell`. Each part with an `#[ignore]`d e2e against a throwaway
   daemon (`cargo test --test marshal -- --ignored --nocapture`), and no test able to reach a live one
   (`RALLY_MARSHAL_ADDRESS`).
+- [ ] **RAL-201: A restart under a new nickname is told its predecessor through the ledger.** From the watchman
+  (2026-11-17, record 5463), after RAL-200: Marshal gives a restarted session a new nickname and records no
+  succession (no predecessor field or succession entity in marshal-entities 0.60.2; `session_name` and cwd are
+  the shim's, declared), so `session-start --hook`'s same-tag search rarely finds the earlier session. Done
+  when: with no earlier transcript of its own nickname, a session is shown the earlier nickname named by the
+  open rally's newest `rally-session add <new> --succeeds <earlier>`, its transcript and record, labelled
+  declared with the record and who confirmed it; never tied by session name or folder, not even as a hint;
+  and with no confirmed succession it says it can't tell and how one is confirmed.
