@@ -2995,6 +2995,49 @@ fn digest_pass(
         .map_or(0, |elapsed| elapsed.as_millis() as i64);
     let shims = rally::shims::from_env();
     let can_send = rally::shims::available(&shims);
+    // Through Marshal's daemon, a designated name is followed through the open rally's session
+    // records to a live session (RAL-199). Both are read once, when a digest is first due.
+    let through_marshal = shims.iter().any(|source| source == rally::marshal::SOURCE);
+    let routing: std::cell::OnceCell<(Value, Vec<String>)> = std::cell::OnceCell::new();
+    // The name a digest for `name` goes to, or `None` with the reason in `row`.
+    let route_to = |name: &str, row: &mut Value| -> Option<String> {
+        if through_marshal {
+            let (open, live) = routing.get_or_init(|| {
+                let open = get("/v1/rallies")
+                    .map(|rallies| rallies["open"].clone())
+                    .unwrap_or(Value::Null);
+                let live = rally::marshal::roster()
+                    .map(|roster| {
+                        roster["sessions"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|s| s["nickname"].as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (open, live)
+            });
+            match rally::marshal::route(name, open, live) {
+                Ok(route) => {
+                    row["routed"] = json!({
+                        "to": route.to,
+                        "chain": route.chain,
+                        "records": route.records,
+                        "note": "routing only: the designation is unchanged",
+                    });
+                    Some(route.to)
+                }
+                Err(why) => {
+                    row["decision"] = json!("due, but the watchman can't be found on Marshal");
+                    row["error"] = json!(why);
+                    None
+                }
+            }
+        } else {
+            Some(name.to_owned())
+        }
+    };
     let mut rows = Vec::new();
     // Each watchman's progress is kept as soon as its own turn ends, so a read that fails for a
     // later watchman can't lose an earlier one's send and have it sent twice (RAL-86).
@@ -3140,13 +3183,23 @@ fn digest_pass(
                     if report_only {
                         row["decision"] = json!("due (report only: not sent)");
                         row["digest"] = json!(digest);
+                        // Where it would go, so a report-only run shows the route too, beside
+                        // its own decision.
+                        let mut probe = json!({});
+                        match route_to(&watch.name, &mut probe) {
+                            Some(_) if !probe["routed"].is_null() => {
+                                row["routed"] = probe["routed"].take();
+                            }
+                            Some(_) => {}
+                            None => row["would_not_send"] = probe["error"].take(),
+                        }
                     } else if !can_send {
                         row["decision"] = json!(format!(
                             "due, but none of {} is on this machine",
                             shims.join(", ")
                         ));
-                    } else {
-                        match rally::shims::tell(&shims, &watch.name, &digest) {
+                    } else if let Some(recipient) = route_to(&watch.name, &mut row) {
+                        match rally::shims::tell(&shims, "digest", &recipient, &digest) {
                             Ok(through) => {
                                 rally::digest::sent(&mut kept, to);
                                 kept.handover_told = Some(rally::digest::handover_keys(&handover));
