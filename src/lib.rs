@@ -42,6 +42,7 @@ pub mod init;
 pub mod ledger;
 pub mod levi;
 pub mod lock_holder;
+pub mod marshal;
 pub mod merge_notes;
 pub mod next;
 pub mod rebased;

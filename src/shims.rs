@@ -1,5 +1,6 @@
-//! Rally's way to Muster or Marshal (RAL-120): one ordered list of shim commands, read from
-//! `RALLY_ROSTER_FROM` (comma-separated), by default `marshal-shim` then `muster-shim`. The viewer
+//! Rally's way to Muster or Marshal (RAL-120): one ordered list of sources, read from
+//! `RALLY_ROSTER_FROM` (comma-separated). By default it's `marshal`, Rally reading Marshal's daemon
+//! itself as a Myko client (RAL-199, [`crate::marshal`]); any other entry is a shim command. The viewer
 //! reads the roster with it (RAL-116), and so do `rally stalls`, `rally wake` and `rally brief`;
 //! `rally wake` and `rally digest` send through it.
 //!
@@ -18,9 +19,9 @@ use serde_json::Value;
 /// The environment variable holding the list, comma-separated.
 pub const ENV: &str = "RALLY_ROSTER_FROM";
 
-/// The list by default: Marshal's, then Muster's, which is frozen but still where the sessions
-/// are until they move to Marshal's daemon.
-pub const DEFAULT: [&str; 2] = ["marshal-shim", "muster-shim"];
+/// The list by default: Rally reading Marshal's daemon itself (RAL-199). Muster is retired, and
+/// upstream `marshal-shim` has no `roster`, so neither shim is asked unless it's listed.
+pub const DEFAULT: [&str; 1] = [crate::marshal::SOURCE];
 
 /// The list from `RALLY_ROSTER_FROM`, or [`DEFAULT`] when it's unset or empty.
 pub fn from_env() -> Vec<String> {
@@ -52,7 +53,8 @@ pub fn on_path(command: &str) -> bool {
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(command).is_file()))
 }
 
-/// Whether any command in `list` can be run here.
+/// Whether any command in `list` can be run here to send. Rally reading Marshal's daemon itself
+/// ([`crate::marshal::SOURCE`]) reads the roster but doesn't send yet, so it isn't counted.
 pub fn available(list: &[String]) -> bool {
     list.iter().any(|command| on_path(command))
 }
@@ -89,6 +91,9 @@ pub fn roster(list: &[String]) -> Result<Roster, Vec<(String, String)>> {
 }
 
 fn read_one(command: &str) -> Result<Value, String> {
+    if command == crate::marshal::SOURCE {
+        return crate::marshal::roster();
+    }
     let out = Command::new(command)
         .arg("roster")
         .output()
@@ -174,6 +179,12 @@ pub fn try_the_next(stderr: &str) -> bool {
 pub fn tell(list: &[String], team: &str, message: &str) -> Result<String, String> {
     let mut tried = Vec::new();
     for command in list {
+        if command == crate::marshal::SOURCE {
+            tried.push(format!(
+                "{command}: Rally reads Marshal's roster itself, but doesn't send through it yet"
+            ));
+            continue;
+        }
         match Command::new(command).args(["tell", team, message]).output() {
             Err(error) => tried.push(format!("{command} couldn't be run ({error})")),
             Ok(out) if out.status.success() => return Ok(command.clone()),
@@ -201,9 +212,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_list_is_marshal_then_muster_unless_set() {
-        assert_eq!(parse(None), ["marshal-shim", "muster-shim"]);
-        assert_eq!(parse(Some(" , ")), ["marshal-shim", "muster-shim"]);
+    fn the_list_is_marshal_s_daemon_unless_set() {
+        assert_eq!(parse(None), ["marshal"]);
+        assert_eq!(parse(Some(" , ")), ["marshal"]);
         assert_eq!(parse(Some("muster-shim")), ["muster-shim"]);
         assert_eq!(parse(Some("a, b")), ["a", "b"]);
     }

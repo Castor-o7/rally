@@ -1390,11 +1390,11 @@ fn session_start(
             let slug = rally::resume::project_slug(cwd);
             let dir = home.join(".claude/projects").join(&slug);
             let transcript = dir.join(format!("{id}.jsonl"));
-            // Muster's own hook runs beside this one at a session's start, so the session may not
+            // Marshal's own hook runs beside this one at a session's start, so the session may not
             // be on the roster or tagged in its transcript yet: asked again, for up to 1.5 s.
             let until = std::time::Instant::now() + std::time::Duration::from_millis(1_500);
             let tie = loop {
-                let roster = muster_roster(std::time::Duration::from_millis(700));
+                let roster = marshal_roster(std::time::Duration::from_millis(700));
                 if let Some(tie) = rally::resume::identify(&transcript, id, roster.as_ref()) {
                     break tie;
                 }
@@ -1535,32 +1535,16 @@ fn behind_lines(
     }
 }
 
-/// Muster's roster through `muster-shim roster`, within `limit`, or `None` (RAL-152). Read-only.
-fn muster_roster(limit: std::time::Duration) -> Option<Value> {
-    let mut child = std::process::Command::new("muster-shim")
-        .arg("roster")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let until = std::time::Instant::now() + limit;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < until => {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
+/// Marshal's roster, read from its daemon within `limit`, or `None` (RAL-152, RAL-199). Read-only.
+/// Read only when `RALLY_ROSTER_FROM` lists it, as it does by default.
+fn marshal_roster(limit: std::time::Duration) -> Option<Value> {
+    if !rally::shims::from_env()
+        .iter()
+        .any(|source| source == rally::marshal::SOURCE)
+    {
+        return None;
     }
-    let mut out = Vec::new();
-    std::io::Read::read_to_end(&mut child.stdout.take()?, &mut out).ok()?;
-    serde_json::from_slice(&out).ok()
+    rally::marshal::roster_at(&rally::marshal::daemon_address(), limit).ok()
 }
 
 /// The pairing at `path`, for commands that only work through the service.

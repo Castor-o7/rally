@@ -1191,6 +1191,8 @@ fn session_start(home: &std::path::Path, args: &[&str]) -> Output {
         .arg("session-start")
         .args(args)
         .env("HOME", home)
+        // Never a live Marshal daemon from a test (RAL-199): port 9 on loopback takes nothing.
+        .env(rally::marshal::OVERRIDE_ENV, "ws://127.0.0.1:9")
         .env_remove("RALLY_DB")
         .env_remove("RALLY_HEAD_FILE")
         .env_remove("RALLY_CONFIG")

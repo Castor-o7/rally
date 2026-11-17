@@ -45,8 +45,19 @@ impl Drop for Service<'_> {
     }
 }
 
+/// A loopback address nothing listens on, so a test never reads a live Marshal daemon (RAL-199).
+fn nothing_listens() -> String {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    format!("ws://127.0.0.1:{port}")
+}
+
 fn rally() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_rally"));
+    command.env(rally::marshal::OVERRIDE_ENV, nothing_listens());
     for name in [
         "RALLY_DB",
         "RALLY_HEAD_FILE",
@@ -4345,6 +4356,8 @@ fn stalls_take_a_projects_own_locks_and_window_and_can_say_nothing() {
             Some(from) => command.env("RALLY_ROSTER_FROM", from),
             None => command.env_remove("RALLY_ROSTER_FROM"),
         };
+        // The default list reads Marshal's daemon (RAL-199): never a live one from a test.
+        command.env(rally::marshal::OVERRIDE_ENV, nothing_listens());
         if let Some(path) = path {
             command.env("PATH", path);
         }
@@ -4397,7 +4410,8 @@ fn stalls_take_a_projects_own_locks_and_window_and_can_say_nothing() {
     assert!(
         said.contains("isn't an all clear")
             && said.contains("\ncan't see: the roster: no shim's roster could be read (")
-            && said.contains("muster-shim: couldn't be run"),
+            && said.contains("marshal: the daemon at ws://127.0.0.1:")
+            && said.contains("couldn't be reached"),
         "{said}"
     );
     // A lock pattern that matches nothing is a blind spot too.

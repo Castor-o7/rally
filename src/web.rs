@@ -1,7 +1,7 @@
 //! The read-only viewer (RAL-25, RAL-27, RAL-29): a page on this machine's loopback address.
 //!
 //! It holds no write path: it reads the ledger with a read-only credential or from a file, roadmap
-//! files through `gh`, and the roster through `muster-shim roster`. Those are read by a background
+//! files through `gh`, and the roster from Marshal's daemon (RAL-199). Those are read by a background
 //! thread, so requests never wait on them and a page can always show how old its data is.
 //!
 //! A web page in the same browser is the threat here. Requests must name this address in `Host`,
@@ -1624,9 +1624,8 @@ fn refresh_roadmaps(projects: &[Project], previous: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-/// The commands the roster is read with, in order, by default (RAL-116): Marshal's, then Muster's,
-/// which is frozen but still where the sessions are until they move to Marshal's daemon.
-pub const DEFAULT_ROSTER_FROM: [&str; 2] = crate::shims::DEFAULT;
+/// What the roster is read from by default: Marshal's daemon, read by Rally itself (RAL-199).
+pub const DEFAULT_ROSTER_FROM: [&str; 1] = crate::shims::DEFAULT;
 
 /// How often a roster command that failed is asked again (RAL-117, RAL-126). Between those it isn't
 /// asked, since a failing one can take its whole limit; one that answers is asked every refresh.
@@ -1646,6 +1645,10 @@ pub struct RosterMemory {
 /// [`ROSTER_RETRY_EARLIER`], unless none of the others answers.
 fn read_roster(from: &[String], memory: &mut RosterMemory) -> Value {
     read_roster_with(from, memory, now_ms(), ROSTER_RETRY_EARLIER, |command| {
+        // Marshal's daemon is read in this process, not through a command (RAL-199).
+        if command == crate::marshal::SOURCE {
+            return crate::marshal::roster().map(|roster| roster.to_string().into_bytes());
+        }
         let mut run = Command::new(command);
         run.arg("roster");
         run_with_timeout(run, COMMAND_LIMIT)

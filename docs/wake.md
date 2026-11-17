@@ -44,7 +44,9 @@ Both times are agreed with the operator and have no default:
 ## Muster or Marshal is optional
 
 `rally wake` reads the roster and sends through Marshal's shim or Muster's (RAL-120): the commands in
-`RALLY_ROSTER_FROM`, comma-separated, by default `marshal-shim,muster-shim`, as the viewer reads the roster. The
+`RALLY_ROSTER_FROM`, comma-separated, by default `marshal` (Rally reading Marshal's daemon itself, RAL-199), as
+the viewer reads the roster. Rally doesn't send through `marshal` yet (RAL-199's second part), so with the
+default list `rally wake` reports only. The
 roster is all of theirs merged (RAL-126), each session naming its `source`, and the report's `roster.read_with`
 lists those read. A message goes through
 the first that knows the team, named in each team's `sent_by`. It falls back to the next only when the shim says

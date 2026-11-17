@@ -1550,3 +1550,14 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   (chrono unmaintained, no safe upgrade) reached Murph's advisory db after 11-15, so `local/dependency-audit`
   failed on every PR. Done when: deny.toml lists it in the file's style, with the paths chrono comes in by, why
   Rally isn't exposed, and a review date, and `cargo deny check` passes.
+- [ ] **RAL-199: Rally talks to upstream Marshal directly as a Myko client.** From the watchman (2026-11-17, record
+  5407): Muster is retired, and upstream `marshal-shim` 0.60.2 has no `roster` or `tell`, so the viewer's roster,
+  `rally digest`'s sends to the watchman, and `rally wake`/`stalls`/`brief` all went dark. Myko pinned to the
+  daemon's line (myko, myko-server, myko-auth and autosocket 6.15.1, hyphae 3.1.9, marshal-entities 0.60.2). In
+  parts. Done when: (1) Rally reads Marshal's roster from the daemon itself (`marshal`, the default
+  `RALLY_ROSTER_FROM`), putting no row on it, and the viewer, `stalls`, `wake`, `brief` and `session-start` read
+  it; muster-shim is no longer in the default list; (2) direct messages go through the daemon too, and
+  `rally digest` reaches the watchman named by its Marshal session; (3) `rally wake` and `stalls` send and read
+  through it, with nothing left on shim `roster`/`tell`. Each part with an `#[ignore]`d e2e against a throwaway
+  daemon (`cargo test --test marshal -- --ignored --nocapture`), and no test able to reach a live one
+  (`RALLY_MARSHAL_ADDRESS`).

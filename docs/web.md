@@ -127,9 +127,13 @@ runs past the window. Reaching the page from a phone is a separate matter, RAL-3
   figure names. Green only ever means Verified, so a ticked box the ledger hasn't verified can't pass for one.
   A headless Chrome test reads every bar's computed colour in the light and dark schemes.
 - **Teams** show what's declared to the ledger, and the roster with its source's own labels (RAL-116). The roster
-  is every command's in `--roster-from` (or `RALLY_ROSTER_FROM`, comma-separated; by default
-  `marshal-shim,muster-shim`), each run as `<command> roster`, shown together (RAL-126): while sessions move from
-  Muster's daemon to Marshal's, both have some. Each row says which roster it came from ("via marshal-shim"); a
+  is every source's in `--roster-from` (or `RALLY_ROSTER_FROM`, comma-separated), shown together (RAL-126). By
+  default it's `marshal`: the viewer reads Marshal's daemon itself as a Myko client (RAL-199, `src/marshal.rs`),
+  at the address `marshal-shim` would use (the first line of `~/.config/marshal/daemon-address`, then
+  `MARSHAL_DAEMON_ADDRESS`, then `MYKO_ADDRESS`, then `ws://localhost:6155`; `RALLY_MARSHAL_ADDRESS` overrides
+  them all). It only reads, and puts no row on the roster. Any other entry is a shim command, run as
+  `<command> roster`; Muster is retired and upstream `marshal-shim` 0.60.2 has no `roster`, so neither is listed
+  by default. Each row says which roster it came from ("via marshal-shim"); a
   session on both is shown once, from the more recently active, saying it's also on the other. The panel says which
   were read and why any weren't. One that fails is asked again only every 5 minutes, since a failing one can take
   its whole limit (RAL-117), unless no other answers; the panel says so. Muster's roster labels each fact attested, declared or observed;
