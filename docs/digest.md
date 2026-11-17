@@ -234,11 +234,10 @@ digest again, on every retry. Fix the file and start it again.
 
 ## Running it on a1
 
-Not current. Since Muster was retired (2026-11-17, condition 5396), Rally sends through Marshal's daemon itself
-(RAL-199), which on Murph listens only on loopback (`127.0.0.1:6155`, [cutover.md](cutover.md)), and a1 is cleared
-only as a test host (grant 5360). So the install below, which sends with `muster-shim`, reaches no watchman, and
-shouldn't be installed. Where the digest runs instead is the operator's call. What follows is kept as the record
-of the a1 setup.
+Not current. Muster is retired (2026-11-17, condition 5396), so the install below, which sends with
+`muster-shim`, reaches nothing: don't install it. Rally sends through Marshal's daemon itself (RAL-199). On
+2026-11-17 the digest runs on Murph (`rally digest --every 30s`, read on the box). Where it runs is the
+operator's call. What follows is kept as the record of the a1 setup.
 
 On a1, beside the backup agent: a1 has `muster-shim` and the Rally pairing. While scopes aren't applied it sends
 to one watchman only, the a1 watchman (fiery-snapper on 2026-11-05), so one change isn't two interruptions. A

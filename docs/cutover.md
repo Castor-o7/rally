@@ -1,7 +1,8 @@
 # Moving the muster from Muster's daemon to Marshal's (RAL-119, refreshed by RAL-197)
 
 **Status, 2026-11-17: Muster is retired (condition 5396), and the muster uses Marshal only.** What follows is
-the record of the move as it stood before that, kept as it was.
+the record of the move as it stood before that, kept as it was, except Marshal's bind, corrected below: since
+13:45 that day the daemon listens on `0.0.0.0`, not loopback (box, read 15:50 for RAL-203).
 
 **An inventory and a runbook.** The watchman (mellow-weevil) asked for it on 2026-11-08, toward the
 operator's goal of moving from Muster's daemon to Marshal's with no interruption. RAL-197 brought it up to
@@ -17,11 +18,13 @@ approve and the lamplighter's to run.
 - **Muster carries every session.** Muster's roster has 5 sessions. Marshal's has one, mauve-tortoise:
   idle, in `~/src/lamplighter`, with an observe-only status from 11-09. User-wide hooks and the MCP server
   are all `muster-shim` (rows 1 and 2). (box)
-- **Marshal runs on Murph, on loopback only.** `marshal-daemon.service` runs `~/.cargo/bin/marshal-daemon`,
-  version string `0.58.1`, PID 4158649, started 2026-11-09 19:43:28. The binary and shim are dated
-  19:43:29 that day. It listens on `127.0.0.1:6155` (Myko) and `127.0.0.1:6156` (the HTTP hook listener).
-  The `bind-loopback.conf` drop-in sets `MARSHAL_BIND=127.0.0.1:6155`, and the hook port is on its
-  default loopback address. (box)
+- **Marshal runs on Murph, on `0.0.0.0`, behind a firewall file.** Read 15:50 on 11-17 for RAL-203:
+  `marshal-daemon.service` runs `~/.cargo/bin/marshal-daemon`, `0.60.2`, PID 2450140, started 13:45:05. It
+  listens on `0.0.0.0:6155` (Myko) and `0.0.0.0:6156` (the HTTP hook listener): the `zz-open-bind.conf`
+  drop-in (13:44) sets both, over `upstream.conf`'s loopback binds. `/etc/nftables.conf` (13:44) accepts 6155
+  and 6156 only from `MARSHAL_CLIENTS`, one address. The ruleset loaded in the kernel needs root to read, so
+  it wasn't. Earlier that day, when RAL-197 read it, the daemon was `0.58.1` (PID 4158649, from 11-09) on
+  `127.0.0.1` only, by a `bind-loopback.conf` drop-in. (box)
 - **That binary is the fork's `82335c2`**, the merge of #113 (MAR-85), which carries MAR-23, MAR-24, MAR-80,
   MAR-81 and MAR-83. The source is the lamplighter's log ("2026-11-09 19:43 — Marshal 82335c2 deployed").
   The binary doesn't embed its commit, so this can't be read from the box. Two things agree with the log:
@@ -45,7 +48,10 @@ approve and the lamplighter's to run.
   (192.168.1.241, plus a ULA IPv6). No `netbird`, `tailscale`, `wg`, `zerotier-cli` or `nebula` is
   installed, and none runs as a unit. (box)
 
-## The bind: loopback
+## The bind: loopback, until 11-17 13:45
+
+Since 13:45 on 11-17 the daemon binds `0.0.0.0`, limited by `/etc/nftables.conf` (above). The rest of this
+section is the record from before.
 
 When this was first read on 11-08, the unit set `MARSHAL_BIND=0.0.0.0:6155` with no gate. The operator
 decided that Marshal binds to `127.0.0.1` "until the gate lands" (condition 1416 in Rally). The drop-in still

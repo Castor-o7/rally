@@ -2,9 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Not current: Muster is retired (2026-11-17, condition 5396), and Rally now sends through
-       Marshal's daemon (RAL-199), which on Murph listens only on loopback; a1 is cleared only as a
-       test host (grant 5360). This agent's muster-shim reaches no watchman, so don't install it.
+  <!-- Not current: Muster is retired (2026-11-17, condition 5396), so this agent's muster-shim
+       reaches nothing. Don't install it. Rally sends through Marshal's daemon itself (RAL-199).
        Kept as the record of the a1 setup. See docs/digest.md, "Running it on a1".
 
        Rally's watchman digest for a1 (RAL-8): every 30 seconds, one pass of `rally digest`. It reads
