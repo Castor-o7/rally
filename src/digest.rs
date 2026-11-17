@@ -6,7 +6,7 @@
 //! the first was seen. With no such records, nothing is sent. The clocks are this machine's: a record
 //! is "seen" when a pass first reads it, so another host's clock doesn't matter.
 //!
-//! Everything here is pure, so it can be tested without the service or Muster.
+//! Everything here is pure, so it can be tested without the service or Marshal.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

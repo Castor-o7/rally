@@ -54,7 +54,7 @@ and its reason go into the ledger in one command.
 Rally can't tell from a roadmap that a story needs the operator, so the team decides. A story that does **isn't
 skipped**:
 
-1. The team asks the operator, through Muster to the operator's address, and records the question:
+1. The team asks the operator, through Marshal to the operator's address, and records the question:
    `rally block --team <team> --story <STORY> --on-team operator --note "<the question>"`.
 2. Until the window agreed with the operator has passed, the story stays the pick. `rally next` shows when the
    question was asked and when a shelve is due, and `after_shelving` names the story that would come next.

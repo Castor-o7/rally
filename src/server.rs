@@ -40,7 +40,7 @@ pub struct RateLimit {
     pub write_burst: f64,
     pub write_per_second: f64,
     pub max_ledger_bytes: u64,
-    /// Rally shares its host with Muster's daemon, so it stops writing well before the disk fills.
+    /// Rally shares its host with Marshal's daemon, so it stops writing well before the disk fills.
     pub min_free_bytes: u64,
     /// Connections open at once, from anyone, and from any one address.
     pub max_connections: usize,
@@ -65,7 +65,7 @@ impl Default for RateLimit {
             write_burst: 30.0,
             write_per_second: 0.2,
             // The size of the ledger's table in Postgres, with its indexes. The service holds the
-            // whole ledger in memory, and a check replays it, on a host shared with Muster: see
+            // whole ledger in memory, and a check replays it, on a host shared with Marshal: see
             // `docs/service.md` for what this costs. Raise this only after RAL-35.
             max_ledger_bytes: 64 * 1024 * 1024,
             min_free_bytes: 5 * 1024 * 1024 * 1024,

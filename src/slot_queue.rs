@@ -14,7 +14,7 @@
 //!
 //! What's read is the kernel's account and the files' own text (observed). Who an owner is comes
 //! from the job itself (declared): dsm-heavy names it from DSM_HEAVY_OWNER, RALLY_NAME, the
-//! `~/.cache/<team>` folder or the session's Muster nickname.
+//! `~/.cache/<team>` folder or the session's nickname.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

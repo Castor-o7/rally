@@ -11,7 +11,7 @@ rally digest --quiet 2m --max 10m --watchman frank-crocodile --report-only   # p
 ## What it's for
 
 The watchman should wake once, with one message, when something in the ledger changed, and hear nothing when
-nothing did. Today it has to poll `rally waiting`, `rally blockers` and `rally handover`, or be told over Muster
+nothing did. Today it has to poll `rally waiting`, `rally blockers` and `rally handover`, or be told over Marshal
 by each team.
 
 ## When a digest is sent
@@ -31,8 +31,9 @@ so a digest goes at most that long after it's due. Each watchman's head and cloc
 
 ## How it's delivered
 
-- One direct message to each designated watchman, through `marshal-shim` or `muster-shim`, whichever knows it, as
-  `rally wake` sends (RAL-120), named in the row's `sent_by`.
+- One direct message to each designated watchman, through the first of `RALLY_ROSTER_FROM` that can reach it, as
+  `rally wake` sends (RAL-120), named in the row's `sent_by`. Rally doesn't send through `marshal`, the default,
+  until RAL-199's second part, so with the default list the digest is only reported.
 - With no watchman designated, nothing is sent: teams verify one another then (`rally waiting`). While the
   service has no operator key, no designation can be checked, so `--watchman <name>` names the one to send to.
   That's declared: the watchman's own records are then told apart by declared name, not credential.
@@ -205,7 +206,7 @@ This doesn't make a digest go sooner: it's part of the next one. It needs `gh` s
 
 With `--every`, a pass that fails doesn't end the loop when the failure can clear with time: the service refusing
 with 429 ("too many requests", "too many checks and past-state reads"), 408 or 5xx; the service being unreachable or
-restarting; Muster being down. The failed pass is logged on stdout as one JSON line, and the loop waits and tries
+restarting; Marshal being down. The failed pass is logged on stdout as one JSON line, and the loop waits and tries
 again:
 
 ```json

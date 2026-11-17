@@ -318,7 +318,7 @@ minutes it runs `rally backup` with the read-only backup pairing into `~/.local/
 the lid opens is the catch-up. The command exits non-zero when the service can't be reached, saying how long ago
 the last backup was and whether that's overdue, and the viewer shows the same from `head.json` when started with
 `rally web --backup-dir ~/.local/state/rally-backup` (overdue past `--backup-max-age-hours`, 1 by default, which
-is four missed runs). A Muster message to the watchman when it's overdue is a later step, limited to one a day.
+is four missed runs). A Marshal message to the watchman when it's overdue is a later step, limited to one a day.
 
 Installing it changes the operator's machine, so it's the operator's to do, on their word:
 
@@ -458,7 +458,7 @@ commit. Backfill entries in the order they were made.
   `show --as-of 60000`, it held 314 to 318 MiB; before they ran one at a time, 1,058 to 1,118 MiB. Both were
   measured with the per-credential limit on checks and past states lifted, so they show the one-at-a-time
   limit alone.
-  The limit stays at 64 MiB: the host shares its memory with Muster's daemon.
+  The limit stays at 64 MiB: the host shares its memory with Marshal's daemon.
 - A damaged `machines.json` logs a line for each request, before any rate limit, until it's fixed.
 - If `cert.pem` or `key.pem` goes missing, the service refuses to start rather than making a new
   certificate, which would break every machine's pin. Restore it, or remove both and pair every machine

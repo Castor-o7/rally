@@ -212,7 +212,7 @@ impl Harness {
 
 /// What a Prime Agent session is told, at the operator's request (RAL-59).
 pub const PRIME_AGENT_NOTICE: &str = "You're a Prime Agent session: Prime Agent's built-in \
-messaging is a fine substitute for Muster when you use Rally. Muster is only needed to reach \
+messaging is a fine substitute for Marshal when you use Rally. Marshal is only needed to reach \
 sessions of other harnesses (Claude Code, Codex, opencode, Pi) or on other machines.";
 
 pub fn render(team: &str, stories: &Map<String, Value>, blockers: &[Value]) -> String {

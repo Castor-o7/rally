@@ -82,9 +82,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now rally
 ```
 
-Postgres runs as Muster's `marshal-postgres` **user** unit, and a system unit can't wait on a user unit. So the
+Postgres runs as Marshal's `marshal-postgres` **user** unit, and a system unit can't wait on a user unit. So the
 service retries every 5 seconds until Postgres's socket is there, which needs lingering for `joshd`
-(`loginctl enable-linger joshd`, already on if Muster's daemon runs at boot). Its startup line shows the operator
+(`loginctl enable-linger joshd`, already on if Marshal's daemon runs at boot). Its startup line shows the operator
 key's fingerprint, which should match Secretive's.
 
 To update Rally later, rebuild, then run the `sudo install` of the binary again and `sudo systemctl restart rally`.
@@ -119,7 +119,7 @@ that account can, so choose where the watchman runs:
 - **(C) The same account, with a separate pairing file.** This catches mistakes, such as a session on the
   default pairing that declares the watchman's name. It doesn't stop a session that goes looking for the file.
 
-Then, by hand, never through Muster or any session:
+Then, by hand, never through Marshal or any session:
 
 1. On Murph: `rally add-machine a1-watchman --address 192.168.1.241:6300 --state-dir ~/.local/state/rally --out
    ~/a1-watchman.pair`. The pair code is written to that private file, never printed.
@@ -196,7 +196,7 @@ are signed, so neither can be changed after the operator signs.
 
 For the two-watchman rally of 2026-11-05: fiery-snapper on a1 and frank-crocodile on Murph. Every step is the
 operator's, by hand. An agent can prepare the commands, but the key, the pair codes and the Touch ID are never
-passed through Muster or a session.
+passed through Marshal or a session.
 
 ### 0. Check the starting point
 

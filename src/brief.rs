@@ -17,7 +17,7 @@ use crate::views::{self, LIST_LIMIT, Page, Readers, UNTRUSTED_TEXT};
 
 /// Said with every brief: it records, and doesn't grant.
 pub const NO_AUTHORITY: &str = "This brief confers no authority. Approvals come from the operator \
-directly, and who holds a role is shown by Muster, not by the ledger.";
+directly, and who holds a role is shown by Marshal, not by the ledger.";
 
 /// Said with the holds, conditions and grants the brief lists (RAL-64).
 pub const STANDINGS: &str = "Holds, conditions and grants are as their writers declared them, not \
@@ -115,7 +115,7 @@ pub fn brief(ledger: &Ledger, hashes: &[String], key: Option<&OperatorKey>, now_
     let (teams, teams_total) = bounded(teams);
 
     // Open claims: stories a team holds, claimed or sent back to it. Whether the claimant's
-    // session is still on Muster's roster is added by the caller, which can ask Muster.
+    // session is still on Marshal's roster is added by the caller, which can ask Marshal.
     let claims: Vec<Value> = ledger
         .stories()
         .iter()
@@ -331,8 +331,8 @@ fn shell_quote(text: &str) -> String {
 }
 
 /// The rally a watchman starts from (RAL-78). With a rally open: the rally, and each session on
-/// Muster's roster marked in it or not. With none open: the rally the roster suggests. A session's
-/// project comes only from the project list's `sessions` (its Muster project or nickname), never
+/// Marshal's roster marked in it or not. With none open: the rally the roster suggests. A session's
+/// project comes only from the project list's `sessions` (its Marshal project or nickname), never
 /// guessed from a name. Sessions working in no listed project, such as `src`, are there to assist the
 /// project teams, so they're teams of the rally but bring no project. Opening it stays the
 /// watchman's or the operator's call: this only says what to run.
@@ -390,7 +390,7 @@ pub fn rally_section(
     let mut value = json!({"kind": "declared", "sessions": rows.clone()});
     if roster.is_none() {
         value["sessions_note"] =
-            json!("Muster's roster couldn't be read, so no sessions are shown.");
+            json!("Marshal's roster couldn't be read, so no sessions are shown.");
     }
     if rallies.is_none() {
         value["note"] =
@@ -443,8 +443,8 @@ pub fn rally_section(
     value
 }
 
-/// Marks each open claim with whether a live Muster session declares the claimant's name, as
-/// Muster's roster shows it (observed). With no roster, says that it couldn't be checked. A name
+/// Marks each open claim with whether a live Marshal session declares the claimant's name, as
+/// Marshal's roster shows it (observed). With no roster, says that it couldn't be checked. A name
 /// on the roster is a nickname, which proves nothing about who made the claim.
 pub fn mark_sessions(brief: &mut Value, roster: Option<&Value>) {
     let nicknames: Option<Vec<String>> = roster.map(|roster| {
@@ -464,14 +464,14 @@ pub fn mark_sessions(brief: &mut Value, roster: Option<&Value>) {
     };
     for claim in claims {
         claim["session"] = match (&nicknames, claim["claimed_by"].as_str()) {
-            (None, _) => json!({"kind": "unknown", "note": "Muster's roster couldn't be read"}),
+            (None, _) => json!({"kind": "unknown", "note": "Marshal's roster couldn't be read"}),
             (Some(_), None) => json!({"kind": "unknown", "note": "the claim names no one"}),
             (Some(names), Some(by)) => {
                 let live = names.contains(&by.trim().to_lowercase());
                 let mut value = json!({"kind": "observed", "on_roster": live});
                 if !live {
                     value["note"] =
-                        json!("no live Muster session has this name: it may have ended");
+                        json!("no live Marshal session has this name: it may have ended");
                 }
                 value
             }
