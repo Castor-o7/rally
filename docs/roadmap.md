@@ -1579,3 +1579,8 @@ principles named were durable, accurate and reactive. Found in rally 0x7 by plus
   row for a team's live session, and say how many they left out; with unit tests of the rule and a headless
   Chrome test of the panel; and the digest's routing and `marshal::recipient` take only live sessions (bound,
   or with a wait held), so a ghost never ends a route early or makes a live nickname ambiguous.
+- [ ] **RAL-206: The Marshal e2e's throwaway shim never borrows the runner's session identity.** From fervent-dace's
+  read of RAL-199 part 3 (2026-11-17): `tests/marshal.rs`'s shim inherited `CLAUDE_CODE_SESSION_ID`, so it took
+  the id and nickname of whichever session ran the test. That only ever reached the throwaway daemon, but the
+  test depended on who ran it. Done when: the shim gets no inherited `CLAUDE*`, `MARSHAL_*` or `MYKO_*` variable,
+  is given a fixed test session id, and the e2e asserts that id.
